@@ -1,0 +1,54 @@
+{
+  "name": "cheapchat",
+  "version": "0.1.0",
+  "private": false,
+  "description": "OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.",
+  "license": "MIT",
+  "keywords": [
+    "electron",
+    "react",
+    "openrouter",
+    "byok",
+    "desktop",
+    "chat"
+  ],
+  "type": "module",
+  "main": "out/main/index.cjs",
+  "packageManager": "pnpm@10.11.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "preview": "electron-vite preview",
+    "rebuild": "electron-rebuild -f -w better-sqlite3,keytar",
+    "postinstall": "electron-rebuild -f -w better-sqlite3,keytar"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.2.7",
+    "@fontsource/ibm-plex-sans": "5.2.8",
+    "better-sqlite3": "12.8.0",
+    "keytar": "7.9.0",
+    "lucide-react": "1.7.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "10.1.0",
+    "rehype-sanitize": "6.0.0",
+    "zustand": "5.0.12"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.0.3",
+    "@tailwindcss/vite": "4.2.2",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "25.5.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "41.1.0",
+    "electron-vite": "5.0.0",
+    "tailwindcss": "4.2.2",
+    "typescript": "6.0.2",
+    "vite": "7.3.1"
+  }
+}

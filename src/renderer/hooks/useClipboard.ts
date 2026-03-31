@@ -6,11 +6,27 @@ export function useClipboard(timeout = 2000) {
   const copy = useCallback(
     async (text: string) => {
       try {
-        await navigator.clipboard.writeText(text);
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const textArea = document.createElement('textarea');
+          textArea.value = text;
+          textArea.style.position = 'fixed';
+          textArea.style.left = '-999999px';
+          textArea.style.top = '-999999px';
+          document.body.append(textArea);
+          textArea.focus();
+          textArea.select();
+          try {
+            document.execCommand('copy');
+          } finally {
+            textArea.remove();
+          }
+        }
         setCopied(true);
         setTimeout(() => setCopied(false), timeout);
       } catch {
-        // Clipboard API may fail in non-secure contexts
+        // Silently fail
       }
     },
     [timeout]

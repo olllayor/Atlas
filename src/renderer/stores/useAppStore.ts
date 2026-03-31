@@ -520,6 +520,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (event.type === 'error') {
       const detail = await window.cheapChat.conversations.get(conversationId);
       const conversations = await window.cheapChat.conversations.list();
+      const shouldShowNotice =
+        event.code === 'auth_error' || event.code === 'missing_credential';
 
       set((state) => {
         const draft = state.draftsByConversation[conversationId];
@@ -544,10 +546,12 @@ export const useAppStore = create<AppState>((set, get) => ({
               errorMessage: event.message
             }
           },
-          notice: {
-            tone: event.code === 'aborted' ? 'info' : 'error',
-            message: event.message
-          }
+          notice: shouldShowNotice
+            ? {
+                tone: 'error',
+                message: event.message
+              }
+            : null
         };
       });
       return;

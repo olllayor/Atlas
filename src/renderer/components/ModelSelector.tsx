@@ -27,7 +27,7 @@ type ModelSelectorProps = {
   isRefreshing?: boolean;
 };
 
-const extractProvider = (modelId: string): string => {
+const extractNamespace = (modelId: string): string => {
   const parts = modelId.split('/');
   return parts.length > 1 ? parts[0] : 'other';
 };
@@ -61,9 +61,9 @@ export function ModelSelector({
     const groups = new Map<string, ModelSummary[]>();
 
     for (const model of filtered) {
-      const provider = extractProvider(model.id);
-      if (!groups.has(provider)) groups.set(provider, []);
-      groups.get(provider)!.push(model);
+      const namespace = extractNamespace(model.id);
+      if (!groups.has(namespace)) groups.set(namespace, []);
+      groups.get(namespace)!.push(model);
     }
 
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
@@ -79,7 +79,7 @@ export function ModelSelector({
     [onSelect, onOpenChange]
   );
 
-  const providerSlug = selectedModel ? extractProvider(selectedModel.id) : null;
+  const providerSlug = selectedModel?.providerId ?? null;
 
   return (
     <AIModelSelector open={open} onOpenChange={onOpenChange}>
@@ -88,11 +88,11 @@ export function ModelSelector({
           ref={triggerRef}
           type="button"
           disabled={disabled}
-          className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex max-w-[260px] items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1.5 text-xs font-medium transition hover:border-white/6 hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
           aria-expanded={open}
           aria-haspopup="listbox"
         >
-          {providerSlug && <ModelSelectorLogo provider={providerSlug} className="dark:invert-0" />}
+          {providerSlug && <ModelSelectorLogo provider={providerSlug} />}
           <ModelSelectorName className="truncate text-text-tertiary">
             {selectedModel ? extractModelName(selectedModel.id) : 'Model'}
           </ModelSelectorName>
@@ -139,14 +139,14 @@ export function ModelSelector({
             ) : null}
           </ModelSelectorEmpty>
 
-          {grouped.map(([provider, providerModels]) => (
-            <ModelSelectorGroup key={provider} heading={provider}>
+          {grouped.map(([namespace, providerModels]) => (
+            <ModelSelectorGroup key={namespace} heading={namespace}>
               {providerModels.map((model) => {
                 const isSelected = model.id === selectedModelId;
 
                 return (
                   <ModelSelectorItem key={model.id} value={model.id} onSelect={() => handleSelect(model.id)}>
-                    <ModelSelectorLogo provider={provider} className="dark:invert-0" />
+                    <ModelSelectorLogo provider={model.providerId} />
                     <div className="min-w-0 flex-1">
                       <ModelSelectorName>{model.label}</ModelSelectorName>
                       <p className="truncate text-[10px] text-text-faint">{extractModelName(model.id)}</p>

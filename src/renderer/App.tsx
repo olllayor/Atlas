@@ -163,10 +163,11 @@ export default function App() {
         onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
         {/* Draggable title bar area for main content - matches sidebar height */}
         <div 
-          className="h-[52px] shrink-0 border-b border-border-subtle"
+          className="relative h-[52px] shrink-0 border-b border-white/6"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
         
@@ -202,6 +203,8 @@ export default function App() {
           isStreaming={activeDraft?.status === 'streaming'}
           models={models}
           selectedModelId={selectedModelId}
+          detail={activeConversation}
+          draft={activeDraft}
           onChange={setComposerValue}
           onSend={() => {
             const payload = composerValue;

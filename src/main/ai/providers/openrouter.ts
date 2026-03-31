@@ -29,6 +29,7 @@ type OpenRouterModelsResponse = {
 };
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENROUTER_FIRST_RESPONSE_TIMEOUT_MS = 300_000;
 
 function isZeroPrice(value: string | number | undefined) {
   if (typeof value === 'number') {
@@ -114,9 +115,10 @@ export class OpenRouterProvider implements ProviderAdapter {
 
   async streamChat(request: ProviderStreamRequest): Promise<ProviderStreamResult> {
     const timeoutController = new AbortController();
+    let hasReceivedResponse = false;
     const timeout = setTimeout(() => {
       timeoutController.abort();
-    }, 45_000);
+    }, OPENROUTER_FIRST_RESPONSE_TIMEOUT_MS);
 
     const signal = AbortSignal.any([request.signal, timeoutController.signal]);
     const startedAt = Date.now();
@@ -141,6 +143,11 @@ export class OpenRouterProvider implements ProviderAdapter {
         maxOutputTokens: request.maxOutputTokens,
         abortSignal: signal,
         onChunk: ({ chunk }) => {
+          if (!hasReceivedResponse) {
+            hasReceivedResponse = true;
+            clearTimeout(timeout);
+          }
+
           if (chunk.type === 'text-delta') {
             request.onChunk(chunk.text);
           }
@@ -176,7 +183,7 @@ export class OpenRouterProvider implements ProviderAdapter {
         latencyMs: Date.now() - startedAt
       };
     } catch (error) {
-      if (timeoutController.signal.aborted && !request.signal.aborted) {
+      if (timeoutController.signal.aborted && !request.signal.aborted && !hasReceivedResponse) {
         throw new RequestTimeoutError();
       }
 

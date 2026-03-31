@@ -1,39 +1,213 @@
-import { Check, Copy } from 'lucide-react';
-import type { PropsWithChildren } from 'react';
-import { useCallback, useRef } from 'react';
+import { code as codeHighlighter, type HighlightResult } from '@streamdown/code';
+import { Check, Copy, Download } from 'lucide-react';
+import type { CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { cn } from '../lib/utils';
 import { useClipboard } from '../hooks/useClipboard';
 
-type CodeBlockProps = PropsWithChildren<{
+type CodeBlockProps = {
+  code: string;
   language?: string;
-}>;
+  isIncomplete?: boolean;
+  meta?: string;
+  className?: string;
+};
 
-export function CodeBlock({ children, language }: CodeBlockProps) {
-  const codeRef = useRef<HTMLPreElement>(null);
+type SupportedLanguage = ReturnType<typeof codeHighlighter.getSupportedLanguages>[number];
+
+const supportedLanguages = new Set<SupportedLanguage>(codeHighlighter.getSupportedLanguages());
+
+const languageAliases: Record<string, string> = {
+  js: 'javascript',
+  ts: 'typescript',
+  shell: 'bash',
+  sh: 'bash',
+  zsh: 'bash',
+  yml: 'yaml',
+  md: 'markdown',
+  txt: 'text',
+  plaintext: 'text',
+};
+
+const fileExtensions: Record<string, string> = {
+  javascript: 'js',
+  jsx: 'jsx',
+  typescript: 'ts',
+  tsx: 'tsx',
+  python: 'py',
+  bash: 'sh',
+  zsh: 'zsh',
+  json: 'json',
+  html: 'html',
+  css: 'css',
+  markdown: 'md',
+  yaml: 'yml',
+  sql: 'sql',
+  rust: 'rs',
+  go: 'go',
+  java: 'java',
+  c: 'c',
+  cpp: 'cpp',
+  csharp: 'cs',
+  ruby: 'rb',
+  php: 'php',
+  swift: 'swift',
+  kotlin: 'kt',
+};
+
+export const streamdownCodeLanguages = Array.from(
+  new Set<string>([
+    ...supportedLanguages,
+    ...Object.keys(languageAliases),
+    'text',
+  ])
+);
+
+function resolveLanguage(language?: string): SupportedLanguage | null {
+  const normalized = language?.trim().toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const aliased = (languageAliases[normalized] ?? normalized) as SupportedLanguage;
+  return supportedLanguages.has(aliased) ? aliased : null;
+}
+
+function getDownloadFilename(language?: string) {
+  const normalized = language?.trim().toLowerCase();
+  const aliased = normalized ? languageAliases[normalized] ?? normalized : 'text';
+  const extension = fileExtensions[aliased] ?? 'txt';
+  return `snippet.${extension}`;
+}
+
+function renderPlainCode(code: string) {
+  return code.split('\n').map((line, index) => (
+    <span key={`${index}-${line.length || 0}`} className="block min-h-6 whitespace-pre">
+      {line || ' '}
+    </span>
+  ));
+}
+
+function renderHighlightedCode(result: HighlightResult) {
+  return result.tokens.map((line, lineIndex) => (
+    <span key={`line-${lineIndex}`} className="block min-h-6 whitespace-pre">
+      {line.length > 0
+        ? line.map((token, tokenIndex) => (
+            <span
+              key={`token-${lineIndex}-${tokenIndex}`}
+              style={
+                {
+                  backgroundColor: token.bgColor,
+                  color: token.color,
+                } satisfies CSSProperties
+              }
+            >
+              {token.content}
+            </span>
+          ))
+        : ' '}
+    </span>
+  ));
+}
+
+export function CodeBlock({ code, language, isIncomplete = false, className }: CodeBlockProps) {
   const { copied, copy } = useClipboard();
+  const [highlighted, setHighlighted] = useState<HighlightResult | null>(null);
+
+  const resolvedLanguage = useMemo(() => resolveLanguage(language), [language]);
+  const languageLabel = (language?.trim() || 'code').toLowerCase();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (isIncomplete || !resolvedLanguage) {
+      setHighlighted(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const maybeResult = codeHighlighter.highlight(
+      {
+        code,
+        language: resolvedLanguage,
+        themes: codeHighlighter.getThemes(),
+      },
+      (result) => {
+        if (!cancelled) {
+          setHighlighted(result);
+        }
+      }
+    );
+
+    setHighlighted(maybeResult);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [code, isIncomplete, resolvedLanguage]);
 
   const handleCopy = useCallback(() => {
-    const text = codeRef.current?.textContent ?? '';
-    void copy(text);
-  }, [copy]);
+    void copy(code);
+  }, [code, copy]);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([code], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = getDownloadFilename(language);
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [code, language]);
 
   return (
-    <div className="group/code relative my-3 overflow-hidden rounded-xl border border-border-default">
-      <div className="flex items-center justify-between border-b border-border-subtle bg-bg-subtle px-3 py-1.5">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-text-faint">
-          {language || 'text'}
-        </span>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="rounded-md p-1 text-text-muted transition hover:bg-bg-hover hover:text-text-primary"
-          title={copied ? 'Copied!' : 'Copy code'}
-        >
-          {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
+    <div
+      className={cn(
+        'group/code my-3 overflow-hidden rounded-[18px] border border-border-default bg-[#0d0f13] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-border-subtle/80 bg-[#111318] px-3 py-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-text-faint">
+            {languageLabel}
+          </span>
+          {isIncomplete && <span className="text-[10px] text-text-faint">Streaming</span>}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-0.5 rounded-full border border-border-subtle/80 bg-black/20 p-0.5">
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="rounded-full p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+            title="Download code"
+          >
+            <Download className="h-3.25 w-3.25" />
+          </button>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="rounded-full p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+            title={copied ? 'Copied!' : 'Copy code'}
+          >
+            {copied ? <Check className="h-3.25 w-3.25 text-success" /> : <Copy className="h-3.25 w-3.25" />}
+          </button>
+        </div>
       </div>
-      <pre ref={codeRef} className="m-0 overflow-x-auto p-4 text-sm leading-relaxed">
-        {children}
+
+      <pre
+        className="m-0 overflow-x-auto px-3 py-3 font-mono text-[12.5px] leading-[1.55] text-text-secondary"
+        style={{
+          background: highlighted?.bg ?? 'linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.008))',
+          color: highlighted?.fg ?? 'var(--text-secondary)',
+        }}
+      >
+        {highlighted ? renderHighlightedCode(highlighted) : renderPlainCode(code)}
       </pre>
     </div>
   );

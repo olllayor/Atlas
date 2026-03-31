@@ -31,24 +31,25 @@ Use this checklist for each release to ensure nothing is missed.
    ```
 
 3. The release workflow will automatically:
-   - Build macOS binaries
-   - Create a GitHub Release draft and upload the build artifacts
+   - Build macOS DMGs for Apple Silicon and Intel
+   - Upload the DMGs, blockmaps, and `latest-mac.yml` to a GitHub Release draft
 
 4. Review the release draft:
    - Edit the release notes (copy from CHANGELOG.md)
-   - Verify all platform binaries are attached
+   - Verify both macOS DMGs are attached
+   - Verify `latest-mac.yml` is attached if auto-update metadata is expected
    - Publish the release when ready
 
 ## After publishing
 
-- [ ] Verify download links work for all platforms
+- [ ] Verify download links work for both macOS artifacts
 - [ ] Smoke test the released binary on at least one platform
 - [ ] Update CHANGELOG.md [Unreleased] section header to the new version
 - [ ] Announce release in relevant channels (if applicable)
 
-## Code signing (optional, for production releases)
+## Code signing (optional, for production macOS releases)
 
-For macOS notarization and Windows code signing, set these repository secrets:
+For macOS notarization and signing, set these repository secrets:
 
 - `APPLE_ID` - Apple Developer account
 - `APPLE_APP_SPECIFIC_PASSWORD` - App-specific password

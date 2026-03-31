@@ -2,8 +2,17 @@
   "name": "cheapchat",
   "version": "0.1.3",
   "private": false,
+  "author": "Olloyor",
   "description": "OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olllayor/cheapchat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/olllayor/cheapchat/issues"
+  },
+  "homepage": "https://github.com/olllayor/cheapchat#readme",
   "keywords": [
     "electron",
     "react",
@@ -27,7 +36,7 @@
     "release": "node scripts/release.mjs",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",
-    "package": "electron-builder"
+    "package": "electron-builder --mac dmg --x64 --arm64 --publish never"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
@@ -93,12 +102,6 @@
       "identity": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false
-    },
-    "win": {
-      "icon": "build/icon.ico"
-    },
-    "linux": {
-      "icon": "build/icon.png"
     },
     "publish": {
       "provider": "github",

@@ -31,8 +31,8 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Package
-        run: pnpm exec electron-builder --publish never
+      - name: Package macOS artifacts
+        run: pnpm package
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -44,6 +44,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: release/**/*
+          files: |
+            release/CheapChat-*.dmg
+            release/CheapChat-*.dmg.blockmap
+            release/latest-mac.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

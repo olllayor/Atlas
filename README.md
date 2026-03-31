@@ -1,7 +1,7 @@
 # CheapChat
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/cheapchat/cheapchat/actions/workflows/ci.yml/badge.svg)](https://github.com/cheapchat/cheapchat/actions/workflows/ci.yml)
+[![CI](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml)
 
 CheapChat is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
 
@@ -176,7 +176,7 @@ Then push the tag to trigger the release workflow:
 git push && git push --tags
 ```
 
-This triggers the CI release workflow, which builds macOS binaries and uploads them to a GitHub Release draft.
+This triggers the CI release workflow, which builds macOS DMGs for Apple Silicon and Intel, then uploads those artifacts plus `latest-mac.yml` to a GitHub Release draft.
 
 ## Security
 

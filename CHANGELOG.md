@@ -17,4 +17,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Abort support for in-flight requests
 - Security-oriented Electron architecture with typed preload bridge
 
-[Unreleased]: https://github.com/cheapchat/cheapchat/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/olllayor/cheapchat/compare/v0.1.3...HEAD

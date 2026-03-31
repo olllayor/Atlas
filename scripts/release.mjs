@@ -23,7 +23,7 @@ if (bump === 'major') {
 const next = `${major}.${minor}.${patch}`;
 pkg.version = next;
 
-writeFileSync(pkg_path, JSON.stringify(pkg, null, 2) + '\n');
+writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 
 execSync(`git add package.json`, { stdio: 'inherit' });
 execSync(`git commit -m "chore: bump version to ${next}"`, { stdio: 'inherit' });

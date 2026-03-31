@@ -37,7 +37,7 @@
     "release": "node scripts/release.mjs",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",
-    "package": "npm run icons:mac && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 --publish never"
+    "package": "pnpm run icons:mac && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 --publish never"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",

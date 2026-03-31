@@ -1,17 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import type { ModelMessage } from 'ai';
-
 import type {
   ChatMessage,
-  ChatMessagePart,
   ConversationDetail,
   ConversationSummary,
   MessageRole,
   MessageStatus,
   ProviderId
 } from '../../../shared/contracts';
-import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
 import type { SqliteDatabase } from '../client';
 
 type ConversationRow = {
@@ -39,15 +35,11 @@ type MessageRow = {
   conversation_id: string;
   role: MessageRole;
   content: string;
-  reasoning: string | null;
-  parts_json: string | null;
-  response_messages_json: string | null;
   status: MessageStatus;
   provider_id: ProviderId | null;
   model_id: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
-  reasoning_tokens: number | null;
   latency_ms: number | null;
   error_code: string | null;
   created_at: string;
@@ -58,15 +50,11 @@ type CreateMessageInput = {
   conversationId: string;
   role: MessageRole;
   content: string;
-  reasoning?: string | null;
-  parts?: ChatMessagePart[] | null;
-  responseMessages?: ModelMessage[] | null;
   status: MessageStatus;
   providerId: ProviderId | null;
   modelId: string | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
-  reasoningTokens?: number | null;
   latencyMs?: number | null;
   errorCode?: string | null;
   createdAt?: string;
@@ -83,34 +71,17 @@ function formatConversationTitle(timestamp: Date) {
   return `Session · ${formatter.format(timestamp)}`;
 }
 
-function parseJson<T>(value: string | null): T | null {
-  if (!value) {
-    return null;
-  }
-
-  return JSON.parse(value) as T;
-}
-
 function mapMessage(row: MessageRow): ChatMessage {
-  const parts = parseJson<ChatMessagePart[]>(row.parts_json) ?? buildFallbackMessageParts({
-          content: row.content,
-          reasoning: row.reasoning,
-          role: row.role
-        });
-
   return {
     id: row.id,
     conversationId: row.conversation_id,
     role: row.role,
     content: row.content,
-    reasoning: row.reasoning,
-    parts,
     status: row.status,
     providerId: row.provider_id,
     modelId: row.model_id,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
-    reasoningTokens: row.reasoning_tokens,
     latencyMs: row.latency_ms,
     errorCode: row.error_code,
     createdAt: row.created_at
@@ -229,15 +200,11 @@ export class ConversationsRepo {
             conversation_id,
             role,
             content,
-            reasoning,
-            parts_json,
-            response_messages_json,
             status,
             provider_id,
             model_id,
             input_tokens,
             output_tokens,
-            reasoning_tokens,
             latency_ms,
             error_code,
             created_at
@@ -260,40 +227,6 @@ export class ConversationsRepo {
       },
       messages
     };
-  }
-
-  getModelHistory(conversationId: string) {
-    const rows = this.db
-      .prepare<{ conversationId: string }, Pick<MessageRow, 'role' | 'content' | 'response_messages_json'>>(
-        `
-          SELECT
-            role,
-            content,
-            response_messages_json
-          FROM messages
-          WHERE conversation_id = @conversationId
-          ORDER BY created_at ASC
-        `
-      )
-      .all({ conversationId });
-
-    const history: ModelMessage[] = [];
-
-    for (const row of rows) {
-      const responseMessages = parseJson<ModelMessage[]>(row.response_messages_json);
-
-      if (row.role === 'assistant' && responseMessages?.length) {
-        history.push(...responseMessages);
-        continue;
-      }
-
-      history.push({
-        role: row.role,
-        content: row.content
-      });
-    }
-
-    return history;
   }
 
   setDefaults(conversationId: string, providerId: ProviderId, modelId: string) {
@@ -328,15 +261,11 @@ export class ConversationsRepo {
               conversation_id,
               role,
               content,
-              reasoning,
-              parts_json,
-              response_messages_json,
               status,
               provider_id,
               model_id,
               input_tokens,
               output_tokens,
-              reasoning_tokens,
               latency_ms,
               error_code,
               created_at
@@ -346,15 +275,11 @@ export class ConversationsRepo {
               @conversationId,
               @role,
               @content,
-              @reasoning,
-              @partsJson,
-              @responseMessagesJson,
               @status,
               @providerId,
               @modelId,
               @inputTokens,
               @outputTokens,
-              @reasoningTokens,
               @latencyMs,
               @errorCode,
               @createdAt
@@ -365,16 +290,12 @@ export class ConversationsRepo {
           id: messageId,
           conversationId: input.conversationId,
           role: input.role,
-          content: input.parts ? getTextContentFromParts(input.parts) || input.content : input.content,
-          reasoning: input.parts ? getReasoningContentFromParts(input.parts) ?? input.reasoning ?? null : input.reasoning ?? null,
-          partsJson: input.parts ? JSON.stringify(input.parts) : null,
-          responseMessagesJson: input.responseMessages ? JSON.stringify(input.responseMessages) : null,
+          content: input.content,
           status: input.status,
           providerId: input.providerId,
           modelId: input.modelId,
           inputTokens: input.inputTokens ?? null,
           outputTokens: input.outputTokens ?? null,
-          reasoningTokens: input.reasoningTokens ?? null,
           latencyMs: input.latencyMs ?? null,
           errorCode: input.errorCode ?? null,
           createdAt: timestamp

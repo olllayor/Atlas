@@ -2,23 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import type { BrowserWindow } from 'electron';
 
-import type {
-  ChatMessagePart,
-  ChatStartRequest,
-  ChatStartResponse,
-  StreamEvent
-} from '../../../shared/contracts';
-import {
-  applyStreamEventToParts,
-  buildFallbackMessageParts,
-  finalizeMessageParts,
-  getReasoningContentFromParts,
-  getTextContentFromParts
-} from '../../../shared/messageParts';
+import type { ChatStartRequest, ChatStartResponse, StreamEvent } from '../../../shared/contracts';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
-import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
-import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools } from '../tools/builtInTools';
 import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
 
@@ -32,7 +18,6 @@ export class ChatEngine {
 
   constructor(
     private readonly conversationsRepo: ConversationsRepo,
-    private readonly modelsRepo: ModelsRepo,
     private readonly keychain: KeychainStore,
     private readonly provider: ProviderAdapter
   ) {}
@@ -87,16 +72,12 @@ export class ChatEngine {
       const messageId = this.conversationsRepo.addMessage({
         conversationId: request.conversationId,
         role: 'assistant',
-        content: getTextContentFromParts(result.parts) || result.content,
-        reasoning: getReasoningContentFromParts(result.parts) ?? result.reasoning ?? null,
-        parts: result.parts,
-        responseMessages: result.responseMessages ?? null,
+        content: result.content,
         status: 'complete',
         providerId: request.providerId,
         modelId: request.modelId,
         inputTokens: result.inputTokens ?? null,
         outputTokens: result.outputTokens ?? null,
-        reasoningTokens: result.reasoningTokens ?? null,
         latencyMs: result.latencyMs ?? null
       });
 
@@ -105,7 +86,6 @@ export class ChatEngine {
         requestId,
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
-        reasoningTokens: result.reasoningTokens,
         latencyMs: result.latencyMs
       });
 
@@ -133,9 +113,9 @@ export class ChatEngine {
     request: ChatStartRequest,
     apiKey: string,
     signal: AbortSignal
-  ): Promise<ProviderStreamResult & { parts: ChatMessagePart[] }> {
+  ): Promise<ProviderStreamResult> {
     let attempt = 0;
-    let streamedAnyResponse = false;
+    let streamedAnyContent = false;
 
     while (true) {
       try {
@@ -144,144 +124,25 @@ export class ChatEngine {
           throw new Error('The chat request is no longer active.');
         }
 
-        let parts: ChatMessagePart[] = [];
-
-        const result = await this.provider.streamChat({
+        return await this.provider.streamChat({
           apiKey,
           modelId: request.modelId,
-          messages: this.conversationsRepo.getModelHistory(request.conversationId),
-          system: request.enableTools ? TOOL_USE_SYSTEM_PROMPT : undefined,
-          tools: request.enableTools ? createBuiltInTools(this.modelsRepo) : undefined,
+          messages: request.messages,
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           signal,
-          onChunk: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'chunk',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
+          onChunk: (delta) => {
+            streamedAnyContent = true;
             this.sendEvent(active.window, {
               type: 'chunk',
               requestId,
-              id: event.id,
-              delta: event.delta
-            });
-          },
-          onReasoningChunk: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-            this.sendEvent(active.window, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-          },
-          onToolInputStart: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputDelta: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputError: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputDenied: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
+              delta
             });
           }
         });
-
-        parts = finalizeMessageParts(parts);
-
-        if (parts.length === 0) {
-          parts = buildFallbackMessageParts({
-            content: result.content,
-            reasoning: result.reasoning,
-            role: 'assistant'
-          });
-        }
-
-        return {
-          ...result,
-          parts
-        };
       } catch (error) {
         const normalized = normalizeError(error);
-        const canRetry = attempt === 0 && normalized.retryable && !streamedAnyResponse && !signal.aborted;
+        const canRetry = attempt === 0 && normalized.retryable && !streamedAnyContent && !signal.aborted;
 
         if (!canRetry) {
           throw error;

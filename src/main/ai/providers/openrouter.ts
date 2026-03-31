@@ -1,7 +1,7 @@
-import { stepCountIs, streamText } from 'ai';
+import { streamText } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 
-import type { ModelSummary } from '../../../shared/contracts';
+import type { ChatInputMessage, ModelSummary } from '../../../shared/contracts';
 import {
   HttpStatusError,
   RequestTimeoutError
@@ -29,9 +29,6 @@ type OpenRouterModelsResponse = {
 };
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-const OPENROUTER_FIRST_RESPONSE_TIMEOUT_MS = 300_000;
-const OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4096;
-const OPENROUTER_HARD_MAX_OUTPUT_TOKENS = 8192;
 
 function isZeroPrice(value: string | number | undefined) {
   if (typeof value === 'number') {
@@ -51,14 +48,6 @@ function buildHeaders(apiKey: string) {
     'Content-Type': 'application/json',
     'X-Title': 'CheapChat'
   };
-}
-
-function resolveMaxOutputTokens(requested: number | undefined) {
-  if (typeof requested !== 'number' || !Number.isFinite(requested)) {
-    return OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
-  }
-
-  return Math.max(256, Math.min(Math.floor(requested), OPENROUTER_HARD_MAX_OUTPUT_TOKENS));
 }
 
 async function throwForBadResponse(response: Response) {
@@ -125,10 +114,9 @@ export class OpenRouterProvider implements ProviderAdapter {
 
   async streamChat(request: ProviderStreamRequest): Promise<ProviderStreamResult> {
     const timeoutController = new AbortController();
-    let hasReceivedResponse = false;
     const timeout = setTimeout(() => {
       timeoutController.abort();
-    }, OPENROUTER_FIRST_RESPONSE_TIMEOUT_MS);
+    }, 45_000);
 
     const signal = AbortSignal.any([request.signal, timeoutController.signal]);
     const startedAt = Date.now();
@@ -140,109 +128,26 @@ export class OpenRouterProvider implements ProviderAdapter {
 
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
-    let reasoningTokens: number | undefined;
     let streamError: unknown;
-    const hasTools = request.tools != null && Object.keys(request.tools).length > 0;
-    const maxOutputTokens = resolveMaxOutputTokens(request.maxOutputTokens);
 
     try {
       const result = streamText({
         model: openrouter(request.modelId),
-        system: request.system,
-        messages: request.messages,
-        tools: request.tools,
-        stopWhen: hasTools ? stepCountIs(6) : undefined,
+        messages: request.messages.map((m: ChatInputMessage) => ({
+          role: m.role,
+          content: m.content
+        })),
         temperature: request.temperature ?? 0.65,
-        maxOutputTokens,
+        maxOutputTokens: request.maxOutputTokens,
         abortSignal: signal,
         onChunk: ({ chunk }) => {
-          if (!hasReceivedResponse) {
-            hasReceivedResponse = true;
-            clearTimeout(timeout);
-          }
-
           if (chunk.type === 'text-delta') {
-            request.onChunk({
-              id: chunk.id,
-              delta: chunk.text
-            });
-            return;
-          }
-
-          if (chunk.type === 'reasoning-delta') {
-            request.onReasoningChunk?.({
-              id: chunk.id,
-              delta: chunk.text
-            });
-            return;
-          }
-
-          if (chunk.type === 'tool-input-start') {
-            request.onToolInputStart?.({
-              toolCallId: chunk.id,
-              toolName: chunk.toolName,
-              dynamic: chunk.dynamic,
-              providerExecuted: chunk.providerExecuted,
-              title: chunk.title
-            });
-            return;
-          }
-
-          if (chunk.type === 'tool-input-delta') {
-            request.onToolInputDelta?.({
-              toolCallId: chunk.id,
-              delta: chunk.delta
-            });
-            return;
-          }
-
-          if (chunk.type === 'tool-call') {
-            request.onToolInputAvailable?.({
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              dynamic: chunk.dynamic,
-              providerExecuted: chunk.providerExecuted,
-              title: chunk.title
-            });
-            return;
-          }
-
-          if (chunk.type === 'tool-result') {
-            request.onToolOutputAvailable?.({
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output: chunk.output,
-              dynamic: chunk.dynamic,
-              preliminary: chunk.preliminary,
-              providerExecuted: chunk.providerExecuted,
-              title: chunk.title
-            });
-            return;
+            request.onChunk(chunk.text);
           }
         },
-        experimental_onToolCallFinish: ({ success, toolCall, error }) => {
-          if (!success) {
-            request.onToolOutputError?.({
-              toolCallId: toolCall.toolCallId,
-              toolName: toolCall.toolName,
-              input: toolCall.input,
-              errorText: error instanceof Error ? error.message : String(error),
-              dynamic: toolCall.dynamic,
-              providerExecuted: toolCall.providerExecuted,
-              title: toolCall.title
-            });
-          }
-        },
-        onFinish: ({ totalUsage }) => {
-          if (!totalUsage) {
-            return;
-          }
-
-          inputTokens = totalUsage.inputTokens;
-          outputTokens = totalUsage.outputTokens;
-          reasoningTokens = totalUsage.outputTokenDetails.reasoningTokens ?? totalUsage.reasoningTokens;
+        onFinish: ({ usage }) => {
+          inputTokens = usage.inputTokens;
+          outputTokens = usage.outputTokens;
         },
         onError: ({ error }) => {
           streamError = error;
@@ -266,15 +171,12 @@ export class OpenRouterProvider implements ProviderAdapter {
 
       return {
         content: await result.text,
-        reasoning: await result.reasoningText,
-        responseMessages: (await result.response).messages,
         inputTokens,
         outputTokens,
-        reasoningTokens,
         latencyMs: Date.now() - startedAt
       };
     } catch (error) {
-      if (timeoutController.signal.aborted && !request.signal.aborted && !hasReceivedResponse) {
+      if (timeoutController.signal.aborted && !request.signal.aborted) {
         throw new RequestTimeoutError();
       }
 

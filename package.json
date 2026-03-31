@@ -1,6 +1,6 @@
 {
   "name": "cheapchat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.",
   "license": "MIT",
@@ -76,11 +76,17 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64", "x64"]
+          "arch": [
+            "arm64",
+            "x64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["arm64", "x64"]
+          "arch": [
+            "arm64",
+            "x64"
+          ]
         }
       ],
       "hardenedRuntime": true,
@@ -89,11 +95,17 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Utility"
     },
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "signAndEditExecutable": false
     },
     "publish": {

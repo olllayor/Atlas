@@ -45,20 +45,20 @@ export function OnboardingFlow({
   if (step === 'done') {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#111418] p-8 text-center shadow-2xl">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/15">
-            <svg className="h-7 w-7 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <div className="w-full max-w-md rounded-xl border border-border-medium bg-bg-elevated p-8 text-center shadow-elevated">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-success-bg">
+            <svg className="h-7 w-7 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="mt-5 text-xl font-semibold text-white">You're all set</h2>
-          <p className="mt-2 text-sm text-slate-400">
+          <h2 className="mt-5 text-xl font-semibold text-text-primary">You're all set</h2>
+          <p className="mt-2 text-sm text-text-tertiary">
             Your API key is configured and ready. Start a conversation below.
           </p>
           <button
             type="button"
             onClick={onContinue}
-            className="mt-6 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-white/90"
+            className="btn-primary mt-6 w-full px-4 py-2.5"
           >
             Start chatting
           </button>
@@ -69,29 +69,29 @@ export function OnboardingFlow({
 
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#111418] p-8 shadow-2xl">
+      <div className="w-full max-w-md rounded-xl border border-border-medium bg-bg-elevated p-8 shadow-elevated">
         <div className="text-center">
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">Welcome to</p>
-          <h1 className="mt-2 text-2xl font-semibold text-white">CheapChat</h1>
-          <p className="mt-2 text-sm text-slate-400">
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
+          <h1 className="mt-2 text-2xl font-semibold text-text-primary">CheapChat</h1>
+          <p className="mt-2 text-sm text-text-tertiary">
             A local-first chat client. Bring your own API key, keep everything on your machine.
           </p>
         </div>
 
         <div className="mt-8">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-sm font-medium text-white">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-bg-active text-sm font-medium text-text-primary">
               1
             </div>
             <div>
-              <h3 className="text-sm font-medium text-white">Add your OpenRouter API key</h3>
-              <p className="mt-0.5 text-xs text-slate-500">
+              <h3 className="text-sm font-medium text-text-primary">Add your OpenRouter API key</h3>
+              <p className="mt-0.5 text-xs text-text-muted">
                 Get one at{' '}
                 <a
                   href="https://openrouter.ai/keys"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-slate-400 underline hover:text-white"
+                  className="text-text-tertiary underline hover:text-text-primary"
                 >
                   openrouter.ai/keys
                 </a>
@@ -105,7 +105,7 @@ export function OnboardingFlow({
               value={keyDraft}
               onChange={(e) => onKeyDraftChange(e.target.value)}
               placeholder="sk-or-v1-..."
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-white/20"
+              className="input px-4 py-3"
             />
           </div>
 
@@ -113,7 +113,7 @@ export function OnboardingFlow({
             type="button"
             onClick={handleSave}
             disabled={isSavingKey || isValidatingKey || !keyDraft.trim()}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="btn-primary mt-4 flex w-full items-center justify-center gap-2 px-4 py-2.5"
           >
             {isSavingKey || isValidatingKey ? (
               <>
@@ -132,11 +132,11 @@ export function OnboardingFlow({
           </button>
 
           {error && (
-            <p className="mt-3 text-xs text-rose-400">{error}</p>
+            <p className="mt-3 text-xs text-error">{error}</p>
           )}
         </div>
 
-        <p className="mt-6 text-center text-[11px] text-slate-600">
+        <p className="mt-6 text-center text-[11px] text-text-faint">
           Keys are stored in your OS keychain. Nothing leaves your machine.
         </p>
       </div>

@@ -43,11 +43,15 @@ CREATE TABLE IF NOT EXISTS messages (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
   content TEXT NOT NULL,
+  reasoning TEXT,
+  parts_json TEXT,
+  response_messages_json TEXT,
   status TEXT NOT NULL,
   provider_id TEXT,
   model_id TEXT,
   input_tokens INTEGER,
   output_tokens INTEGER,
+  reasoning_tokens INTEGER,
   latency_ms INTEGER,
   error_code TEXT,
   created_at TEXT NOT NULL
@@ -62,4 +66,30 @@ ON messages (conversation_id, created_at);
 
 export function applySchema(database: SqliteDatabase) {
   database.exec(SCHEMA);
+
+  const columns = database
+    .prepare<
+      [],
+      {
+        name: string;
+      }
+    >('PRAGMA table_info(messages)')
+    .all()
+    .map((column) => column.name);
+
+  if (!columns.includes('reasoning')) {
+    database.exec('ALTER TABLE messages ADD COLUMN reasoning TEXT');
+  }
+
+  if (!columns.includes('parts_json')) {
+    database.exec('ALTER TABLE messages ADD COLUMN parts_json TEXT');
+  }
+
+  if (!columns.includes('reasoning_tokens')) {
+    database.exec('ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER');
+  }
+
+  if (!columns.includes('response_messages_json')) {
+    database.exec('ALTER TABLE messages ADD COLUMN response_messages_json TEXT');
+  }
 }

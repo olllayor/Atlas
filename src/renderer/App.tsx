@@ -11,7 +11,7 @@ import { useAppStore } from './stores/useAppStore';
 function LoadingScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="flex items-center gap-2 text-slate-500">
+      <div className="flex items-center gap-2 text-text-muted">
         <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -25,13 +25,13 @@ function LoadingScreen() {
 function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center px-6">
-      <div className="w-full max-w-md rounded-2xl border border-rose-500/20 bg-[#111418] p-8 text-center shadow-2xl">
-        <h1 className="text-xl font-semibold text-white">Something went wrong</h1>
-        <p className="mt-2 text-sm text-slate-400">{message}</p>
+      <div className="w-full max-w-md rounded-xl border border-error-border bg-bg-elevated p-8 text-center shadow-elevated">
+        <h1 className="text-xl font-semibold text-text-primary">Something went wrong</h1>
+        <p className="mt-2 text-sm text-text-tertiary">{message}</p>
         <button
           type="button"
           onClick={onRetry}
-          className="mt-6 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 transition hover:bg-rose-500/20"
+          className="btn-secondary mt-6 border-error-border bg-error-bg px-4 py-2 text-sm text-error-text"
         >
           Retry
         </button>
@@ -152,7 +152,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen overflow-hidden bg-bg-base">
       <Sidebar
         conversations={conversations}
         selectedConversationId={selectedConversationId}
@@ -163,19 +163,27 @@ export default function App() {
         onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
+        {/* Draggable title bar area for main content - matches sidebar height */}
+        <div 
+          className="relative h-[52px] shrink-0 border-b border-white/6"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        />
+        
         {notice && (
           <div
             className={`flex items-center justify-between border-b px-4 py-2 text-sm ${
               notice.tone === 'error'
-                ? 'border-rose-500/20 bg-rose-500/5 text-rose-200'
+                ? 'border-error-border bg-error-bg text-error-text'
                 : notice.tone === 'success'
-                  ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-200'
-                  : 'border-amber-500/20 bg-amber-500/5 text-amber-200'
+                  ? 'border-success-border bg-success-bg text-success-text'
+                  : 'border-warning-border bg-warning-bg text-warning-text'
             }`}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <span>{notice.message}</span>
-            <button onClick={dismissNotice} className="ml-3 text-slate-500 hover:text-white">
+            <button onClick={dismissNotice} className="ml-3 text-text-muted hover:text-text-primary">
               ✕
             </button>
           </div>
@@ -186,6 +194,7 @@ export default function App() {
           draft={activeDraft}
           hasCredential={hasCredential}
           onOpenSettings={openSettings}
+          onSuggestionClick={(prompt) => setComposerValue(prompt)}
         />
 
         <Composer
@@ -194,6 +203,8 @@ export default function App() {
           isStreaming={activeDraft?.status === 'streaming'}
           models={models}
           selectedModelId={selectedModelId}
+          detail={activeConversation}
+          draft={activeDraft}
           onChange={setComposerValue}
           onSend={() => {
             const payload = composerValue;

@@ -17,6 +17,45 @@ type ModelRow = {
 export class ModelsRepo {
   constructor(private readonly db: SqliteDatabase) {}
 
+  getById(modelId: string) {
+    const row = this.db
+      .prepare<{ modelId: string }, ModelRow>(
+        `
+          SELECT
+            model_id,
+            provider_id,
+            label,
+            context_window,
+            is_free,
+            supports_vision,
+            supports_tools,
+            archived,
+            last_synced_at,
+            last_seen_free_at
+          FROM model_cache
+          WHERE model_id = @modelId
+        `
+      )
+      .get({ modelId });
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.model_id,
+      providerId: row.provider_id,
+      label: row.label,
+      contextWindow: row.context_window,
+      isFree: Boolean(row.is_free),
+      supportsVision: Boolean(row.supports_vision),
+      supportsTools: Boolean(row.supports_tools),
+      archived: Boolean(row.archived),
+      lastSyncedAt: row.last_synced_at,
+      lastSeenFreeAt: row.last_seen_free_at
+    } satisfies ModelSummary;
+  }
+
   list(options: ListModelsOptions = {}) {
     const freeOnly = options.freeOnly ? 1 : 0;
     const includeArchived = options.includeArchived ? 1 : 0;

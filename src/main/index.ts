@@ -28,7 +28,7 @@ app.whenReady().then(async () => {
   database.settings.syncSecretPresence('openrouter', Boolean(await keychain.getSecret('openrouter')));
 
   const modelRegistry = new ModelRegistry(database.models, database.settings, keychain, openRouter);
-  const chatEngine = new ChatEngine(database.conversations, keychain, openRouter);
+  const chatEngine = new ChatEngine(database.conversations, database.models, keychain, openRouter);
 
   registerSettingsIpc({
     settingsRepo: database.settings,

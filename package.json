@@ -87,6 +87,10 @@
       {
         "from": "build/icon.png",
         "to": "assets/icon.png"
+      },
+      {
+        "from": "build/icon.icns",
+        "to": "assets/icon.icns"
       }
     ],
     "mac": {

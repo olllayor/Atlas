@@ -64,6 +64,55 @@ Known issue as of March 31, 2026: this currently fails in this environment durin
 pnpm build
 ```
 
+## Installing on macOS
+
+CheapChat is distributed as an unsigned DMG via GitHub Releases. macOS will warn you because the app has not been notarized with an Apple Developer account. Here is how to install it.
+
+### Download
+
+1. Go to [Releases](https://github.com/olllayor/cheapchat/releases)
+2. Download the DMG matching your Mac:
+   - `CheapChat-*-arm64.dmg` — Apple Silicon (M1/M2/M3/M4)
+   - `CheapChat-*-x64.dmg` — Intel Macs
+3. Open the DMG and drag CheapChat to your Applications folder
+
+### Bypassing the "unidentified developer" warning
+
+The first time you open CheapChat, macOS will block it with one of these messages:
+
+- **"CheapChat can't be opened because it is from an unidentified developer"**
+- **"CheapChat is damaged and can't be opened. You should move it to the Trash"**
+
+Both are expected for unsigned apps. To bypass them:
+
+**Method 1 — System Settings**
+
+1. Open **System Settings** → **Privacy & Security**
+2. Scroll to the Security section
+3. You should see a message: *"CheapChat was blocked from use because it is not from an identified developer"*
+4. Click **Open Anyway**
+5. Confirm by clicking **Open** in the dialog
+
+**Method 2 — Terminal (if Method 1 doesn't show the button)**
+
+```bash
+xattr -d com.apple.quarantine /Applications/CheapChat.app
+```
+
+This removes the quarantine flag that triggers the warning. You only need to do this once.
+
+**Method 3 — Right-click open**
+
+1. Right-click (or Control-click) on CheapChat.app
+2. Select **Open** from the context menu
+3. Click **Open** in the confirmation dialog
+
+This method sometimes works for the "unidentified developer" warning but not for the "damaged" warning — use the `xattr` command above if you see "damaged."
+
+### Why is this necessary?
+
+Apple requires developers to pay $99/year for a Developer Program membership to sign and notarize apps. CheapChat is an open-source personal project without a paid Apple account. The app is safe — you can review the source code and build it yourself from this repository.
+
 ## Product scope
 
 CheapChat v1 is intentionally small:

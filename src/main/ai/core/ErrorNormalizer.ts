@@ -28,6 +28,12 @@ export type NormalizedError = {
   retryable: boolean;
 };
 
+function isAIError(error: unknown): error is { statusCode?: number; message: string; isRetryable?: boolean; data?: unknown } {
+  if (error == null || typeof error !== 'object') return false;
+  const symbols = Object.getOwnPropertySymbols(error);
+  return symbols.some((s) => s.description === 'vercel.ai.error' && (error as Record<string | symbol, unknown>)[s] === true);
+}
+
 export function normalizeError(error: unknown): NormalizedError {
   if (error instanceof MissingCredentialError) {
     return {
@@ -74,6 +80,48 @@ export function normalizeError(error: unknown): NormalizedError {
       code: 'provider_error',
       message: error.message,
       retryable: false
+    };
+  }
+
+  if (isAIError(error)) {
+    const status = error.statusCode;
+
+    if (status === 401 || status === 403) {
+      return {
+        code: 'auth_error',
+        message: 'OpenRouter rejected the API key. Revalidate it in settings.',
+        retryable: false
+      };
+    }
+
+    if (status === 429) {
+      return {
+        code: 'rate_limited',
+        message: 'The selected free model is rate limited right now. Pick another model or try again shortly.',
+        retryable: true
+      };
+    }
+
+    if (status === 404) {
+      return {
+        code: 'model_unavailable',
+        message: error.message || 'This model is not available right now. Try a different model.',
+        retryable: false
+      };
+    }
+
+    if (status && status >= 500) {
+      return {
+        code: 'upstream_unavailable',
+        message: 'OpenRouter is temporarily unavailable.',
+        retryable: true
+      };
+    }
+
+    return {
+      code: 'provider_error',
+      message: error.message || 'The model provider returned an error.',
+      retryable: error.isRetryable ?? false
     };
   }
 

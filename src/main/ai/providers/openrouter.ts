@@ -1,3 +1,6 @@
+import { streamText } from 'ai';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+
 import type { ChatInputMessage, ModelSummary } from '../../../shared/contracts';
 import {
   HttpStatusError,
@@ -24,6 +27,8 @@ type OpenRouterModel = {
 type OpenRouterModelsResponse = {
   data: OpenRouterModel[];
 };
+
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 function isZeroPrice(value: string | number | undefined) {
   if (typeof value === 'number') {
@@ -74,68 +79,14 @@ function normalizeModel(model: OpenRouterModel): ModelSummary {
   };
 }
 
-function buildChatBody(request: ProviderStreamRequest) {
-  return {
-    model: request.modelId,
-    messages: request.messages.map((message: ChatInputMessage) => ({
-      role: message.role,
-      content: message.content
-    })),
-    temperature: request.temperature ?? 0.65,
-    max_tokens: request.maxOutputTokens,
-    stream: true,
-    stream_options: {
-      include_usage: true
-    }
-  };
-}
-
-function parseStreamEvent(
-  rawEvent: string,
-  onChunk: (delta: string) => void,
-  content: { value: string },
-  usage: { inputTokens?: number; outputTokens?: number }
-) {
-  const data = rawEvent
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trimStart())
-    .join('\n')
-    .trim();
-
-  if (!data) {
-    return { done: false };
-  }
-
-  if (data === '[DONE]') {
-    return { done: true };
-  }
-
-  const payload = JSON.parse(data);
-  const delta = payload.choices?.[0]?.delta?.content ?? '';
-
-  if (typeof delta === 'string' && delta.length > 0) {
-    content.value += delta;
-    onChunk(delta);
-  }
-
-  if (payload.usage) {
-    usage.inputTokens = payload.usage.prompt_tokens ?? usage.inputTokens;
-    usage.outputTokens = payload.usage.completion_tokens ?? usage.outputTokens;
-  }
-
-  return { done: false };
-}
-
 export class OpenRouterProvider implements ProviderAdapter {
   readonly providerId = 'openrouter' as const;
-  private readonly baseUrl = 'https://openrouter.ai/api/v1';
 
   async validateCredential(apiKey: string) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
-      const response = await fetch(`${this.baseUrl}/models`, {
+      const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
         headers: buildHeaders(apiKey),
         signal: controller.signal
       });
@@ -149,7 +100,7 @@ export class OpenRouterProvider implements ProviderAdapter {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
     try {
-      const response = await fetch(`${this.baseUrl}/models`, {
+      const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
         headers: buildHeaders(apiKey),
         signal: controller.signal
       });
@@ -170,63 +121,58 @@ export class OpenRouterProvider implements ProviderAdapter {
     const signal = AbortSignal.any([request.signal, timeoutController.signal]);
     const startedAt = Date.now();
 
+    const openrouter = createOpenRouter({
+      apiKey: request.apiKey,
+      headers: { 'X-Title': 'CheapChat' }
+    });
+
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    let streamError: unknown;
+
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: buildHeaders(request.apiKey),
-        body: JSON.stringify(buildChatBody(request)),
-        signal
+      const result = streamText({
+        model: openrouter(request.modelId),
+        messages: request.messages.map((m: ChatInputMessage) => ({
+          role: m.role,
+          content: m.content
+        })),
+        temperature: request.temperature ?? 0.65,
+        maxOutputTokens: request.maxOutputTokens,
+        abortSignal: signal,
+        onChunk: ({ chunk }) => {
+          if (chunk.type === 'text-delta') {
+            request.onChunk(chunk.text);
+          }
+        },
+        onFinish: ({ usage }) => {
+          inputTokens = usage.inputTokens;
+          outputTokens = usage.outputTokens;
+        },
+        onError: ({ error }) => {
+          streamError = error;
+        },
+        providerOptions: {
+          openrouter: {
+            usage: { include: true }
+          }
+        }
       });
 
-      await throwForBadResponse(response);
-
-      const reader = response.body?.getReader();
-
-      if (!reader) {
-        throw new Error('OpenRouter did not return a readable stream.');
+      // Consume the stream to trigger callbacks
+      for await (const _ of result.textStream) {
+        // stream consumption drives the pipeline
       }
 
-      const decoder = new TextDecoder();
-      const content = { value: '' };
-      const usage: { inputTokens?: number; outputTokens?: number } = {};
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-
-        let boundaryIndex = buffer.indexOf('\n\n');
-        while (boundaryIndex >= 0) {
-          const rawEvent = buffer.slice(0, boundaryIndex);
-          buffer = buffer.slice(boundaryIndex + 2);
-
-          const eventState = parseStreamEvent(rawEvent, request.onChunk, content, usage);
-          if (eventState.done) {
-            return {
-              content: content.value,
-              inputTokens: usage.inputTokens,
-              outputTokens: usage.outputTokens,
-              latencyMs: Date.now() - startedAt
-            };
-          }
-
-          boundaryIndex = buffer.indexOf('\n\n');
-        }
-      }
-
-      if (buffer.trim().length > 0) {
-        parseStreamEvent(buffer, request.onChunk, content, usage);
+      // streamText suppresses errors; re-throw if one was captured
+      if (streamError) {
+        throw streamError;
       }
 
       return {
-        content: content.value,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
+        content: await result.text,
+        inputTokens,
+        outputTokens,
         latencyMs: Date.now() - startedAt
       };
     } catch (error) {

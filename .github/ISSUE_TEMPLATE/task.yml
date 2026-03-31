@@ -1,0 +1,30 @@
+name: Task
+description: Suggest a task, cleanup, or improvement
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For tasks that are not bugs or feature requests, such as cleanup, documentation improvements, or refactoring.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done and why?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: What area of the codebase does this affect?
+      options:
+        - Main process
+        - Renderer (UI)
+        - Preload / IPC
+        - Build / CI
+        - Documentation
+        - Other
+    validations:
+      required: true

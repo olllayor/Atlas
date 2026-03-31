@@ -23,11 +23,20 @@
     "build": "tsc --noEmit && electron-vite build",
     "preview": "electron-vite preview",
     "rebuild": "electron-rebuild -f -w better-sqlite3,keytar",
-    "postinstall": "electron-rebuild -f -w better-sqlite3,keytar"
+    "postinstall": "electron-rebuild -f -w better-sqlite3,keytar",
+    "release": "node scripts/release.mjs",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major",
+    "package": "electron-builder"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.64",
+    "@ai-sdk/google": "^3.0.54",
+    "@ai-sdk/openai": "^3.0.49",
     "@fontsource/ibm-plex-mono": "5.2.7",
     "@fontsource/ibm-plex-sans": "5.2.8",
+    "@openrouter/ai-sdk-provider": "^2.3.3",
+    "ai": "^6.0.141",
     "better-sqlite3": "12.8.0",
     "keytar": "7.9.0",
     "lucide-react": "1.7.0",
@@ -49,6 +58,47 @@
     "electron-vite": "5.0.0",
     "tailwindcss": "4.2.2",
     "typescript": "6.0.2",
-    "vite": "7.3.1"
+    "vite": "7.3.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.cheapchat.app",
+    "productName": "CheapChat",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64", "x64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility"
+    },
+    "win": {
+      "target": ["nsis", "portable"],
+      "signAndEditExecutable": false
+    },
+    "publish": {
+      "provider": "github",
+      "releaseType": "draft"
+    }
   }
 }

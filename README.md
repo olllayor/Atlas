@@ -1,8 +1,11 @@
 # CheapChat
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/cheapchat/cheapchat/actions/workflows/ci.yml/badge.svg)](https://github.com/cheapchat/cheapchat/actions/workflows/ci.yml)
+
 CheapChat is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
 
-This repository is being prepared for open source release. The core app scaffold is in place and production builds work. Development startup still has an unresolved Electron runtime issue in this environment, so the project should currently be treated as an early OSS codebase rather than a polished public release.
+This repository is open source. The core app scaffold is in place and production builds work. Development startup still has an unresolved Electron runtime issue in this environment, so the project should currently be treated as an early OSS codebase rather than a polished public release.
 
 ## What it does
 
@@ -88,6 +91,17 @@ Out of scope for v1:
 - [ ] Multi-provider fallback — auto-failover between configured providers
 - [ ] Provider health dashboard — per-provider status, last successful call, rate-limit indicators
 
+### AI capabilities (powered by Vercel AI SDK)
+
+- [ ] Tool / function calling — model tool use with local tool execution (web search, file read, code exec)
+- [ ] Structured output — JSON mode for models that support it (`generateObject` / `streamObject`)
+- [ ] Image input / vision — drag-and-drop images into the composer (multi-modal messages)
+- [ ] Reasoning / thinking — expose model reasoning tokens for supported models
+- [ ] Prompt templates — save and reuse common prompt patterns
+- [ ] Auto-title conversations — generate titles from first message
+- [ ] Model comparison — send the same prompt to multiple models side by side
+- [ ] Streaming resume — reconnect and resume interrupted streams
+
 ### UI/UX
 
 - [ ] Conversation search — full-text search across message history
@@ -97,7 +111,6 @@ Out of scope for v1:
 - [ ] Import conversations — restore from exported files
 - [ ] Keyboard shortcuts — quick model switch, new chat, search, settings
 - [ ] Custom system prompts — per-conversation or global default
-- [ ] Image input / vision — drag-and-drop images into the composer
 - [ ] Code block copy button — one-click copy on rendered code blocks
 - [ ] Syntax highlighting — language-specific code highlighting
 - [ ] Theme support — light mode, custom accent colors
@@ -108,16 +121,9 @@ Out of scope for v1:
 - [ ] Conversation memory — long-term memory with vector embeddings stored locally
 - [ ] Session management — named sessions within a conversation, separate context windows
 - [ ] Token budget controls — per-conversation or global max-token limits
-- [ ] Cost tracking — estimated cost per message and per conversation
-- [ ] Rate-limit handling — automatic backoff and user-friendly rate-limit indicators
+- [ ] Cost tracking — estimated cost per message and per conversation (OpenRouter usage accounting built in)
 - [ ] Offline mode — view history and draft messages without a network connection
-- [ ] Model comparison — send the same prompt to multiple models side by side
-- [ ] Prompt templates — save and reuse common prompt patterns
-- [ ] Auto-title conversations — generate titles from first message
 - [ ] Conversation folders / tags — organize conversations with labels
-- [ ] Streaming resume — reconnect and resume interrupted streams
-- [ ] Tool / function calling — model tool use with local tool execution
-- [ ] Structured output — JSON mode for models that support it
 
 ### Platform
 
@@ -148,6 +154,29 @@ This is still a personal-tool codebase moving toward public OSS quality. Review 
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+### Releases
+
+CheapChat uses GitHub Releases for distribution. To cut a new release:
+
+```bash
+# bump patch (0.1.0 -> 0.1.1)
+pnpm release
+
+# bump minor (0.1.0 -> 0.2.0)
+pnpm release:minor
+
+# bump major (0.1.0 -> 1.0.0)
+pnpm release:major
+```
+
+Then push the tag to trigger the release workflow:
+
+```bash
+git push && git push --tags
+```
+
+This triggers the CI release workflow which builds and publishes binaries for macOS, Linux, and Windows as a GitHub Release draft.
 
 ## Security
 

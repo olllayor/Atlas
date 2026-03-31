@@ -54,7 +54,7 @@ function resizePng(sourcePath, size, outputPath) {
   execFileSync(
     'magick',
     [sourcePath, '-filter', 'Lanczos', '-resize', `${size}x${size}`, '-background', 'none', '-alpha', 'on', `PNG32:${outputPath}`],
-    { stdio: 'ignore' }
+    { stdio: 'inherit' }
   );
 }
 

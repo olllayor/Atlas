@@ -14,3 +14,8 @@ coverage
 plan.md
 .idea/
 .vscode/
+.agents/
+.kilocode/
+npx
+skills-lock.json
+skills/

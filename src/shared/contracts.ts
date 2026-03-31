@@ -6,56 +6,6 @@ export type MessageRole = 'system' | 'user' | 'assistant';
 
 export type MessageStatus = 'complete' | 'streaming' | 'error' | 'aborted';
 
-export type ChatPartState = 'streaming' | 'done';
-
-export type ChatToolState =
-  | 'input-streaming'
-  | 'input-available'
-  | 'approval-requested'
-  | 'approval-responded'
-  | 'output-available'
-  | 'output-error'
-  | 'output-denied';
-
-export type ChatTextPart = {
-  id: string;
-  type: 'text';
-  text: string;
-  state?: ChatPartState;
-};
-
-export type ChatReasoningPart = {
-  id: string;
-  type: 'reasoning';
-  text: string;
-  state?: ChatPartState;
-};
-
-export type ChatToolApproval = {
-  id: string;
-  approved?: boolean;
-  reason?: string;
-};
-
-export type ChatToolPart = {
-  id: string;
-  type: 'tool';
-  toolCallId: string;
-  toolName: string;
-  state: ChatToolState;
-  rawInput?: string;
-  input?: unknown;
-  output?: unknown;
-  errorText?: string;
-  dynamic?: boolean;
-  providerExecuted?: boolean;
-  title?: string;
-  preliminary?: boolean;
-  approval?: ChatToolApproval;
-};
-
-export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatToolPart;
-
 export type ModelSummary = {
   id: string;
   providerId: ProviderId;
@@ -106,14 +56,11 @@ export type ChatMessage = {
   conversationId: string;
   role: MessageRole;
   content: string;
-  reasoning: string | null;
-  parts: ChatMessagePart[];
   status: MessageStatus;
   providerId: ProviderId | null;
   modelId: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
-  reasoningTokens: number | null;
   latencyMs: number | null;
   errorCode: string | null;
   createdAt: string;
@@ -141,7 +88,6 @@ export type ChatStartRequest = {
   providerId: ProviderId;
   modelId: string;
   messages: ChatInputMessage[];
-  enableTools?: boolean;
   temperature?: number;
   maxOutputTokens?: number;
 };
@@ -153,74 +99,7 @@ export type ChatStartResponse = {
 export type StreamChunkEvent = {
   type: 'chunk';
   requestId: string;
-  id: string;
   delta: string;
-};
-
-export type StreamReasoningEvent = {
-  type: 'reasoning';
-  requestId: string;
-  id: string;
-  delta: string;
-};
-
-export type StreamToolInputStartEvent = {
-  type: 'tool-input-start';
-  requestId: string;
-  toolCallId: string;
-  toolName: string;
-  dynamic?: boolean;
-  providerExecuted?: boolean;
-  title?: string;
-};
-
-export type StreamToolInputDeltaEvent = {
-  type: 'tool-input-delta';
-  requestId: string;
-  toolCallId: string;
-  delta: string;
-};
-
-export type StreamToolInputAvailableEvent = {
-  type: 'tool-input-available';
-  requestId: string;
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-  dynamic?: boolean;
-  providerExecuted?: boolean;
-  title?: string;
-};
-
-export type StreamToolOutputAvailableEvent = {
-  type: 'tool-output-available';
-  requestId: string;
-  toolCallId: string;
-  toolName: string;
-  input?: unknown;
-  output: unknown;
-  dynamic?: boolean;
-  providerExecuted?: boolean;
-  preliminary?: boolean;
-  title?: string;
-};
-
-export type StreamToolOutputErrorEvent = {
-  type: 'tool-output-error';
-  requestId: string;
-  toolCallId: string;
-  toolName: string;
-  input?: unknown;
-  errorText: string;
-  dynamic?: boolean;
-  providerExecuted?: boolean;
-  title?: string;
-};
-
-export type StreamToolOutputDeniedEvent = {
-  type: 'tool-output-denied';
-  requestId: string;
-  toolCallId: string;
 };
 
 export type StreamMetaEvent = {
@@ -228,7 +107,6 @@ export type StreamMetaEvent = {
   requestId: string;
   inputTokens?: number;
   outputTokens?: number;
-  reasoningTokens?: number;
   latencyMs?: number;
 };
 
@@ -248,13 +126,6 @@ export type StreamDoneEvent = {
 
 export type StreamEvent =
   | StreamChunkEvent
-  | StreamReasoningEvent
-  | StreamToolInputStartEvent
-  | StreamToolInputDeltaEvent
-  | StreamToolInputAvailableEvent
-  | StreamToolOutputAvailableEvent
-  | StreamToolOutputErrorEvent
-  | StreamToolOutputDeniedEvent
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamDoneEvent;

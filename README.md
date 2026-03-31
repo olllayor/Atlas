@@ -176,7 +176,7 @@ Then push the tag to trigger the release workflow:
 git push && git push --tags
 ```
 
-This triggers the CI release workflow, which builds macOS DMGs for Apple Silicon and Intel, then uploads those artifacts plus `latest-mac.yml` to a GitHub Release draft.
+This triggers the CI release workflow, which builds macOS DMG and ZIP artifacts for Apple Silicon and Intel, optionally signs/notarizes them if Apple secrets are configured, and publishes them to GitHub Releases with `latest-mac.yml` and blockmaps.
 
 ## Security
 

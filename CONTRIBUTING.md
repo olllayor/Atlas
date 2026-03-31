@@ -2,12 +2,20 @@
 
 CheapChat is still early-stage. Small, focused contributions are the right fit.
 
+## Branch workflow
+
+- `dev` is the default branch — work on bugs, features, and fixes here
+- `main` is the stable release branch
+- Open PRs targeting `dev` for all work
+- When ready for release, merge `dev` → `main` via PR
+
 ## Before opening a PR
 
 - keep scope narrow
 - preserve the local-first and BYOK model
 - do not add hosted services or unnecessary abstraction
 - prefer concrete fixes over broad refactors
+- base your branch off `dev` and target `dev` for PRs
 
 ## Local setup
 

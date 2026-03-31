@@ -2,18 +2,32 @@
 
 Use this checklist for each release to ensure nothing is missed.
 
+The release workflow triggers on tags matching `v*.*.*` such as `v0.1.4` or `v0.1.4-beta.1`.
+
+## Branch workflow
+
+- All development happens on `dev`
+- When ready to release, merge `dev` → `main` via PR
+- Cut the release from `main`
+
 ## Before cutting a release
 
-- [ ] All PRs for this release are merged
-- [ ] `pnpm build` passes locally
-- [ ] CI is green on main branch
+- [ ] All PRs for this release are merged to `dev`
+- [ ] `dev` → `main` PR is merged
+- [ ] `pnpm build` passes locally on `main`
+- [ ] CI is green on `main` branch
 - [ ] CHANGELOG.md is updated with all changes since last release
 - [ ] No unresolved security issues
 - [ ] README.md is accurate (remove outdated "early release" notes when appropriate)
 
 ## Cutting a release
 
-1. Run the release script:
+1. Check out `main` and pull latest:
+   ```bash
+   git checkout main && git pull
+   ```
+
+2. Run the release script:
    ```bash
    # For patch releases (bug fixes)
    pnpm release
@@ -25,20 +39,21 @@ Use this checklist for each release to ensure nothing is missed.
    pnpm release:major
    ```
 
-2. Push the tag:
+3. Push the tag:
    ```bash
    git push && git push --tags
    ```
 
-3. The release workflow will automatically:
-   - Build macOS DMGs for Apple Silicon and Intel
-   - Upload the DMGs, blockmaps, and `latest-mac.yml` to a GitHub Release draft
+4. The release workflow will automatically:
+   - Build macOS DMG and ZIP artifacts for Apple Silicon and Intel
+   - Sign and notarize macOS builds if signing secrets are configured
+   - Publish a GitHub Release with the installers, blockmaps, and `latest-mac.yml`
 
-4. Review the release draft:
-   - Edit the release notes (copy from CHANGELOG.md)
+5. Review the published GitHub Release:
    - Verify both macOS DMGs are attached
+   - Verify both macOS ZIPs are attached
    - Verify `latest-mac.yml` is attached if auto-update metadata is expected
-   - Publish the release when ready
+   - Confirm prerelease tags such as `v0.1.4-beta.1` were marked as prereleases
 
 ## After publishing
 
@@ -51,10 +66,10 @@ Use this checklist for each release to ensure nothing is missed.
 
 For macOS notarization and signing, set these repository secrets:
 
-- `APPLE_ID` - Apple Developer account
-- `APPLE_APP_SPECIFIC_PASSWORD` - App-specific password
-- `APPLE_TEAM_ID` - Team ID from Apple Developer portal
 - `CSC_LINK` - Base64-encoded signing certificate
 - `CSC_KEY_PASSWORD` - Certificate password
+- `APPLE_API_KEY` - Contents of the App Store Connect `.p8` API key
+- `APPLE_API_KEY_ID` - App Store Connect key ID
+- `APPLE_API_ISSUER` - App Store Connect issuer ID
 
-These are not required for draft releases or early open source distribution.
+If those secrets are absent, the workflow still publishes unsigned macOS artifacts.

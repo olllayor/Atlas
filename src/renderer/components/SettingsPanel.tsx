@@ -1,6 +1,7 @@
 import { KeyRound, RefreshCw, X } from 'lucide-react';
+import { useState } from 'react';
 
-import type { SettingsSummary } from '../../shared/contracts';
+import type { ProviderId, ProviderCredentialSummary, SettingsSummary } from '../../shared/contracts';
 
 type SettingsPanelProps = {
   open: boolean;
@@ -11,9 +12,23 @@ type SettingsPanelProps = {
   isRefreshingModels: boolean;
   onClose: () => void;
   onKeyDraftChange: (value: string) => void;
-  onSaveKey: () => void;
-  onValidateKey: () => void;
+  onSaveKey: (providerId: ProviderId) => void;
+  onValidateKey: (providerId: ProviderId) => void;
   onRefreshModels: () => void;
+};
+
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  openrouter: 'OpenRouter',
+  openai: 'OpenAI',
+  gemini: 'Gemini',
+  anthropic: 'Anthropic'
+};
+
+const PROVIDER_PLACEHOLDERS: Record<ProviderId, string> = {
+  openrouter: 'sk-or-v1-...',
+  openai: 'sk-...',
+  gemini: 'AIza...',
+  anthropic: 'sk-ant-...'
 };
 
 export function SettingsPanel({
@@ -29,9 +44,12 @@ export function SettingsPanel({
   onValidateKey,
   onRefreshModels,
 }: SettingsPanelProps) {
+  const [activeProvider, setActiveProvider] = useState<ProviderId>('openrouter');
+
   if (!open) return null;
 
-  const openRouter = settings?.providers.find((p) => p.providerId === 'openrouter');
+  const providerCredential = settings?.providers.find((p) => p.providerId === activeProvider);
+  const providers = settings?.providers ?? [];
 
   return (
     <>
@@ -51,21 +69,41 @@ export function SettingsPanel({
 
           <div className="flex-1 overflow-y-auto px-6 py-6">
             <section>
-              <h3 className="text-sm font-medium text-white">API Key</h3>
-              <p className="mt-1 text-xs text-slate-500">Stored in your OS keychain.</p>
+              <h3 className="text-sm font-medium text-white">Providers</h3>
+              <p className="mt-1 text-xs text-slate-500">Manage API keys for each provider.</p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {providers.map((provider) => (
+                  <button
+                    key={provider.providerId}
+                    type="button"
+                    onClick={() => setActiveProvider(provider.providerId)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                      provider.providerId === activeProvider
+                        ? 'bg-white text-black'
+                        : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {PROVIDER_LABELS[provider.providerId]}
+                    {provider.hasSecret && (
+                      <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    )}
+                  </button>
+                ))}
+              </div>
 
               <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.03] p-4">
                 <input
                   type="password"
                   value={keyDraft}
                   onChange={(e) => onKeyDraftChange(e.target.value)}
-                  placeholder={openRouter?.hasSecret ? 'A key is saved. Paste to replace.' : 'sk-or-v1-...'}
+                  placeholder={providerCredential?.hasSecret ? 'A key is saved. Paste to replace.' : PROVIDER_PLACEHOLDERS[activeProvider]}
                   className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none placeholder:text-slate-600 focus:border-white/20"
                 />
                 <div className="mt-3 flex gap-2">
                   <button
                     type="button"
-                    onClick={onSaveKey}
+                    onClick={() => onSaveKey(activeProvider)}
                     disabled={isSaving}
                     className="rounded-lg bg-white px-3 py-2 text-xs font-medium text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -73,7 +111,7 @@ export function SettingsPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={onValidateKey}
+                    onClick={() => onValidateKey(activeProvider)}
                     disabled={isValidating}
                     className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -82,30 +120,8 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              {openRouter && (
-                <dl className="mt-4 space-y-2 text-xs">
-                  <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
-                    <dt className="text-slate-500">Saved</dt>
-                    <dd className="font-medium text-white">{openRouter.hasSecret ? 'Yes' : 'No'}</dd>
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
-                    <dt className="text-slate-500">Status</dt>
-                    <dd className="font-medium text-white">{openRouter.status}</dd>
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
-                    <dt className="text-slate-500">Last sync</dt>
-                    <dd className="font-medium text-white">
-                      {settings?.modelCatalogLastSyncedAt
-                        ? new Intl.DateTimeFormat('en', {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          }).format(new Date(settings.modelCatalogLastSyncedAt))
-                        : 'Never'}
-                    </dd>
-                  </div>
-                </dl>
+              {providerCredential && (
+                <ProviderStatus provider={providerCredential} settings={settings} />
               )}
             </section>
 
@@ -127,5 +143,33 @@ export function SettingsPanel({
         </div>
       </div>
     </>
+  );
+}
+
+function ProviderStatus({ provider, settings }: { provider: ProviderCredentialSummary; settings: SettingsSummary | null }) {
+  return (
+    <dl className="mt-4 space-y-2 text-xs">
+      <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
+        <dt className="text-slate-500">Saved</dt>
+        <dd className="font-medium text-white">{provider.hasSecret ? 'Yes' : 'No'}</dd>
+      </div>
+      <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
+        <dt className="text-slate-500">Status</dt>
+        <dd className="font-medium text-white">{provider.status}</dd>
+      </div>
+      <div className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
+        <dt className="text-slate-500">Last sync</dt>
+        <dd className="font-medium text-white">
+          {settings?.modelCatalogLastSyncedAt
+            ? new Intl.DateTimeFormat('en', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              }).format(new Date(settings.modelCatalogLastSyncedAt))
+            : 'Never'}
+        </dd>
+      </div>
+    </dl>
   );
 }

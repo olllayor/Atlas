@@ -1,4 +1,4 @@
-import type { ListModelsOptions, SettingsSummary } from '../../../shared/contracts';
+import type { ListModelsOptions, ModelSummary, ProviderId, SettingsSummary } from '../../../shared/contracts';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { SettingsRepo } from '../../db/repositories/settingsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
@@ -10,7 +10,7 @@ export class ModelRegistry {
     private readonly modelsRepo: ModelsRepo,
     private readonly settingsRepo: SettingsRepo,
     private readonly keychain: KeychainStore,
-    private readonly provider: ProviderAdapter
+    private readonly providers: Map<ProviderId, ProviderAdapter>
   ) {}
 
   list(options: ListModelsOptions = {}) {
@@ -18,18 +18,57 @@ export class ModelRegistry {
   }
 
   async refresh() {
-    const apiKey = await this.keychain.getSecret('openrouter');
+    const results: ModelSummary[] = [];
 
+    for (const [providerId, provider] of this.providers) {
+      const apiKey = await this.keychain.getSecret(providerId);
+      if (!apiKey) continue;
+
+      try {
+        const models = await provider.listModels(apiKey);
+        const validatedAt = new Date().toISOString();
+
+        this.modelsRepo.upsertModels(models);
+        this.settingsRepo.updateCredentialStatus(providerId, {
+          hasSecret: true,
+          status: 'valid',
+          validatedAt
+        });
+
+        results.push(...models);
+      } catch (error) {
+        const normalized = normalizeError(error);
+
+        if (normalized.code === 'auth_error') {
+          this.settingsRepo.updateCredentialStatus(providerId, {
+            hasSecret: true,
+            status: 'invalid',
+            validatedAt: null
+          });
+        }
+      }
+    }
+
+    return results.length > 0 ? results : this.modelsRepo.list();
+  }
+
+  async refreshProvider(providerId: ProviderId) {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`Unknown provider: ${providerId}`);
+    }
+
+    const apiKey = await this.keychain.getSecret(providerId);
     if (!apiKey) {
-      throw new Error('Add an OpenRouter API key in settings before refreshing models.');
+      throw new Error(`Add a ${providerId} API key in settings before refreshing models.`);
     }
 
     try {
-      const models = await this.provider.listModels(apiKey);
+      const models = await provider.listModels(apiKey);
       const validatedAt = new Date().toISOString();
 
       this.modelsRepo.upsertModels(models);
-      this.settingsRepo.updateCredentialStatus('openrouter', {
+      this.settingsRepo.updateCredentialStatus(providerId, {
         hasSecret: true,
         status: 'valid',
         validatedAt
@@ -40,7 +79,7 @@ export class ModelRegistry {
       const normalized = normalizeError(error);
 
       if (normalized.code === 'auth_error') {
-        this.settingsRepo.updateCredentialStatus('openrouter', {
+        this.settingsRepo.updateCredentialStatus(providerId, {
           hasSecret: true,
           status: 'invalid',
           validatedAt: null
@@ -51,20 +90,25 @@ export class ModelRegistry {
     }
   }
 
-  async validateOpenRouterKey() {
-    const apiKey = await this.keychain.getSecret('openrouter');
+  async validateProviderKey(providerId: ProviderId) {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`Unknown provider: ${providerId}`);
+    }
+
+    const apiKey = await this.keychain.getSecret(providerId);
 
     if (!apiKey) {
-      this.settingsRepo.updateCredentialStatus('openrouter', {
+      this.settingsRepo.updateCredentialStatus(providerId, {
         hasSecret: false,
         status: 'missing',
         validatedAt: null
       });
-      throw new Error('Save an OpenRouter API key first.');
+      throw new Error(`Save a ${providerId} API key first.`);
     }
 
-    await this.provider.validateCredential(apiKey);
-    this.settingsRepo.updateCredentialStatus('openrouter', {
+    await provider.validateCredential(apiKey);
+    this.settingsRepo.updateCredentialStatus(providerId, {
       hasSecret: true,
       status: 'valid',
       validatedAt: new Date().toISOString()

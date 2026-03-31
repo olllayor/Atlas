@@ -7,7 +7,8 @@ const SERVICE_NAME = 'cheapchat';
 const ACCOUNT_NAMES: Record<ProviderId, string> = {
   openrouter: 'openrouter-api-key',
   openai: 'openai-api-key',
-  gemini: 'gemini-api-key'
+  gemini: 'gemini-api-key',
+  anthropic: 'anthropic-api-key'
 };
 
 export class KeychainStore {

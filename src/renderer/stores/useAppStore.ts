@@ -60,6 +60,9 @@ type AppState = {
   setKeyDraft: (value: string) => void;
   saveOpenRouterKey: () => Promise<void>;
   validateOpenRouterKey: () => Promise<void>;
+  saveProviderKey: (providerId: ProviderId) => Promise<void>;
+  validateProviderKey: (providerId: ProviderId) => Promise<void>;
+  refreshProviderModels: (providerId: ProviderId) => Promise<void>;
   updatePreferences: (patch: { showFreeOnlyByDefault?: boolean }) => Promise<void>;
   setSelectedModel: (conversationId: string, modelId: string) => void;
   sendMessage: (content: string) => Promise<void>;
@@ -76,8 +79,8 @@ function getErrorMessage(error: unknown) {
   return 'Unexpected error';
 }
 
-function findOpenRouterCredential(settings: SettingsSummary | null): ProviderCredentialSummary | null {
-  return settings?.providers.find((provider) => provider.providerId === 'openrouter') ?? null;
+function hasAnyCredential(settings: SettingsSummary | null): boolean {
+  return settings?.providers.some((provider) => provider.hasSecret) ?? false;
 }
 
 function resolveSelectedModelId(
@@ -167,7 +170,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             : {}
       });
 
-      if (findOpenRouterCredential(settings)?.hasSecret) {
+      if (hasAnyCredential(settings)) {
         void get().refreshModels({ silent: true });
       }
     } catch (error) {
@@ -317,6 +320,113 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  saveProviderKey: async (providerId) => {
+    const secret = get().keyDraft.trim();
+    if (!secret) {
+      set({
+        notice: {
+          tone: 'error',
+          message: `Enter a ${providerId} API key before saving.`
+        }
+      });
+      return;
+    }
+
+    set({ isSavingKey: true });
+
+    try {
+      const methodMap: Record<ProviderId, string> = {
+        openrouter: 'saveOpenRouterKey',
+        openai: 'saveOpenAiKey',
+        gemini: 'saveGeminiKey',
+        anthropic: 'saveAnthropicKey'
+      };
+      const saveFn = (window.cheapChat.settings as unknown as Record<string, (secret: string) => Promise<SettingsSummary>>)[methodMap[providerId]];
+      const settings = await saveFn(secret);
+      set({
+        isSavingKey: false,
+        settings,
+        keyDraft: '',
+        notice: {
+          tone: 'success',
+          message: `${providerId} key saved to the OS keychain.`
+        }
+      });
+    } catch (error) {
+      set({
+        isSavingKey: false,
+        notice: {
+          tone: 'error',
+          message: getErrorMessage(error)
+        }
+      });
+    }
+  },
+
+  validateProviderKey: async (providerId) => {
+    set({ isValidatingKey: true });
+
+    try {
+      const methodMap: Record<ProviderId, string> = {
+        openrouter: 'validateOpenRouterKey',
+        openai: 'validateOpenAiKey',
+        gemini: 'validateGeminiKey',
+        anthropic: 'validateAnthropicKey'
+      };
+      const validateFn = (window.cheapChat.settings as unknown as Record<string, () => Promise<SettingsSummary>>)[methodMap[providerId]];
+      const settings = await validateFn();
+      set({
+        isValidatingKey: false,
+        settings,
+        notice: {
+          tone: 'success',
+          message: `${providerId} key validated successfully.`
+        }
+      });
+    } catch (error) {
+      set({
+        isValidatingKey: false,
+        notice: {
+          tone: 'error',
+          message: getErrorMessage(error)
+        }
+      });
+    }
+  },
+
+  refreshProviderModels: async (providerId) => {
+    try {
+      const models = await window.cheapChat.models.refreshProvider(providerId);
+      const settings = await window.cheapChat.settings.getSummary();
+      const state = get();
+      const selectedModelId = resolveSelectedModelId(
+        state.selectedConversationId,
+        state.selectedModelIdByConversation,
+        state.conversationDetails,
+        models
+      );
+
+      set((current) => ({
+        models: settings.showFreeOnlyByDefault ? models.filter((model) => model.isFree) : models,
+        settings,
+        selectedModelIdByConversation:
+          selectedModelId && current.selectedConversationId
+            ? {
+                ...current.selectedModelIdByConversation,
+                [current.selectedConversationId]: selectedModelId
+              }
+            : current.selectedModelIdByConversation
+      }));
+    } catch (error) {
+      set({
+        notice: {
+          tone: 'error',
+          message: getErrorMessage(error)
+        }
+      });
+    }
+  },
+
   updatePreferences: async (patch) => {
     const settings = await window.cheapChat.settings.updatePreferences(patch);
     const models = await window.cheapChat.models.list({
@@ -393,9 +503,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         content: message.content
       }));
 
+    const selectedModel = state.models.find((m) => m.id === modelId);
+    const providerId = selectedModel?.providerId ?? 'openrouter';
+
     const request = await window.cheapChat.chat.start({
       conversationId,
-      providerId: 'openrouter' as const,
+      providerId,
       modelId,
       messages: [...completeMessages, { role: 'user' as const, content: trimmed }],
       temperature: 0.65
@@ -416,7 +529,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               role: 'user' as const,
               content: trimmed,
               status: 'complete' as const,
-              providerId: 'openrouter' as const,
+              providerId,
               modelId,
               inputTokens: null,
               outputTokens: null,
@@ -431,7 +544,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...current.draftsByConversation,
         [conversationId]: {
           requestId: request.requestId,
-          providerId: 'openrouter' as const,
+          providerId,
           modelId,
           content: '',
           status: 'streaming' as const,
@@ -450,7 +563,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 updatedAt: now,
                 lastMessageAt: now,
                 lastMessagePreview: trimmed,
-                defaultProviderId: 'openrouter' as const,
+                defaultProviderId: providerId,
                 defaultModelId: modelId
               }
             : conversation

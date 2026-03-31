@@ -34,7 +34,9 @@ function isAIError(error: unknown): error is { statusCode?: number; message: str
   return symbols.some((s) => s.description === 'vercel.ai.error' && (error as Record<string | symbol, unknown>)[s] === true);
 }
 
-export function normalizeError(error: unknown): NormalizedError {
+export function normalizeError(error: unknown, providerId?: string): NormalizedError {
+  const providerName = providerId ? providerId.charAt(0).toUpperCase() + providerId.slice(1) : 'The provider';
+
   if (error instanceof MissingCredentialError) {
     return {
       code: 'missing_credential',
@@ -55,7 +57,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (error.status === 401 || error.status === 403) {
       return {
         code: 'auth_error',
-        message: 'OpenRouter rejected the API key. Revalidate it in settings.',
+        message: `${providerName} rejected the API key. Revalidate it in settings.`,
         retryable: false
       };
     }
@@ -71,7 +73,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (error.status >= 500) {
       return {
         code: 'upstream_unavailable',
-        message: 'OpenRouter is temporarily unavailable.',
+        message: `${providerName} is temporarily unavailable.`,
         retryable: true
       };
     }
@@ -89,7 +91,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (status === 401 || status === 403) {
       return {
         code: 'auth_error',
-        message: 'OpenRouter rejected the API key. Revalidate it in settings.',
+        message: `${providerName} rejected the API key. Revalidate it in settings.`,
         retryable: false
       };
     }
@@ -113,7 +115,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (status && status >= 500) {
       return {
         code: 'upstream_unavailable',
-        message: 'OpenRouter is temporarily unavailable.',
+        message: `${providerName} is temporarily unavailable.`,
         retryable: true
       };
     }

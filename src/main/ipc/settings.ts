@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron/main';
 
+import type { ProviderId } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
@@ -12,35 +13,69 @@ type SettingsIpcDeps = {
   keychain: KeychainStore;
 };
 
+const PROVIDER_CONFIGS: Array<{
+  saveChannel: string;
+  validateChannel: string;
+  providerId: ProviderId;
+  label: string;
+}> = [
+  {
+    saveChannel: IPC_CHANNELS.settingsSaveOpenRouterKey,
+    validateChannel: IPC_CHANNELS.settingsValidateOpenRouterKey,
+    providerId: 'openrouter',
+    label: 'OpenRouter'
+  },
+  {
+    saveChannel: IPC_CHANNELS.settingsSaveOpenAiKey,
+    validateChannel: IPC_CHANNELS.settingsValidateOpenAiKey,
+    providerId: 'openai',
+    label: 'OpenAI'
+  },
+  {
+    saveChannel: IPC_CHANNELS.settingsSaveGeminiKey,
+    validateChannel: IPC_CHANNELS.settingsValidateGeminiKey,
+    providerId: 'gemini',
+    label: 'Gemini'
+  },
+  {
+    saveChannel: IPC_CHANNELS.settingsSaveAnthropicKey,
+    validateChannel: IPC_CHANNELS.settingsValidateAnthropicKey,
+    providerId: 'anthropic',
+    label: 'Anthropic'
+  }
+];
+
 export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: SettingsIpcDeps) {
   ipcMain.handle(IPC_CHANNELS.settingsGetSummary, (event) => {
     assertTrustedSender(event);
     return modelRegistry.getSettingsSummary();
   });
 
-  ipcMain.handle(IPC_CHANNELS.settingsSaveOpenRouterKey, async (event, secret: string) => {
-    assertTrustedSender(event);
+  for (const config of PROVIDER_CONFIGS) {
+    ipcMain.handle(config.saveChannel, async (event, secret: string) => {
+      assertTrustedSender(event);
 
-    const trimmed = secret.trim();
-    if (!trimmed) {
-      throw new Error('OpenRouter API key cannot be empty.');
-    }
+      const trimmed = secret.trim();
+      if (!trimmed) {
+        throw new Error(`${config.label} API key cannot be empty.`);
+      }
 
-    await keychain.setSecret('openrouter', trimmed);
-    settingsRepo.updateCredentialStatus('openrouter', {
-      hasSecret: true,
-      status: 'unknown',
-      validatedAt: null
+      await keychain.setSecret(config.providerId, trimmed);
+      settingsRepo.updateCredentialStatus(config.providerId, {
+        hasSecret: true,
+        status: 'unknown',
+        validatedAt: null
+      });
+
+      return modelRegistry.getSettingsSummary();
     });
 
-    return modelRegistry.getSettingsSummary();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.settingsValidateOpenRouterKey, async (event) => {
-    assertTrustedSender(event);
-    await modelRegistry.validateOpenRouterKey();
-    return modelRegistry.getSettingsSummary();
-  });
+    ipcMain.handle(config.validateChannel, async (event) => {
+      assertTrustedSender(event);
+      await modelRegistry.validateProviderKey(config.providerId);
+      return modelRegistry.getSettingsSummary();
+    });
+  }
 
   ipcMain.handle(
     IPC_CHANNELS.settingsUpdatePreferences,

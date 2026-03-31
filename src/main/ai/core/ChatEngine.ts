@@ -7,6 +7,7 @@ import type { ConversationsRepo } from '../../db/repositories/conversationsRepo'
 import type { KeychainStore } from '../../secrets/keychain';
 import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
+import type { ProviderId } from '../../../shared/contracts';
 
 type ActiveRequest = {
   controller: AbortController;
@@ -19,7 +20,7 @@ export class ChatEngine {
   constructor(
     private readonly conversationsRepo: ConversationsRepo,
     private readonly keychain: KeychainStore,
-    private readonly provider: ProviderAdapter
+    private readonly providers: Map<ProviderId, ProviderAdapter>
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -124,14 +125,19 @@ export class ChatEngine {
           throw new Error('The chat request is no longer active.');
         }
 
-        return await this.provider.streamChat({
+        const provider = this.providers.get(request.providerId);
+        if (!provider) {
+          throw new Error(`Unknown provider: ${request.providerId}`);
+        }
+
+        return await provider.streamChat({
           apiKey,
           modelId: request.modelId,
           messages: request.messages,
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           signal,
-          onChunk: (delta) => {
+          onChunk: (delta: string) => {
             streamedAnyContent = true;
             this.sendEvent(active.window, {
               type: 'chunk',

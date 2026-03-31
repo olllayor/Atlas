@@ -45,6 +45,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  const [onboardingProvider, setOnboardingProvider] = useState<'openrouter' | 'openai' | 'gemini' | 'anthropic'>('openrouter');
 
   const {
     bootstrapping,
@@ -72,6 +73,8 @@ export default function App() {
     setKeyDraft,
     saveOpenRouterKey,
     validateOpenRouterKey,
+    saveProviderKey,
+    validateProviderKey,
     setSelectedModel,
     sendMessage,
     abortConversation,
@@ -82,8 +85,7 @@ export default function App() {
   const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
   const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
-  const openRouterCredential = settings?.providers.find((p) => p.providerId === 'openrouter') ?? null;
-  const hasCredential = Boolean(openRouterCredential?.hasSecret);
+  const hasCredential = settings?.providers.some((p) => p.hasSecret) ?? false;
 
   const onStreamEvent = useEffectEvent((event: StreamEvent) => {
     void handleStreamEvent(event);
@@ -127,26 +129,28 @@ export default function App() {
           isValidatingKey={isValidatingKey}
           keyDraft={keyDraft}
           onKeyDraftChange={setKeyDraft}
-          onSaveKey={() => void saveOpenRouterKey()}
-          onValidateKey={() => void validateOpenRouterKey()}
+          onSaveKey={() => void saveProviderKey(onboardingProvider)}
+          onValidateKey={() => void validateProviderKey(onboardingProvider)}
           onContinue={() => {
             setShowOnboarding(false);
             setOnboardingDone(true);
           }}
+          selectedProvider={onboardingProvider}
+          onProviderChange={setOnboardingProvider}
         />
-        <SettingsPanel
-          open={settingsDialogOpen}
-          settings={settings}
-          keyDraft={keyDraft}
-          isSaving={isSavingKey}
-          isValidating={isValidatingKey}
-          isRefreshingModels={isRefreshingModels}
-          onClose={closeSettings}
-          onKeyDraftChange={setKeyDraft}
-          onSaveKey={() => void saveOpenRouterKey()}
-          onValidateKey={() => void validateOpenRouterKey()}
-          onRefreshModels={() => void refreshModels()}
-        />
+      <SettingsPanel
+        open={settingsDialogOpen}
+        settings={settings}
+        keyDraft={keyDraft}
+        isSaving={isSavingKey}
+        isValidating={isValidatingKey}
+        isRefreshingModels={isRefreshingModels}
+        onClose={closeSettings}
+        onKeyDraftChange={setKeyDraft}
+        onSaveKey={(providerId) => void saveProviderKey(providerId)}
+        onValidateKey={(providerId) => void validateProviderKey(providerId)}
+        onRefreshModels={() => void refreshModels()}
+      />
       </>
     );
   }
@@ -221,8 +225,8 @@ export default function App() {
         isRefreshingModels={isRefreshingModels}
         onClose={closeSettings}
         onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveOpenRouterKey()}
-        onValidateKey={() => void validateOpenRouterKey()}
+        onSaveKey={(providerId) => void saveProviderKey(providerId)}
+        onValidateKey={(providerId) => void validateProviderKey(providerId)}
         onRefreshModels={() => void refreshModels()}
       />
     </div>

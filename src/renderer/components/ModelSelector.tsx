@@ -147,11 +147,16 @@ export function ModelSelector({
                       <p className="truncate text-sm font-medium text-white">{model.label}</p>
                       <p className="mt-0.5 truncate text-[11px] text-slate-500">{model.id}</p>
                     </div>
-                    {model.isFree && (
-                      <span className="ml-2 shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-400">
-                        Free
+                    <div className="ml-2 flex shrink-0 items-center gap-1">
+                      {model.isFree && (
+                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-400">
+                          Free
+                        </span>
+                      )}
+                      <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                        {model.providerId}
                       </span>
-                    )}
+                    </div>
                   </button>
                 );
               })

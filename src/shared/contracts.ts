@@ -1,4 +1,4 @@
-export type ProviderId = 'openrouter' | 'openai' | 'gemini';
+export type ProviderId = 'openrouter' | 'openai' | 'gemini' | 'anthropic';
 
 export type CredentialStatus = 'missing' | 'valid' | 'invalid' | 'unknown';
 
@@ -139,11 +139,18 @@ export type RendererApi = {
     getSummary: () => Promise<SettingsSummary>;
     saveOpenRouterKey: (secret: string) => Promise<SettingsSummary>;
     validateOpenRouterKey: () => Promise<SettingsSummary>;
+    saveOpenAiKey: (secret: string) => Promise<SettingsSummary>;
+    validateOpenAiKey: () => Promise<SettingsSummary>;
+    saveGeminiKey: (secret: string) => Promise<SettingsSummary>;
+    validateGeminiKey: () => Promise<SettingsSummary>;
+    saveAnthropicKey: (secret: string) => Promise<SettingsSummary>;
+    validateAnthropicKey: () => Promise<SettingsSummary>;
     updatePreferences: (patch: SettingsUpdateRequest) => Promise<SettingsSummary>;
   };
   models: {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;
     refresh: () => Promise<ModelSummary[]>;
+    refreshProvider: (providerId: ProviderId) => Promise<ModelSummary[]>;
   };
   conversations: {
     list: () => Promise<ConversationSummary[]>;

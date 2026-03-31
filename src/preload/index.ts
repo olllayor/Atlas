@@ -10,12 +10,25 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.settingsSaveOpenRouterKey, secret),
     validateOpenRouterKey: () =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsValidateOpenRouterKey),
+    saveOpenAiKey: (secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsSaveOpenAiKey, secret),
+    validateOpenAiKey: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsValidateOpenAiKey),
+    saveGeminiKey: (secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsSaveGeminiKey, secret),
+    validateGeminiKey: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsValidateGeminiKey),
+    saveAnthropicKey: (secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsSaveAnthropicKey, secret),
+    validateAnthropicKey: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsValidateAnthropicKey),
     updatePreferences: (patch) =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsUpdatePreferences, patch)
   },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
-    refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh)
+    refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh),
+    refreshProvider: (providerId) => ipcRenderer.invoke(IPC_CHANNELS.modelsRefreshProvider, providerId)
   },
   conversations: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsList),

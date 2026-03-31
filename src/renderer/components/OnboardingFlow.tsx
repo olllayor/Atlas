@@ -1,6 +1,22 @@
 import { KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
 
+import type { ProviderId } from '../../shared/contracts';
+
+type ProviderOption = {
+  id: ProviderId;
+  label: string;
+  url: string;
+  placeholder: string;
+};
+
+const PROVIDER_OPTIONS: ProviderOption[] = [
+  { id: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/keys', placeholder: 'sk-or-v1-...' },
+  { id: 'openai', label: 'OpenAI', url: 'https://platform.openai.com/api-keys', placeholder: 'sk-...' },
+  { id: 'gemini', label: 'Gemini', url: 'https://aistudio.google.com/app/apikey', placeholder: 'AIza...' },
+  { id: 'anthropic', label: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', placeholder: 'sk-ant-...' }
+];
+
 type OnboardingFlowProps = {
   hasCredential: boolean;
   isSavingKey: boolean;
@@ -10,6 +26,8 @@ type OnboardingFlowProps = {
   onSaveKey: () => void;
   onValidateKey: () => void;
   onContinue: () => void;
+  selectedProvider: ProviderId;
+  onProviderChange: (providerId: ProviderId) => void;
 };
 
 export function OnboardingFlow({
@@ -21,11 +39,20 @@ export function OnboardingFlow({
   onSaveKey,
   onValidateKey,
   onContinue,
+  selectedProvider,
+  onProviderChange,
 }: OnboardingFlowProps) {
-  const [step, setStep] = useState<'key' | 'validating' | 'done'>(
-    hasCredential ? 'done' : 'key'
+  const [step, setStep] = useState<'provider' | 'key' | 'validating' | 'done'>(
+    hasCredential ? 'done' : 'provider'
   );
   const [error, setError] = useState<string | null>(null);
+
+  const selectedProviderOption = PROVIDER_OPTIONS.find((p) => p.id === selectedProvider) ?? PROVIDER_OPTIONS[0];
+
+  const handleProviderSelect = (providerId: ProviderId) => {
+    onProviderChange(providerId);
+    setStep('key');
+  };
 
   const handleSave = async () => {
     setError(null);
@@ -67,6 +94,56 @@ export function OnboardingFlow({
     );
   }
 
+  if (step === 'provider') {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#111418] p-8 shadow-2xl">
+          <div className="text-center">
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">Welcome to</p>
+            <h1 className="mt-2 text-2xl font-semibold text-white">CheapChat</h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Choose a provider to get started. You can add more later in settings.
+            </p>
+          </div>
+
+          <div className="mt-8 grid gap-3">
+            {PROVIDER_OPTIONS.map((provider) => (
+              <button
+                key={provider.id}
+                type="button"
+                onClick={() => handleProviderSelect(provider.id)}
+                className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-left transition hover:bg-white/10"
+              >
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-sm font-bold text-white">
+                  {provider.label.charAt(0)}
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-white">{provider.label}</h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Get a key at{' '}
+                    <a
+                      href={provider.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-slate-400 underline hover:text-white"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {new URL(provider.url).hostname}
+                    </a>
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <p className="mt-6 text-center text-[11px] text-slate-600">
+            Keys are stored in your OS keychain. Nothing leaves your machine.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#111418] p-8 shadow-2xl">
@@ -84,16 +161,16 @@ export function OnboardingFlow({
               1
             </div>
             <div>
-              <h3 className="text-sm font-medium text-white">Add your OpenRouter API key</h3>
+              <h3 className="text-sm font-medium text-white">Add your {selectedProviderOption.label} API key</h3>
               <p className="mt-0.5 text-xs text-slate-500">
                 Get one at{' '}
                 <a
-                  href="https://openrouter.ai/keys"
+                  href={selectedProviderOption.url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-slate-400 underline hover:text-white"
                 >
-                  openrouter.ai/keys
+                  {new URL(selectedProviderOption.url).hostname}
                 </a>
               </p>
             </div>
@@ -104,7 +181,7 @@ export function OnboardingFlow({
               type="password"
               value={keyDraft}
               onChange={(e) => onKeyDraftChange(e.target.value)}
-              placeholder="sk-or-v1-..."
+              placeholder={selectedProviderOption.placeholder}
               className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-white/20"
             />
           </div>

@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/olllayor/cheapchat)](https://github.com/olllayor/cheapchat/releases/latest)
 
 CheapChat is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
 

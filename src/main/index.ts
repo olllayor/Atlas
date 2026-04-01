@@ -6,7 +6,7 @@ import { ChatEngine } from './ai/core/ChatEngine';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { OpenRouterProvider } from './ai/providers/openrouter';
 import { createWindow } from './bootstrap/createWindow';
-import { getAppIcon } from './bootstrap/iconPath';
+import { getDockIcon } from './bootstrap/iconPath';
 import { createAppDatabase } from './db/client';
 import { registerChatIpc } from './ipc/chat';
 import { registerConversationsIpc } from './ipc/conversations';
@@ -62,7 +62,7 @@ async function resolveDatabasePath() {
 }
 
 app.whenReady().then(async () => {
-  const icon = getAppIcon();
+  const icon = getDockIcon();
   if (icon && process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(icon);
   }

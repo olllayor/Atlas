@@ -1,10 +1,10 @@
-import { ChevronLeft, ChevronRight, MessageSquare, Plus, Settings } from 'lucide-react';
-import { useState } from 'react';
+import { ChevronLeft, ChevronRight, Plus, Settings } from 'lucide-react';
 
-import type { ConversationSummary } from '../../shared/contracts';
+import { SidebarConversationRow } from './SidebarConversationRow';
+import type { SidebarConversationItem } from './sidebarViewModel';
 
 type SidebarProps = {
-  conversations: ConversationSummary[];
+  items: SidebarConversationItem[];
   selectedConversationId: string | null;
   collapsed: boolean;
   onSelect: (conversationId: string) => void;
@@ -14,7 +14,7 @@ type SidebarProps = {
 };
 
 export function Sidebar({
-  conversations,
+  items,
   selectedConversationId,
   collapsed,
   onSelect,
@@ -22,8 +22,6 @@ export function Sidebar({
   onOpenSettings,
   onToggleCollapsed,
 }: SidebarProps) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-
   return (
     <aside
       className={`relative flex flex-col border-r border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)_16%),linear-gradient(180deg,#0d1015,#090b0f)] transition-all ${
@@ -81,27 +79,28 @@ export function Sidebar({
         )}
 
         <div className="space-y-1">
-          {conversations.map((conv) => {
-            const isActive = conv.id === selectedConversationId;
+          {items.map((item) => {
+            const isActive = item.id === selectedConversationId;
             return (
               <button
-                key={conv.id}
+                key={item.id}
                 type="button"
-                onClick={() => onSelect(conv.id)}
-                onMouseEnter={() => setHoveredId(conv.id)}
-                onMouseLeave={() => setHoveredId(null)}
-                className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left transition ${
+                onClick={() => onSelect(item.id)}
+                className={`flex w-full items-center ${collapsed ? 'justify-center gap-0 px-0 py-2.5' : item.isRunning ? 'gap-2.5 px-3 py-2' : 'gap-0 px-3 py-1.5'} rounded-xl text-left transition ${
                   isActive
                     ? 'border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.045))] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
                     : 'border border-transparent text-text-tertiary hover:bg-white/[0.04] hover:text-text-secondary'
-                } ${collapsed ? 'justify-center' : ''}`}
+                }`}
               >
-                <MessageSquare className={`h-4 w-4 shrink-0 ${isActive ? 'text-white/92' : 'text-text-faint'}`} />
-                {!collapsed && (
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{conv.title}</p>
-                  </div>
-                )}
+                <SidebarConversationRow
+                  isActive={isActive}
+                  isCollapsed={collapsed}
+                  isRunning={item.isRunning}
+                  primaryLabel={item.primaryLabel}
+                  secondaryLabel={item.secondaryLabel}
+                  timestampLabel={item.timestampLabel}
+                  status={item.status}
+                />
               </button>
             );
           })}

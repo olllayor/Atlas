@@ -7,6 +7,7 @@ import { OnboardingFlow } from './components/OnboardingFlow';
 import { AppUpdateButton } from './components/AppUpdateButton';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
+import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { useAppStore } from './stores/useAppStore';
 
 function LoadingScreen() {
@@ -89,6 +90,12 @@ export default function App() {
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
   const openRouterCredential = settings?.providers.find((p) => p.providerId === 'openrouter') ?? null;
   const hasCredential = Boolean(openRouterCredential?.hasSecret);
+  const sidebarItems = buildSidebarConversationItems({
+    conversations,
+    conversationDetails,
+    draftsByConversation,
+    now: Date.now(),
+  });
 
   const onStreamEvent = useEffectEvent((event: StreamEvent) => {
     void handleStreamEvent(event);
@@ -172,7 +179,7 @@ export default function App() {
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base">
       <Sidebar
-        conversations={conversations}
+        items={sidebarItems}
         selectedConversationId={selectedConversationId}
         collapsed={sidebarCollapsed}
         onSelect={(id) => void loadConversation(id)}

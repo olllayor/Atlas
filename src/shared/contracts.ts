@@ -134,6 +134,54 @@ export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
 };
 
+export type AppUpdateProgress = {
+  percent: number;
+  bytesPerSecond: number;
+  transferred: number;
+  total: number;
+};
+
+export type AppUpdateSnapshot =
+  | {
+      status: 'idle';
+    }
+  | {
+      status: 'checking';
+    }
+  | {
+      status: 'available';
+      currentVersion: string;
+      latestVersion: string;
+      releaseUrl: string;
+      releaseNotes: string | null;
+      checkedAt: string;
+    }
+  | {
+      status: 'not-available';
+      currentVersion: string;
+      checkedAt: string;
+    }
+  | {
+      status: 'error';
+      message: string;
+      checkedAt: string;
+    }
+  | {
+      status: 'downloading';
+      currentVersion: string;
+      latestVersion: string;
+      releaseNotes: string | null;
+      checkedAt: string;
+      progress: AppUpdateProgress | null;
+    }
+  | {
+      status: 'downloaded';
+      currentVersion: string;
+      latestVersion: string;
+      releaseNotes: string | null;
+      checkedAt: string;
+    };
+
 export type RendererApi = {
   settings: {
     getSummary: () => Promise<SettingsSummary>;
@@ -154,5 +202,11 @@ export type RendererApi = {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
+  };
+  updates: {
+    getState: () => Promise<AppUpdateSnapshot>;
+    check: () => Promise<AppUpdateSnapshot>;
+    performPrimaryAction: () => Promise<void>;
+    subscribe: (listener: (snapshot: AppUpdateSnapshot) => void) => () => void;
   };
 };

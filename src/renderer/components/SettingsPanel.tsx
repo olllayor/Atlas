@@ -1,10 +1,11 @@
 import { KeyRound, RefreshCw, X } from 'lucide-react';
 
-import type { SettingsSummary } from '../../shared/contracts';
+import type { AppUpdateSnapshot, SettingsSummary } from '../../shared/contracts';
 
 type SettingsPanelProps = {
   open: boolean;
   settings: SettingsSummary | null;
+  updateState: AppUpdateSnapshot;
   keyDraft: string;
   isSaving: boolean;
   isValidating: boolean;
@@ -13,12 +14,14 @@ type SettingsPanelProps = {
   onKeyDraftChange: (value: string) => void;
   onSaveKey: () => void;
   onValidateKey: () => void;
+  onCheckForUpdates: () => void;
   onRefreshModels: () => void;
 };
 
 export function SettingsPanel({
   open,
   settings,
+  updateState,
   keyDraft,
   isSaving,
   isValidating,
@@ -27,6 +30,7 @@ export function SettingsPanel({
   onKeyDraftChange,
   onSaveKey,
   onValidateKey,
+  onCheckForUpdates,
   onRefreshModels,
 }: SettingsPanelProps) {
   if (!open) return null;
@@ -122,6 +126,29 @@ export function SettingsPanel({
                 <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingModels ? 'animate-spin' : ''}`} />
                 {isRefreshingModels ? 'Refreshing...' : 'Refresh catalog'}
               </button>
+            </section>
+
+            <section className="mt-8">
+              <h3 className="section-title">App Updates</h3>
+              <p className="section-desc">Check GitHub Releases for the latest macOS build.</p>
+
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onCheckForUpdates}
+                  disabled={updateState.status === 'checking'}
+                  className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-xs"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${updateState.status === 'checking' ? 'animate-spin' : ''}`} />
+                  {updateState.status === 'checking' ? 'Checking...' : 'Check for updates...'}
+                </button>
+
+                {updateState.status === 'available' ? <span className="text-xs text-text-tertiary">Update available</span> : null}
+
+                {updateState.status === 'downloaded' ? (
+                  <span className="text-xs text-text-tertiary">Restart required</span>
+                ) : null}
+              </div>
             </section>
           </div>
         </div>

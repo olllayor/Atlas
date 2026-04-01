@@ -11,7 +11,9 @@ import { registerChatIpc } from './ipc/chat';
 import { registerConversationsIpc } from './ipc/conversations';
 import { registerModelsIpc } from './ipc/models';
 import { registerSettingsIpc } from './ipc/settings';
+import { registerUpdatesIpc } from './ipc/updates';
 import { KeychainStore } from './secrets/keychain';
+import { UpdateService } from './updates/UpdateService';
 
 app.setName('CheapChat');
 
@@ -24,6 +26,7 @@ app.whenReady().then(async () => {
   const database = createAppDatabase(join(app.getPath('userData'), 'cheapchat.db'));
   const keychain = new KeychainStore();
   const openRouter = new OpenRouterProvider();
+  const updateService = new UpdateService();
 
   database.settings.syncSecretPresence('openrouter', Boolean(await keychain.getSecret('openrouter')));
 
@@ -38,8 +41,12 @@ app.whenReady().then(async () => {
   registerModelsIpc(modelRegistry);
   registerConversationsIpc(database.conversations);
   registerChatIpc(chatEngine);
+  registerUpdatesIpc(updateService);
 
-  createWindow();
+  const window = createWindow();
+  window.once('show', () => {
+    updateService.start();
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

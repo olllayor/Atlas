@@ -1,9 +1,10 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 
-import type { StreamEvent } from '../shared/contracts';
+import type { AppUpdateSnapshot, StreamEvent } from '../shared/contracts';
 import { ChatWindow } from './components/ChatWindow';
 import { Composer } from './components/Composer';
 import { OnboardingFlow } from './components/OnboardingFlow';
+import { AppUpdateButton } from './components/AppUpdateButton';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { useAppStore } from './stores/useAppStore';
@@ -63,6 +64,7 @@ export default function App() {
     selectedModelIdByConversation,
     draftsByConversation,
     notice,
+    updateState,
     bootstrap,
     refreshModels,
     loadConversation,
@@ -72,6 +74,9 @@ export default function App() {
     setKeyDraft,
     saveOpenRouterKey,
     validateOpenRouterKey,
+    setUpdateState,
+    checkForUpdates,
+    performUpdatePrimaryAction,
     setSelectedModel,
     sendMessage,
     abortConversation,
@@ -89,6 +94,10 @@ export default function App() {
     void handleStreamEvent(event);
   });
 
+  const onUpdateState = useEffectEvent((snapshot: AppUpdateSnapshot) => {
+    setUpdateState(snapshot);
+  });
+
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
@@ -99,6 +108,13 @@ export default function App() {
     });
     return unsubscribe;
   }, [onStreamEvent]);
+
+  useEffect(() => {
+    const unsubscribe = window.cheapChat.updates.subscribe((snapshot) => {
+      onUpdateState(snapshot);
+    });
+    return unsubscribe;
+  }, [onUpdateState]);
 
   useEffect(() => {
     if (initialized && !hasCredential && conversations.length === 0) {
@@ -137,6 +153,7 @@ export default function App() {
         <SettingsPanel
           open={settingsDialogOpen}
           settings={settings}
+          updateState={updateState}
           keyDraft={keyDraft}
           isSaving={isSavingKey}
           isValidating={isValidatingKey}
@@ -145,6 +162,7 @@ export default function App() {
           onKeyDraftChange={setKeyDraft}
           onSaveKey={() => void saveOpenRouterKey()}
           onValidateKey={() => void validateOpenRouterKey()}
+          onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onRefreshModels={() => void refreshModels()}
         />
       </>
@@ -162,8 +180,15 @@ export default function App() {
         onOpenSettings={openSettings}
         onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
-
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
+        {/* Draggable title bar area for main content - matches sidebar height */}
+        <div
+          className="relative h-[52px] shrink-0 border-b border-white/6"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        >
+          <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
+        </div>
         {notice && (
           <div
             className={`flex items-center justify-between border-b px-4 py-2 text-sm ${
@@ -215,6 +240,7 @@ export default function App() {
       <SettingsPanel
         open={settingsDialogOpen}
         settings={settings}
+        updateState={updateState}
         keyDraft={keyDraft}
         isSaving={isSavingKey}
         isValidating={isValidatingKey}
@@ -223,6 +249,7 @@ export default function App() {
         onKeyDraftChange={setKeyDraft}
         onSaveKey={() => void saveOpenRouterKey()}
         onValidateKey={() => void validateOpenRouterKey()}
+        onCheckForUpdates={() => void checkForUpdates({ manual: true })}
         onRefreshModels={() => void refreshModels()}
       />
     </div>

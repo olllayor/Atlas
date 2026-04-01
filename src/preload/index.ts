@@ -36,6 +36,22 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.chatEvent, handler);
       };
     }
+  },
+  updates: {
+    getState: () => ipcRenderer.invoke(IPC_CHANNELS.updatesGetState),
+    check: () => ipcRenderer.invoke(IPC_CHANNELS.updatesCheck),
+    performPrimaryAction: () => ipcRenderer.invoke(IPC_CHANNELS.updatesPerformPrimaryAction),
+    subscribe: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.updatesEvent, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.updatesEvent, handler);
+      };
+    }
   }
 };
 

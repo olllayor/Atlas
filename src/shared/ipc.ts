@@ -10,5 +10,9 @@ export const IPC_CHANNELS = {
   conversationsGet: 'conversations:get',
   chatStart: 'chat:start',
   chatAbort: 'chat:abort',
-  chatEvent: 'chat:event'
+  chatEvent: 'chat:event',
+  updatesGetState: 'updates:getState',
+  updatesCheck: 'updates:check',
+  updatesPerformPrimaryAction: 'updates:performPrimaryAction',
+  updatesEvent: 'updates:event'
 } as const;

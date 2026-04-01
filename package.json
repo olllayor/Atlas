@@ -1,5 +1,5 @@
 {
-  "name": "cheapchat",
+  "name": "atlas-chat",
   "version": "0.1.12",
   "private": false,
   "author": "Olloyor",
@@ -7,12 +7,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/olllayor/cheapchat.git"
+    "url": "git+https://github.com/olllayor/Atlas.git"
   },
   "bugs": {
-    "url": "https://github.com/olllayor/cheapchat/issues"
+    "url": "https://github.com/olllayor/Atlas/issues"
   },
-  "homepage": "https://github.com/olllayor/cheapchat#readme",
+  "homepage": "https://github.com/olllayor/Atlas#readme",
   "keywords": [
     "electron",
     "react",
@@ -103,8 +103,8 @@
     "vite": "7.3.1"
   },
   "build": {
-    "appId": "com.cheapchat.app",
-    "productName": "CheapChat",
+    "appId": "com.olllayor.atlaschat",
+    "productName": "Atlas",
     "directories": {
       "buildResources": "build",
       "output": "release"

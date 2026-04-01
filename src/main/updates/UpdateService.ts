@@ -25,7 +25,7 @@ type RepositoryInfo = {
 
 const DEFAULT_REPOSITORY: RepositoryInfo = {
   owner: 'olllayor',
-  name: 'cheapchat'
+  name: 'Atlas'
 };
 
 function parseRepositoryInfo(): RepositoryInfo {

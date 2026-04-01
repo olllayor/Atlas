@@ -119,7 +119,7 @@ export function createBuiltInTools(modelsRepo: ModelsRepo) {
     }),
     search_model_catalog: tool({
       description:
-        "Search CheapChat's local model catalog by name or capability. Use this when the user asks about free models, providers, tool support, vision support, or context window size.",
+        "Search Atlas's local model catalog by name or capability. Use this when the user asks about free models, providers, tool support, vision support, or context window size.",
       inputSchema: z.object({
         query: z.string().trim().optional().describe('Optional search term for model id, label, or provider'),
         freeOnly: z.boolean().default(false).describe('Only return free models'),

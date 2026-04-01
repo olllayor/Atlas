@@ -72,7 +72,7 @@ export function OnboardingFlow({
       <div className="w-full max-w-md rounded-xl border border-border-medium bg-bg-elevated p-8 shadow-elevated">
         <div className="text-center">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
-          <h1 className="mt-2 text-2xl font-semibold text-text-primary">CheapChat</h1>
+          <h1 className="mt-2 text-2xl font-semibold text-text-primary">Atlas</h1>
           <p className="mt-2 text-sm text-text-tertiary">
             A local-first chat client. Bring your own API key, keep everything on your machine.
           </p>

@@ -534,7 +534,7 @@ async function fetchText(url: URL | string, init?: RequestInit) {
   const response = await fetch(url, {
     ...init,
     headers: {
-      'User-Agent': 'CheapChat/0.1',
+      'User-Agent': 'Atlas/0.1',
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
       ...(init?.headers ?? {})
     }
@@ -767,7 +767,7 @@ function validateBashCommand(command: string) {
   for (const pattern of READ_ONLY_BASH_BLOCKLIST) {
     if (pattern.test(normalized)) {
       throw new Error(
-        'Command rejected by CheapChat safety policy. This first integration only allows read-only shell commands.'
+        'Command rejected by Atlas safety policy. This first integration only allows read-only shell commands.'
       );
     }
   }

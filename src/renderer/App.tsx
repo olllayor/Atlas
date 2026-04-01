@@ -103,14 +103,14 @@ export default function App() {
   }, [bootstrap]);
 
   useEffect(() => {
-    const unsubscribe = window.cheapChat.chat.subscribe((event) => {
+    const unsubscribe = window.atlasChat.chat.subscribe((event) => {
       onStreamEvent(event);
     });
     return unsubscribe;
   }, [onStreamEvent]);
 
   useEffect(() => {
-    const unsubscribe = window.cheapChat.updates.subscribe((snapshot) => {
+    const unsubscribe = window.atlasChat.updates.subscribe((snapshot) => {
       onUpdateState(snapshot);
     });
     return unsubscribe;

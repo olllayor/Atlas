@@ -49,7 +49,7 @@ function buildHeaders(apiKey: string) {
   return {
     Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
-    'X-Title': 'CheapChat'
+    'X-Title': 'Atlas'
   };
 }
 
@@ -135,7 +135,7 @@ export class OpenRouterProvider implements ProviderAdapter {
 
     const openrouter = createOpenRouter({
       apiKey: request.apiKey,
-      headers: { 'X-Title': 'CheapChat' }
+      headers: { 'X-Title': 'Atlas' }
     });
 
     let inputTokens: number | undefined;

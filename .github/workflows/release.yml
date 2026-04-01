@@ -42,10 +42,10 @@ jobs:
           make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
           generate_release_notes: true
           files: |
-            release/CheapChat-*.dmg
-            release/CheapChat-*.zip
-            release/CheapChat-*.dmg.blockmap
-            release/CheapChat-*.zip.blockmap
+            release/Atlas-*.dmg
+            release/Atlas-*.zip
+            release/Atlas-*.dmg.blockmap
+            release/Atlas-*.zip.blockmap
             release/latest-mac.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

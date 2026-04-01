@@ -142,23 +142,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     try {
-      const settings = await window.cheapChat.settings.getSummary();
-      let conversations = await window.cheapChat.conversations.list();
+      const settings = await window.atlasChat.settings.getSummary();
+      let conversations = await window.atlasChat.conversations.list();
 
       if (conversations.length === 0) {
-        const createdConversation = await window.cheapChat.conversations.create();
+        const createdConversation = await window.atlasChat.conversations.create();
         conversations = [createdConversation];
       }
 
       const selectedConversationId = conversations[0]?.id ?? null;
       const [detail, models, updateState] = await Promise.all([
-        selectedConversationId ? window.cheapChat.conversations.get(selectedConversationId) : Promise.resolve(null),
-        window.cheapChat.models.list({
+        selectedConversationId ? window.atlasChat.conversations.get(selectedConversationId) : Promise.resolve(null),
+        window.atlasChat.models.list({
           freeOnly: settings.showFreeOnlyByDefault,
           includeArchived: false,
           allowStale: true
         }),
-        window.cheapChat.updates.getState()
+        window.atlasChat.updates.getState()
       ]);
 
       const defaultModelId = chooseDefaultModel(models);
@@ -193,8 +193,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isRefreshingModels: true });
 
     try {
-      const models = await window.cheapChat.models.refresh();
-      const settings = await window.cheapChat.settings.getSummary();
+      const models = await window.atlasChat.models.refresh();
+      const settings = await window.atlasChat.settings.getSummary();
       const state = get();
       const selectedModelId = resolveSelectedModelId(
         state.selectedConversationId,
@@ -235,12 +235,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshConversationList: async () => {
-    const conversations = await window.cheapChat.conversations.list();
+    const conversations = await window.atlasChat.conversations.list();
     set({ conversations });
   },
 
   loadConversation: async (conversationId) => {
-    const detail = await window.cheapChat.conversations.get(conversationId);
+    const detail = await window.atlasChat.conversations.get(conversationId);
     set((state) => ({
       selectedConversationId: conversationId,
       conversationDetails: {
@@ -258,7 +258,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createConversation: async () => {
-    const created = await window.cheapChat.conversations.create();
+    const created = await window.atlasChat.conversations.create();
     await get().refreshConversationList();
     await get().loadConversation(created.id);
   },
@@ -282,7 +282,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isSavingKey: true });
 
     try {
-      const settings = await window.cheapChat.settings.saveOpenRouterKey(secret);
+      const settings = await window.atlasChat.settings.saveOpenRouterKey(secret);
       set({
         isSavingKey: false,
         settings,
@@ -307,7 +307,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isValidatingKey: true });
 
     try {
-      const settings = await window.cheapChat.settings.validateOpenRouterKey();
+      const settings = await window.atlasChat.settings.validateOpenRouterKey();
       set({
         isValidatingKey: false,
         settings,
@@ -329,8 +329,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updatePreferences: async (patch) => {
-    const settings = await window.cheapChat.settings.updatePreferences(patch);
-    const models = await window.cheapChat.models.list({
+    const settings = await window.atlasChat.settings.updatePreferences(patch);
+    const models = await window.atlasChat.models.list({
       freeOnly: settings.showFreeOnlyByDefault,
       includeArchived: false,
       allowStale: true
@@ -353,7 +353,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   checkForUpdates: async ({ manual } = {}) => {
     try {
-      const snapshot = await window.cheapChat.updates.check();
+      const snapshot = await window.atlasChat.updates.check();
 
       set({
         updateState: snapshot,
@@ -368,7 +368,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               : snapshot.status === 'not-available'
                 ? {
                     tone: 'info',
-                    message: `CheapChat ${snapshot.currentVersion} is up to date.`
+                    message: 'Atlas is up to date.'
                   }
                 : null
       });
@@ -385,7 +385,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   performUpdatePrimaryAction: async () => {
-    await window.cheapChat.updates.performPrimaryAction();
+    await window.atlasChat.updates.performPrimaryAction();
   },
 
   setSelectedModel: (conversationId, modelId) => {
@@ -414,7 +414,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const detail = state.conversationDetails[conversationId] ?? (await window.cheapChat.conversations.get(conversationId));
+    const detail = state.conversationDetails[conversationId] ?? (await window.atlasChat.conversations.get(conversationId));
     const modelId =
       resolveSelectedModelId(
         conversationId,
@@ -443,7 +443,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         content: message.content
       }));
 
-    const request = await window.cheapChat.chat.start({
+    const request = await window.atlasChat.chat.start({
       conversationId,
       providerId: 'openrouter' as const,
       modelId,
@@ -526,7 +526,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    await window.cheapChat.chat.abort(draft.requestId);
+    await window.atlasChat.chat.abort(draft.requestId);
   },
 
   handleStreamEvent: async (event) => {
@@ -589,8 +589,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (event.type === 'error') {
-      const detail = await window.cheapChat.conversations.get(conversationId);
-      const conversations = await window.cheapChat.conversations.list();
+      const detail = await window.atlasChat.conversations.get(conversationId);
+      const conversations = await window.atlasChat.conversations.list();
       const shouldShowNotice =
         event.code === 'auth_error' || event.code === 'missing_credential';
 
@@ -628,8 +628,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const detail = await window.cheapChat.conversations.get(conversationId);
-    const conversations = await window.cheapChat.conversations.list();
+    const detail = await window.atlasChat.conversations.get(conversationId);
+    const conversations = await window.atlasChat.conversations.list();
 
     set((state) => {
       const { [conversationId]: _draft, ...restDrafts } = state.draftsByConversation;

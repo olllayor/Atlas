@@ -55,4 +55,4 @@ const api: RendererApi = {
   }
 };
 
-contextBridge.exposeInMainWorld('cheapChat', api);
+contextBridge.exposeInMainWorld('atlasChat', api);

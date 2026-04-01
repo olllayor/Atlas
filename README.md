@@ -1,10 +1,10 @@
-# CheapChat
+# Atlas
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/cheapchat/actions/workflows/ci.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/olllayor/cheapchat)](https://github.com/olllayor/cheapchat/releases/latest)
+[![CI](https://github.com/olllayor/Atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/Atlas/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/olllayor/Atlas)](https://github.com/olllayor/Atlas/releases/latest)
 
-CheapChat is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
+Atlas is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
 
 This repository is open source. The core app scaffold is in place and production builds work. Development startup still has an unresolved Electron runtime issue in this environment, so the project should currently be treated as an early OSS codebase rather than a polished public release.
 
@@ -67,22 +67,22 @@ pnpm build
 
 ## Installing on macOS
 
-CheapChat is distributed as an unsigned DMG via GitHub Releases. macOS will warn you because the app has not been notarized with an Apple Developer account. Here is how to install it.
+Atlas is distributed as an unsigned DMG via GitHub Releases. macOS will warn you because the app has not been notarized with an Apple Developer account. Here is how to install it.
 
 ### Download
 
-1. Go to [Releases](https://github.com/olllayor/cheapchat/releases)
+1. Go to [Releases](https://github.com/olllayor/Atlas/releases)
 2. Download the DMG matching your Mac:
-   - `CheapChat-*-arm64.dmg` — Apple Silicon (M1/M2/M3/M4)
-   - `CheapChat-*-x64.dmg` — Intel Macs
-3. Open the DMG and drag CheapChat to your Applications folder
+   - `Atlas-*-arm64.dmg` — Apple Silicon (M1/M2/M3/M4)
+   - `Atlas-*-x64.dmg` — Intel Macs
+3. Open the DMG and drag Atlas to your Applications folder
 
 ### Bypassing the "unidentified developer" warning
 
-The first time you open CheapChat, macOS will block it with one of these messages:
+The first time you open Atlas, macOS will block it with one of these messages:
 
-- **"CheapChat can't be opened because it is from an unidentified developer"**
-- **"CheapChat is damaged and can't be opened. You should move it to the Trash"**
+- **"Atlas can't be opened because it is from an unidentified developer"**
+- **"Atlas is damaged and can't be opened. You should move it to the Trash"**
 
 Both are expected for unsigned apps. To bypass them:
 
@@ -90,21 +90,21 @@ Both are expected for unsigned apps. To bypass them:
 
 1. Open **System Settings** → **Privacy & Security**
 2. Scroll to the Security section
-3. You should see a message: *"CheapChat was blocked from use because it is not from an identified developer"*
+3. You should see a message: *"Atlas was blocked from use because it is not from an identified developer"*
 4. Click **Open Anyway**
 5. Confirm by clicking **Open** in the dialog
 
 **Method 2 — Terminal (if Method 1 doesn't show the button)**
 
 ```bash
-xattr -d com.apple.quarantine /Applications/CheapChat.app
+xattr -d com.apple.quarantine /Applications/Atlas.app
 ```
 
 This removes the quarantine flag that triggers the warning. You only need to do this once.
 
 **Method 3 — Right-click open**
 
-1. Right-click (or Control-click) on CheapChat.app
+1. Right-click (or Control-click) on Atlas.app
 2. Select **Open** from the context menu
 3. Click **Open** in the confirmation dialog
 
@@ -112,11 +112,11 @@ This method sometimes works for the "unidentified developer" warning but not for
 
 ### Why is this necessary?
 
-Apple requires developers to pay $99/year for a Developer Program membership to sign and notarize apps. CheapChat is an open-source personal project without a paid Apple account. The app is safe — you can review the source code and build it yourself from this repository.
+Apple requires developers to pay $99/year for a Developer Program membership to sign and notarize apps. Atlas is an open-source personal project without a paid Apple account. The app is safe — you can review the source code and build it yourself from this repository.
 
 ## Product scope
 
-CheapChat v1 is intentionally small:
+Atlas v1 is intentionally small:
 
 - single-user desktop app
 - local-only storage
@@ -207,7 +207,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ### Releases
 
-CheapChat uses GitHub Releases for distribution. To cut a new release:
+Atlas uses GitHub Releases for distribution. To cut a new release:
 
 ```bash
 # bump patch (0.1.0 -> 0.1.1)

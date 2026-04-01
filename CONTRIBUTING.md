@@ -1,6 +1,6 @@
 # Contributing
 
-CheapChat is still early-stage. Small, focused contributions are the right fit.
+Atlas is still early-stage. Small, focused contributions are the right fit.
 
 ## Branch workflow
 

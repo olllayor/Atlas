@@ -45,7 +45,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="flex flex-1 items-center justify-center gap-2">
             <span className="h-1.5 w-1.5 rounded-full bg-[#7c8cff]" />
-            <h1 className="text-sm font-semibold tracking-[0.01em] text-white/96">CheapChat</h1>
+            <h1 className="text-sm font-semibold tracking-[0.01em] text-white/96">Atlas</h1>
           </div>
         )}
         

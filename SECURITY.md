@@ -2,7 +2,7 @@
 
 ## Supported status
 
-CheapChat is an early open source project and does not currently offer formal security support windows or coordinated release SLAs.
+Atlas is an early open source project and does not currently offer formal security support windows or coordinated release SLAs.
 
 ## Reporting
 

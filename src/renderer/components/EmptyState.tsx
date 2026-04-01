@@ -42,7 +42,7 @@ export function EmptyState({ onSuggestionClick }: EmptyStateProps) {
           </svg>
         </div>
         <h1 className="text-xl font-semibold bg-gradient-to-r from-gradient-start to-gradient-end bg-clip-text text-transparent">
-          CheapChat
+          Atlas
         </h1>
       </div>
       <p className="text-sm text-text-muted">What can I help with?</p>

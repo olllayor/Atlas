@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { normalizeAttachmentMediaType } from "../../../shared/attachments";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
 import {
   CornerDownLeftIcon,
@@ -278,7 +279,7 @@ export const PromptInputProvider = ({
       ...incoming.map((file) => ({
         filename: file.name,
         id: nanoid(),
-        mediaType: file.type,
+        mediaType: normalizeAttachmentMediaType(file.type, file.name),
         sizeBytes: file.size,
         type: "file" as const,
         url: URL.createObjectURL(file),
@@ -565,6 +566,8 @@ export const PromptInput = ({
         return true;
       }
 
+      const fileMediaType = normalizeAttachmentMediaType(f.type, f.name);
+
       const patterns = accept
         .split(",")
         .map((s) => s.trim())
@@ -574,9 +577,9 @@ export const PromptInput = ({
         if (pattern.endsWith("/*")) {
           // e.g: image/* -> image/
           const prefix = pattern.slice(0, -1);
-          return f.type.startsWith(prefix);
+          return fileMediaType.startsWith(prefix);
         }
-        return f.type === pattern;
+        return fileMediaType === pattern;
       });
     },
     [accept]
@@ -622,7 +625,7 @@ export const PromptInput = ({
           next.push({
             filename: file.name,
             id: nanoid(),
-            mediaType: file.type,
+            mediaType: normalizeAttachmentMediaType(file.type, file.name),
             sizeBytes: file.size,
             type: "file",
             url: URL.createObjectURL(file),

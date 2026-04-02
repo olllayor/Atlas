@@ -14,6 +14,7 @@ import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { prewarmMessageRendering } from './lib/messageRendering';
+import { runViewTransition } from './lib/viewTransitions';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
 
 function LoadingScreen() {
@@ -256,7 +257,7 @@ export default function App() {
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
         activeCredentialProviderId={activeCredentialProviderId}
-        onBack={closeSettings}
+        onBack={() => runViewTransition(() => closeSettings())}
         onNavigate={setSettingsSection}
         onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
@@ -307,13 +308,16 @@ export default function App() {
           onSelect={(id) => void loadConversation(id)}
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
-          onOpenSettings={openSettings}
+          onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
-          onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
         />
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
+        <div
+          className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]"
+          style={{ viewTransitionName: 'app-main-panel' }}
+        >
           <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
           {/* Draggable title bar area for main content - matches sidebar height */}
           <div
@@ -330,7 +334,7 @@ export default function App() {
               hasCredential={hasCredential}
               isLoadingConversation={isLoadingConversation}
               isLoadingOlder={isLoadingOlder}
-              onOpenSettings={openSettings}
+              onOpenSettings={() => runViewTransition(() => openSettings())}
               onSuggestionClick={(prompt) => setComposerValue(prompt)}
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
             />

@@ -64,7 +64,10 @@ export function Sidebar({
       className={`relative flex flex-col border-r border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)_16%),linear-gradient(180deg,#0d1015,#090b0f)] transition-all ${
         collapsed ? 'w-[68px]' : 'w-[284px]'
       }`}
-      style={{ transitionDuration: 'var(--duration-normal)' }}
+      style={{
+        transitionDuration: 'var(--duration-normal)',
+        viewTransitionName: 'app-sidebar',
+      }}
     >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.03),transparent_34%)]" />
 
@@ -74,15 +77,14 @@ export function Sidebar({
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         {!collapsed ? <div className="w-[78px] shrink-0" /> : null}
-        
+
         {/* Centered app name */}
         {!collapsed && (
           <div className="flex flex-1 items-center justify-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#7c8cff]" />
-            <h1 className="text-sm font-semibold tracking-[0.01em] text-white/96">Atlas</h1>
+            <h1 className="text-xl font-bold tracking-[0.06em] text-white/96">Atlas</h1>
           </div>
         )}
-        
+
         {/* Collapse button */}
         <button
           type="button"

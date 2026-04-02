@@ -14,6 +14,7 @@ import { costFromUsage } from 'tokenlens';
 
 import type {
   AppUpdateSnapshot,
+  CodeFontFamily,
   ConversationPage,
   ConversationStats,
   DiagnosticsSnapshot,
@@ -21,8 +22,16 @@ import type {
   SettingsSection,
   SettingsSummary,
   ThemeMode,
+  UiFontFamily,
   UsageProviderSummary,
   UsageSummary,
+} from '../../shared/contracts';
+import {
+  CODE_FONT_SIZE_MAX,
+  CODE_FONT_SIZE_MIN,
+  DEFAULT_SETTINGS_APPEARANCE,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
 } from '../../shared/contracts';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
 
@@ -43,6 +52,10 @@ type SettingsWorkspaceProps = {
   onSaveKey: () => void;
   onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUiFontSizeChange: (value: number) => void;
+  onCodeFontSizeChange: (value: number) => void;
+  onUiFontFamilyChange: (value: UiFontFamily) => void;
+  onCodeFontFamilyChange: (value: CodeFontFamily) => void;
   onToggleFreeModels: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
@@ -92,6 +105,10 @@ export function SettingsWorkspace({
   onSaveKey,
   onValidateKey,
   onThemeModeChange,
+  onUiFontSizeChange,
+  onCodeFontSizeChange,
+  onUiFontFamilyChange,
+  onCodeFontFamilyChange,
   onToggleFreeModels,
   onUpdateAction,
   onRefreshModels,
@@ -195,7 +212,14 @@ export function SettingsWorkspace({
               ) : null}
 
               {activeSection === 'appearance' ? (
-                <AppearancePage settings={settings} onThemeModeChange={onThemeModeChange} />
+                <AppearancePage
+                  settings={settings}
+                  onThemeModeChange={onThemeModeChange}
+                  onUiFontSizeChange={onUiFontSizeChange}
+                  onCodeFontSizeChange={onCodeFontSizeChange}
+                  onUiFontFamilyChange={onUiFontFamilyChange}
+                  onCodeFontFamilyChange={onCodeFontFamilyChange}
+                />
               ) : null}
 
               {activeSection === 'usage' ? <UsagePage usageSummary={usageSummary} /> : null}
@@ -363,11 +387,20 @@ function GeneralPage({
 function AppearancePage({
   settings,
   onThemeModeChange,
+  onUiFontSizeChange,
+  onCodeFontSizeChange,
+  onUiFontFamilyChange,
+  onCodeFontFamilyChange,
 }: {
   settings: SettingsSummary | null;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUiFontSizeChange: (value: number) => void;
+  onCodeFontSizeChange: (value: number) => void;
+  onUiFontFamilyChange: (value: UiFontFamily) => void;
+  onCodeFontFamilyChange: (value: CodeFontFamily) => void;
 }) {
-  const themeMode = settings?.appearance.themeMode ?? 'dark';
+  const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
+  const themeMode = appearance.themeMode;
 
   return (
     <>
@@ -380,14 +413,52 @@ function AppearancePage({
         </SettingsStackedRow>
       </SettingsGroup>
 
+      <SettingsGroup title="Typography">
+        <SettingsRow title="UI font size" description="Font size for the Atlas user interface.">
+          <NumberStepper
+            value={appearance.uiFontSize}
+            min={UI_FONT_SIZE_MIN}
+            max={UI_FONT_SIZE_MAX}
+            defaultValue={DEFAULT_SETTINGS_APPEARANCE.uiFontSize}
+            onChange={onUiFontSizeChange}
+          />
+        </SettingsRow>
+        <SettingsRow title="Code font size" description="Font size for code blocks, tool payloads, and diffs.">
+          <NumberStepper
+            value={appearance.codeFontSize}
+            min={CODE_FONT_SIZE_MIN}
+            max={CODE_FONT_SIZE_MAX}
+            defaultValue={DEFAULT_SETTINGS_APPEARANCE.codeFontSize}
+            onChange={onCodeFontSizeChange}
+          />
+        </SettingsRow>
+        <SettingsRow title="UI font family" description="Override the Atlas interface typeface.">
+          <SelectControl
+            value={appearance.uiFontFamily}
+            onChange={(value) => onUiFontFamilyChange(value as UiFontFamily)}
+            options={[
+              { value: 'dm-sans', label: 'DM Sans' },
+              { value: 'geist', label: 'Geist Sans' },
+              { value: 'system', label: 'System UI' },
+            ]}
+          />
+        </SettingsRow>
+        <SettingsRow title="Code font family" description="Override the typeface used for code surfaces.">
+          <SelectControl
+            value={appearance.codeFontFamily}
+            onChange={(value) => onCodeFontFamilyChange(value as CodeFontFamily)}
+            options={[
+              { value: 'system', label: 'System Mono' },
+              { value: 'geist-mono', label: 'Geist Mono' },
+            ]}
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
       <SettingsGroup title="Coming soon">
         <DisabledRow
           title="Accent controls"
           description="Accent color and contrast tuning will be added after the base theme system settles."
-        />
-        <DisabledRow
-          title="Typography"
-          description="UI and code font controls will land here when broader appearance settings ship."
         />
       </SettingsGroup>
     </>
@@ -524,6 +595,81 @@ function DisabledRow({ title, description }: { title: string; description: strin
       </div>
       <StatusPill tone="muted">Soon</StatusPill>
     </div>
+  );
+}
+
+function NumberStepper({
+  value,
+  min,
+  max,
+  defaultValue,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  defaultValue: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onChange(defaultValue)}
+        disabled={value === defaultValue}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-border-default bg-bg-subtle text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+        title="Reset"
+      >
+        <ReloadIcon className="h-4 w-4" />
+      </button>
+      <div className="inline-flex h-9 items-center overflow-hidden rounded-[12px] border border-border-default bg-bg-subtle">
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(min, value - 1))}
+          disabled={value <= min}
+          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Decrease value"
+        >
+          -
+        </button>
+        <span className="inline-flex h-full min-w-[56px] items-center justify-center border-x border-border-subtle px-3 text-[13px] font-medium tabular-nums text-text-primary">
+          {value}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(Math.min(max, value + 1))}
+          disabled={value >= max}
+          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Increase value"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SelectControl({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="h-9 min-w-[190px] rounded-[10px] border border-border-default bg-bg-subtle px-3 text-[13px] font-medium text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong"
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

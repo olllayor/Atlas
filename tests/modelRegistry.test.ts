@@ -119,6 +119,11 @@ test('ModelRegistry refresh merges provider catalogs and prefers configured prov
   const summary = registry.getSettingsSummary();
   assert.equal(summary.defaultProviderId, 'openrouter');
   assert.equal(summary.providers.find((provider) => provider.providerId === 'openrouter')?.status, 'valid');
+  assert.equal(summary.appearance.themeMode, 'dark');
+  assert.equal(summary.appearance.uiFontSize, 15);
+  assert.equal(summary.appearance.codeFontSize, 13);
+  assert.equal(summary.appearance.uiFontFamily, 'dm-sans');
+  assert.equal(summary.appearance.codeFontFamily, 'system');
 });
 
 test('ModelRegistry validateProviderKey updates provider credential status', async (t) => {

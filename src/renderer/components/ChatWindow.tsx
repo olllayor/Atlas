@@ -69,7 +69,7 @@ function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; mod
   return (
     <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">
       {latencyMs ? (
-        <span className="inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 font-mono text-[10.5px] leading-none tabular-nums text-text-faint/85">
+        <span className="app-code-chip inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 tabular-nums text-text-faint/85">
           {latencyMs}ms
         </span>
       ) : null}
@@ -140,7 +140,7 @@ function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> })
                 Approve running <span className="font-medium text-white/86">{resolvedName}</span>.
               </div>
               {part.input ? (
-                <pre className="mt-2 overflow-x-auto rounded-[12px] border border-white/6 bg-black/20 px-3 py-2 font-mono text-[11px] leading-5 text-white/58">
+                <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-white/6 bg-black/20 px-3 py-2 text-white/58">
                   {JSON.stringify(part.input, null, 2)}
                 </pre>
               ) : null}

@@ -97,10 +97,36 @@ export type ProviderCredentialSummary = {
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
+export const UI_FONT_FAMILY_OPTIONS = ['dm-sans', 'geist', 'system'] as const;
+export type UiFontFamily = (typeof UI_FONT_FAMILY_OPTIONS)[number];
+
+export const CODE_FONT_FAMILY_OPTIONS = ['system', 'geist-mono'] as const;
+export type CodeFontFamily = (typeof CODE_FONT_FAMILY_OPTIONS)[number];
+
+export const UI_FONT_SIZE_MIN = 13;
+export const UI_FONT_SIZE_MAX = 18;
+export const UI_FONT_SIZE_DEFAULT = 15;
+
+export const CODE_FONT_SIZE_MIN = 11;
+export const CODE_FONT_SIZE_MAX = 16;
+export const CODE_FONT_SIZE_DEFAULT = 13;
+
 export type SettingsSection = 'general' | 'appearance' | 'usage';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
+  uiFontSize: number;
+  codeFontSize: number;
+  uiFontFamily: UiFontFamily;
+  codeFontFamily: CodeFontFamily;
+};
+
+export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
+  themeMode: 'dark',
+  uiFontSize: UI_FONT_SIZE_DEFAULT,
+  codeFontSize: CODE_FONT_SIZE_DEFAULT,
+  uiFontFamily: 'dm-sans',
+  codeFontFamily: 'system'
 };
 
 export type SettingsSummary = {
@@ -371,6 +397,10 @@ export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
+    uiFontSize?: number;
+    codeFontSize?: number;
+    uiFontFamily?: UiFontFamily;
+    codeFontFamily?: CodeFontFamily;
   };
 };
 

@@ -254,7 +254,7 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
       </div>
 
       <pre
-        className="m-0 overflow-x-auto px-3 py-3 font-mono text-[12.5px] leading-[1.55] text-text-secondary"
+        className="app-code-text m-0 overflow-x-auto px-3 py-3 text-text-secondary"
         style={{
           background: highlighted?.bg ?? 'linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.008))',
           color: highlighted?.fg ?? 'var(--text-secondary)',

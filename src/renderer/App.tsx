@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, StreamEvent, ThemeMode } from '../shared/contracts';
 import { PROVIDER_METADATA } from '../shared/providerMetadata';
 import { ChatWindow } from './components/ChatWindow';
@@ -165,7 +166,8 @@ export default function App() {
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
   const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
   const activeCredentialProvider = PROVIDER_METADATA[activeCredentialProviderId];
-  const themeMode = settings?.appearance.themeMode ?? 'dark';
+  const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
+  const themeMode = appearance.themeMode;
   const sidebarItems = buildSidebarConversationItems({
     conversations,
     draftsByConversation,
@@ -234,6 +236,14 @@ export default function App() {
     };
   }, [themeMode]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.uiFontFamily = appearance.uiFontFamily;
+    root.dataset.codeFontFamily = appearance.codeFontFamily;
+    root.style.setProperty('--ui-font-size', `${appearance.uiFontSize}px`);
+    root.style.setProperty('--code-font-size', `${appearance.codeFontSize}px`);
+  }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
+
   if (bootstrapping) return <LoadingScreen />;
   if (!initialized || bootstrapError) {
     return <ErrorScreen message={bootstrapError ?? 'Unknown error'} onRetry={() => void bootstrap()} />;
@@ -264,6 +274,10 @@ export default function App() {
         onSaveKey={() => void saveProviderKey()}
         onValidateKey={() => void validateProviderKey()}
         onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
+        onUiFontSizeChange={(value) => void updatePreferences({ appearance: { uiFontSize: value } })}
+        onCodeFontSizeChange={(value) => void updatePreferences({ appearance: { codeFontSize: value } })}
+        onUiFontFamilyChange={(value) => void updatePreferences({ appearance: { uiFontFamily: value } })}
+        onCodeFontFamilyChange={(value) => void updatePreferences({ appearance: { codeFontFamily: value } })}
         onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {

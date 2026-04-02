@@ -56,6 +56,22 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setThemeMode(patch.appearance.themeMode);
       }
 
+      if (typeof patch?.appearance?.uiFontSize === 'number') {
+        settingsRepo.setUiFontSize(patch.appearance.uiFontSize);
+      }
+
+      if (typeof patch?.appearance?.codeFontSize === 'number') {
+        settingsRepo.setCodeFontSize(patch.appearance.codeFontSize);
+      }
+
+      if (patch?.appearance?.uiFontFamily) {
+        settingsRepo.setUiFontFamily(patch.appearance.uiFontFamily);
+      }
+
+      if (patch?.appearance?.codeFontFamily) {
+        settingsRepo.setCodeFontFamily(patch.appearance.codeFontFamily);
+      }
+
       return modelRegistry.getSettingsSummary();
     }
   );

@@ -1,9 +1,11 @@
-import { useEffect, useEffectEvent, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import type { AppUpdateSnapshot, StreamEvent, ThemeMode } from '../shared/contracts';
+import type { AppUpdateSnapshot, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
+import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { PROVIDER_METADATA } from '../shared/providerMetadata';
 import { ChatWindow } from './components/ChatWindow';
+import { CommandPalette } from './components/CommandPalette';
 import { Composer } from './components/Composer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { AppUpdateButton } from './components/AppUpdateButton';
@@ -12,6 +14,15 @@ import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorks
 import { Sidebar } from './components/Sidebar';
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
+import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
+import {
+  isEditableTarget,
+  resolveShortcutCommand,
+  resolveShortcutPlatform,
+  shortcutLabelForCommand,
+  shouldShowConversationJumpHints,
+  shouldShowShortcutHintForCommand,
+} from './lib/keybindings';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { runViewTransition } from './lib/viewTransitions';
@@ -60,8 +71,15 @@ function resolveThemeMode(mode: ThemeMode, prefersDark: boolean) {
 export default function App() {
   const [composerValue, setComposerValue] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showConversationJumpHints, setShowConversationJumpHints] = useState(false);
+  const [showNewChatShortcutHint, setShowNewChatShortcutHint] = useState(false);
+  const [showSidebarToggleShortcutHint, setShowSidebarToggleShortcutHint] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  const shortcutPlatform = useMemo(
+    () => resolveShortcutPlatform(typeof navigator === 'undefined' ? 'MacIntel' : navigator.platform),
+    []
+  );
 
   const {
     bootstrapping,
@@ -69,6 +87,10 @@ export default function App() {
     bootstrapError,
     activeView,
     settingsSection,
+    commandPaletteOpen,
+    modelPickerOpen,
+    composerFocused,
+    composerFocusNonce,
     activeCredentialProviderId,
     keyDraft,
     isSavingKey,
@@ -94,6 +116,10 @@ export default function App() {
     openSettings,
     closeSettings,
     setSettingsSection,
+    setCommandPaletteOpen,
+    setModelPickerOpen,
+    setComposerFocused,
+    requestComposerFocus,
     setActiveCredentialProvider,
     setKeyDraft,
     saveProviderKey,
@@ -103,6 +129,8 @@ export default function App() {
     checkForUpdates,
     performUpdatePrimaryAction,
     setSelectedModel,
+    selectAdjacentConversation,
+    selectConversationByIndex,
     sendMessage,
     abortConversation,
     deleteConversation,
@@ -114,6 +142,10 @@ export default function App() {
       bootstrapError: state.bootstrapError,
       activeView: state.activeView,
       settingsSection: state.settingsSection,
+      commandPaletteOpen: state.commandPaletteOpen,
+      modelPickerOpen: state.modelPickerOpen,
+      composerFocused: state.composerFocused,
+      composerFocusNonce: state.composerFocusNonce,
       activeCredentialProviderId: state.activeCredentialProviderId,
       keyDraft: state.keyDraft,
       isSavingKey: state.isSavingKey,
@@ -139,6 +171,10 @@ export default function App() {
       openSettings: state.openSettings,
       closeSettings: state.closeSettings,
       setSettingsSection: state.setSettingsSection,
+      setCommandPaletteOpen: state.setCommandPaletteOpen,
+      setModelPickerOpen: state.setModelPickerOpen,
+      setComposerFocused: state.setComposerFocused,
+      requestComposerFocus: state.requestComposerFocus,
       setActiveCredentialProvider: state.setActiveCredentialProvider,
       setKeyDraft: state.setKeyDraft,
       saveProviderKey: state.saveProviderKey,
@@ -148,6 +184,8 @@ export default function App() {
       checkForUpdates: state.checkForUpdates,
       performUpdatePrimaryAction: state.performUpdatePrimaryAction,
       setSelectedModel: state.setSelectedModel,
+      selectAdjacentConversation: state.selectAdjacentConversation,
+      selectConversationByIndex: state.selectConversationByIndex,
       sendMessage: state.sendMessage,
       abortConversation: state.abortConversation,
       deleteConversation: state.deleteConversation,
@@ -171,6 +209,83 @@ export default function App() {
     draftsByConversation,
     now: Date.now(),
   });
+  const resolvedKeybindings = useMemo(
+    () => resolveKeybindingRules(settings?.keyboard.keybindings ?? getDefaultKeybindingRules()),
+    [settings?.keyboard.keybindings]
+  );
+  const keybindingContext = useMemo(
+    () => ({
+      'view.chat': activeView === 'chat',
+      'view.settings': activeView === 'settings',
+      'commandPalette.open': commandPaletteOpen,
+      'modelPicker.open': modelPickerOpen,
+      'composer.focus': composerFocused
+    }),
+    [activeView, commandPaletteOpen, composerFocused, modelPickerOpen]
+  );
+  const settingsShortcutLabel = useMemo(
+    () =>
+      shortcutLabelForCommand(resolvedKeybindings, 'settings.open', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+    [keybindingContext, resolvedKeybindings, shortcutPlatform]
+  );
+  const newChatShortcutLabel = useMemo(
+    () =>
+      shortcutLabelForCommand(resolvedKeybindings, 'chat.new', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+    [keybindingContext, resolvedKeybindings, shortcutPlatform]
+  );
+  const sidebarToggleShortcutLabel = useMemo(
+    () =>
+      shortcutLabelForCommand(resolvedKeybindings, 'sidebar.toggle', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+    [keybindingContext, resolvedKeybindings, shortcutPlatform]
+  );
+  const conversationJumpLabelById = useMemo(() => {
+    const next = new Map<string, string>();
+    for (let index = 0; index < Math.min(sidebarItems.length, 9); index += 1) {
+      const item = sidebarItems[index];
+      if (!item) {
+        continue;
+      }
+
+      const label = shortcutLabelForCommand(resolvedKeybindings, `conversation.jump.${index + 1}` as KeybindingCommand, {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      });
+
+      if (label) {
+        next.set(item.id, label);
+      }
+    }
+
+    return next;
+  }, [keybindingContext, resolvedKeybindings, shortcutPlatform, sidebarItems]);
+  const commandPaletteItems = useMemo(
+    () =>
+      APP_COMMAND_DEFINITIONS.filter((definition) => definition.showInCommandPalette !== false).map((definition) => ({
+        command: definition.command,
+        description: definition.description,
+        disabled:
+          (definition.command === 'sidebar.toggle' && activeView !== 'chat') ||
+          (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming')) ||
+          ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
+            !selectedConversationId),
+        section: definition.section,
+        shortcutLabel: shortcutLabelForCommand(resolvedKeybindings, definition.command, {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        }),
+        title: definition.title,
+      })),
+    [activeDraft?.status, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
+  );
 
   const onStreamEvent = useEffectEvent((event: StreamEvent) => {
     void handleStreamEvent(event);
@@ -178,6 +293,79 @@ export default function App() {
 
   const onUpdateState = useEffectEvent((snapshot: AppUpdateSnapshot) => {
     setUpdateState(snapshot);
+  });
+
+  const runCommand = useEffectEvent((command: KeybindingCommand) => {
+    if (command === 'app.commandPalette.toggle') {
+      setModelPickerOpen(false);
+      setCommandPaletteOpen(!commandPaletteOpen);
+      return;
+    }
+
+    if (command === 'chat.new') {
+      setCommandPaletteOpen(false);
+      setModelPickerOpen(false);
+      void createConversation();
+      return;
+    }
+
+    if (command === 'sidebar.toggle') {
+      if (activeView !== 'chat') {
+        return;
+      }
+
+      setCommandPaletteOpen(false);
+      runViewTransition(() => {
+        setSidebarCollapsed((current) => !current);
+      });
+      return;
+    }
+
+    if (command === 'settings.open') {
+      setCommandPaletteOpen(false);
+      runViewTransition(() => {
+        openSettings('general');
+      });
+      return;
+    }
+
+    if (command === 'composer.focus') {
+      requestComposerFocus();
+      return;
+    }
+
+    if (command === 'models.openSwitcher') {
+      if (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming') {
+        return;
+      }
+
+      setCommandPaletteOpen(false);
+      setModelPickerOpen(!modelPickerOpen);
+      return;
+    }
+
+    if (command === 'conversation.previous') {
+      setCommandPaletteOpen(false);
+      setModelPickerOpen(false);
+      void selectAdjacentConversation('previous');
+      return;
+    }
+
+    if (command === 'conversation.next') {
+      setCommandPaletteOpen(false);
+      setModelPickerOpen(false);
+      void selectAdjacentConversation('next');
+      return;
+    }
+
+    if (command.startsWith('conversation.jump.')) {
+      const index = Number(command.split('.').at(-1));
+      if (Number.isFinite(index) && index >= 1) {
+        setCommandPaletteOpen(false);
+        setModelPickerOpen(false);
+        void selectConversationByIndex(index - 1);
+      }
+    }
   });
 
   useEffect(() => {
@@ -234,6 +422,87 @@ export default function App() {
     };
   }, [themeMode]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      setShowConversationJumpHints(
+        shouldShowConversationJumpHints(event, resolvedKeybindings, {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+      setShowNewChatShortcutHint(
+        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+      setShowSidebarToggleShortcutHint(
+        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+
+      const command = resolveShortcutCommand(event, resolvedKeybindings, {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      });
+
+      if (!command) {
+        return;
+      }
+
+      const definition = APP_COMMANDS_BY_ID[command];
+      if (isEditableTarget(event.target) && !definition.allowWhileEditable) {
+        return;
+      }
+
+      event.preventDefault();
+      runCommand(command);
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      setShowConversationJumpHints(
+        shouldShowConversationJumpHints(event, resolvedKeybindings, {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+      setShowNewChatShortcutHint(
+        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+      setShowSidebarToggleShortcutHint(
+        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
+          context: keybindingContext,
+          platform: shortcutPlatform
+        })
+      );
+    };
+
+    const onWindowBlur = () => {
+      setShowConversationJumpHints(false);
+      setShowNewChatShortcutHint(false);
+      setShowSidebarToggleShortcutHint(false);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onWindowBlur);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onWindowBlur);
+    };
+  }, [keybindingContext, resolvedKeybindings, runCommand, shortcutPlatform]);
+
   if (bootstrapping) return <LoadingScreen />;
   if (!initialized || bootstrapError) {
     return <ErrorScreen message={bootstrapError ?? 'Unknown error'} onRetry={() => void bootstrap()} />;
@@ -257,6 +526,7 @@ export default function App() {
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
         activeCredentialProviderId={activeCredentialProviderId}
+        shortcutPlatform={shortcutPlatform}
         onBack={() => runViewTransition(() => closeSettings())}
         onNavigate={setSettingsSection}
         onSelectProvider={setActiveCredentialProvider}
@@ -264,6 +534,7 @@ export default function App() {
         onSaveKey={() => void saveProviderKey()}
         onValidateKey={() => void validateProviderKey()}
         onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
+        onUpdateKeybindings={(rules) => void updatePreferences({ keyboard: { keybindings: rules } })}
         onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {
@@ -295,7 +566,13 @@ export default function App() {
         }}
       />
     ) : (
-      <div className="flex h-screen overflow-hidden bg-bg-base">
+      <div
+        className={`flex h-screen overflow-hidden ${
+          sidebarCollapsed
+            ? 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
+            : 'bg-bg-base'
+        }`}
+      >
         <Sidebar
           items={sidebarItems}
           selectedConversationId={selectedConversationId}
@@ -305,6 +582,13 @@ export default function App() {
           isRefreshingModels={isRefreshingModels}
           conversationStats={conversationStats}
           loadedMessageCount={loadedMetrics.loadedMessageCount}
+          newChatShortcutLabel={newChatShortcutLabel}
+          showNewChatShortcutHint={showNewChatShortcutHint}
+          sidebarToggleShortcutLabel={sidebarToggleShortcutLabel}
+          showSidebarToggleShortcutHint={showSidebarToggleShortcutHint}
+          settingsShortcutLabel={settingsShortcutLabel}
+          showConversationJumpHints={showConversationJumpHints}
+          conversationJumpLabelById={conversationJumpLabelById}
           onSelect={(id) => void loadConversation(id)}
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
@@ -315,13 +599,19 @@ export default function App() {
         />
 
         <div
-          className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]"
+          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden ${
+            sidebarCollapsed
+              ? 'bg-transparent'
+              : 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
+          }`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
+          {!sidebarCollapsed ? (
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
+          ) : null}
           {/* Draggable title bar area for main content - matches sidebar height */}
           <div
-            className="relative h-[52px] shrink-0 border-b border-white/6"
+            className={`relative h-[52px] shrink-0 ${sidebarCollapsed ? '' : 'border-b border-white/6'}`}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
             <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
@@ -345,6 +635,8 @@ export default function App() {
               isStreaming={activeDraft?.status === 'streaming'}
               models={models}
               selectedModelId={selectedModelId}
+              modelPickerOpen={modelPickerOpen}
+              composerFocusNonce={composerFocusNonce}
               detail={activeConversation}
               draft={activeDraft}
               onChange={setComposerValue}
@@ -363,6 +655,8 @@ export default function App() {
               onSelectModel={(modelId) => {
                 if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
               }}
+              onModelPickerOpenChange={setModelPickerOpen}
+              onComposerFocusChange={setComposerFocused}
               onRefreshModels={() => void refreshModels()}
               isRefreshingModels={isRefreshingModels}
             />
@@ -374,6 +668,12 @@ export default function App() {
   return (
     <TooltipProvider>
       <AtlasToaster />
+      <CommandPalette
+        items={commandPaletteItems}
+        onOpenChange={setCommandPaletteOpen}
+        onSelect={runCommand}
+        open={commandPaletteOpen}
+      />
       {content}
     </TooltipProvider>
   );

@@ -15,6 +15,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
@@ -25,6 +26,7 @@ type SidebarSettingsMenuProps = {
   isRefreshingModels: boolean;
   conversationStats: ConversationStats | null;
   loadedMessageCount: number;
+  settingsShortcutLabel?: string | null;
   onOpenSettings: (section?: SettingsSection) => void;
   onRefreshModels: () => void;
   onCheckForUpdates: () => void;
@@ -73,6 +75,7 @@ export function SidebarSettingsMenu({
   isRefreshingModels,
   conversationStats,
   loadedMessageCount,
+  settingsShortcutLabel,
   onOpenSettings,
   onRefreshModels,
   onCheckForUpdates,
@@ -128,7 +131,13 @@ export function SidebarSettingsMenu({
         >
           <GearIcon className="h-4 w-4 text-white/46" />
           <span>Settings</span>
-          <ChevronRightIcon className="ml-auto h-4 w-4 text-white/30" />
+          {settingsShortcutLabel ? (
+            <DropdownMenuShortcut className="text-[10px] tracking-[0.08em] text-white/36">
+              {settingsShortcutLabel}
+            </DropdownMenuShortcut>
+          ) : (
+            <ChevronRightIcon className="ml-auto h-4 w-4 text-white/30" />
+          )}
         </DropdownMenuItem>
 
         <DropdownMenuItem

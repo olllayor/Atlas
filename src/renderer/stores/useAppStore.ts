@@ -8,6 +8,7 @@ import type {
   ConversationSummary,
   ConversationStats,
   DiagnosticsSnapshot,
+  KeybindingRule,
   ModelSummary,
   ProviderCredentialSummary,
   ProviderId,
@@ -61,6 +62,10 @@ type AppState = {
   bootstrapError: string | null;
   activeView: AppView;
   settingsSection: SettingsSection;
+  commandPaletteOpen: boolean;
+  modelPickerOpen: boolean;
+  composerFocused: boolean;
+  composerFocusNonce: number;
   activeCredentialProviderId: ProviderId;
   keyDraft: string;
   isSavingKey: boolean;
@@ -91,6 +96,10 @@ type AppState = {
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
   setSettingsSection: (section: SettingsSection) => void;
+  setCommandPaletteOpen: (open: boolean) => void;
+  setModelPickerOpen: (open: boolean) => void;
+  setComposerFocused: (focused: boolean) => void;
+  requestComposerFocus: () => void;
   setActiveCredentialProvider: (providerId: ProviderId) => void;
   setKeyDraft: (value: string) => void;
   saveProviderKey: () => Promise<void>;
@@ -100,6 +109,8 @@ type AppState = {
   checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
   performUpdatePrimaryAction: () => Promise<void>;
   setSelectedModel: (conversationId: string, modelId: string) => void;
+  selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
+  selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: { text: string; files: ChatInputFilePart[] }) => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
@@ -188,6 +199,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   bootstrapError: null,
   activeView: 'chat',
   settingsSection: 'general',
+  commandPaletteOpen: false,
+  modelPickerOpen: false,
+  composerFocused: false,
+  composerFocusNonce: 0,
   activeCredentialProviderId: 'openrouter',
   keyDraft: '',
   isSavingKey: false,
@@ -475,12 +490,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   createConversation: async () => {
     const created = await window.atlasChat.conversations.create();
     await get().refreshConversationList();
+    set({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      modelPickerOpen: false
+    });
     await get().loadConversation(created.id);
   },
 
-  openSettings: (section = 'general') => set({ activeView: 'settings', settingsSection: section }),
-  closeSettings: () => set({ activeView: 'chat' }),
+  openSettings: (section = 'general') =>
+    set({
+      activeView: 'settings',
+      settingsSection: section,
+      commandPaletteOpen: false,
+      modelPickerOpen: false
+    }),
+  closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
+  setComposerFocused: (focused) => set({ composerFocused: focused }),
+  requestComposerFocus: () =>
+    set((state) => ({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      composerFocusNonce: state.composerFocusNonce + 1
+    })),
   setActiveCredentialProvider: (providerId) => set({ activeCredentialProviderId: providerId, keyDraft: '' }),
   setKeyDraft: (value) => set({ keyDraft: value }),
 
@@ -624,6 +659,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         [conversationId]: modelId
       }
     }));
+  },
+
+  selectAdjacentConversation: async (direction) => {
+    const state = get();
+    const currentIndex = state.conversations.findIndex(
+      (conversation) => conversation.id === state.selectedConversationId
+    );
+
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const nextConversation =
+      direction === 'previous' ? state.conversations[currentIndex - 1] : state.conversations[currentIndex + 1];
+
+    if (!nextConversation) {
+      return;
+    }
+
+    set({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      modelPickerOpen: false
+    });
+    await get().loadConversation(nextConversation.id);
+  },
+
+  selectConversationByIndex: async (index) => {
+    const conversation = get().conversations[index];
+    if (!conversation) {
+      return;
+    }
+
+    set({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      modelPickerOpen: false
+    });
+    await get().loadConversation(conversation.id);
   },
 
   sendMessage: async (message) => {

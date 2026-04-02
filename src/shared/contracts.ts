@@ -1,5 +1,15 @@
 export type ProviderId = 'openrouter' | 'glm' | 'openai' | 'gemini';
 
+export type {
+  KeybindingCommand,
+  KeybindingContext,
+  KeybindingRule,
+  KeybindingShortcut,
+  KeybindingWhenIdentifier,
+  KeybindingWhenNode,
+  ResolvedKeybindingRule,
+} from './keybindings';
+
 export type CredentialStatus = 'missing' | 'valid' | 'invalid' | 'unknown';
 
 export type MessageRole = 'system' | 'user' | 'assistant';
@@ -97,16 +107,21 @@ export type ProviderCredentialSummary = {
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-export type SettingsSection = 'general' | 'appearance' | 'usage';
+export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
+};
+
+export type SettingsKeyboardSummary = {
+  keybindings: import('./keybindings').KeybindingRule[];
 };
 
 export type SettingsSummary = {
   providers: ProviderCredentialSummary[];
   defaultProviderId: ProviderId | null;
   appearance: SettingsAppearanceSummary;
+  keyboard: SettingsKeyboardSummary;
   showFreeOnlyByDefault: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
@@ -371,6 +386,9 @@ export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
+  };
+  keyboard?: {
+    keybindings?: import('./keybindings').KeybindingRule[];
   };
 };
 

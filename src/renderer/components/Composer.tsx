@@ -51,12 +51,16 @@ type ComposerProps = {
   isStreaming: boolean;
   models: ModelSummary[];
   selectedModelId: string | null;
+  modelPickerOpen: boolean;
+  composerFocusNonce: number;
   detail: ConversationDetail | null;
   draft: DraftStateLike | null;
   onChange: (value: string) => void;
   onSend: (message: PromptInputMessage) => Promise<void> | void;
   onAbort: () => void;
   onSelectModel: (modelId: string) => void;
+  onModelPickerOpenChange: (open: boolean) => void;
+  onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
   isRefreshingModels?: boolean;
 };
@@ -257,16 +261,19 @@ export function Composer({
   isStreaming,
   models,
   selectedModelId,
+  modelPickerOpen,
+  composerFocusNonce,
   detail,
   draft,
   onChange,
   onSend,
   onAbort,
   onSelectModel,
+  onModelPickerOpenChange,
+  onComposerFocusChange,
   onRefreshModels,
   isRefreshingModels,
 }: ComposerProps) {
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const selectedModel = useMemo(
@@ -280,6 +287,10 @@ export function Composer({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [value]);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, [composerFocusNonce]);
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text.trim());
@@ -366,6 +377,8 @@ export function Composer({
               ref={textareaRef}
               value={value}
               onChange={(e) => onChange(e.target.value)}
+              onBlur={() => onComposerFocusChange(false)}
+              onFocus={() => onComposerFocusChange(true)}
               disabled={disabled}
               rows={1}
               placeholder="Message..."
@@ -385,10 +398,10 @@ export function Composer({
             models={models}
             onAbort={onAbort}
             onAttachmentErrorClear={() => setAttachmentError(null)}
-            onModelPickerOpenChange={setModelPickerOpen}
+            onModelPickerOpenChange={onModelPickerOpenChange}
             onRefreshModels={onRefreshModels}
             onSelectModel={(modelId) => {
-              setModelPickerOpen(false);
+              onModelPickerOpenChange(false);
               onSelectModel(modelId);
             }}
             selectedModel={selectedModel}

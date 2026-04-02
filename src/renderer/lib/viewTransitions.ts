@@ -24,7 +24,11 @@ export function runViewTransition(update: () => void) {
     return;
   }
 
-  viewTransitionDocument.startViewTransition(() => {
+  const transition = viewTransitionDocument.startViewTransition(() => {
     flushSync(update);
+  });
+
+  void transition.finished.catch(() => {
+    // Ignore transition failures and preserve the state update.
   });
 }

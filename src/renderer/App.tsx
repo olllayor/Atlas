@@ -10,6 +10,7 @@ import { AppUpdateButton } from './components/AppUpdateButton';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { Sidebar } from './components/Sidebar';
+import { AtlasToaster } from './components/ui/sonner';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
@@ -82,7 +83,6 @@ export default function App() {
     draftsByConversation,
     conversationStats,
     diagnostics,
-    notice,
     updateState,
     bootstrap,
     refreshModels,
@@ -105,7 +105,6 @@ export default function App() {
     abortConversation,
     deleteConversation,
     handleStreamEvent,
-    dismissNotice,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -129,7 +128,6 @@ export default function App() {
       selectedConversationId: state.selectedConversationId,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
       draftsByConversation: state.draftsByConversation,
-      notice: state.notice,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
       refreshModels: state.refreshModels,
@@ -152,7 +150,6 @@ export default function App() {
       abortConversation: state.abortConversation,
       deleteConversation: state.deleteConversation,
       handleStreamEvent: state.handleStreamEvent,
-      dismissNotice: state.dismissNotice,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -240,21 +237,18 @@ export default function App() {
     return <ErrorScreen message={bootstrapError ?? 'Unknown error'} onRetry={() => void bootstrap()} />;
   }
 
-  if (activeView === 'settings') {
-    const usageSummary = buildUsageSummary({
-      settings,
-      conversationPages: conversationDetails,
-      conversationStats,
-      diagnostics,
-      rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
-    });
-
-    return (
+  const content =
+    activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
         updateState={updateState}
-        usageSummary={usageSummary}
-        notice={notice}
+        usageSummary={buildUsageSummary({
+          settings,
+          conversationPages: conversationDetails,
+          conversationStats,
+          diagnostics,
+          rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
+        })}
         keyDraft={keyDraft}
         isSaving={isSavingKey}
         isValidating={isValidatingKey}
@@ -263,7 +257,6 @@ export default function App() {
         activeCredentialProviderId={activeCredentialProviderId}
         onBack={closeSettings}
         onNavigate={setSettingsSection}
-        onDismissNotice={dismissNotice}
         onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
         onSaveKey={() => void saveProviderKey()}
@@ -280,11 +273,7 @@ export default function App() {
         }}
         onRefreshModels={() => void refreshModels()}
       />
-    );
-  }
-
-  if (showOnboarding && !hasCredential) {
-    return (
+    ) : showOnboarding && !hasCredential ? (
       <OnboardingFlow
         hasCredential={hasCredential}
         providerId={activeCredentialProviderId}
@@ -303,95 +292,81 @@ export default function App() {
           setOnboardingDone(true);
         }}
       />
+    ) : (
+      <div className="flex h-screen overflow-hidden bg-bg-base">
+        <Sidebar
+          items={sidebarItems}
+          selectedConversationId={selectedConversationId}
+          collapsed={sidebarCollapsed}
+          settings={settings}
+          updateState={updateState}
+          isRefreshingModels={isRefreshingModels}
+          conversationStats={conversationStats}
+          loadedMessageCount={loadedMetrics.loadedMessageCount}
+          onSelect={(id) => void loadConversation(id)}
+          onCreate={() => void createConversation()}
+          onDelete={(id) => void deleteConversation(id)}
+          onOpenSettings={openSettings}
+          onRefreshModels={() => void refreshModels()}
+          onCheckForUpdates={() => void checkForUpdates({ manual: true })}
+          onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
+          {/* Draggable title bar area for main content - matches sidebar height */}
+          <div
+            className="relative h-[52px] shrink-0 border-b border-white/6"
+            style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+          >
+            <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
+          </div>
+
+          <RendererErrorBoundary resetKey={selectedConversationId}>
+            <ChatWindow
+              detail={activeConversation}
+              draft={activeDraft}
+              hasCredential={hasCredential}
+              isLoadingConversation={isLoadingConversation}
+              isLoadingOlder={isLoadingOlder}
+              onOpenSettings={openSettings}
+              onSuggestionClick={(prompt) => setComposerValue(prompt)}
+              onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
+            />
+
+            <Composer
+              value={composerValue}
+              disabled={!selectedConversationId}
+              isStreaming={activeDraft?.status === 'streaming'}
+              models={models}
+              selectedModelId={selectedModelId}
+              detail={activeConversation}
+              draft={activeDraft}
+              onChange={setComposerValue}
+              onSend={() => {
+                const payload = composerValue;
+                void sendMessage(payload)
+                  .then(() => setComposerValue(''))
+                  .catch(() => setComposerValue(payload));
+              }}
+              onAbort={() => {
+                if (selectedConversationId) void abortConversation(selectedConversationId);
+              }}
+              onSelectModel={(modelId) => {
+                if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
+              }}
+              onRefreshModels={() => void refreshModels()}
+              isRefreshingModels={isRefreshingModels}
+            />
+          </RendererErrorBoundary>
+        </div>
+      </div>
     );
-  }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base">
-      <Sidebar
-        items={sidebarItems}
-        selectedConversationId={selectedConversationId}
-        collapsed={sidebarCollapsed}
-        settings={settings}
-        updateState={updateState}
-        isRefreshingModels={isRefreshingModels}
-        conversationStats={conversationStats}
-        loadedMessageCount={loadedMetrics.loadedMessageCount}
-        onSelect={(id) => void loadConversation(id)}
-        onCreate={() => void createConversation()}
-        onDelete={(id) => void deleteConversation(id)}
-        onOpenSettings={openSettings}
-        onRefreshModels={() => void refreshModels()}
-        onCheckForUpdates={() => void checkForUpdates({ manual: true })}
-        onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]">
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
-        {/* Draggable title bar area for main content - matches sidebar height */}
-        <div
-          className="relative h-[52px] shrink-0 border-b border-white/6"
-          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        >
-          <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
-        </div>
-
-        {notice && (
-          <div
-            className={`flex items-center justify-between border-b px-4 py-2 text-sm ${
-              notice.tone === 'error'
-                ? 'border-error-border bg-error-bg text-error-text'
-                : notice.tone === 'success'
-                  ? 'border-success-border bg-success-bg text-success-text'
-                  : 'border-warning-border bg-warning-bg text-warning-text'
-            }`}
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <span>{notice.message}</span>
-            <button onClick={dismissNotice} className="ml-3 text-text-muted hover:text-text-primary">
-              ✕
-            </button>
-          </div>
-        )}
-
-        <RendererErrorBoundary resetKey={selectedConversationId}>
-          <ChatWindow
-            detail={activeConversation}
-            draft={activeDraft}
-            hasCredential={hasCredential}
-            isLoadingConversation={isLoadingConversation}
-            isLoadingOlder={isLoadingOlder}
-            onOpenSettings={openSettings}
-            onSuggestionClick={(prompt) => setComposerValue(prompt)}
-            onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
-          />
-
-          <Composer
-            value={composerValue}
-            disabled={!selectedConversationId}
-            isStreaming={activeDraft?.status === 'streaming'}
-            models={models}
-            selectedModelId={selectedModelId}
-            detail={activeConversation}
-            draft={activeDraft}
-            onChange={setComposerValue}
-            onSend={() => {
-              const payload = composerValue;
-              void sendMessage(payload)
-                .then(() => setComposerValue(''))
-                .catch(() => setComposerValue(payload));
-            }}
-            onAbort={() => {
-              if (selectedConversationId) void abortConversation(selectedConversationId);
-            }}
-            onSelectModel={(modelId) => {
-              if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
-            }}
-            onRefreshModels={() => void refreshModels()}
-            isRefreshingModels={isRefreshingModels}
-          />
-        </RendererErrorBoundary>
-      </div>
-    </div>
+    <>
+      <AtlasToaster />
+      {content}
+    </>
   );
 }

@@ -24,6 +24,7 @@ import {
   mergeConversationPage,
   reconcileConversationCache
 } from './conversationCache';
+import { notify } from '../lib/notify';
 
 type DraftState = {
   requestId: string;
@@ -37,11 +38,6 @@ type DraftState = {
   reasoningTokens?: number;
   latencyMs?: number;
   startedAt: string;
-};
-
-type Notice = {
-  tone: 'error' | 'success' | 'info';
-  message: string;
 };
 
 type RefreshModelsOptions = {
@@ -74,7 +70,6 @@ type AppState = {
   selectedModelIdByConversation: Record<string, string>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
-  notice: Notice | null;
   updateState: AppUpdateSnapshot;
   bootstrap: () => Promise<void>;
   refreshModels: (options?: RefreshModelsOptions) => Promise<void>;
@@ -100,7 +95,6 @@ type AppState = {
   abortConversation: (conversationId: string) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => Promise<void>;
-  dismissNotice: () => void;
 };
 
 function getErrorMessage(error: unknown) {
@@ -203,7 +197,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedModelIdByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
-  notice: null,
   updateState: { status: 'idle' },
 
   bootstrap: async () => {
@@ -299,23 +292,23 @@ export const useAppStore = create<AppState>((set, get) => ({
                 [current.selectedConversationId]: selectedModelId
               }
             : current.selectedModelIdByConversation,
-        notice: silent
-          ? current.notice
-          : {
-              tone: 'success',
-              message: 'Model catalog refreshed.'
-            }
       }));
+
+      if (!silent) {
+        notify({
+          tone: 'success',
+          title: 'Model catalog refreshed.'
+        });
+      }
     } catch (error) {
-      set((current) => ({
-        isRefreshingModels: false,
-        notice: silent
-          ? current.notice
-          : {
-              tone: 'error',
-              message: getErrorMessage(error)
-            }
-      }));
+      set({ isRefreshingModels: false });
+
+      if (!silent) {
+        notify({
+          tone: 'error',
+          title: getErrorMessage(error)
+        });
+      }
     }
   },
 
@@ -392,12 +385,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set((current) => ({
         isLoadingConversationId:
-          current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
-        notice: {
-          tone: 'error',
-          message: getErrorMessage(error)
-        }
+          current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
+
+      notify({
+        tone: 'error',
+        title: getErrorMessage(error)
+      });
     }
   },
 
@@ -459,12 +453,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingOlderByConversation: {
           ...current.isLoadingOlderByConversation,
           [conversationId]: false
-        },
-        notice: {
-          tone: 'error',
-          message: getErrorMessage(error)
         }
       }));
+
+      notify({
+        tone: 'error',
+        title: getErrorMessage(error)
+      });
     }
   },
 
@@ -486,11 +481,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const secret = state.keyDraft.trim();
     const metadata = PROVIDER_METADATA[providerId];
     if (!secret) {
-      set({
-        notice: {
-          tone: 'error',
-          message: `Enter a ${metadata.label} API key before saving.`
-        }
+      notify({
+        tone: 'error',
+        title: `Enter a ${metadata.label} API key before saving.`
       });
       return;
     }
@@ -503,19 +496,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         isSavingKey: false,
         settings,
         keyDraft: '',
-        activeCredentialProviderId: providerId,
-        notice: {
-          tone: 'success',
-          message: `${metadata.label} key saved to the OS keychain.`
-        }
+        activeCredentialProviderId: providerId
+      });
+
+      notify({
+        tone: 'success',
+        title: `${metadata.label} key saved to the OS keychain.`
       });
     } catch (error) {
       set({
-        isSavingKey: false,
-        notice: {
-          tone: 'error',
-          message: getErrorMessage(error)
-        }
+        isSavingKey: false
+      });
+
+      notify({
+        tone: 'error',
+        title: getErrorMessage(error)
       });
     }
   },
@@ -533,19 +528,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         isValidatingKey: false,
         settings,
         keyDraft: '',
-        notice: {
-          tone: 'success',
-          message: `${metadata.label} key validated successfully.`
-        }
+      });
+
+      notify({
+        tone: 'success',
+        title: `${metadata.label} key validated successfully.`
       });
       await get().refreshModels({ silent: true });
     } catch (error) {
       set({
-        isValidatingKey: false,
-        notice: {
-          tone: 'error',
-          message: getErrorMessage(error)
-        }
+        isValidatingKey: false
+      });
+
+      notify({
+        tone: 'error',
+        title: getErrorMessage(error)
       });
     }
   },
@@ -582,32 +579,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const snapshot = await window.atlasChat.updates.check();
 
-      set({
-        updateState: snapshot,
-        notice:
-          !manual
-            ? null
-            : snapshot.status === 'error'
-              ? {
-                  tone: 'error',
-                  message: snapshot.message
-                }
-              : snapshot.status === 'not-available'
-                ? {
-                    tone: 'info',
-                    message: 'Atlas is up to date.'
-                  }
-                : null
-      });
+      set({ updateState: snapshot });
+
+      if (manual && snapshot.status === 'error') {
+        notify({
+          tone: 'error',
+          title: snapshot.message
+        });
+      }
+
+      if (manual && snapshot.status === 'not-available') {
+        notify({
+          tone: 'info',
+          title: 'Atlas is up to date.'
+        });
+      }
     } catch (error) {
-      set({
-        notice: manual
-          ? {
-              tone: 'error',
-              message: getErrorMessage(error)
-            }
-          : null
-      });
+      if (manual) {
+        notify({
+          tone: 'error',
+          title: getErrorMessage(error)
+        });
+      }
     }
   },
 
@@ -653,14 +646,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           [conversationId]: detail
         },
         state.models
-      ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
+    ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
 
     if (!modelId) {
-      set({
-        notice: {
-          tone: 'error',
-          message: 'Refresh the model catalog and select a model before sending.'
-        }
+      notify({
+        tone: 'error',
+        title: 'Refresh the model catalog and select a model before sending.'
       });
       return;
     }
@@ -669,22 +660,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
 
     if (!selectedModel || !providerId) {
-      set({
-        notice: {
-          tone: 'error',
-          message: 'Select a valid model before sending.'
-        }
+      notify({
+        tone: 'error',
+        title: 'Select a valid model before sending.'
       });
       return;
     }
 
     const credential = findCredential(state.settings, providerId);
     if (!credential?.hasSecret) {
+      notify({
+        tone: 'error',
+        title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.`
+      });
+
       set({
-        notice: {
-          tone: 'error',
-          message: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.`
-        },
         activeCredentialProviderId: providerId
       });
       return;
@@ -939,15 +929,16 @@ export const useAppStore = create<AppState>((set, get) => ({
               status: event.code === 'aborted' ? 'aborted' : 'error',
               errorMessage: event.message
             }
-          },
-          notice: shouldShowNotice
-            ? {
-                tone: 'error',
-                message: event.message
-              }
-            : null
+          }
         };
       });
+
+      if (shouldShowNotice) {
+        notify({
+          tone: 'error',
+          title: event.message
+        });
+      }
       return;
     }
 
@@ -976,7 +967,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  dismissNotice: () => set({ notice: null })
 }));
 
 export function selectLoadedConversationMetrics(state: AppState) {

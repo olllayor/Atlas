@@ -30,7 +30,6 @@ type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
   usageSummary: UsageSummary;
-  notice: { tone: 'error' | 'success' | 'info'; message: string } | null;
   activeCredentialProviderId: ProviderId;
   keyDraft: string;
   isSaving: boolean;
@@ -39,7 +38,6 @@ type SettingsWorkspaceProps = {
   activeSection: SettingsSection;
   onBack: () => void;
   onNavigate: (section: SettingsSection) => void;
-  onDismissNotice: () => void;
   onSelectProvider: (providerId: ProviderId) => void;
   onKeyDraftChange: (value: string) => void;
   onSaveKey: () => void;
@@ -81,7 +79,6 @@ export function SettingsWorkspace({
   settings,
   updateState,
   usageSummary,
-  notice,
   activeCredentialProviderId,
   keyDraft,
   isSaving,
@@ -90,7 +87,6 @@ export function SettingsWorkspace({
   activeSection,
   onBack,
   onNavigate,
-  onDismissNotice,
   onSelectProvider,
   onKeyDraftChange,
   onSaveKey,
@@ -171,23 +167,6 @@ export function SettingsWorkspace({
           className="relative h-[52px] shrink-0 border-b border-border-subtle"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         />
-
-        {notice ? (
-          <div
-            className={`relative flex items-center justify-between border-b px-4 py-2 text-sm ${
-              notice.tone === 'error'
-                ? 'border-error-border bg-error-bg text-error-text'
-                : notice.tone === 'success'
-                  ? 'border-success-border bg-success-bg text-success-text'
-                  : 'border-warning-border bg-warning-bg text-warning-text'
-            }`}
-          >
-            <span>{notice.message}</span>
-            <button onClick={onDismissNotice} className="ml-3 text-current opacity-70 transition hover:opacity-100">
-              ✕
-            </button>
-          </div>
-        ) : null}
 
         <div className="relative h-[calc(100vh-52px)] overflow-y-auto">
           <div className="mx-auto w-full max-w-[760px] px-10 pb-16 pt-8">

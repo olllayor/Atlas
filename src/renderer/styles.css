@@ -405,6 +405,43 @@ select {
 }
 
 /* ============================================
+   View transitions
+   ============================================ */
+
+::view-transition-group(app-sidebar),
+::view-transition-group(app-main-panel) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(app-sidebar),
+::view-transition-new(app-sidebar),
+::view-transition-old(app-main-panel),
+::view-transition-new(app-main-panel) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(app-main-panel) {
+  opacity: 1;
+}
+
+::view-transition-new(app-main-panel) {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(app-sidebar),
+  ::view-transition-group(app-main-panel),
+  ::view-transition-old(app-sidebar),
+  ::view-transition-new(app-sidebar),
+  ::view-transition-old(app-main-panel),
+  ::view-transition-new(app-main-panel) {
+    animation-duration: 0ms;
+  }
+}
+
+/* ============================================
    Utility classes for common patterns
    ============================================ */
 

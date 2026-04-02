@@ -56,6 +56,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setThemeMode(patch.appearance.themeMode);
       }
 
+      if (patch?.keyboard?.keybindings) {
+        settingsRepo.setKeybindings(patch.keyboard.keybindings);
+      }
+
       return modelRegistry.getSettingsSummary();
     }
   );

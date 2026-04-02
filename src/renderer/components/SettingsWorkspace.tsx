@@ -9,7 +9,8 @@ import {
   TimerIcon,
   UpdateIcon,
 } from '@radix-ui/react-icons';
-import type { CSSProperties, PropsWithChildren } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PropsWithChildren } from 'react';
+import { useMemo, useState } from 'react';
 import { costFromUsage } from 'tokenlens';
 
 import type {
@@ -17,6 +18,8 @@ import type {
   ConversationPage,
   ConversationStats,
   DiagnosticsSnapshot,
+  KeybindingCommand,
+  KeybindingRule,
   ProviderId,
   SettingsSection,
   SettingsSummary,
@@ -24,7 +27,16 @@ import type {
   UsageProviderSummary,
   UsageSummary,
 } from '../../shared/contracts';
+import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
+import type { ShortcutPlatform } from '../lib/keybindings';
+import {
+  createShortcutFromKeyboardEvent,
+  formatShortcutLabel,
+  resolveKeybindingConflicts,
+  serializeShortcut,
+} from '../lib/keybindings';
 
 type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
@@ -36,6 +48,7 @@ type SettingsWorkspaceProps = {
   isValidating: boolean;
   isRefreshingModels: boolean;
   activeSection: SettingsSection;
+  shortcutPlatform: ShortcutPlatform;
   onBack: () => void;
   onNavigate: (section: SettingsSection) => void;
   onSelectProvider: (providerId: ProviderId) => void;
@@ -43,6 +56,7 @@ type SettingsWorkspaceProps = {
   onSaveKey: () => void;
   onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
@@ -62,6 +76,7 @@ type FutureNavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
+  { key: 'keyboard', label: 'Keyboard', icon: GearIcon },
   { key: 'usage', label: 'Usage', icon: TimerIcon },
 ];
 
@@ -85,6 +100,7 @@ export function SettingsWorkspace({
   isValidating,
   isRefreshingModels,
   activeSection,
+  shortcutPlatform,
   onBack,
   onNavigate,
   onSelectProvider,
@@ -92,6 +108,7 @@ export function SettingsWorkspace({
   onSaveKey,
   onValidateKey,
   onThemeModeChange,
+  onUpdateKeybindings,
   onToggleFreeModels,
   onUpdateAction,
   onRefreshModels,
@@ -198,6 +215,14 @@ export function SettingsWorkspace({
                 <AppearancePage settings={settings} onThemeModeChange={onThemeModeChange} />
               ) : null}
 
+              {activeSection === 'keyboard' ? (
+                <KeyboardPage
+                  keybindings={settings?.keyboard.keybindings ?? getDefaultKeybindingRules()}
+                  platform={shortcutPlatform}
+                  onUpdateKeybindings={onUpdateKeybindings}
+                />
+              ) : null}
+
               {activeSection === 'usage' ? <UsagePage usageSummary={usageSummary} /> : null}
             </div>
           </div>
@@ -210,6 +235,10 @@ export function SettingsWorkspace({
 function sectionTitle(section: SettingsSection) {
   if (section === 'appearance') {
     return 'Appearance';
+  }
+
+  if (section === 'keyboard') {
+    return 'Keyboard';
   }
 
   if (section === 'usage') {
@@ -390,6 +419,133 @@ function AppearancePage({
           description="UI and code font controls will land here when broader appearance settings ship."
         />
       </SettingsGroup>
+    </>
+  );
+}
+
+function KeyboardPage({
+  keybindings,
+  platform,
+  onUpdateKeybindings,
+}: {
+  keybindings: KeybindingRule[];
+  platform: ShortcutPlatform;
+  onUpdateKeybindings: (rules: KeybindingRule[]) => void;
+}) {
+  const [capturingCommand, setCapturingCommand] = useState<KeybindingCommand | null>(null);
+  const groupedCommands = useMemo(() => {
+    const next = new Map<string, typeof APP_COMMAND_DEFINITIONS>();
+
+    for (const definition of APP_COMMAND_DEFINITIONS) {
+      if (!next.has(definition.section)) {
+        next.set(definition.section, []);
+      }
+
+      next.get(definition.section)!.push(definition);
+    }
+
+    return Array.from(next.entries());
+  }, []);
+
+  const updateCommandShortcut = (command: KeybindingCommand, shortcut: KeybindingRule['shortcut']) => {
+    onUpdateKeybindings(
+      keybindings.map((rule) => (rule.command === command ? { ...rule, shortcut } : rule)),
+    );
+  };
+
+  const resetCommandShortcut = (command: KeybindingCommand) => {
+    const defaultRule = getDefaultKeybindingRules().find((rule) => rule.command === command);
+    if (!defaultRule) {
+      return;
+    }
+
+    updateCommandShortcut(command, defaultRule.shortcut);
+  };
+
+  const resetAllShortcuts = () => {
+    onUpdateKeybindings(getDefaultKeybindingRules());
+  };
+
+  const handleCapture = (command: KeybindingCommand) => (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === 'Escape') {
+      setCapturingCommand(null);
+      return;
+    }
+
+    const shortcut = createShortcutFromKeyboardEvent(event.nativeEvent, platform);
+    if (!shortcut) {
+      return;
+    }
+
+    updateCommandShortcut(command, shortcut);
+    setCapturingCommand(null);
+  };
+
+  return (
+    <>
+      <SettingsGroup title="Keyboard shortcuts">
+        <SettingsRow
+          title="Customize Atlas shortcuts"
+          description="Shortcuts are stored locally on this device. Duplicate bindings are allowed and the last matching rule wins."
+        >
+          <ActionButton onClick={resetAllShortcuts}>Reset all to defaults</ActionButton>
+        </SettingsRow>
+      </SettingsGroup>
+
+      {groupedCommands.map(([section, definitions]) => (
+        <SettingsGroup key={section} title={section}>
+          {definitions.map((definition) => {
+            const rule = keybindings.find((entry) => entry.command === definition.command);
+            const shortcut = rule?.shortcut ?? getDefaultKeybindingRules().find((entry) => entry.command === definition.command)?.shortcut;
+            const conflicts = resolveKeybindingConflicts(keybindings, definition.command);
+            const shortcutLabel = shortcut ? formatShortcutLabel(shortcut, platform) : 'Not set';
+            const isCapturing = capturingCommand === definition.command;
+
+            return (
+              <div
+                className="border-t border-border-subtle px-4 py-4 first:border-t-0"
+                key={definition.command}
+              >
+                <div className="flex items-start justify-between gap-5">
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-medium text-text-primary">{definition.title}</div>
+                    <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{definition.description}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCapturingCommand((current) => (current === definition.command ? null : definition.command))
+                      }
+                      onKeyDown={isCapturing ? handleCapture(definition.command) : undefined}
+                      className={`inline-flex h-9 min-w-[128px] items-center justify-center rounded-xl border px-3 font-mono text-[12px] transition ${
+                        isCapturing
+                          ? 'border-white/20 bg-white/[0.06] text-white'
+                          : 'border-border-default bg-bg-subtle text-text-primary hover:bg-bg-hover'
+                      }`}
+                    >
+                      {isCapturing ? 'Press keys…' : shortcutLabel}
+                    </button>
+                    <ActionButton onClick={() => resetCommandShortcut(definition.command)}>Reset</ActionButton>
+                  </div>
+                </div>
+                {conflicts.length > 0 ? (
+                  <div className="mt-3 text-[11.5px] text-[#ffbd8a]">
+                    Also bound to{' '}
+                    {conflicts.map((command) => APP_COMMANDS_BY_ID[command].title).join(', ')}. The last matching rule wins.
+                  </div>
+                ) : null}
+                {shortcut ? (
+                  <div className="mt-2 text-[11px] font-mono text-text-faint/70">{serializeShortcut(shortcut)}</div>
+                ) : null}
+              </div>
+            );
+          })}
+        </SettingsGroup>
+      ))}
     </>
   );
 }

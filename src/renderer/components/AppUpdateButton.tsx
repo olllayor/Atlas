@@ -37,21 +37,21 @@ export function AppUpdateButton({ updateState, onClick }: AppUpdateButtonProps) 
     );
   const toneClass =
     updateState.status === 'downloaded'
-      ? 'border-[#5d78d8]/28 bg-[#5d78d8]/12 text-[#dbe5ff] hover:border-[#6c87eb]/36 hover:bg-[#5d78d8]/16'
+      ? 'border-[#5d78d8]/18 bg-[#5d78d8]/10 text-[#dbe5ff] hover:border-[#6c87eb]/24 hover:bg-[#5d78d8]/14'
       : updateState.status === 'downloading'
-        ? 'border-white/8 bg-white/[0.03] text-white/58'
-        : 'border-white/8 bg-white/[0.035] text-white/78 hover:border-white/12 hover:bg-white/[0.06] hover:text-white';
+        ? 'border-white/6 bg-white/[0.025] text-white/54'
+        : 'border-white/6 bg-white/[0.025] text-white/68 hover:border-white/10 hover:bg-white/[0.045] hover:text-white/82';
 
   return (
     <div
-      className="absolute inset-y-0 left-4 z-10 flex items-center"
+      className="absolute inset-y-0 right-4 z-10 flex items-center"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       <button
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium tracking-[0.01em] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] transition ${toneClass} ${
+        className={`inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[11.5px] font-medium tracking-[0.01em] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] backdrop-blur-sm transition ${toneClass} ${
           disabled ? 'cursor-default' : 'active:scale-[0.985]'
         }`}
       >

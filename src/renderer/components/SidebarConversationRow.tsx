@@ -5,6 +5,8 @@ type SidebarConversationRowProps = {
   primaryLabel: string;
   secondaryLabel: string | null;
   timestampLabel: string | null;
+  jumpLabel?: string | null;
+  showJumpHint?: boolean;
   status: 'idle' | 'streaming' | 'error' | 'aborted';
   hideTimestamp?: boolean;
 };
@@ -21,6 +23,8 @@ export function SidebarConversationRow({
   primaryLabel,
   secondaryLabel,
   timestampLabel,
+  jumpLabel,
+  showJumpHint = false,
   status,
   hideTimestamp = false,
 }: SidebarConversationRowProps) {
@@ -90,10 +94,15 @@ export function SidebarConversationRow({
         {timestampLabel ? (
           <span
             className={`absolute inset-0 text-right text-[10px] font-medium leading-4 tabular-nums text-white/34 transition-opacity group-hover:opacity-0 ${
-              hideTimestamp ? 'opacity-0' : ''
+              hideTimestamp || showJumpHint ? 'opacity-0' : ''
             }`}
           >
             {timestampLabel}
+          </span>
+        ) : null}
+        {showJumpHint && jumpLabel ? (
+          <span className="absolute right-0 top-0 inline-flex h-5 items-center rounded-full border border-white/10 bg-white/[0.07] px-1.5 font-mono text-[10px] leading-none text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+            {jumpLabel}
           </span>
         ) : null}
       </div>

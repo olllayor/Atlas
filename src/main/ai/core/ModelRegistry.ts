@@ -113,6 +113,9 @@ export class ModelRegistry {
       appearance: {
         themeMode: this.settingsRepo.getThemeMode()
       },
+      keyboard: {
+        keybindings: this.settingsRepo.getKeybindings()
+      },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,
       modelCatalogStale: !catalog.lastSyncedAt || Date.now() - lastSyncedAt > staleThreshold,

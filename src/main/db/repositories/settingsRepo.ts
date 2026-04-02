@@ -1,4 +1,6 @@
 import type { CredentialStatus, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import type { KeybindingRule } from '../../../shared/keybindings';
+import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
 import type { SqliteDatabase } from '../client';
 
@@ -60,6 +62,14 @@ export class SettingsRepo {
 
   setThemeMode(value: ThemeMode) {
     this.setJsonSetting('themeMode', value);
+  }
+
+  getKeybindings(): KeybindingRule[] {
+    return decodeKeybindingRules(this.getJsonSetting<unknown>('keybindings', null));
+  }
+
+  setKeybindings(value: KeybindingRule[]) {
+    this.setJsonSetting('keybindings', parseKeybindingRules(value));
   }
 
   syncSecretPresence(providerId: ProviderId, hasSecret: boolean) {

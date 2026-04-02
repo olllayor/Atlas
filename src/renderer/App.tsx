@@ -1,7 +1,8 @@
 import { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import type { AppUpdateSnapshot, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
+import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
+import type { AppUpdateSnapshot, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { PROVIDER_METADATA } from '../shared/providerMetadata';
 import { ChatWindow } from './components/ChatWindow';
@@ -66,6 +67,49 @@ function resolveThemeMode(mode: ThemeMode, prefersDark: boolean) {
   }
 
   return mode;
+}
+
+function toCssFontFamilyList(value: string) {
+  const genericFamilies = new Set([
+    'serif',
+    'sans-serif',
+    'monospace',
+    'cursive',
+    'fantasy',
+    'system-ui',
+    'ui-serif',
+    'ui-sans-serif',
+    'ui-monospace',
+    'emoji',
+    'math',
+    'fangsong',
+  ]);
+
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      if (
+        part.startsWith('"') ||
+        part.startsWith("'") ||
+        genericFamilies.has(part.toLowerCase())
+      ) {
+        return part;
+      }
+
+      return /[^a-zA-Z0-9_-]/.test(part) ? JSON.stringify(part) : part;
+    })
+    .join(', ');
+}
+
+function buildFontFamilyValue(override: FontFamilyOverride, fallbackVariable: '--font-ui-system' | '--font-mono-system') {
+  const normalized = override?.trim();
+  if (!normalized) {
+    return `var(${fallbackVariable})`;
+  }
+
+  return `${toCssFontFamilyList(normalized)}, var(${fallbackVariable})`;
 }
 
 export default function App() {
@@ -203,7 +247,8 @@ export default function App() {
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
   const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
   const activeCredentialProvider = PROVIDER_METADATA[activeCredentialProviderId];
-  const themeMode = settings?.appearance.themeMode ?? 'dark';
+  const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
+  const themeMode = appearance.themeMode;
   const sidebarItems = buildSidebarConversationItems({
     conversations,
     draftsByConversation,
@@ -423,6 +468,14 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--ui-font-size', `${appearance.uiFontSize}px`);
+    root.style.setProperty('--code-font-size', `${appearance.codeFontSize}px`);
+    root.style.setProperty('--font-ui-family', buildFontFamilyValue(appearance.uiFontFamily, '--font-ui-system'));
+    root.style.setProperty('--font-code-mono', buildFontFamilyValue(appearance.codeFontFamily, '--font-mono-system'));
+  }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) {
         return;
@@ -534,6 +587,10 @@ export default function App() {
         onSaveKey={() => void saveProviderKey()}
         onValidateKey={() => void validateProviderKey()}
         onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
+        onUiFontSizeChange={(value) => void updatePreferences({ appearance: { uiFontSize: value } })}
+        onCodeFontSizeChange={(value) => void updatePreferences({ appearance: { codeFontSize: value } })}
+        onUiFontFamilyChange={(value) => void updatePreferences({ appearance: { uiFontFamily: value } })}
+        onCodeFontFamilyChange={(value) => void updatePreferences({ appearance: { codeFontFamily: value } })}
         onUpdateKeybindings={(rules) => void updatePreferences({ keyboard: { keybindings: rules } })}
         onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
         onUpdateAction={() => {

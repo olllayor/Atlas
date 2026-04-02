@@ -1,4 +1,13 @@
-import type { CredentialStatus, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import {
+  CODE_FONT_SIZE_DEFAULT,
+  CODE_FONT_SIZE_MAX,
+  CODE_FONT_SIZE_MIN,
+  DEFAULT_SETTINGS_APPEARANCE,
+  UI_FONT_SIZE_DEFAULT,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
+} from '../../../shared/contracts';
+import type { CredentialStatus, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
@@ -15,6 +24,23 @@ type ProviderCredentialRow = {
 
 export class SettingsRepo {
   constructor(private readonly db: SqliteDatabase) {}
+
+  private clampNumber(value: unknown, min: number, max: number, fallback: number) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+
+    return Math.min(max, Math.max(min, Math.round(value)));
+  }
+
+  private normalizeFontFamily(value: unknown): FontFamilyOverride {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const sanitized = value.replace(/[;\n\r{}]/g, ' ').trim().replace(/\s+/g, ' ');
+    return sanitized.length > 0 ? sanitized : null;
+  }
 
   private getJsonSetting<T>(key: string, fallback: T) {
     const row = this.db
@@ -56,12 +82,59 @@ export class SettingsRepo {
   }
 
   getThemeMode(): ThemeMode {
-    const value = this.getJsonSetting<ThemeMode>('themeMode', 'dark');
-    return value === 'light' || value === 'dark' || value === 'system' ? value : 'dark';
+    const value = this.getJsonSetting<ThemeMode>('themeMode', DEFAULT_SETTINGS_APPEARANCE.themeMode);
+    return value === 'light' || value === 'dark' || value === 'system' ? value : DEFAULT_SETTINGS_APPEARANCE.themeMode;
   }
 
   setThemeMode(value: ThemeMode) {
     this.setJsonSetting('themeMode', value);
+  }
+
+  getUiFontSize() {
+    return this.clampNumber(
+      this.getJsonSetting<number>('uiFontSize', UI_FONT_SIZE_DEFAULT),
+      UI_FONT_SIZE_MIN,
+      UI_FONT_SIZE_MAX,
+      UI_FONT_SIZE_DEFAULT
+    );
+  }
+
+  setUiFontSize(value: number) {
+    this.setJsonSetting('uiFontSize', this.clampNumber(value, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX, UI_FONT_SIZE_DEFAULT));
+  }
+
+  getCodeFontSize() {
+    return this.clampNumber(
+      this.getJsonSetting<number>('codeFontSize', CODE_FONT_SIZE_DEFAULT),
+      CODE_FONT_SIZE_MIN,
+      CODE_FONT_SIZE_MAX,
+      CODE_FONT_SIZE_DEFAULT
+    );
+  }
+
+  setCodeFontSize(value: number) {
+    this.setJsonSetting(
+      'codeFontSize',
+      this.clampNumber(value, CODE_FONT_SIZE_MIN, CODE_FONT_SIZE_MAX, CODE_FONT_SIZE_DEFAULT)
+    );
+  }
+
+  getUiFontFamily(): FontFamilyOverride {
+    return this.normalizeFontFamily(this.getJsonSetting<FontFamilyOverride>('uiFontFamily', DEFAULT_SETTINGS_APPEARANCE.uiFontFamily));
+  }
+
+  setUiFontFamily(value: FontFamilyOverride) {
+    this.setJsonSetting('uiFontFamily', this.normalizeFontFamily(value));
+  }
+
+  getCodeFontFamily(): FontFamilyOverride {
+    return this.normalizeFontFamily(
+      this.getJsonSetting<FontFamilyOverride>('codeFontFamily', DEFAULT_SETTINGS_APPEARANCE.codeFontFamily)
+    );
+  }
+
+  setCodeFontFamily(value: FontFamilyOverride) {
+    this.setJsonSetting('codeFontFamily', this.normalizeFontFamily(value));
   }
 
   getKeybindings(): KeybindingRule[] {

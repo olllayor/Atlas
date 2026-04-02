@@ -111,7 +111,11 @@ export class ModelRegistry {
         PROVIDER_ORDER.find((providerId) => this.providers.has(providerId)) ??
         null,
       appearance: {
-        themeMode: this.settingsRepo.getThemeMode()
+        themeMode: this.settingsRepo.getThemeMode(),
+        uiFontSize: this.settingsRepo.getUiFontSize(),
+        codeFontSize: this.settingsRepo.getCodeFontSize(),
+        uiFontFamily: this.settingsRepo.getUiFontFamily(),
+        codeFontFamily: this.settingsRepo.getCodeFontFamily()
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()

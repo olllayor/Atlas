@@ -43,7 +43,7 @@ export class RendererErrorBoundary extends Component<
               <p className="mt-2 text-sm text-error-text/80">
                 The app recovered instead of leaving the window blank. Switching sessions again will retry this view.
               </p>
-              <pre className="mt-4 overflow-x-auto rounded-2xl border border-error-border/60 bg-black/20 px-4 py-3 text-xs leading-6 text-error-text/80">
+              <pre className="app-code-text mt-4 overflow-x-auto rounded-2xl border border-error-border/60 bg-black/20 px-4 py-3 text-error-text/80">
                 {this.state.error.message}
               </pre>
             </div>

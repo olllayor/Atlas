@@ -40,6 +40,26 @@ function createDatabase() {
   };
 }
 
+test('SettingsRepo stores and normalizes typography preferences', (t) => {
+  const { database, raw, tempDir } = createDatabase();
+  const settingsRepo = new SettingsRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  settingsRepo.setUiFontSize(99);
+  settingsRepo.setCodeFontSize(2);
+  settingsRepo.setUiFontFamily('OpenAI Sans');
+  settingsRepo.setCodeFontFamily('Berkeley Mono');
+
+  assert.equal(settingsRepo.getUiFontSize(), 18);
+  assert.equal(settingsRepo.getCodeFontSize(), 11);
+  assert.equal(settingsRepo.getUiFontFamily(), 'OpenAI Sans');
+  assert.equal(settingsRepo.getCodeFontFamily(), 'Berkeley Mono');
+});
+
 test('SettingsRepo stores and restores keybindings', (t) => {
   const { database, raw, tempDir } = createDatabase();
   const settingsRepo = new SettingsRepo(database);

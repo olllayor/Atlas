@@ -9,8 +9,14 @@ import {
   TimerIcon,
   UpdateIcon,
 } from '@radix-ui/react-icons';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PropsWithChildren } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type {
+  ChangeEvent,
+  CSSProperties,
+  FocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  PropsWithChildren
+} from 'react';
 import { costFromUsage } from 'tokenlens';
 
 import type {
@@ -18,6 +24,7 @@ import type {
   ConversationPage,
   ConversationStats,
   DiagnosticsSnapshot,
+  FontFamilyOverride,
   KeybindingCommand,
   KeybindingRule,
   ProviderId,
@@ -26,6 +33,13 @@ import type {
   ThemeMode,
   UsageProviderSummary,
   UsageSummary,
+} from '../../shared/contracts';
+import {
+  CODE_FONT_SIZE_MAX,
+  CODE_FONT_SIZE_MIN,
+  DEFAULT_SETTINGS_APPEARANCE,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
 } from '../../shared/contracts';
 import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
@@ -56,6 +70,10 @@ type SettingsWorkspaceProps = {
   onSaveKey: () => void;
   onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUiFontSizeChange: (value: number) => void;
+  onCodeFontSizeChange: (value: number) => void;
+  onUiFontFamilyChange: (value: FontFamilyOverride) => void;
+  onCodeFontFamilyChange: (value: FontFamilyOverride) => void;
   onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
   onUpdateAction: () => void;
@@ -108,6 +126,10 @@ export function SettingsWorkspace({
   onSaveKey,
   onValidateKey,
   onThemeModeChange,
+  onUiFontSizeChange,
+  onCodeFontSizeChange,
+  onUiFontFamilyChange,
+  onCodeFontFamilyChange,
   onUpdateKeybindings,
   onToggleFreeModels,
   onUpdateAction,
@@ -212,7 +234,14 @@ export function SettingsWorkspace({
               ) : null}
 
               {activeSection === 'appearance' ? (
-                <AppearancePage settings={settings} onThemeModeChange={onThemeModeChange} />
+                <AppearancePage
+                  settings={settings}
+                  onThemeModeChange={onThemeModeChange}
+                  onUiFontSizeChange={onUiFontSizeChange}
+                  onCodeFontSizeChange={onCodeFontSizeChange}
+                  onUiFontFamilyChange={onUiFontFamilyChange}
+                  onCodeFontFamilyChange={onCodeFontFamilyChange}
+                />
               ) : null}
 
               {activeSection === 'keyboard' ? (
@@ -392,11 +421,20 @@ function GeneralPage({
 function AppearancePage({
   settings,
   onThemeModeChange,
+  onUiFontSizeChange,
+  onCodeFontSizeChange,
+  onUiFontFamilyChange,
+  onCodeFontFamilyChange,
 }: {
   settings: SettingsSummary | null;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onUiFontSizeChange: (value: number) => void;
+  onCodeFontSizeChange: (value: number) => void;
+  onUiFontFamilyChange: (value: FontFamilyOverride) => void;
+  onCodeFontFamilyChange: (value: FontFamilyOverride) => void;
 }) {
-  const themeMode = settings?.appearance.themeMode ?? 'dark';
+  const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
+  const themeMode = appearance.themeMode;
 
   return (
     <>
@@ -409,14 +447,45 @@ function AppearancePage({
         </SettingsStackedRow>
       </SettingsGroup>
 
+      <SettingsGroup title="Typography">
+        <SettingsRow title="UI font size" description="Font size for the Atlas user interface.">
+          <NumberStepper
+            value={appearance.uiFontSize}
+            min={UI_FONT_SIZE_MIN}
+            max={UI_FONT_SIZE_MAX}
+            defaultValue={DEFAULT_SETTINGS_APPEARANCE.uiFontSize}
+            onChange={onUiFontSizeChange}
+          />
+        </SettingsRow>
+        <SettingsRow title="Code font size" description="Font size for code blocks, tool payloads, and diffs.">
+          <NumberStepper
+            value={appearance.codeFontSize}
+            min={CODE_FONT_SIZE_MIN}
+            max={CODE_FONT_SIZE_MAX}
+            defaultValue={DEFAULT_SETTINGS_APPEARANCE.codeFontSize}
+            onChange={onCodeFontSizeChange}
+          />
+        </SettingsRow>
+        <SettingsRow title="UI font family" description="Override the Atlas interface typeface.">
+          <FontFamilyField
+            value={appearance.uiFontFamily}
+            placeholder="System font"
+            onCommit={onUiFontFamilyChange}
+          />
+        </SettingsRow>
+        <SettingsRow title="Code font family" description="Override the typeface used for code surfaces.">
+          <FontFamilyField
+            value={appearance.codeFontFamily}
+            placeholder="System monospace"
+            onCommit={onCodeFontFamilyChange}
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
       <SettingsGroup title="Coming soon">
         <DisabledRow
           title="Accent controls"
           description="Accent color and contrast tuning will be added after the base theme system settles."
-        />
-        <DisabledRow
-          title="Typography"
-          description="UI and code font controls will land here when broader appearance settings ship."
         />
       </SettingsGroup>
     </>
@@ -680,6 +749,111 @@ function DisabledRow({ title, description }: { title: string; description: strin
       </div>
       <StatusPill tone="muted">Soon</StatusPill>
     </div>
+  );
+}
+
+function NumberStepper({
+  value,
+  min,
+  max,
+  defaultValue,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  defaultValue: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onChange(defaultValue)}
+        disabled={value === defaultValue}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-border-default bg-bg-subtle text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+        title="Reset"
+      >
+        <ReloadIcon className="h-4 w-4" />
+      </button>
+      <div className="inline-flex h-9 items-center overflow-hidden rounded-[12px] border border-border-default bg-bg-subtle">
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(min, value - 1))}
+          disabled={value <= min}
+          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Decrease value"
+        >
+          -
+        </button>
+        <span className="inline-flex h-full min-w-[56px] items-center justify-center border-x border-border-subtle px-3 text-[13px] font-medium tabular-nums text-text-primary">
+          {value}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(Math.min(max, value + 1))}
+          disabled={value >= max}
+          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Increase value"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FontFamilyField({
+  value,
+  placeholder,
+  onCommit,
+}: {
+  value: FontFamilyOverride;
+  placeholder: string;
+  onCommit: (value: FontFamilyOverride) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? '');
+
+  useEffect(() => {
+    setDraft(value ?? '');
+  }, [value]);
+
+  const commitValue = (rawValue: string) => {
+    const normalized = rawValue.trim();
+    onCommit(normalized.length > 0 ? normalized : null);
+  };
+
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setDraft(event.target.value);
+  };
+
+  const handleBlur = (event: FocusEvent<HTMLInputElement>) => {
+    commitValue(event.currentTarget.value);
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      commitValue(event.currentTarget.value);
+      event.currentTarget.blur();
+    }
+
+    if (event.key === 'Escape') {
+      setDraft(value ?? '');
+      event.currentTarget.blur();
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      value={draft}
+      placeholder={placeholder}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
+      className="h-9 min-w-[190px] rounded-[10px] border border-border-default bg-bg-subtle px-3 text-[13px] font-medium text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong placeholder:text-text-muted"
+      spellCheck={false}
+    />
   );
 }
 

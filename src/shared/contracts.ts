@@ -106,11 +106,32 @@ export type ProviderCredentialSummary = {
 };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type FontFamilyOverride = string | null;
+
+export const UI_FONT_SIZE_MIN = 13;
+export const UI_FONT_SIZE_MAX = 18;
+export const UI_FONT_SIZE_DEFAULT = 15;
+
+export const CODE_FONT_SIZE_MIN = 11;
+export const CODE_FONT_SIZE_MAX = 16;
+export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
+  uiFontSize: number;
+  codeFontSize: number;
+  uiFontFamily: FontFamilyOverride;
+  codeFontFamily: FontFamilyOverride;
+};
+
+export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
+  themeMode: 'dark',
+  uiFontSize: UI_FONT_SIZE_DEFAULT,
+  codeFontSize: CODE_FONT_SIZE_DEFAULT,
+  uiFontFamily: null,
+  codeFontFamily: null
 };
 
 export type SettingsKeyboardSummary = {
@@ -386,6 +407,10 @@ export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
+    uiFontSize?: number;
+    codeFontSize?: number;
+    uiFontFamily?: FontFamilyOverride;
+    codeFontFamily?: FontFamilyOverride;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];

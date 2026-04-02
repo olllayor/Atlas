@@ -47,13 +47,30 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
     IPC_CHANNELS.settingsUpdatePreferences,
     (event, patch: SettingsUpdateRequest) => {
       assertTrustedSender(event);
+      const appearancePatch = patch?.appearance;
 
       if (typeof patch?.showFreeOnlyByDefault === 'boolean') {
         settingsRepo.setShowFreeOnlyByDefault(patch.showFreeOnlyByDefault);
       }
 
-      if (patch?.appearance?.themeMode) {
-        settingsRepo.setThemeMode(patch.appearance.themeMode);
+      if (appearancePatch?.themeMode) {
+        settingsRepo.setThemeMode(appearancePatch.themeMode);
+      }
+
+      if (typeof appearancePatch?.uiFontSize === 'number') {
+        settingsRepo.setUiFontSize(appearancePatch.uiFontSize);
+      }
+
+      if (typeof appearancePatch?.codeFontSize === 'number') {
+        settingsRepo.setCodeFontSize(appearancePatch.codeFontSize);
+      }
+
+      if (appearancePatch && 'uiFontFamily' in appearancePatch) {
+        settingsRepo.setUiFontFamily(appearancePatch.uiFontFamily ?? null);
+      }
+
+      if (appearancePatch && 'codeFontFamily' in appearancePatch) {
+        settingsRepo.setCodeFontFamily(appearancePatch.codeFontFamily ?? null);
       }
 
       if (patch?.keyboard?.keybindings) {

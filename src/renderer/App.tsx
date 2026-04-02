@@ -1,14 +1,18 @@
 import { useEffect, useEffectEvent, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import type { AppUpdateSnapshot, StreamEvent, ThemeMode } from '../shared/contracts';
+import { PROVIDER_METADATA } from '../shared/providerMetadata';
 import { ChatWindow } from './components/ChatWindow';
 import { Composer } from './components/Composer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { AppUpdateButton } from './components/AppUpdateButton';
-import { SettingsWorkspace } from './components/SettingsWorkspace';
+import { RendererErrorBoundary } from './components/RendererErrorBoundary';
+import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
-import { useAppStore } from './stores/useAppStore';
+import { prewarmMessageRendering } from './lib/messageRendering';
+import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
 
 function LoadingScreen() {
   return (
@@ -62,6 +66,7 @@ export default function App() {
     bootstrapError,
     activeView,
     settingsSection,
+    activeCredentialProviderId,
     keyDraft,
     isSavingKey,
     isValidatingKey,
@@ -70,21 +75,27 @@ export default function App() {
     models,
     conversations,
     conversationDetails,
+    isLoadingOlderByConversation,
+    isLoadingConversationId,
     selectedConversationId,
     selectedModelIdByConversation,
     draftsByConversation,
+    conversationStats,
+    diagnostics,
     notice,
     updateState,
     bootstrap,
     refreshModels,
     loadConversation,
+    loadOlderMessages,
     createConversation,
     openSettings,
     closeSettings,
     setSettingsSection,
+    setActiveCredentialProvider,
     setKeyDraft,
-    saveOpenRouterKey,
-    validateOpenRouterKey,
+    saveProviderKey,
+    validateProviderKey,
     updatePreferences,
     setUpdateState,
     checkForUpdates,
@@ -95,17 +106,69 @@ export default function App() {
     deleteConversation,
     handleStreamEvent,
     dismissNotice,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      bootstrapping: state.bootstrapping,
+      initialized: state.initialized,
+      bootstrapError: state.bootstrapError,
+      activeView: state.activeView,
+      settingsSection: state.settingsSection,
+      activeCredentialProviderId: state.activeCredentialProviderId,
+      keyDraft: state.keyDraft,
+      isSavingKey: state.isSavingKey,
+      isValidatingKey: state.isValidatingKey,
+      isRefreshingModels: state.isRefreshingModels,
+      settings: state.settings,
+      models: state.models,
+      conversations: state.conversations,
+      conversationDetails: state.conversationDetails,
+      conversationStats: state.conversationStats,
+      diagnostics: state.diagnostics,
+      isLoadingOlderByConversation: state.isLoadingOlderByConversation,
+      isLoadingConversationId: state.isLoadingConversationId,
+      selectedConversationId: state.selectedConversationId,
+      selectedModelIdByConversation: state.selectedModelIdByConversation,
+      draftsByConversation: state.draftsByConversation,
+      notice: state.notice,
+      updateState: state.updateState,
+      bootstrap: state.bootstrap,
+      refreshModels: state.refreshModels,
+      loadConversation: state.loadConversation,
+      loadOlderMessages: state.loadOlderMessages,
+      createConversation: state.createConversation,
+      openSettings: state.openSettings,
+      closeSettings: state.closeSettings,
+      setSettingsSection: state.setSettingsSection,
+      setActiveCredentialProvider: state.setActiveCredentialProvider,
+      setKeyDraft: state.setKeyDraft,
+      saveProviderKey: state.saveProviderKey,
+      validateProviderKey: state.validateProviderKey,
+      updatePreferences: state.updatePreferences,
+      setUpdateState: state.setUpdateState,
+      checkForUpdates: state.checkForUpdates,
+      performUpdatePrimaryAction: state.performUpdatePrimaryAction,
+      setSelectedModel: state.setSelectedModel,
+      sendMessage: state.sendMessage,
+      abortConversation: state.abortConversation,
+      deleteConversation: state.deleteConversation,
+      handleStreamEvent: state.handleStreamEvent,
+      dismissNotice: state.dismissNotice,
+    }))
+  );
+  const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
+  const diagnosticsSummary = useAppStore(useShallow(selectDiagnosticsSummary));
 
   const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
   const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+  const isLoadingOlder = selectedConversationId ? Boolean(isLoadingOlderByConversation[selectedConversationId]) : false;
+  const isLoadingConversation =
+    selectedConversationId != null && isLoadingConversationId === selectedConversationId;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
-  const openRouterCredential = settings?.providers.find((p) => p.providerId === 'openrouter') ?? null;
-  const hasCredential = Boolean(openRouterCredential?.hasSecret);
+  const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
+  const activeCredentialProvider = PROVIDER_METADATA[activeCredentialProviderId];
   const themeMode = settings?.appearance.themeMode ?? 'dark';
   const sidebarItems = buildSidebarConversationItems({
     conversations,
-    conversationDetails,
     draftsByConversation,
     now: Date.now(),
   });
@@ -122,6 +185,8 @@ export default function App() {
     void bootstrap();
   }, [bootstrap]);
 
+  useEffect(() => prewarmMessageRendering(), []);
+
   useEffect(() => {
     const unsubscribe = window.atlasChat.chat.subscribe((event) => {
       onStreamEvent(event);
@@ -137,10 +202,15 @@ export default function App() {
   }, [onUpdateState]);
 
   useEffect(() => {
-    if (initialized && !hasCredential && conversations.length === 0) {
+    if (initialized && !hasCredential) {
       setShowOnboarding(true);
+      return;
     }
-  }, [initialized, hasCredential, conversations.length]);
+
+    if (hasCredential) {
+      setShowOnboarding(false);
+    }
+  }, [initialized, hasCredential]);
 
   useEffect(() => {
     if (onboardingDone && hasCredential) {
@@ -171,23 +241,33 @@ export default function App() {
   }
 
   if (activeView === 'settings') {
+    const usageSummary = buildUsageSummary({
+      settings,
+      conversationPages: conversationDetails,
+      conversationStats,
+      diagnostics,
+      rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
+    });
+
     return (
       <SettingsWorkspace
         settings={settings}
         updateState={updateState}
-        conversationDetails={conversationDetails}
+        usageSummary={usageSummary}
         notice={notice}
         keyDraft={keyDraft}
         isSaving={isSavingKey}
         isValidating={isValidatingKey}
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
+        activeCredentialProviderId={activeCredentialProviderId}
         onBack={closeSettings}
         onNavigate={setSettingsSection}
         onDismissNotice={dismissNotice}
+        onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveOpenRouterKey()}
-        onValidateKey={() => void validateOpenRouterKey()}
+        onSaveKey={() => void saveProviderKey()}
+        onValidateKey={() => void validateProviderKey()}
         onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
         onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
         onUpdateAction={() => {
@@ -207,12 +287,17 @@ export default function App() {
     return (
       <OnboardingFlow
         hasCredential={hasCredential}
+        providerId={activeCredentialProviderId}
+        providerLabel={activeCredentialProvider.label}
+        providerLink={activeCredentialProvider.keyLink}
+        providerLinkLabel={activeCredentialProvider.keyLinkLabel}
         isSavingKey={isSavingKey}
         isValidatingKey={isValidatingKey}
         keyDraft={keyDraft}
+        onProviderChange={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveOpenRouterKey()}
-        onValidateKey={() => void validateOpenRouterKey()}
+        onSaveKey={() => void saveProviderKey()}
+        onValidateKey={() => void validateProviderKey()}
         onContinue={() => {
           setShowOnboarding(false);
           setOnboardingDone(true);
@@ -230,7 +315,8 @@ export default function App() {
         settings={settings}
         updateState={updateState}
         isRefreshingModels={isRefreshingModels}
-        conversationDetails={conversationDetails}
+        conversationStats={conversationStats}
+        loadedMessageCount={loadedMetrics.loadedMessageCount}
         onSelect={(id) => void loadConversation(id)}
         onCreate={() => void createConversation()}
         onDelete={(id) => void deleteConversation(id)}
@@ -268,38 +354,43 @@ export default function App() {
           </div>
         )}
 
-        <ChatWindow
-          detail={activeConversation}
-          draft={activeDraft}
-          hasCredential={hasCredential}
-          onOpenSettings={openSettings}
-          onSuggestionClick={(prompt) => setComposerValue(prompt)}
-        />
+        <RendererErrorBoundary resetKey={selectedConversationId}>
+          <ChatWindow
+            detail={activeConversation}
+            draft={activeDraft}
+            hasCredential={hasCredential}
+            isLoadingConversation={isLoadingConversation}
+            isLoadingOlder={isLoadingOlder}
+            onOpenSettings={openSettings}
+            onSuggestionClick={(prompt) => setComposerValue(prompt)}
+            onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
+          />
 
-        <Composer
-          value={composerValue}
-          disabled={!selectedConversationId}
-          isStreaming={activeDraft?.status === 'streaming'}
-          models={models}
-          selectedModelId={selectedModelId}
-          detail={activeConversation}
-          draft={activeDraft}
-          onChange={setComposerValue}
-          onSend={() => {
-            const payload = composerValue;
-            void sendMessage(payload)
-              .then(() => setComposerValue(''))
-              .catch(() => setComposerValue(payload));
-          }}
-          onAbort={() => {
-            if (selectedConversationId) void abortConversation(selectedConversationId);
-          }}
-          onSelectModel={(modelId) => {
-            if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
-          }}
-          onRefreshModels={() => void refreshModels()}
-          isRefreshingModels={isRefreshingModels}
-        />
+          <Composer
+            value={composerValue}
+            disabled={!selectedConversationId}
+            isStreaming={activeDraft?.status === 'streaming'}
+            models={models}
+            selectedModelId={selectedModelId}
+            detail={activeConversation}
+            draft={activeDraft}
+            onChange={setComposerValue}
+            onSend={() => {
+              const payload = composerValue;
+              void sendMessage(payload)
+                .then(() => setComposerValue(''))
+                .catch(() => setComposerValue(payload));
+            }}
+            onAbort={() => {
+              if (selectedConversationId) void abortConversation(selectedConversationId);
+            }}
+            onSelectModel={(modelId) => {
+              if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
+            }}
+            onRefreshModels={() => void refreshModels()}
+            isRefreshingModels={isRefreshingModels}
+          />
+        </RendererErrorBoundary>
       </div>
     </div>
   );

@@ -6,10 +6,10 @@ import { IPC_CHANNELS } from '../shared/ipc';
 const api: RendererApi = {
   settings: {
     getSummary: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetSummary),
-    saveOpenRouterKey: (secret) =>
-      ipcRenderer.invoke(IPC_CHANNELS.settingsSaveOpenRouterKey, secret),
-    validateOpenRouterKey: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.settingsValidateOpenRouterKey),
+    saveProviderKey: (providerId, secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsSaveProviderKey, providerId, secret),
+    validateProviderKey: (providerId, secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsValidateProviderKey, providerId, secret),
     updatePreferences: (patch) =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsUpdatePreferences, patch)
   },
@@ -21,6 +21,8 @@ const api: RendererApi = {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsList),
     create: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsCreate),
     get: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGet, conversationId),
+    getPage: (conversationId, request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetPage, conversationId, request),
+    getStats: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetStats),
     delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId)
   },
   chat: {
@@ -37,6 +39,9 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.chatEvent, handler);
       };
     }
+  },
+  diagnostics: {
+    getSnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGetSnapshot)
   },
   updates: {
     getState: () => ipcRenderer.invoke(IPC_CHANNELS.updatesGetState),

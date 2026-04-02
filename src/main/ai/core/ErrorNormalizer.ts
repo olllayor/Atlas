@@ -55,7 +55,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (error.status === 401 || error.status === 403) {
       return {
         code: 'auth_error',
-        message: 'OpenRouter rejected the API key. Revalidate it in settings.',
+        message: 'The provider rejected the API key. Revalidate it in settings.',
         retryable: false
       };
     }
@@ -71,7 +71,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (error.status >= 500) {
       return {
         code: 'upstream_unavailable',
-        message: 'OpenRouter is temporarily unavailable.',
+        message: 'The provider is temporarily unavailable.',
         retryable: true
       };
     }
@@ -89,7 +89,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (status === 401 || status === 403) {
       return {
         code: 'auth_error',
-        message: 'OpenRouter rejected the API key. Revalidate it in settings.',
+        message: 'The provider rejected the API key. Revalidate it in settings.',
         retryable: false
       };
     }
@@ -113,7 +113,7 @@ export function normalizeError(error: unknown): NormalizedError {
     if (status && status >= 500) {
       return {
         code: 'upstream_unavailable',
-        message: 'OpenRouter is temporarily unavailable.',
+        message: 'The provider is temporarily unavailable.',
         retryable: true
       };
     }

@@ -62,6 +62,9 @@ ON conversations (updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at
 ON messages (conversation_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at_id
+ON messages (conversation_id, created_at, id);
 `;
 
 export function applySchema(database: SqliteDatabase) {

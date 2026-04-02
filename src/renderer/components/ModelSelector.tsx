@@ -15,6 +15,7 @@ import {
 } from '@/components/ai-elements/model-selector';
 
 import type { ModelSummary } from '../../shared/contracts';
+import { PROVIDER_METADATA } from '../../shared/providerMetadata';
 
 type ModelSelectorProps = {
   models: ModelSummary[];
@@ -27,9 +28,8 @@ type ModelSelectorProps = {
   isRefreshing?: boolean;
 };
 
-const extractNamespace = (modelId: string): string => {
-  const parts = modelId.split('/');
-  return parts.length > 1 ? parts[0] : 'other';
+const extractNamespace = (model: ModelSummary): string => {
+  return PROVIDER_METADATA[model.providerId]?.label ?? model.providerId;
 };
 
 const extractModelName = (modelId: string): string => {
@@ -61,7 +61,7 @@ export function ModelSelector({
     const groups = new Map<string, ModelSummary[]>();
 
     for (const model of filtered) {
-      const namespace = extractNamespace(model.id);
+      const namespace = extractNamespace(model);
       if (!groups.has(namespace)) groups.set(namespace, []);
       groups.get(namespace)!.push(model);
     }

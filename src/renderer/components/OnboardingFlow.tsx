@@ -1,11 +1,19 @@
 import { KeyRound, X } from 'lucide-react';
 import { useState } from 'react';
 
+import type { ProviderId } from '../../shared/contracts';
+import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+
 type OnboardingFlowProps = {
   hasCredential: boolean;
+  providerId: ProviderId;
+  providerLabel: string;
+  providerLink: string;
+  providerLinkLabel: string;
   isSavingKey: boolean;
   isValidatingKey: boolean;
   keyDraft: string;
+  onProviderChange: (providerId: ProviderId) => void;
   onKeyDraftChange: (value: string) => void;
   onSaveKey: () => void;
   onValidateKey: () => void;
@@ -14,9 +22,14 @@ type OnboardingFlowProps = {
 
 export function OnboardingFlow({
   hasCredential,
+  providerId,
+  providerLabel,
+  providerLink,
+  providerLinkLabel,
   isSavingKey,
   isValidatingKey,
   keyDraft,
+  onProviderChange,
   onKeyDraftChange,
   onSaveKey,
   onValidateKey,
@@ -84,19 +97,40 @@ export function OnboardingFlow({
               1
             </div>
             <div>
-              <h3 className="text-sm font-medium text-text-primary">Add your OpenRouter API key</h3>
+              <h3 className="text-sm font-medium text-text-primary">Add your {providerLabel} API key</h3>
               <p className="mt-0.5 text-xs text-text-muted">
                 Get one at{' '}
                 <a
-                  href="https://openrouter.ai/keys"
+                  href={providerLink}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-text-tertiary underline hover:text-text-primary"
                 >
-                  openrouter.ai/keys
+                  {providerLinkLabel}
                 </a>
               </p>
             </div>
+          </div>
+
+          <div className="mt-5 inline-flex rounded-[14px] border border-border-default bg-bg-subtle p-1">
+            {(['openrouter', 'glm'] as const).map((id) => {
+              const isActive = id === providerId;
+
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => onProviderChange(id)}
+                  className={`inline-flex h-9 items-center rounded-[10px] px-3 text-[13px] font-medium transition ${
+                    isActive
+                      ? 'bg-bg-elevated text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                      : 'text-text-tertiary hover:text-text-primary'
+                  }`}
+                >
+                  {PROVIDER_METADATA[id].label}
+                </button>
+              );
+            })}
           </div>
 
           <div className="mt-5">
@@ -104,7 +138,7 @@ export function OnboardingFlow({
               type="password"
               value={keyDraft}
               onChange={(e) => onKeyDraftChange(e.target.value)}
-              placeholder="sk-or-v1-..."
+              placeholder={PROVIDER_METADATA[providerId].keyPlaceholder}
               className="input px-4 py-3"
             />
           </div>

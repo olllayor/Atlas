@@ -1,7 +1,8 @@
 import type { CredentialStatus, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
 import type { SqliteDatabase } from '../client';
 
-const PROVIDERS: ProviderId[] = ['openrouter', 'openai', 'gemini'];
+const PROVIDERS: ProviderId[] = [...PROVIDER_ORDER];
 
 type ProviderCredentialRow = {
   provider_id: ProviderId;

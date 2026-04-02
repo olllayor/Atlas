@@ -1,5 +1,4 @@
 import {
-  ActivityLogIcon,
   ArrowLeftIcon,
   ChevronRightIcon,
   DesktopIcon,
@@ -7,6 +6,7 @@ import {
   MoonIcon,
   ReloadIcon,
   SunIcon,
+  TimerIcon,
   UpdateIcon,
 } from '@radix-ui/react-icons';
 import type { CSSProperties, PropsWithChildren } from 'react';
@@ -14,7 +14,9 @@ import { costFromUsage } from 'tokenlens';
 
 import type {
   AppUpdateSnapshot,
-  ConversationDetail,
+  ConversationPage,
+  ConversationStats,
+  DiagnosticsSnapshot,
   ProviderId,
   SettingsSection,
   SettingsSummary,
@@ -22,12 +24,14 @@ import type {
   UsageProviderSummary,
   UsageSummary,
 } from '../../shared/contracts';
+import { PROVIDER_METADATA } from '../../shared/providerMetadata';
 
 type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
-  conversationDetails: Record<string, ConversationDetail>;
+  usageSummary: UsageSummary;
   notice: { tone: 'error' | 'success' | 'info'; message: string } | null;
+  activeCredentialProviderId: ProviderId;
   keyDraft: string;
   isSaving: boolean;
   isValidating: boolean;
@@ -36,6 +40,7 @@ type SettingsWorkspaceProps = {
   onBack: () => void;
   onNavigate: (section: SettingsSection) => void;
   onDismissNotice: () => void;
+  onSelectProvider: (providerId: ProviderId) => void;
   onKeyDraftChange: (value: string) => void;
   onSaveKey: () => void;
   onValidateKey: () => void;
@@ -59,7 +64,7 @@ type FutureNavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
-  { key: 'usage', label: 'Usage', icon: ActivityLogIcon },
+  { key: 'usage', label: 'Usage', icon: TimerIcon },
 ];
 
 const futureNavItems: FutureNavItem[] = [
@@ -75,8 +80,9 @@ const futureNavItems: FutureNavItem[] = [
 export function SettingsWorkspace({
   settings,
   updateState,
-  conversationDetails,
+  usageSummary,
   notice,
+  activeCredentialProviderId,
   keyDraft,
   isSaving,
   isValidating,
@@ -85,6 +91,7 @@ export function SettingsWorkspace({
   onBack,
   onNavigate,
   onDismissNotice,
+  onSelectProvider,
   onKeyDraftChange,
   onSaveKey,
   onValidateKey,
@@ -93,8 +100,6 @@ export function SettingsWorkspace({
   onUpdateAction,
   onRefreshModels,
 }: SettingsWorkspaceProps) {
-  const usageSummary = buildUsageSummary(settings, conversationDetails);
-
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
       <aside className="relative flex w-[292px] shrink-0 flex-col border-r border-border-subtle bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0)_15%),var(--bg-panel)]">
@@ -195,10 +200,12 @@ export function SettingsWorkspace({
                 <GeneralPage
                   settings={settings}
                   updateState={updateState}
+                  activeCredentialProviderId={activeCredentialProviderId}
                   keyDraft={keyDraft}
                   isSaving={isSaving}
                   isValidating={isValidating}
                   isRefreshingModels={isRefreshingModels}
+                  onSelectProvider={onSelectProvider}
                   onKeyDraftChange={onKeyDraftChange}
                   onSaveKey={onSaveKey}
                   onValidateKey={onValidateKey}
@@ -236,10 +243,12 @@ function sectionTitle(section: SettingsSection) {
 function GeneralPage({
   settings,
   updateState,
+  activeCredentialProviderId,
   keyDraft,
   isSaving,
   isValidating,
   isRefreshingModels,
+  onSelectProvider,
   onKeyDraftChange,
   onSaveKey,
   onValidateKey,
@@ -249,10 +258,12 @@ function GeneralPage({
 }: {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
+  activeCredentialProviderId: ProviderId;
   keyDraft: string;
   isSaving: boolean;
   isValidating: boolean;
   isRefreshingModels: boolean;
+  onSelectProvider: (providerId: ProviderId) => void;
   onKeyDraftChange: (value: string) => void;
   onSaveKey: () => void;
   onValidateKey: () => void;
@@ -260,8 +271,9 @@ function GeneralPage({
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
-  const openRouter = settings?.providers.find((provider) => provider.providerId === 'openrouter') ?? null;
-  const savedStateLabel = openRouter?.hasSecret ? 'Saved' : 'Missing';
+  const provider = settings?.providers.find((entry) => entry.providerId === activeCredentialProviderId) ?? null;
+  const metadata = PROVIDER_METADATA[activeCredentialProviderId];
+  const savedStateLabel = provider?.hasSecret ? 'Saved' : 'Missing';
   const lastSyncedLabel = formatTimestamp(settings?.modelCatalogLastSyncedAt);
   const updateLabel = getUpdateLabel(updateState);
 
@@ -269,21 +281,23 @@ function GeneralPage({
     <>
       <SettingsGroup title="Provider access">
         <SettingsStackedRow
-          title="OpenRouter API key"
+          title={metadata.keyLabel}
           description="Stored in your macOS keychain. Paste a new key to replace the current one."
         >
+          <ProviderPicker current={activeCredentialProviderId} onChange={onSelectProvider} />
+
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <StatusPill tone={openRouter?.hasSecret ? 'success' : 'muted'}>{savedStateLabel}</StatusPill>
+            <StatusPill tone={provider?.hasSecret ? 'success' : 'muted'}>{savedStateLabel}</StatusPill>
             <StatusPill
               tone={
-                openRouter?.status === 'valid'
+                provider?.status === 'valid'
                   ? 'success'
-                  : openRouter?.status === 'invalid'
+                  : provider?.status === 'invalid'
                     ? 'warning'
                     : 'muted'
               }
             >
-              {openRouter?.status ?? 'unknown'}
+              {provider?.status ?? 'unknown'}
             </StatusPill>
           </div>
 
@@ -292,7 +306,11 @@ function GeneralPage({
               type="password"
               value={keyDraft}
               onChange={(event) => onKeyDraftChange(event.target.value)}
-              placeholder={openRouter?.hasSecret ? 'A key is already saved. Paste to replace it.' : 'sk-or-v1-...'}
+              placeholder={
+                provider?.hasSecret
+                  ? 'A key is already saved. Paste to replace it.'
+                  : metadata.keyPlaceholder
+              }
               className="h-10 min-w-0 flex-1 rounded-xl border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
             />
             <div className="flex gap-2">
@@ -303,6 +321,18 @@ function GeneralPage({
                 {isValidating ? 'Validating…' : 'Validate'}
               </ActionButton>
             </div>
+          </div>
+
+          <div className="mt-3 text-[12px] text-text-tertiary">
+            Get one at{' '}
+            <a
+              href={metadata.keyLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-text-primary"
+            >
+              {metadata.keyLinkLabel}
+            </a>
           </div>
         </SettingsStackedRow>
 
@@ -432,6 +462,34 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
         >
           <ValueBadge>{usageSummary.local.loadedConversationCount}</ValueBadge>
         </SettingsRow>
+
+        <SettingsRow
+          title="Stored history"
+          description={`${formatCompactNumber(usageSummary.local.storedMessageCount)} messages persisted across ${formatCompactNumber(usageSummary.local.storedConversationCount)} conversations`}
+        >
+          <ValueBadge>{formatCompactNumber(usageSummary.local.storedConversationCount)}</ValueBadge>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Database size"
+          description="SQLite conversation store on disk."
+        >
+          <ValueBadge>{formatBytes(usageSummary.local.databaseSizeBytes)}</ValueBadge>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Renderer heap"
+          description="Current JS heap used by the renderer process."
+        >
+          <ValueBadge>{usageSummary.local.rendererHeapBytes == null ? 'Unavailable' : formatBytes(usageSummary.local.rendererHeapBytes)}</ValueBadge>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Main-process RSS"
+          description="Resident memory used by the Electron main process."
+        >
+          <ValueBadge>{usageSummary.local.mainProcessRssBytes == null ? 'Unavailable' : formatBytes(usageSummary.local.mainProcessRssBytes)}</ValueBadge>
+        </SettingsRow>
       </SettingsGroup>
     </>
   );
@@ -516,6 +574,39 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
           >
             <Icon className="h-4 w-4" />
             <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProviderPicker({
+  current,
+  onChange,
+}: {
+  current: ProviderId;
+  onChange: (providerId: ProviderId) => void;
+}) {
+  const items: ProviderId[] = ['openrouter', 'glm'];
+
+  return (
+    <div className="mb-4 inline-flex rounded-[14px] border border-border-default bg-bg-subtle p-1">
+      {items.map((providerId) => {
+        const isActive = providerId === current;
+
+        return (
+          <button
+            key={providerId}
+            type="button"
+            onClick={() => onChange(providerId)}
+            className={`inline-flex h-9 items-center rounded-[10px] px-3 text-[13px] font-medium transition ${
+              isActive
+                ? 'bg-bg-elevated text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                : 'text-text-tertiary hover:text-text-primary'
+            }`}
+          >
+            {PROVIDER_METADATA[providerId].label}
           </button>
         );
       })}
@@ -621,6 +712,23 @@ function formatUsd(value?: number | null) {
   }).format(value);
 }
 
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let normalized = value;
+  let unitIndex = -1;
+
+  do {
+    normalized /= 1024;
+    unitIndex += 1;
+  } while (normalized >= 1024 && unitIndex < units.length - 1);
+
+  return `${normalized.toFixed(normalized >= 100 ? 0 : normalized >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
 function formatTimestamp(value?: string | null) {
   if (!value) {
     return 'never';
@@ -686,18 +794,27 @@ function toneForMetricState(state: UsageProviderSummary['state']): 'success' | '
   return 'muted';
 }
 
-function buildUsageSummary(
-  settings: SettingsSummary | null,
-  conversationDetails: Record<string, ConversationDetail>
-): UsageSummary {
+export function buildUsageSummary({
+  settings,
+  conversationPages,
+  conversationStats,
+  diagnostics,
+  rendererHeapBytes,
+}: {
+  settings: SettingsSummary | null;
+  conversationPages: Record<string, ConversationPage>;
+  conversationStats: ConversationStats | null;
+  diagnostics: DiagnosticsSnapshot | null;
+  rendererHeapBytes: number | null;
+}): UsageSummary {
   let inputTokens = 0;
   let outputTokens = 0;
   let reasoningTokens = 0;
   let totalCost = 0;
   let hasCost = false;
 
-  for (const detail of Object.values(conversationDetails)) {
-    for (const message of detail.messages) {
+  for (const page of Object.values(conversationPages)) {
+    for (const message of page.messages) {
       inputTokens += message.inputTokens ?? 0;
       outputTokens += message.outputTokens ?? 0;
       reasoningTokens += message.reasoningTokens ?? 0;
@@ -716,7 +833,7 @@ function buildUsageSummary(
   }
 
   const openRouter = buildProviderUsageSummary('openrouter', settings);
-  const openAi = buildProviderUsageSummary('openai', settings);
+  const glm = buildProviderUsageSummary('glm', settings);
 
   return {
     local: {
@@ -725,16 +842,21 @@ function buildUsageSummary(
       outputTokens,
       reasoningTokens,
       estimatedCostUsd: hasCost ? totalCost : null,
-      loadedConversationCount: Object.keys(conversationDetails).length,
-      loadedMessageCount: Object.values(conversationDetails).reduce((total, detail) => total + detail.messages.length, 0),
+      storedConversationCount: conversationStats?.storedConversationCount ?? 0,
+      storedMessageCount: conversationStats?.storedMessageCount ?? 0,
+      databaseSizeBytes: conversationStats?.databaseSizeBytes ?? diagnostics?.databaseSizeBytes ?? 0,
+      loadedConversationCount: Object.keys(conversationPages).length,
+      loadedMessageCount: Object.values(conversationPages).reduce((total, page) => total + page.messages.length, 0),
+      rendererHeapBytes,
+      mainProcessRssBytes: diagnostics?.mainProcess.rssBytes ?? null,
     },
-    providers: [openRouter, openAi],
+    providers: [openRouter, glm],
   };
 }
 
 function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSummary | null): UsageProviderSummary {
   const provider = settings?.providers.find((entry) => entry.providerId === providerId) ?? null;
-  const label = providerId === 'openrouter' ? 'OpenRouter rate limits' : 'OpenAI usage and cost';
+  const label = `${PROVIDER_METADATA[providerId].label} usage`;
 
   if (!provider?.hasSecret) {
     return {
@@ -742,10 +864,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
       label,
       state: 'not_connected',
       primary: 'Not connected',
-      secondary:
-        providerId === 'openrouter'
-          ? 'Add an OpenRouter key to expose free-tier usage and rate-limit telemetry.'
-          : 'Add an OpenAI key before usage and API cost telemetry can appear here.',
+      secondary: `Add a ${PROVIDER_METADATA[providerId].label} key before provider telemetry can appear here.`,
     };
   }
 
@@ -754,10 +873,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
     label,
     state: 'unavailable',
     primary: 'Pending provider telemetry',
-    secondary:
-      providerId === 'openrouter'
-        ? 'The layout is ready for remaining free-tier limits once provider metrics are wired in.'
-        : 'The layout is ready for OpenAI token and spend telemetry once provider metrics are wired in.',
+    secondary: `The layout is ready for ${PROVIDER_METADATA[providerId].label} telemetry once provider metrics are wired in.`,
   };
 }
 

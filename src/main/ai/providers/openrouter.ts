@@ -107,7 +107,11 @@ export class OpenRouterProvider implements ProviderAdapter {
     }
   }
 
-  async listModels(apiKey: string) {
+  async listModels(apiKey: string | null) {
+    if (!apiKey) {
+      throw new Error('Add an OpenRouter API key in settings before refreshing models.');
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
     try {

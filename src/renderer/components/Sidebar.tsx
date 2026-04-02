@@ -1,7 +1,8 @@
-import { Check, Plus, Trash2, X } from 'lucide-react';
+import { Pencil2Icon } from '@radix-ui/react-icons';
+import { Check, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 
-import type { AppUpdateSnapshot, ConversationDetail, SettingsSection, SettingsSummary } from '../../shared/contracts';
+import type { AppUpdateSnapshot, ConversationStats, SettingsSection, SettingsSummary } from '../../shared/contracts';
 import { SidebarConversationRow } from './SidebarConversationRow';
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
 import type { SidebarConversationItem } from './sidebarViewModel';
@@ -13,7 +14,8 @@ type SidebarProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
   isRefreshingModels: boolean;
-  conversationDetails: Record<string, ConversationDetail>;
+  conversationStats: ConversationStats | null;
+  loadedMessageCount: number;
   onSelect: (conversationId: string) => void;
   onCreate: () => void;
   onDelete: (conversationId: string) => void;
@@ -45,7 +47,8 @@ export function Sidebar({
   settings,
   updateState,
   isRefreshingModels,
-  conversationDetails,
+  conversationStats,
+  loadedMessageCount,
   onSelect,
   onCreate,
   onDelete,
@@ -100,7 +103,7 @@ export function Sidebar({
             collapsed ? 'justify-center' : ''
           }`}
         >
-          <Plus className="h-4 w-4 shrink-0" />
+          <Pencil2Icon className="h-4 w-4 shrink-0" />
           {!collapsed && <span>New chat</span>}
         </button>
       </div>
@@ -198,7 +201,8 @@ export function Sidebar({
           settings={settings}
           updateState={updateState}
           isRefreshingModels={isRefreshingModels}
-          conversationDetails={conversationDetails}
+          conversationStats={conversationStats}
+          loadedMessageCount={loadedMessageCount}
           onOpenSettings={onOpenSettings}
           onRefreshModels={onRefreshModels}
           onCheckForUpdates={onCheckForUpdates}

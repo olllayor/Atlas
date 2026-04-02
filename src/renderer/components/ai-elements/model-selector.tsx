@@ -189,6 +189,7 @@ const PROVIDER_LOGO_ALIASES: Record<string, string> = {
   bedrock: 'amazon-bedrock',
   'google-ai-studio': 'google',
   'google-gemini': 'google',
+  glm: 'zai',
   meta: 'llama',
   'meta-llama': 'llama',
   mistralai: 'mistral',

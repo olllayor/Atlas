@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron/main';
 
 import { IPC_CHANNELS } from '../../shared/ipc';
-import type { SettingsUpdateRequest } from '../../shared/contracts';
+import type { ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
 import type { KeychainStore } from '../secrets/keychain';
@@ -19,16 +19,16 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
     return modelRegistry.getSettingsSummary();
   });
 
-  ipcMain.handle(IPC_CHANNELS.settingsSaveOpenRouterKey, async (event, secret: string) => {
+  ipcMain.handle(IPC_CHANNELS.settingsSaveProviderKey, async (event, providerId: ProviderId, secret: string) => {
     assertTrustedSender(event);
 
     const trimmed = secret.trim();
     if (!trimmed) {
-      throw new Error('OpenRouter API key cannot be empty.');
+      throw new Error('Provider API key cannot be empty.');
     }
 
-    await keychain.setSecret('openrouter', trimmed);
-    settingsRepo.updateCredentialStatus('openrouter', {
+    await keychain.setSecret(providerId, trimmed);
+    settingsRepo.updateCredentialStatus(providerId, {
       hasSecret: true,
       status: 'unknown',
       validatedAt: null
@@ -37,9 +37,9 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
     return modelRegistry.getSettingsSummary();
   });
 
-  ipcMain.handle(IPC_CHANNELS.settingsValidateOpenRouterKey, async (event) => {
+  ipcMain.handle(IPC_CHANNELS.settingsValidateProviderKey, async (event, providerId: ProviderId, secret?: string) => {
     assertTrustedSender(event);
-    await modelRegistry.validateOpenRouterKey();
+    await modelRegistry.validateProviderKey(providerId, secret);
     return modelRegistry.getSettingsSummary();
   });
 

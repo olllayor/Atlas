@@ -16,6 +16,9 @@ type CodeBlockProps = {
 
 type SupportedLanguage = ReturnType<typeof codeHighlighter.getSupportedLanguages>[number];
 
+const MAX_HIGHLIGHT_CACHE_SIZE = 120;
+const highlightCache = new Map<string, HighlightResult | null>();
+
 const supportedLanguages = new Set<SupportedLanguage>(codeHighlighter.getSupportedLanguages());
 
 const languageAliases: Record<string, string> = {
@@ -82,6 +85,45 @@ function getDownloadFilename(language?: string) {
   return `snippet.${extension}`;
 }
 
+function buildHighlightCacheKey(language: string, code: string) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < code.length; index += 1) {
+    hash ^= code.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `${language}:${hash >>> 0}:${code.length}`;
+}
+
+function getCachedHighlightResult(key: string) {
+  if (!highlightCache.has(key)) {
+    return undefined;
+  }
+
+  const value = highlightCache.get(key) ?? null;
+  highlightCache.delete(key);
+  highlightCache.set(key, value);
+  return value;
+}
+
+function setCachedHighlightResult(key: string, value: HighlightResult | null) {
+  if (highlightCache.has(key)) {
+    highlightCache.delete(key);
+  }
+
+  highlightCache.set(key, value);
+
+  while (highlightCache.size > MAX_HIGHLIGHT_CACHE_SIZE) {
+    const oldestKey = highlightCache.keys().next().value;
+    if (!oldestKey) {
+      return;
+    }
+
+    highlightCache.delete(oldestKey);
+  }
+}
+
 function renderPlainCode(code: string) {
   return code.split('\n').map((line, index) => (
     <span key={`${index}-${line.length || 0}`} className="block min-h-6 whitespace-pre">
@@ -129,6 +171,15 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
       };
     }
 
+    const cacheKey = buildHighlightCacheKey(resolvedLanguage, code);
+    const cached = getCachedHighlightResult(cacheKey);
+    if (cached !== undefined) {
+      setHighlighted(cached);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const maybeResult = codeHighlighter.highlight(
       {
         code,
@@ -137,11 +188,13 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
       },
       (result) => {
         if (!cancelled) {
+          setCachedHighlightResult(cacheKey, result);
           setHighlighted(result);
         }
       }
     );
 
+    setCachedHighlightResult(cacheKey, maybeResult);
     setHighlighted(maybeResult);
 
     return () => {

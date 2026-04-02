@@ -1,4 +1,4 @@
-import type { ConversationDetail, ConversationSummary } from '../../shared/contracts';
+import type { ConversationSummary } from '../../shared/contracts';
 import type { DraftStateLike } from './types';
 
 export type SidebarConversationItem = {
@@ -12,7 +12,6 @@ export type SidebarConversationItem = {
 
 type BuildSidebarConversationItemsParams = {
   conversations: ConversationSummary[];
-  conversationDetails: Record<string, ConversationDetail>;
   draftsByConversation: Record<string, DraftStateLike | undefined>;
   now: number;
 };
@@ -28,46 +27,6 @@ function clipLabel(value: string, maxLength = 90) {
   }
 
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function getLatestUserLabel(detail?: ConversationDetail) {
-  if (!detail) {
-    return null;
-  }
-
-  for (let index = detail.messages.length - 1; index >= 0; index -= 1) {
-    const message = detail.messages[index];
-    if (message.role !== 'user') {
-      continue;
-    }
-
-    const content = clipLabel(message.content);
-    if (content) {
-      return content;
-    }
-  }
-
-  return null;
-}
-
-function getLatestAssistantPreview(detail?: ConversationDetail) {
-  if (!detail) {
-    return null;
-  }
-
-  for (let index = detail.messages.length - 1; index >= 0; index -= 1) {
-    const message = detail.messages[index];
-    if (message.role !== 'assistant') {
-      continue;
-    }
-
-    const content = clipLabel(message.content);
-    if (content) {
-      return content;
-    }
-  }
-
-  return null;
 }
 
 function formatRelativeTimestamp(timestamp: string | null | undefined, now: number) {
@@ -102,7 +61,6 @@ function formatRelativeTimestamp(timestamp: string | null | undefined, now: numb
 
 function buildSecondaryLabel(
   conversation: ConversationSummary,
-  detail: ConversationDetail | undefined,
   draft: DraftStateLike | undefined,
   primaryLabel: string
 ) {
@@ -118,7 +76,7 @@ function buildSecondaryLabel(
     return 'Generation stopped';
   }
 
-  const assistantPreview = getLatestAssistantPreview(detail);
+  const assistantPreview = clipLabel(conversation.lastAssistantMessagePreview ?? '');
   if (assistantPreview && assistantPreview !== primaryLabel) {
     return assistantPreview;
   }
@@ -133,18 +91,15 @@ function buildSecondaryLabel(
 
 export function buildSidebarConversationItems({
   conversations,
-  conversationDetails,
   draftsByConversation,
   now,
 }: BuildSidebarConversationItemsParams) {
   return conversations.map<SidebarConversationItem>((conversation) => {
-    const detail = conversationDetails[conversation.id];
     const draft = draftsByConversation[conversation.id];
-    const summaryPreview = clipLabel(conversation.lastMessagePreview ?? '');
     const conversationTitle = clipLabel(conversation.title);
     const primaryLabel =
-      getLatestUserLabel(detail) ??
-      (summaryPreview || null) ??
+      clipLabel(conversation.lastUserMessagePreview ?? '') ||
+      clipLabel(conversation.lastMessagePreview ?? '') ||
       conversationTitle;
 
     return {
@@ -152,7 +107,7 @@ export function buildSidebarConversationItems({
       isRunning: draft?.status === 'streaming',
       status: draft?.status ?? 'idle',
       primaryLabel,
-      secondaryLabel: buildSecondaryLabel(conversation, detail, draft, primaryLabel),
+      secondaryLabel: buildSecondaryLabel(conversation, draft, primaryLabel),
       timestampLabel: formatRelativeTimestamp(draft?.startedAt ?? conversation.updatedAt, now),
     };
   });

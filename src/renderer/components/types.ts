@@ -1,9 +1,9 @@
-import type { ChatMessagePart } from '../../shared/contracts';
+import type { ChatMessagePart, ProviderId } from '../../shared/contracts';
 
 export type DraftStateLike = {
   requestId: string;
   modelId: string;
-  providerId: string;
+  providerId: ProviderId;
   parts: ChatMessagePart[];
   status: 'streaming' | 'error' | 'aborted';
   errorMessage?: string;

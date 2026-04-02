@@ -69,6 +69,6 @@ export type ProviderStreamResult = {
 export interface ProviderAdapter {
   readonly providerId: ProviderId;
   validateCredential(apiKey: string): Promise<void>;
-  listModels(apiKey: string): Promise<ModelSummary[]>;
+  listModels(apiKey: string | null): Promise<ModelSummary[]>;
   streamChat(request: ProviderStreamRequest): Promise<ProviderStreamResult>;
 }

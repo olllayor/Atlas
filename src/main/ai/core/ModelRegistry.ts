@@ -1,16 +1,18 @@
-import type { ListModelsOptions, SettingsSummary } from '../../../shared/contracts';
+import type { ListModelsOptions, ProviderId, SettingsSummary } from '../../../shared/contracts';
+import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { SettingsRepo } from '../../db/repositories/settingsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import { normalizeError } from './ErrorNormalizer';
-import type { ProviderAdapter } from './ProviderAdapter';
+import type { ProviderRegistry } from './providerRegistry';
+import { getProviderOrThrow } from './providerRegistry';
 
 export class ModelRegistry {
   constructor(
     private readonly modelsRepo: ModelsRepo,
     private readonly settingsRepo: SettingsRepo,
     private readonly keychain: KeychainStore,
-    private readonly provider: ProviderAdapter
+    private readonly providers: ProviderRegistry
   ) {}
 
   list(options: ListModelsOptions = {}) {
@@ -18,53 +20,78 @@ export class ModelRegistry {
   }
 
   async refresh() {
-    const apiKey = await this.keychain.getSecret('openrouter');
+    let refreshedAny = false;
+    let sawProviderFailure = false;
 
-    if (!apiKey) {
-      throw new Error('Add an OpenRouter API key in settings before refreshing models.');
-    }
-
-    try {
-      const models = await this.provider.listModels(apiKey);
-      const validatedAt = new Date().toISOString();
-
-      this.modelsRepo.upsertModels(models);
-      this.settingsRepo.updateCredentialStatus('openrouter', {
-        hasSecret: true,
-        status: 'valid',
-        validatedAt
-      });
-
-      return this.modelsRepo.list();
-    } catch (error) {
-      const normalized = normalizeError(error);
-
-      if (normalized.code === 'auth_error') {
-        this.settingsRepo.updateCredentialStatus('openrouter', {
-          hasSecret: true,
-          status: 'invalid',
-          validatedAt: null
-        });
+    for (const providerId of PROVIDER_ORDER) {
+      const provider = this.providers.get(providerId);
+      if (!provider) {
+        continue;
       }
 
-      throw error;
+      const apiKey = await this.keychain.getSecret(providerId);
+      if (!apiKey && providerId !== 'glm') {
+        continue;
+      }
+
+      try {
+        const models = await provider.listModels(apiKey);
+        this.modelsRepo.upsertModels(models);
+        refreshedAny = true;
+
+        if (apiKey) {
+          this.settingsRepo.updateCredentialStatus(providerId, {
+            hasSecret: true,
+            status: 'valid',
+            validatedAt: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        sawProviderFailure = true;
+        const normalized = normalizeError(error);
+        if (normalized.code === 'auth_error' && apiKey) {
+          this.settingsRepo.updateCredentialStatus(providerId, {
+            hasSecret: true,
+            status: 'invalid',
+            validatedAt: null
+          });
+        }
+      }
+    }
+
+    if (refreshedAny) {
+      return this.modelsRepo.list();
+    }
+
+    const cachedModels = this.modelsRepo.list({ allowStale: true });
+    if (cachedModels.length > 0 && sawProviderFailure) {
+      return cachedModels;
+    }
+
+    if (!refreshedAny) {
+      throw new Error('Add a provider API key in settings before refreshing models.');
     }
   }
 
-  async validateOpenRouterKey() {
-    const apiKey = await this.keychain.getSecret('openrouter');
+  async validateProviderKey(providerId: ProviderId, secretOverride?: string) {
+    const provider = getProviderOrThrow(this.providers, providerId);
+    const override = secretOverride?.trim();
+    const apiKey = override || (await this.keychain.getSecret(providerId));
 
     if (!apiKey) {
-      this.settingsRepo.updateCredentialStatus('openrouter', {
+      this.settingsRepo.updateCredentialStatus(providerId, {
         hasSecret: false,
         status: 'missing',
         validatedAt: null
       });
-      throw new Error('Save an OpenRouter API key first.');
+      throw new Error('Save an API key first.');
     }
 
-    await this.provider.validateCredential(apiKey);
-    this.settingsRepo.updateCredentialStatus('openrouter', {
+    await provider.validateCredential(apiKey);
+    if (override) {
+      await this.keychain.setSecret(providerId, apiKey);
+    }
+    this.settingsRepo.updateCredentialStatus(providerId, {
       hasSecret: true,
       status: 'valid',
       validatedAt: new Date().toISOString()
@@ -79,6 +106,10 @@ export class ModelRegistry {
 
     return {
       providers: credentials,
+      defaultProviderId:
+        credentials.find((provider) => provider.hasSecret)?.providerId ??
+        PROVIDER_ORDER.find((providerId) => this.providers.has(providerId)) ??
+        null,
       appearance: {
         themeMode: this.settingsRepo.getThemeMode()
       },

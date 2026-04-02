@@ -1,4 +1,4 @@
-export type ProviderId = 'openrouter' | 'openai' | 'gemini';
+export type ProviderId = 'openrouter' | 'glm' | 'openai' | 'gemini';
 
 export type CredentialStatus = 'missing' | 'valid' | 'invalid' | 'unknown';
 
@@ -92,6 +92,7 @@ export type SettingsAppearanceSummary = {
 
 export type SettingsSummary = {
   providers: ProviderCredentialSummary[];
+  defaultProviderId: ProviderId | null;
   appearance: SettingsAppearanceSummary;
   showFreeOnlyByDefault: boolean;
   modelCatalogLastSyncedAt: string | null;
@@ -105,6 +106,8 @@ export type ConversationSummary = {
   createdAt: string;
   updatedAt: string;
   lastMessagePreview: string | null;
+  lastUserMessagePreview: string | null;
+  lastAssistantMessagePreview: string | null;
   lastMessageAt: string | null;
   defaultProviderId: ProviderId | null;
   defaultModelId: string | null;
@@ -138,6 +141,23 @@ export type ConversationDetail = {
     defaultModelId: string | null;
   };
   messages: ChatMessage[];
+};
+
+export type ConversationPageRequest = {
+  cursor?: string | null;
+  limit?: number;
+};
+
+export type ConversationPage = ConversationDetail & {
+  hasOlder: boolean;
+  nextCursor: string | null;
+  limit: number;
+};
+
+export type ConversationStats = {
+  storedConversationCount: number;
+  storedMessageCount: number;
+  databaseSizeBytes: number;
 };
 
 export type ChatInputMessage = {
@@ -287,10 +307,35 @@ export type UsageSummary = {
     outputTokens: number;
     reasoningTokens: number;
     estimatedCostUsd: number | null;
+    storedConversationCount: number;
+    storedMessageCount: number;
+    databaseSizeBytes: number;
     loadedConversationCount: number;
     loadedMessageCount: number;
+    rendererHeapBytes: number | null;
+    mainProcessRssBytes: number | null;
   };
   providers: UsageProviderSummary[];
+};
+
+export type DiagnosticsSnapshot = {
+  collectedAt: string;
+  build: {
+    appVersion: string;
+    electronVersion: string | null;
+    chromeVersion: string | null;
+    nodeVersion: string;
+    platform: string;
+    arch: string;
+  };
+  mainProcess: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    externalBytes: number;
+    arrayBuffersBytes: number;
+  };
+  databaseSizeBytes: number;
 };
 
 export type SettingsUpdateRequest = {
@@ -351,8 +396,8 @@ export type AppUpdateSnapshot =
 export type RendererApi = {
   settings: {
     getSummary: () => Promise<SettingsSummary>;
-    saveOpenRouterKey: (secret: string) => Promise<SettingsSummary>;
-    validateOpenRouterKey: () => Promise<SettingsSummary>;
+    saveProviderKey: (providerId: ProviderId, secret: string) => Promise<SettingsSummary>;
+    validateProviderKey: (providerId: ProviderId, secret?: string) => Promise<SettingsSummary>;
     updatePreferences: (patch: SettingsUpdateRequest) => Promise<SettingsSummary>;
   };
   models: {
@@ -363,12 +408,17 @@ export type RendererApi = {
     list: () => Promise<ConversationSummary[]>;
     create: () => Promise<ConversationSummary>;
     get: (conversationId: string) => Promise<ConversationDetail>;
+    getPage: (conversationId: string, request?: ConversationPageRequest) => Promise<ConversationPage>;
+    getStats: () => Promise<ConversationStats>;
     delete: (conversationId: string) => Promise<void>;
   };
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
+  };
+  diagnostics: {
+    getSnapshot: () => Promise<DiagnosticsSnapshot>;
   };
   updates: {
     getState: () => Promise<AppUpdateSnapshot>;

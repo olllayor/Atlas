@@ -7,6 +7,7 @@ const LEGACY_SERVICE_NAMES = ['cheapchat'];
 
 const ACCOUNT_NAMES: Record<ProviderId, string> = {
   openrouter: 'openrouter-api-key',
+  glm: 'glm-api-key',
   openai: 'openai-api-key',
   gemini: 'gemini-api-key'
 };

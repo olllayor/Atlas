@@ -2,6 +2,7 @@
 node_modules
 dist
 out
+dist-tests
 release
 .DS_Store
 *.log

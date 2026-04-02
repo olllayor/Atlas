@@ -25,6 +25,7 @@ import {
 } from './lib/keybindings';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { prewarmMessageRendering } from './lib/messageRendering';
+import { runViewTransition } from './lib/viewTransitions';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
 
 function LoadingScreen() {
@@ -522,7 +523,7 @@ export default function App() {
         activeSection={settingsSection}
         activeCredentialProviderId={activeCredentialProviderId}
         shortcutPlatform={shortcutPlatform}
-        onBack={closeSettings}
+        onBack={() => runViewTransition(() => closeSettings())}
         onNavigate={setSettingsSection}
         onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
@@ -587,10 +588,10 @@ export default function App() {
           onSelect={(id) => void loadConversation(id)}
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
-          onOpenSettings={openSettings}
+          onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
-          onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
         />
 
         <div
@@ -599,6 +600,7 @@ export default function App() {
               ? 'bg-transparent'
               : 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
           }`}
+          style={{ viewTransitionName: 'app-main-panel' }}
         >
           {!sidebarCollapsed ? (
             <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
@@ -618,7 +620,7 @@ export default function App() {
               hasCredential={hasCredential}
               isLoadingConversation={isLoadingConversation}
               isLoadingOlder={isLoadingOlder}
-              onOpenSettings={openSettings}
+              onOpenSettings={() => runViewTransition(() => openSettings())}
               onSuggestionClick={(prompt) => setComposerValue(prompt)}
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
             />

@@ -28,6 +28,7 @@ const api: RendererApi = {
   chat: {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
     abort: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.chatAbort, requestId),
+    openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {
       const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
         listener(payload);

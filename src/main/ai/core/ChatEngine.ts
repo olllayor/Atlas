@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import type { BrowserWindow } from 'electron';
+import { BrowserWindow } from 'electron/main';
 
 import type {
   ChatMessagePart,
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
+  OpenVisualWindowRequest,
   StreamEvent
 } from '../../../shared/contracts';
 import {
@@ -23,12 +24,15 @@ import {
   getReasoningContentFromParts,
   getTextContentFromParts
 } from '../../../shared/messageParts';
+import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
+import { VisualStreamParser } from '../../../shared/visualParser';
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools } from '../tools/builtInTools';
+import { VISUAL_PROMPT } from './VISUAL_PROMPT';
 import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
 import type { ProviderRegistry } from './providerRegistry';
@@ -38,6 +42,7 @@ type ActiveRequest = {
   controller: AbortController;
   window: BrowserWindow;
   onWindowClosed: () => void;
+  visualParser: VisualStreamParser;
 };
 
 type BufferedRequestEvents = {
@@ -90,13 +95,14 @@ export class ChatEngine {
 
     const requestId = randomUUID();
     const controller = new AbortController();
+    const visualParser = new VisualStreamParser();
     const onWindowClosed = () => {
       controller.abort();
       this.clearBufferedEvents(requestId);
       this.activeRequests.delete(requestId);
     };
     window.once('closed', onWindowClosed);
-    this.activeRequests.set(requestId, { controller, window, onWindowClosed });
+    this.activeRequests.set(requestId, { controller, window, onWindowClosed, visualParser });
 
     const persistedParts = this.persistInputParts(request.conversationId, requestId, inputParts);
     this.conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
@@ -152,6 +158,37 @@ export class ChatEngine {
   abort(requestId: string) {
     const active = this.activeRequests.get(requestId);
     active?.controller.abort();
+  }
+
+  async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
+    const srcdoc = buildVisualSrcDoc({
+      visualId: request.visualId,
+      content: request.content,
+      theme: request.theme,
+    });
+    const html = buildStandaloneVisualWindowHtml({
+      title: request.title,
+      srcdoc,
+      theme: request.theme,
+    });
+    const window = new BrowserWindow({
+      width: 980,
+      height: 720,
+      minWidth: 720,
+      minHeight: 520,
+      autoHideMenuBar: true,
+      backgroundColor: request.theme.background,
+      title: request.title?.trim() || 'Inline Visual',
+      parent: sourceWindow,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      }
+    });
+
+    await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    window.show();
   }
 
   private async runRequest(requestId: string, request: ChatStartRequest) {
@@ -235,30 +272,29 @@ export class ChatEngine {
           throw new Error('The chat request is no longer active.');
         }
 
+        active.visualParser.reset();
         let parts: ChatMessagePart[] = [];
+        let lastTextPartId = 'assistant-text';
 
         const result = await provider.streamChat({
           apiKey,
           modelId: request.modelId,
           messages: this.conversationsRepo.getModelHistory(request.conversationId),
-          system: request.enableTools ? TOOL_USE_SYSTEM_PROMPT : undefined,
+          system: request.enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT,
           tools: request.enableTools ? createBuiltInTools(this.modelsRepo) : undefined,
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           signal,
           onChunk: (event) => {
             streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'chunk',
+            lastTextPartId = event.id;
+            parts = this.applyParsedChunks({
+              activeWindow: active.window,
+              parts,
+              parsed: active.visualParser.feed(event.delta, requestId),
               requestId,
-              id: event.id,
-              delta: event.delta
-            });
-            this.sendEvent(active.window, {
-              type: 'chunk',
-              requestId,
-              id: event.id,
-              delta: event.delta
+              textPartId: event.id,
+              emitToRenderer: true,
             });
           },
           onReasoningChunk: (event) => {
@@ -355,6 +391,14 @@ export class ChatEngine {
             });
           }
         });
+        parts = this.applyParsedChunks({
+          activeWindow: active.window,
+          parts,
+          parsed: active.visualParser.flush(requestId),
+          requestId,
+          textPartId: lastTextPartId,
+          emitToRenderer: true,
+        });
 
         parts = finalizeMessageParts(parts);
 
@@ -382,6 +426,68 @@ export class ChatEngine {
         await sleep(450 + Math.floor(Math.random() * 350));
       }
     }
+  }
+
+  private applyParsedChunks({
+    activeWindow,
+    parts,
+    parsed,
+    requestId,
+    textPartId,
+    emitToRenderer,
+  }: {
+    activeWindow: BrowserWindow;
+    parts: ChatMessagePart[];
+    parsed: ReturnType<VisualStreamParser['feed']>;
+    requestId: string;
+    textPartId: string;
+    emitToRenderer: boolean;
+  }) {
+    let nextParts = parts;
+
+    for (const item of parsed) {
+      if (item.type === 'text') {
+        const event: StreamEvent = {
+          type: 'chunk',
+          requestId,
+          id: textPartId,
+          delta: item.content,
+        };
+        nextParts = applyStreamEventToParts(nextParts, event);
+        if (emitToRenderer) {
+          this.sendEvent(activeWindow, event);
+        }
+        continue;
+      }
+
+      if (item.type === 'visual_start') {
+        const event: StreamEvent = {
+          type: 'visual-start',
+          requestId,
+          visualId: item.visualId!,
+          title: item.title,
+        };
+        nextParts = applyStreamEventToParts(nextParts, event);
+        if (emitToRenderer) {
+          this.sendEvent(activeWindow, event);
+        }
+        continue;
+      }
+
+      const event: StreamEvent = {
+        type: 'visual-complete',
+        requestId,
+        visualId: item.visualId!,
+        content: item.content,
+        title: item.title,
+      };
+      nextParts = applyStreamEventToParts(nextParts, event);
+      if (emitToRenderer) {
+        this.sendEvent(activeWindow, event);
+      }
+    }
+
+    return nextParts;
   }
 
   private sendEvent(window: BrowserWindow, event: StreamEvent) {

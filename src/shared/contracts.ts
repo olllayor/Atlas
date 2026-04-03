@@ -76,7 +76,15 @@ export type ChatToolPart = {
   approval?: ChatToolApproval;
 };
 
-export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart;
+export type ChatVisualPart = {
+  id: string;
+  type: 'visual';
+  content: string;
+  state: ChatPartState;
+  title?: string;
+};
+
+export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart | ChatVisualPart;
 
 export type ModelSummary = {
   id: string;
@@ -244,6 +252,26 @@ export type ChatStartResponse = {
   requestId: string;
 };
 
+export type VisualThemeTokens = {
+  colorScheme: 'light' | 'dark';
+  background: string;
+  panel: string;
+  text: string;
+  mutedText: string;
+  border: string;
+  accent: string;
+  errorBackground: string;
+  errorBorder: string;
+  errorText: string;
+};
+
+export type OpenVisualWindowRequest = {
+  visualId: string;
+  content: string;
+  title?: string;
+  theme: VisualThemeTokens;
+};
+
 export type StreamChunkEvent = {
   type: 'chunk';
   requestId: string;
@@ -334,6 +362,21 @@ export type StreamErrorEvent = {
   retryable: boolean;
 };
 
+export type StreamVisualStartEvent = {
+  type: 'visual-start';
+  requestId: string;
+  visualId: string;
+  title?: string;
+};
+
+export type StreamVisualCompleteEvent = {
+  type: 'visual-complete';
+  requestId: string;
+  visualId: string;
+  content: string;
+  title?: string;
+};
+
 export type StreamDoneEvent = {
   type: 'done';
   requestId: string;
@@ -349,6 +392,8 @@ export type StreamEvent =
   | StreamToolOutputAvailableEvent
   | StreamToolOutputErrorEvent
   | StreamToolOutputDeniedEvent
+  | StreamVisualStartEvent
+  | StreamVisualCompleteEvent
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamDoneEvent;
@@ -487,6 +532,7 @@ export type RendererApi = {
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
+    openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
   };
   diagnostics: {

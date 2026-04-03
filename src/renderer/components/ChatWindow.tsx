@@ -35,6 +35,7 @@ import {
 } from './ai-elements/confirmation';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { VisualBlock } from './ai-elements/visual';
 import { useClipboard } from '../hooks/useClipboard';
 
 type ChatWindowProps = {
@@ -271,6 +272,10 @@ function AssistantParts({
           return <AttachmentRow key={part.id} attachments={[part]} />;
         }
 
+        if (part.type === 'visual') {
+          return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+        }
+
         return (
           <MessageResponse
             key={`text-${index}`}
@@ -438,9 +443,15 @@ function estimateHistoryRowHeight(message: ChatMessage) {
 
   const toolCount = message.parts.filter((part) => part.type === 'tool').length;
   const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
+  const visualCount = message.parts.filter((part) => part.type === 'visual').length;
   return Math.min(
     560,
-    156 + Math.ceil(message.content.length / 100) * 24 + toolCount * 84 + reasoningCount * 56 + fileCount * 28,
+    156 +
+      Math.ceil(message.content.length / 100) * 24 +
+      toolCount * 84 +
+      reasoningCount * 56 +
+      visualCount * 320 +
+      fileCount * 28,
   );
 }
 

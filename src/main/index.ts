@@ -1,6 +1,6 @@
 import { access, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserWindow, app } from 'electron/main';
+import { BrowserWindow, app, ipcMain } from 'electron/main';
 
 import { ChatEngine } from './ai/core/ChatEngine';
 import { ModelRegistry } from './ai/core/ModelRegistry';
@@ -20,6 +20,9 @@ import { registerSettingsIpc } from './ipc/settings';
 import { registerUpdatesIpc } from './ipc/updates';
 import { KeychainStore } from './secrets/keychain';
 import { UpdateService } from './updates/UpdateService';
+import { capturePostHogEvent, getAnonymousId, shutdownPostHog } from './analytics/PostHogClient';
+import { IPC_CHANNELS } from '../shared/ipc';
+import { POSTHOG_EVENTS } from '../shared/posthog';
 
 const APP_NAME = 'Atlas';
 const DATABASE_FILENAME = 'atlas-chat.db';
@@ -107,9 +110,18 @@ app.whenReady().then(async () => {
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
 
+  ipcMain.handle(IPC_CHANNELS.posthogGetAnonymousId, () => {
+    return getAnonymousId();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.posthogCaptureEvent, (_event: Electron.IpcMainInvokeEvent, eventName: string, properties?: Record<string, unknown>) => {
+    capturePostHogEvent(eventName, properties);
+  });
+
   const window = createWindow();
   window.once('show', () => {
     updateService.start();
+    capturePostHogEvent(POSTHOG_EVENTS.APP_LAUNCHED);
   });
 
   app.on('activate', () => {
@@ -120,6 +132,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  void shutdownPostHog();
   if (process.platform !== 'darwin') {
     app.quit();
   }

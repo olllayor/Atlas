@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { config } from 'dotenv';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -18,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const require = createRequire(import.meta.url);
+
+config({ path: join(repoRoot, '.env') });
 
 const APP_DISPLAY_NAME = 'Atlas';
 const DEV_BUNDLE_ID = 'com.olllayor.atlaschat.dev';

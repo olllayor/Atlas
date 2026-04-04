@@ -58,6 +58,12 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.updatesEvent, handler);
       };
     }
+  },
+  posthog: {
+    getAnonymousId: () => ipcRenderer.invoke(IPC_CHANNELS.posthogGetAnonymousId),
+    captureEvent: (event, properties) => {
+      ipcRenderer.invoke(IPC_CHANNELS.posthogCaptureEvent, event, properties);
+    }
   }
 };
 

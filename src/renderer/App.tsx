@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { PROVIDER_METADATA } from '../shared/providerMetadata';
+import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
 import { Composer } from './components/Composer';
@@ -25,6 +26,7 @@ import {
   shouldShowShortcutHintForCommand,
 } from './lib/keybindings';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
+import { captureEvent, identifyUser } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { runViewTransition } from './lib/viewTransitions';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
@@ -343,6 +345,7 @@ export default function App() {
   const runCommand = useEffectEvent((command: KeybindingCommand) => {
     if (command === 'app.commandPalette.toggle') {
       setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
       setCommandPaletteOpen(!commandPaletteOpen);
       return;
     }
@@ -350,6 +353,7 @@ export default function App() {
     if (command === 'chat.new') {
       setCommandPaletteOpen(false);
       setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.CONVERSATION_CREATED);
       void createConversation();
       return;
     }
@@ -368,6 +372,7 @@ export default function App() {
 
     if (command === 'settings.open') {
       setCommandPaletteOpen(false);
+      captureEvent(POSTHOG_EVENTS.SETTINGS_OPENED);
       runViewTransition(() => {
         openSettings('general');
       });
@@ -415,6 +420,7 @@ export default function App() {
 
   useEffect(() => {
     void bootstrap();
+    void identifyUser();
   }, [bootstrap]);
 
   useEffect(() => prewarmMessageRendering(), []);
@@ -584,15 +590,42 @@ export default function App() {
         onNavigate={setSettingsSection}
         onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveProviderKey()}
-        onValidateKey={() => void validateProviderKey()}
-        onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
-        onUiFontSizeChange={(value) => void updatePreferences({ appearance: { uiFontSize: value } })}
-        onCodeFontSizeChange={(value) => void updatePreferences({ appearance: { codeFontSize: value } })}
-        onUiFontFamilyChange={(value) => void updatePreferences({ appearance: { uiFontFamily: value } })}
-        onCodeFontFamilyChange={(value) => void updatePreferences({ appearance: { codeFontFamily: value } })}
-        onUpdateKeybindings={(rules) => void updatePreferences({ keyboard: { keybindings: rules } })}
-        onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
+        onSaveKey={() => {
+          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_SAVED, { providerId: activeCredentialProviderId });
+          void saveProviderKey();
+        }}
+        onValidateKey={() => {
+          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_VALIDATED, { providerId: activeCredentialProviderId });
+          void validateProviderKey();
+        }}
+        onThemeModeChange={(mode) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'themeMode', value: mode });
+          void updatePreferences({ appearance: { themeMode: mode } });
+        }}
+        onUiFontSizeChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontSize', value });
+          void updatePreferences({ appearance: { uiFontSize: value } });
+        }}
+        onCodeFontSizeChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontSize', value });
+          void updatePreferences({ appearance: { codeFontSize: value } });
+        }}
+        onUiFontFamilyChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontFamily', value });
+          void updatePreferences({ appearance: { uiFontFamily: value } });
+        }}
+        onCodeFontFamilyChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontFamily', value });
+          void updatePreferences({ appearance: { codeFontFamily: value } });
+        }}
+        onUpdateKeybindings={(rules) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'keybindings' });
+          void updatePreferences({ keyboard: { keybindings: rules } });
+        }}
+        onToggleFreeModels={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'showFreeOnlyByDefault', value });
+          void updatePreferences({ showFreeOnlyByDefault: value });
+        }}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {
             void performUpdatePrimaryAction();
@@ -618,6 +651,7 @@ export default function App() {
         onSaveKey={() => void saveProviderKey()}
         onValidateKey={() => void validateProviderKey()}
         onContinue={() => {
+          captureEvent(POSTHOG_EVENTS.ONBOARDING_COMPLETED);
           setShowOnboarding(false);
           setOnboardingDone(true);
         }}
@@ -699,6 +733,10 @@ export default function App() {
               onChange={setComposerValue}
               onSend={(message) => {
                 const fallbackValue = message.text;
+                captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
+                  hasFiles: message.files && message.files.length > 0,
+                  fileCount: message.files?.length ?? 0,
+                });
                 return sendMessage({
                   text: message.text,
                   files: message.files,
@@ -707,10 +745,16 @@ export default function App() {
                   .catch(() => setComposerValue(fallbackValue));
               }}
               onAbort={() => {
-                if (selectedConversationId) void abortConversation(selectedConversationId);
+                if (selectedConversationId) {
+                  captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+                  void abortConversation(selectedConversationId);
+                }
               }}
               onSelectModel={(modelId) => {
-                if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
+                if (selectedConversationId) {
+                  captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
+                  setSelectedModel(selectedConversationId, modelId);
+                }
               }}
               onModelPickerOpenChange={setModelPickerOpen}
               onComposerFocusChange={setComposerFocused}

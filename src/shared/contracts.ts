@@ -498,4 +498,8 @@ export type RendererApi = {
     performPrimaryAction: () => Promise<void>;
     subscribe: (listener: (snapshot: AppUpdateSnapshot) => void) => () => void;
   };
+  posthog: {
+    getAnonymousId: () => Promise<string>;
+    captureEvent: (event: string, properties?: Record<string, unknown>) => void;
+  };
 };

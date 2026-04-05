@@ -144,10 +144,10 @@ export const ContextTrigger = ({
     <HoverCardTrigger asChild>
       <button
         type="button"
-        className={cn(
-          "relative inline-flex size-[34px] items-center justify-center rounded-full border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] text-[9px] font-semibold tabular-nums text-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-white/16 hover:bg-white/8 hover:text-white",
-          className
-        )}
+          className={cn(
+            "relative inline-flex size-[34px] items-center justify-center border border-white/10 bg-white/[0.05] text-[9px] font-normal tabular-nums text-white/50 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white/70",
+            className
+          )}
         {...props}
       >
         <svg
@@ -160,7 +160,7 @@ export const ContextTrigger = ({
             cy="16"
             r="14"
             fill="none"
-            stroke="rgba(255,255,255,0.12)"
+            stroke="rgba(255,255,255,0.15)"
             strokeWidth="2"
           />
           <circle
@@ -168,7 +168,7 @@ export const ContextTrigger = ({
             cy="16"
             r="14"
             fill="none"
-            stroke="rgba(110,141,255,0.95)"
+            stroke="rgba(255,255,255,0.6)"
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             strokeLinecap="round"
@@ -188,10 +188,10 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
     side="top"
     align="end"
     sideOffset={12}
-    className={cn(
-      "w-[292px] rounded-[12px] border border-white/10 bg-[#171717]/98 p-0 text-text-primary shadow-[0_18px_48px_rgba(0,0,0,0.38)] backdrop-blur-xl",
-      className
-    )}
+      className={cn(
+        "w-[292px] border border-white/10 bg-bg-elevated p-0 text-text-primary",
+        className
+      )}
     {...props}
   />
 );

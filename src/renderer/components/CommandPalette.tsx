@@ -37,7 +37,7 @@ export function CommandPalette({ items, onOpenChange, onSelect, open }: CommandP
 
   return (
     <CommandDialog
-      className="overflow-hidden rounded-2xl border border-white/8 bg-[#12161d]/96 p-0 text-white shadow-[0_30px_90px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+      className="overflow-hidden rounded-none border border-white/8 bg-bg-base p-0 text-white"
       description="Search for Atlas actions"
       onOpenChange={onOpenChange}
       open={open}
@@ -51,24 +51,24 @@ export function CommandPalette({ items, onOpenChange, onSelect, open }: CommandP
         <CommandEmpty className="py-10 text-center text-sm text-white/42">No matching commands.</CommandEmpty>
         {Object.entries(grouped).map(([section, sectionItems]) => (
           <CommandGroup
-            className="overflow-hidden px-1 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.16em] [&_[cmdk-group-heading]]:text-white/28"
+            className="overflow-hidden px-1 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.16em] [&_[cmdk-group-heading]]:text-white/30"
             heading={section}
             key={section}
           >
             {sectionItems.map((item) => (
               <CommandItem
-                className="rounded-xl px-3 py-3 data-[selected=true]:bg-white/[0.08] data-[selected=true]:text-white"
+                className="rounded-none px-3 py-3 data-[selected=true]:bg-white/[0.05] data-[selected=true]:text-white"
                 disabled={item.disabled}
                 key={item.command}
                 onSelect={() => onSelect(item.command)}
                 value={`${item.title} ${item.description}`}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium text-white/88">{item.title}</div>
+                  <div className="truncate text-[13px] font-normal text-white/88">{item.title}</div>
                   <div className="mt-0.5 truncate text-[11px] text-white/44">{item.description}</div>
                 </div>
                 {item.shortcutLabel ? (
-                  <CommandShortcut className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] tracking-[0.08em] text-white/55">
+                  <CommandShortcut className="rounded-none border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] tracking-[0.08em] text-white/55">
                     {item.shortcutLabel}
                   </CommandShortcut>
                 ) : null}

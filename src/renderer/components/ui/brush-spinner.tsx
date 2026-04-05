@@ -15,7 +15,7 @@ interface BrushSpinnerProps {
 function BrushSpinner({
   size = 24,
   strokeWidth = 2.5,
-  color = "var(--text-primary)",
+  color = "rgba(255,255,255,0.9)",
   glowColor = "rgba(255,255,255,0.25)",
   speed = 1.2,
   className,

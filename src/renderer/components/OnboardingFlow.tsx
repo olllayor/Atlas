@@ -58,13 +58,13 @@ export function OnboardingFlow({
   if (step === 'done') {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="w-full max-w-md rounded-xl border border-border-medium bg-bg-elevated p-8 text-center shadow-elevated">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-success-bg">
-            <svg className="h-7 w-7 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <div className="w-full max-w-md border border-white/10 bg-bg-base p-8 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center border border-white/20 bg-white/[0.05]">
+            <svg className="h-7 w-7 text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="mt-5 text-xl font-semibold text-text-primary">You're all set</h2>
+          <h2 className="mt-5 text-xl font-normal text-text-primary">You're all set</h2>
           <p className="mt-2 text-sm text-text-tertiary">
             Your API key is configured and ready. Start a conversation below.
           </p>
@@ -82,10 +82,10 @@ export function OnboardingFlow({
 
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md rounded-xl border border-border-medium bg-bg-elevated p-8 shadow-elevated">
+      <div className="w-full max-w-md border border-white/10 bg-bg-base p-8">
         <div className="text-center">
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
-          <h1 className="mt-2 text-2xl font-semibold text-text-primary">Atlas</h1>
+          <p className="text-xs font-normal uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
+          <h1 className="mt-2 text-2xl font-normal text-text-primary">Atlas</h1>
           <p className="mt-2 text-sm text-text-tertiary">
             A local-first chat client. Bring your own API key, keep everything on your machine.
           </p>
@@ -93,11 +93,11 @@ export function OnboardingFlow({
 
         <div className="mt-8">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-bg-active text-sm font-medium text-text-primary">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-white/20 bg-white/[0.05] text-sm font-normal text-text-primary">
               1
             </div>
             <div>
-              <h3 className="text-sm font-medium text-text-primary">Add your {providerLabel} API key</h3>
+              <h3 className="text-sm font-normal text-text-primary">Add your {providerLabel} API key</h3>
               <p className="mt-0.5 text-xs text-text-muted">
                 Get one at{' '}
                 <a
@@ -112,7 +112,7 @@ export function OnboardingFlow({
             </div>
           </div>
 
-          <div className="mt-5 inline-flex rounded-[14px] border border-border-default bg-bg-subtle p-1">
+          <div className="mt-5 inline-flex border border-white/10 bg-bg-subtle p-1">
             {(['openrouter', 'glm'] as const).map((id) => {
               const isActive = id === providerId;
 
@@ -121,9 +121,9 @@ export function OnboardingFlow({
                   key={id}
                   type="button"
                   onClick={() => onProviderChange(id)}
-                  className={`inline-flex h-9 items-center rounded-[10px] px-3 text-[13px] font-medium transition ${
+                  className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
                     isActive
-                      ? 'bg-bg-elevated text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                      ? 'bg-bg-elevated text-text-primary'
                       : 'text-text-tertiary hover:text-text-primary'
                   }`}
                 >
@@ -166,7 +166,7 @@ export function OnboardingFlow({
           </button>
 
           {error && (
-            <p className="mt-3 text-xs text-error">{error}</p>
+            <p className="mt-3 text-xs text-white/50">{error}</p>
           )}
         </div>
 

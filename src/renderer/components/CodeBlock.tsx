@@ -221,23 +221,23 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
   return (
     <div
       className={cn(
-        'group/code my-3 overflow-hidden rounded-[18px] border border-border-default bg-[#0d0f13] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]',
+        'group/code my-3 overflow-hidden border border-border-default bg-white/[0.03]',
         className
       )}
     >
-      <div className="flex items-center justify-between gap-3 border-b border-border-subtle/80 bg-[#111318] px-3 py-2">
+      <div className="flex items-center justify-between gap-3 border-b border-border-subtle/80 px-3 py-2">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="font-code-sans text-[10px] font-medium uppercase tracking-[0.16em] text-text-faint">
+          <span className="font-code-sans text-[10px] font-normal uppercase tracking-[0.16em] text-text-faint">
             {languageLabel}
           </span>
           {isIncomplete && <span className="text-[10px] text-text-faint">Streaming</span>}
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5 rounded-full border border-border-subtle/80 bg-black/20 p-0.5">
+        <div className="flex shrink-0 items-center gap-0.5 border border-border-subtle/80 p-0.5">
           <button
             type="button"
             onClick={handleDownload}
-            className="rounded-full p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+            className="p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
             title="Download code"
           >
             <Download className="h-3.25 w-3.25" />
@@ -245,10 +245,10 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
           <button
             type="button"
             onClick={handleCopy}
-            className="rounded-full p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+            className="p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
             title={copied ? 'Copied!' : 'Copy code'}
           >
-            {copied ? <Check className="h-3.25 w-3.25 text-success" /> : <Copy className="h-3.25 w-3.25" />}
+            {copied ? <Check className="h-3.25 w-3.25 text-white/50" /> : <Copy className="h-3.25 w-3.25" />}
           </button>
         </div>
       </div>

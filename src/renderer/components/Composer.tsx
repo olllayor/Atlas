@@ -96,19 +96,19 @@ const ComposerAttachmentItem = memo(
       <AttachmentHoverCard>
         <AttachmentHoverCardTrigger asChild>
           <Attachment
-            className="h-7 max-w-[148px] gap-1.5 rounded-full border-white/8 bg-white/[0.035] pl-1.5 pr-1 text-text-secondary hover:bg-white/[0.055] hover:text-text-primary"
+            className="h-7 max-w-[148px] gap-1.5 border border-white/10 bg-white/[0.03] pl-1.5 pr-1 text-text-secondary hover:bg-white/[0.05] hover:text-text-primary"
             data={attachment}
             onRemove={handleRemove}
           >
-            <div className="flex size-[18px] shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-white/[0.06]">
+            <div className="flex size-[18px] shrink-0 items-center justify-center overflow-hidden bg-white/[0.06]">
               {inlinePreview}
             </div>
             <AttachmentInfo className="min-w-0 max-w-[92px] flex-none text-[11px] leading-none text-inherit" />
-            <AttachmentRemove className="!ml-0 !size-4 shrink-0 rounded-full !p-0 !opacity-100 text-white/35 transition hover:bg-white/[0.08] hover:text-white [&>svg]:size-[10px]" />
+            <AttachmentRemove className="!ml-0 !size-4 shrink-0 !p-0 !opacity-100 text-white/35 transition hover:bg-white/[0.08] hover:text-white [&>svg]:size-[10px]" />
           </Attachment>
         </AttachmentHoverCardTrigger>
         <AttachmentHoverCardContent
-          className="max-w-[240px] rounded-md border-white/10 bg-[#2f333d] px-2.5 py-1.5 text-[12px] font-medium text-white shadow-lg"
+          className="max-w-[240px] border border-white/10 bg-bg-elevated px-2.5 py-1.5 text-[12px] font-normal text-white"
           side="top"
           sideOffset={6}
         >
@@ -199,12 +199,12 @@ function ComposerFooter({
 
   return (
     <>
-      {footerMessage ? <div className="px-4 pb-2 text-[11px] leading-5 text-[#ffbd8a]">{footerMessage}</div> : null}
+      {footerMessage ? <div className="px-4 pb-2 text-[11px] leading-5 text-white/50">{footerMessage}</div> : null}
 
       <PromptInputFooter className="flex items-center justify-between px-3.5 pb-3 pt-0.5">
         <PromptInputTools className="flex items-center gap-1">
           <PromptInputButton
-            className="size-8 rounded-full border border-white/8 bg-white/[0.03] text-white/58 hover:bg-white/[0.07] hover:text-white"
+            className="size-8 border border-white/10 bg-transparent text-white/40 hover:bg-white/[0.05] hover:text-white"
             disabled={disabled || isStreaming}
             onClick={() => attachments.openFileDialog()}
             tooltip="Attach from disk"
@@ -243,7 +243,7 @@ function ComposerFooter({
           ) : null}
 
           <PromptInputSubmit
-            className="inline-flex size-8 items-center justify-center rounded-full bg-[#2b468f] text-white shadow-[0_8px_20px_rgba(43,70,143,0.24)] transition hover:bg-[#3553a8] disabled:cursor-not-allowed disabled:opacity-30"
+            className="inline-flex size-8 items-center justify-center bg-white text-bg-base transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-30"
             disabled={isStreaming ? false : !hasSubmittableContent || disabled || Boolean(unsupportedReason)}
             onStop={onAbort}
             size="icon-sm"
@@ -362,7 +362,7 @@ export function Composer({
       <div className="mx-auto max-w-content-max">
         <PromptInput
           accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
-          className="overflow-hidden rounded-[22px] border border-white/7 bg-[linear-gradient(180deg,rgba(30,34,41,0.92),rgba(24,27,34,0.96))] shadow-[0_14px_30px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] transition-all focus-within:border-white/11 focus-within:bg-[linear-gradient(180deg,rgba(34,38,46,0.95),rgba(25,29,36,0.98))]"
+          className="overflow-hidden border border-white/10 bg-bg-base transition-all focus-within:border-white/20"
           globalDrop
           maxFileSize={MAX_ATTACHMENT_SIZE_BYTES}
           maxFiles={MAX_ATTACHMENT_COUNT}

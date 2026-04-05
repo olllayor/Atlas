@@ -34,7 +34,7 @@ export const ModelSelectorContent = ({
 }: ModelSelectorContentProps) => (
   <DialogContent
     aria-describedby={undefined}
-    className={cn('outline! border-none! p-0 outline-border! outline-solid!', className)}
+    className={cn('outline! border-none! rounded-none p-0 outline-border! outline-solid!', className)}
     {...props}
   >
     <DialogTitle className="sr-only">{title}</DialogTitle>
@@ -155,7 +155,7 @@ export const ModelSelectorLogo = ({ provider, className, ...props }: ModelSelect
       <span
         aria-label={`${provider} logo fallback`}
         className={cn(
-          'flex size-[22px] shrink-0 items-center justify-center rounded-[6px] border border-white/10 text-[8px] font-semibold uppercase tracking-[0.08em] text-white/88 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]',
+          'flex size-[22px] shrink-0 items-center justify-center rounded-none border border-white/10 text-[8px] font-normal uppercase tracking-[0.08em] text-white/88',
           className,
         )}
         style={fallbackStyle}
@@ -171,7 +171,7 @@ export const ModelSelectorLogo = ({ provider, className, ...props }: ModelSelect
       {...props}
       alt={`${provider} logo`}
       className={cn(
-        'size-[22px] shrink-0 rounded-[6px] border border-white/10 bg-white/92 p-[1.5px] shadow-[0_1px_0_rgba(255,255,255,0.04),inset_0_1px_0_rgba(255,255,255,0.16)]',
+        'size-[22px] shrink-0 rounded-none border border-white/10 bg-white/92 p-[1.5px]',
         className,
       )}
       height={22}
@@ -230,7 +230,7 @@ export type ModelSelectorLogoGroupProps = ComponentProps<'div'>;
 export const ModelSelectorLogoGroup = ({ className, ...props }: ModelSelectorLogoGroupProps) => (
   <div
     className={cn(
-      'flex shrink-0 items-center -space-x-1 [&>img]:rounded-full [&>img]:bg-background [&>img]:p-px [&>img]:ring-1 dark:[&>img]:bg-foreground',
+      'flex shrink-0 items-center -space-x-1 [&>img]:rounded-none [&>img]:bg-background [&>img]:p-px [&>img]:ring-1 dark:[&>img]:bg-foreground',
       className,
     )}
     {...props}

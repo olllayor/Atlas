@@ -37,10 +37,10 @@ export function SidebarConversationRow({
       <div className="relative flex items-center justify-center">
         <span
           aria-hidden="true"
-          className={`flex h-8 w-8 items-center justify-center rounded-xl border text-[11px] font-semibold tracking-[0.01em] transition ${
+          className={`flex h-8 w-8 items-center justify-center border text-[11px] font-normal tracking-[0.01em] transition ${
             isActive
-              ? 'border-white/12 bg-white/[0.08] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
-              : 'border-white/6 bg-white/[0.03] text-white/58 group-hover:border-white/10 group-hover:bg-white/[0.05] group-hover:text-white/74'
+              ? 'border-white/20 bg-white/[0.08] text-white/70'
+              : 'border-white/10 bg-transparent text-white/40 group-hover:border-white/20 group-hover:bg-white/[0.05] group-hover:text-white/60'
           }`}
           title={primaryLabel}
         >
@@ -48,7 +48,7 @@ export function SidebarConversationRow({
         </span>
 
         {isRunning ? (
-          <BrushSpinner size={10} strokeWidth={1.5} color="#22d3ee" glowColor="rgba(34,211,238,0.3)" speed={1.5} className="absolute right-0 top-0" />
+          <BrushSpinner size={10} strokeWidth={1.5} color="rgba(255,255,255,0.5)" glowColor="rgba(255,255,255,0.15)" speed={1.5} className="absolute right-0 top-0" />
         ) : null}
       </div>
     );
@@ -57,23 +57,23 @@ export function SidebarConversationRow({
   return (
     <>
       {isRunning ? (
-        <BrushSpinner size={12} strokeWidth={1.5} color="#22d3ee" glowColor="rgba(34,211,238,0.3)" speed={1.5} />
+        <BrushSpinner size={12} strokeWidth={1.5} color="rgba(255,255,255,0.5)" glowColor="rgba(255,255,255,0.15)" speed={1.5} />
       ) : null}
 
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-medium leading-[18px] text-white/92" title={primaryLabel}>
+        <div className="truncate text-[13px] font-normal leading-[18px] text-white/70" title={primaryLabel}>
           {primaryLabel}
         </div>
         {secondaryLabel ? (
           <div
             className={`truncate pt-0.5 text-[11px] leading-4 ${
               status === 'streaming'
-                ? 'animate-pulse text-white/48'
+                ? 'animate-pulse text-white/30'
                 : status === 'error'
-                  ? 'text-error-text/80'
+                  ? 'text-white/50'
                   : status === 'aborted'
-                    ? 'text-text-muted'
-                    : 'text-text-muted'
+                    ? 'text-white/30'
+                    : 'text-white/30'
             }`}
             title={secondaryLabel}
           >
@@ -85,7 +85,7 @@ export function SidebarConversationRow({
       <div className="relative ml-2 h-4 w-5 shrink-0 self-start">
         {timestampLabel ? (
           <span
-            className={`absolute inset-0 text-right text-[10px] font-medium leading-4 tabular-nums text-white/34 transition-opacity group-hover:opacity-0 ${
+            className={`absolute inset-0 text-right text-[10px] font-normal leading-4 tabular-nums text-white/30 transition-opacity group-hover:opacity-0 ${
               hideTimestamp || showJumpHint ? 'opacity-0' : ''
             }`}
           >
@@ -93,7 +93,7 @@ export function SidebarConversationRow({
           </span>
         ) : null}
         {showJumpHint && jumpLabel ? (
-          <span className="absolute right-0 top-0 inline-flex h-5 items-center rounded-full border border-white/10 bg-white/[0.07] px-1.5 font-mono text-[10px] leading-none text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+          <span className="absolute right-0 top-0 inline-flex h-5 items-center border border-white/10 bg-white/[0.05] px-1.5 font-mono text-[10px] leading-none text-white/50">
             {jumpLabel}
           </span>
         ) : null}

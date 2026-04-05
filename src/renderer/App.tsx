@@ -16,6 +16,7 @@ import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorks
 import { Sidebar } from './components/Sidebar';
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
+import { XAILandingPage } from './components/XAILandingPage';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
 import {
   isEditableTarget,
@@ -181,6 +182,8 @@ export default function App() {
     abortConversation,
     deleteConversation,
     handleStreamEvent,
+    openLanding,
+    closeLanding,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -236,6 +239,8 @@ export default function App() {
       abortConversation: state.abortConversation,
       deleteConversation: state.deleteConversation,
       handleStreamEvent: state.handleStreamEvent,
+      openLanding: state.openLanding,
+      closeLanding: state.closeLanding,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -568,7 +573,9 @@ export default function App() {
   }
 
   const content =
-    activeView === 'settings' ? (
+    activeView === 'landing' ? (
+      <XAILandingPage onBackToApp={() => closeLanding()} />
+    ) : activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
         updateState={updateState}
@@ -660,7 +667,7 @@ export default function App() {
       <div
         className={`flex h-screen overflow-hidden ${
           sidebarCollapsed
-            ? 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
+            ? 'bg-bg-base'
             : 'bg-bg-base'
         }`}
       >
@@ -684,22 +691,16 @@ export default function App() {
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
+          onOpenLanding={() => openLanding()}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
         />
 
         <div
-          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden ${
-            sidebarCollapsed
-              ? 'bg-transparent'
-              : 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
-          }`}
+          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-base`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
-          {!sidebarCollapsed ? (
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
-          ) : null}
           {/* Draggable title bar area for main content - matches sidebar height */}
           <div
             className={`relative h-[52px] shrink-0 ${sidebarCollapsed ? '' : 'border-b border-white/6'}`}

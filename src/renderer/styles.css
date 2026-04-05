@@ -1,81 +1,78 @@
 @import 'tailwindcss';
 
 /* ============================================
-   LAYER 1: Semantic CSS Custom Properties
-   Override these on [data-theme="*"] to theme.
+   LAYER 1: xAI Design Tokens
+   Single source of truth — all values map to xAI spec.
+   Old variable names preserved as aliases for backward compat.
    ============================================ */
 
 :root {
   color-scheme: dark;
 
-  /* Backgrounds - 5-tier elevation */
-  --bg-base: #07080b;
-  --bg-panel: #0b0d12;
-  --bg-surface: #101319;
-  --bg-elevated: #151922;
-  --bg-code: rgba(0, 0, 0, 0.3);
+  /* Backgrounds — xAI: #1f2228 canvas, white-opacity surfaces */
+  --bg-base: #1f2228;
+  --bg-panel: var(--bg-base);          /* alias, was #0b0d12 */
+  --bg-surface: var(--bg-base);        /* alias, was #101319 */
+  --bg-elevated: rgba(255, 255, 255, 0.05); /* alias, was #151922 */
+  --bg-code: rgba(255, 255, 255, 0.03);     /* was rgba(0,0,0,0.3) */
 
-  /* Backgrounds - white opacity scale */
+  /* White opacity scale — xAI surfaces */
   --bg-subtle: rgba(255, 255, 255, 0.03);
   --bg-ghost: rgba(255, 255, 255, 0.04);
   --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-active: rgba(255, 255, 255, 0.08);
   --bg-button: #ffffff;
   --bg-button-hover: rgba(255, 255, 255, 0.9);
 
-  /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-medium: rgba(255, 255, 255, 0.1);
+  /* Borders — xAI: 2-tier white opacity */
+  --border-subtle: rgba(255, 255, 255, 0.1);   /* alias for --border-default */
+  --border-default: rgba(255, 255, 255, 0.1);  /* was 0.08 */
+  --border-medium: rgba(255, 255, 255, 0.1);   /* alias, was 0.1 */
   --border-strong: rgba(255, 255, 255, 0.2);
 
-  /* Text - 6-tier scale */
+  /* Text — xAI: white with opacity tiers */
   --text-primary: #ffffff;
-  --text-secondary: #cbd5e1;
-  --text-tertiary: #94a3b8;
-  --text-muted: #64748b;
-  --text-faint: #475569;
-  --text-inverse: #000000;
+  --text-secondary: rgba(255, 255, 255, 0.7);  /* was #cbd5e1 */
+  --text-tertiary: rgba(255, 255, 255, 0.5);   /* was #94a3b8 */
+  --text-muted: rgba(255, 255, 255, 0.5);      /* was #64748b */
+  --text-faint: rgba(255, 255, 255, 0.3);      /* was #475569 */
+  --text-inverse: #1f2228;                     /* was #000000 */
 
-  /* Semantic - success */
-  --success: #34d399;
-  --success-bg: rgba(52, 211, 153, 0.15);
-  --success-border: rgba(52, 211, 153, 0.2);
-  --success-text: #a7f3d0;
+  /* Semantic — monochrome, no colored accents */
+  /* MUST pair error states with icon — border alone fails a11y */
+  --success: rgba(255, 255, 255, 0.7);
+  --success-bg: rgba(255, 255, 255, 0.05);
+  --success-border: rgba(255, 255, 255, 0.2);
+  --success-text: rgba(255, 255, 255, 0.7);
 
-  /* Semantic - warning */
-  --warning: #fbbf24;
-  --warning-bg: rgba(245, 158, 11, 0.05);
-  --warning-border: rgba(245, 158, 11, 0.2);
-  --warning-text: #fde68a;
+  --warning: rgba(255, 255, 255, 0.5);
+  --warning-bg: rgba(255, 255, 255, 0.05);
+  --warning-border: rgba(255, 255, 255, 0.2);
+  --warning-text: rgba(255, 255, 255, 0.5);
 
-  /* Semantic - error */
-  --error: #fb7185;
-  --error-bg: rgba(244, 63, 94, 0.1);
-  --error-border: rgba(244, 63, 94, 0.2);
-  --error-text: #fecdd3;
+  --error: rgba(255, 255, 255, 0.7);
+  --error-bg: rgba(255, 255, 255, 0.05);
+  --error-border: rgba(255, 255, 255, 0.3); /* MUST pair with icon, border alone fails a11y */
+  --error-text: rgba(255, 255, 255, 0.7);
 
-  /* Toasts */
-  --toast-bg: rgba(27, 44, 77, 0.92);
-  --toast-border: rgba(82, 110, 167, 0.42);
-  --toast-text: #b8c2d6;
-  --toast-icon: #cad2e3;
-  --toast-close: rgba(184, 194, 214, 0.56);
-  --toast-close-hover: rgba(232, 238, 250, 0.92);
+  /* Toasts — monochrome */
+  --toast-bg: rgba(31, 34, 40, 0.96);
+  --toast-border: rgba(255, 255, 255, 0.1);
+  --toast-text: rgba(255, 255, 255, 0.7);
+  --toast-icon: rgba(255, 255, 255, 0.5);
+  --toast-close: rgba(255, 255, 255, 0.3);
+  --toast-close-hover: rgba(255, 255, 255, 0.5);
 
   /* UI elements */
-  --overlay: rgba(0, 0, 0, 0.4);
+  --overlay: rgba(0, 0, 0, 0.6);
   --scrollbar: rgba(255, 255, 255, 0.1);
   --scrollbar-hover: rgba(255, 255, 255, 0.18);
 
   /* Typography */
   --ui-font-size: 15px;
   --code-font-size: 13px;
-  --font-ui-system:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
-    'Segoe UI Symbol';
-  --font-mono-system:
-    'SF Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace;
+  --font-ui-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-mono-system: 'GeistMono', 'Menlo', 'Cascadia Code', 'Consolas', monospace; /* xAI: GeistMono first */
   --font-ui-family: var(--font-ui-system);
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
@@ -85,25 +82,26 @@
   --sidebar-expanded: 284px;
   --sidebar-collapsed: 68px;
 
-  /* Border radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
-  --radius-full: 9999px;
+  /* Border radius — xAI: sharp (0px) by default */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-subtle: 4px;  /* exception use only */
+  --radius-full: 9999px; /* ONLY: ui/avatar.tsx, context.tsx progress ring */
 
-  /* Shadows */
-  --shadow-elevated: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  /* Shadows — xAI: none, ever */
+  --shadow-elevated: none;
 
-  /* Transitions */
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
-  --duration-slow: 400ms;
+  /* Transitions — xAI: snappy, no bounce */
+  --duration-fast: 80ms;
+  --duration-normal: 150ms;
+  --duration-slow: 200ms;
 
-  /* Gradients */
+  /* Gradients — removed (xAI has none) */
   --gradient-start: var(--text-primary);
-  --gradient-end: var(--text-tertiary);
+  --gradient-end: var(--text-primary);
 
   /* macOS-specific adjustments */
   --macos-titlebar-height: 0px;
@@ -115,69 +113,18 @@ html {
 
 /* ============================================
    FUTURE THEME: Light
-   Uncomment and adjust values when ready.
+   (disabled — xAI is dark-only)
    ============================================ */
 
 [data-theme='light'] {
-  color-scheme: light;
-
-  --bg-base: #ffffff;
-  --bg-panel: #f8f9fa;
-  --bg-surface: #f1f3f5;
-  --bg-elevated: #e9ecef;
-  --bg-code: rgba(0, 0, 0, 0.05);
-
-  --bg-subtle: rgba(0, 0, 0, 0.02);
-  --bg-ghost: rgba(0, 0, 0, 0.03);
-  --bg-hover: rgba(0, 0, 0, 0.04);
-  --bg-active: rgba(0, 0, 0, 0.06);
-  --bg-button: #111827;
-  --bg-button-hover: rgba(17, 24, 39, 0.9);
-
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border-default: rgba(0, 0, 0, 0.08);
-  --border-medium: rgba(0, 0, 0, 0.12);
-  --border-strong: rgba(0, 0, 0, 0.2);
-
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-tertiary: #6b7280;
-  --text-muted: #9ca3af;
-  --text-faint: #d1d5db;
-  --text-inverse: #ffffff;
-
-  --success: #059669;
-  --success-bg: rgba(5, 150, 105, 0.1);
-  --success-border: rgba(5, 150, 105, 0.2);
-  --success-text: #047857;
-
-  --warning: #d97706;
-  --warning-bg: rgba(217, 119, 6, 0.08);
-  --warning-border: rgba(217, 119, 6, 0.2);
-  --warning-text: #b45309;
-
-  --error: #e11d48;
-  --error-bg: rgba(225, 29, 72, 0.08);
-  --error-border: rgba(225, 29, 72, 0.15);
-  --error-text: #be123c;
-
-  --toast-bg: rgba(236, 242, 255, 0.98);
-  --toast-border: rgba(147, 174, 228, 0.65);
-  --toast-text: #38507f;
-  --toast-icon: #5974a8;
-  --toast-close: rgba(56, 80, 127, 0.48);
-  --toast-close-hover: rgba(33, 50, 84, 0.9);
-
-  --overlay: rgba(0, 0, 0, 0.3);
-  --scrollbar: rgba(0, 0, 0, 0.15);
-  --scrollbar-hover: rgba(0, 0, 0, 0.25);
-
-  --shadow-elevated: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+  color-scheme: dark;
+  /* All values inherit from :root — no light mode */
 }
 
 /* ============================================
    LAYER 2: Tailwind @theme mapping
-   Maps semantic CSS vars → Tailwind utilities
+   Maps semantic CSS vars → Tailwind utilities.
+   Radius/shadow overrides at config level catch missed classes.
    ============================================ */
 
 @theme {
@@ -260,14 +207,16 @@ html {
   --spacing-sidebar-expanded: var(--sidebar-expanded);
   --spacing-sidebar-collapsed: var(--sidebar-collapsed);
 
-  --radius-sm: var(--radius-sm);
-  --radius-md: var(--radius-md);
-  --radius-lg: var(--radius-lg);
-  --radius-xl: var(--radius-xl);
-  --radius-2xl: var(--radius-2xl);
-  --radius-full: var(--radius-full);
+  /* xAI: all radius 0px at config level — catches missed rounded-* classes */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-full: 9999px;
 
-  --shadow-elevated: var(--shadow-elevated);
+  /* xAI: no shadows, ever */
+  --shadow-elevated: none;
 
   --duration-fast: var(--duration-fast);
   --duration-normal: var(--duration-normal);
@@ -291,11 +240,15 @@ body,
 body {
   font-family: var(--font-ui-family);
   font-optical-sizing: auto;
-  background:
-    radial-gradient(circle at top, rgba(79, 102, 255, 0.09), transparent 30%),
-    radial-gradient(circle at 78% 16%, rgba(255, 255, 255, 0.03), transparent 24%), var(--bg-base);
+  background: var(--bg-base); /* xAI: solid #1f2228, no gradients */
   color: var(--text-primary);
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* GeistMono needs explicit smoothing in Electron's Chromium */
+code, pre, .font-mono, [class*="GeistMono"] {
   -webkit-font-smoothing: antialiased;
 }
 
@@ -308,6 +261,29 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+/* ============================================
+   Focus rings — critical without shadow elevation
+   ============================================ */
+
+*:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   Motion — targeted, snappy, no bounce
+   ============================================ */
+
+button, input, [role="option"], [role="button"] {
+  transition-duration: 80ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+.panel, .drawer, aside {
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
 }
 
 /* ============================================
@@ -338,7 +314,7 @@ select {
 .markdown-body pre {
   overflow-x: auto;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-sm); /* xAI: 0px */
   background: var(--bg-code);
   padding: 1rem;
   font-family: var(--font-mono);
@@ -347,7 +323,7 @@ select {
 }
 
 .markdown-body code {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm); /* xAI: 0px */
   background: var(--bg-code);
   padding: 0.1rem 0.35rem;
   font-family: var(--font-mono);
@@ -456,15 +432,20 @@ select {
 }
 
 /* ============================================
-   Utility classes for common patterns
+   Utility classes — xAI spec
    ============================================ */
 
+/* Primary button: white bg, dark text, 0px radius, GeistMono uppercase */
 .btn-primary {
-  border-radius: var(--radius-md);
+  border-radius: 0px;
   background: var(--bg-button);
   color: var(--text-inverse);
-  font-weight: 500;
+  font-family: var(--font-mono-system);
   font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 12px 24px;
   transition: background var(--duration-fast) ease;
 }
 
@@ -477,14 +458,28 @@ select {
   opacity: 0.5;
 }
 
+/* Ghost button: transparent bg, white text, 1px border, GeistMono uppercase */
 .btn-secondary {
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-  font-weight: 500;
+  border-radius: 0px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono-system);
   font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 12px 24px;
   transition: background var(--duration-fast) ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.btn-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .font-code-sans {
@@ -509,27 +504,20 @@ select {
   line-height: 1;
 }
 
-.btn-secondary:hover {
-  background: var(--bg-active);
-}
-
-.btn-secondary:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
+/* Card: 0px radius, subtle bg, barely-visible border, no shadow */
 .card {
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-elevated);
+  border-radius: 0px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-subtle);
 }
 
+/* Input: 0px radius, transparent bg, white border, blue focus ring */
 .input {
   width: 100%;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-hover);
-  padding: 0.625rem 0.75rem;
+  border-radius: 0px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  padding: 12px 16px;
   font-size: 0.875rem;
   color: var(--text-primary);
   outline: none;
@@ -537,7 +525,8 @@ select {
 }
 
 .input:focus {
-  border-color: var(--border-strong);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
 .input::placeholder {
@@ -546,7 +535,7 @@ select {
 
 .section-title {
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text-primary);
 }
 

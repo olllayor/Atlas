@@ -88,7 +88,7 @@ export function ModelSelector({
           ref={triggerRef}
           type="button"
           disabled={disabled}
-          className="flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-transparent px-2.5 text-[12px] font-medium text-white/72 transition hover:border-white/6 hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 max-w-[260px] items-center gap-1.5 border border-transparent px-2.5 text-[12px] font-normal text-white/72 transition hover:border-white/6 hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
           aria-expanded={open}
           aria-haspopup="listbox"
         >
@@ -113,8 +113,8 @@ export function ModelSelector({
           <button
             type="button"
             onClick={() => setShowFreeOnly((prev) => !prev)}
-            className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition ${
-              showFreeOnly ? 'bg-success-bg text-success' : 'bg-bg-hover text-text-muted hover:text-text-tertiary'
+            className={`px-2 py-0.5 text-[10px] font-normal transition ${
+              showFreeOnly ? 'border-white/20 bg-white/[0.05] text-white/50' : 'bg-bg-hover text-text-muted hover:text-text-tertiary'
             }`}
           >
             Free
@@ -152,11 +152,11 @@ export function ModelSelector({
                       <p className="truncate text-[10px] text-text-faint">{extractModelName(model.id)}</p>
                     </div>
                     {model.isFree ? (
-                      <span className="shrink-0 rounded-full bg-success-bg px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-success">
+                      <span className="shrink-0 border border-white/20 bg-white/[0.05] px-1.5 py-0.5 text-[9px] font-normal uppercase tracking-wider text-white/50">
                         Free
                       </span>
                     ) : null}
-                    {isSelected ? <Check className="ml-auto h-4 w-4 text-success" /> : <div className="ml-auto h-4 w-4" />}
+                    {isSelected ? <Check className="ml-auto h-4 w-4 text-white/50" /> : <div className="ml-auto h-4 w-4" />}
                   </ModelSelectorItem>
                 );
               })}

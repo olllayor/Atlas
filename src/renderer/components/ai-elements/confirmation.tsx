@@ -61,9 +61,7 @@ export const Confirmation = ({
       <Alert
         variant={destructive ? "destructive" : "default"}
         className={cn(
-          "grid-cols-1 gap-0 rounded-[16px] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.028),rgba(255,255,255,0.016))] px-3.5 py-3 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]",
-          destructive &&
-            "border-red-500/18 bg-[linear-gradient(180deg,rgba(244,63,94,0.12),rgba(244,63,94,0.06))] text-red-50",
+          "grid-cols-1 gap-0 border border-white/10 bg-white/[0.03] px-3.5 py-3 text-white",
           className
         )}
         {...props}
@@ -77,7 +75,7 @@ export const Confirmation = ({
 export type ConfirmationTitleProps = ComponentProps<typeof AlertTitle>;
 
 export const ConfirmationTitle = ({ className, ...props }: ConfirmationTitleProps) => (
-  <AlertTitle className={cn("col-start-1 text-[12px] font-medium text-white/84", className)} {...props} />
+  <AlertTitle className={cn("col-start-1 text-[12px] font-normal text-white/70", className)} {...props} />
 );
 
 function ConditionalConfirmation({
@@ -102,7 +100,7 @@ export const ConfirmationRequest = ({ children }: ConfirmationRequestProps) => {
   const { state } = useConfirmation();
   return (
     <ConditionalConfirmation when={state === "approval-requested"}>
-      <AlertDescription className="col-start-1 mt-1 text-[12.5px] leading-5.5 text-white/68">
+      <AlertDescription className="col-start-1 mt-1 text-[12.5px] leading-5.5 text-white/50">
         {children}
       </AlertDescription>
     </ConditionalConfirmation>
@@ -117,7 +115,7 @@ export const ConfirmationAccepted = ({ children }: ConfirmationAcceptedProps) =>
   const { approval, state } = useConfirmation();
   return (
     <ConditionalConfirmation when={isAcceptedState(approval, state)}>
-      <AlertDescription className="col-start-1 mt-1 flex items-center gap-2 text-[12.5px] leading-5 text-emerald-200">
+      <AlertDescription className="col-start-1 mt-1 flex items-center gap-2 text-[12.5px] leading-5 text-white/50">
         {children}
       </AlertDescription>
     </ConditionalConfirmation>
@@ -132,7 +130,7 @@ export const ConfirmationRejected = ({ children }: ConfirmationRejectedProps) =>
   const { approval, state } = useConfirmation();
   return (
     <ConditionalConfirmation when={isRejectedState(approval, state)}>
-      <AlertDescription className="col-start-1 mt-1 flex items-center gap-2 text-[12.5px] leading-5 text-red-100">
+      <AlertDescription className="col-start-1 mt-1 flex items-center gap-2 text-[12.5px] leading-5 text-white/50">
         {children}
       </AlertDescription>
     </ConditionalConfirmation>

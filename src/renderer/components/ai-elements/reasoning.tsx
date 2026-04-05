@@ -114,7 +114,7 @@ export const Reasoning = ({
       <Collapsible onOpenChange={setIsOpen} open={isOpen} {...props}>
         <div
           className={cn(
-            "w-full rounded-[20px] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.018))] shadow-[0_16px_36px_-28px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-sm",
+            "w-full border border-white/10 bg-white/[0.03]",
             className
           )}
         >
@@ -141,14 +141,14 @@ export const ReasoningTrigger = ({
   const defaultLabel = getThinkingMessage?.(isStreaming, duration) ?? (
     <>
       <div className="flex min-w-0 items-center gap-2.5">
-        <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-[12px] border border-white/6 bg-[linear-gradient(180deg,rgba(157,176,255,0.12),rgba(157,176,255,0.05))] text-[#aab8ff] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-          {isStreaming ? <BrushSpinner size={14} strokeWidth={1.8} color="#aab8ff" glowColor="rgba(170,184,255,0.3)" speed={1.2} /> : <BrainCircuit className="size-3.5 text-[#aab8ff]" />}
+        <span className="inline-flex size-9 shrink-0 items-center justify-center border border-white/10 bg-white/[0.05] text-white/50">
+          {isStreaming ? <BrushSpinner size={14} strokeWidth={1.8} color="rgba(255,255,255,0.5)" glowColor="rgba(255,255,255,0.15)" speed={1.2} /> : <BrainCircuit className="size-3.5 text-white/50" />}
         </span>
         <div className="min-w-0">
-          <div className="truncate text-[13.5px] font-medium tracking-[-0.02em] text-white/90">
+          <div className="truncate text-[13.5px] font-normal tracking-[-0.02em] text-white/70">
             {isStreaming ? "Reasoning" : "Thought process"}
           </div>
-          <div className="pt-0.5 text-[10.5px] text-white/36">
+          <div className="pt-0.5 text-[10.5px] text-white/30">
             Reasoning notes
           </div>
         </div>
@@ -167,12 +167,12 @@ export const ReasoningTrigger = ({
       <div className="flex min-w-0 items-center gap-2.5">
         {children ?? defaultLabel}
         {durationLabel ? (
-          <span className="shrink-0 rounded-full border border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium tabular-nums text-white/48 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
+          <span className="shrink-0 border border-white/10 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-normal tabular-nums text-white/40">
             {durationLabel}
           </span>
         ) : null}
       </div>
-      <span className="inline-flex size-7.5 shrink-0 items-center justify-center rounded-full border border-white/6 bg-white/[0.03] text-white/34 transition">
+      <span className="inline-flex size-7.5 shrink-0 items-center justify-center border border-white/10 bg-white/[0.03] text-white/30 transition">
         <ChevronDown
           className={cn(
             "size-3.25 transition-transform duration-200",

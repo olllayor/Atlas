@@ -67,7 +67,7 @@ function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; mod
     return null;
   }
 
-  const seconds = (latencyMs / 1000).toFixed(1);
+  const seconds = latencyMs ? (latencyMs / 1000).toFixed(1) : '';
 
   return (
     <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">

@@ -35,6 +35,7 @@ import {
 } from './ai-elements/confirmation';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { VisualBlock } from './ai-elements/visual';
 import { useClipboard } from '../hooks/useClipboard';
 
 type ChatWindowProps = {
@@ -66,16 +67,18 @@ function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; mod
     return null;
   }
 
+  const seconds = (latencyMs / 1000).toFixed(1);
+
   return (
     <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">
       {latencyMs ? (
         <span className="app-code-chip inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 tabular-nums text-text-faint/85">
-          {latencyMs}ms
+          {seconds}s
         </span>
       ) : null}
       {modelLabel ? (
         <span
-          className="inline-flex max-w-[min(100%,360px)] items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 text-[10.5px] leading-none text-text-faint/80"
+          className="inline-flex max-w-[min(100%,360px)] items-center border border-border-subtle bg-bg-hover px-2.5 py-1 text-[10.5px] leading-none text-text-faint/80"
           title={modelLabel}
         >
           {modelLabel}
@@ -137,10 +140,10 @@ function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> })
             <ConfirmationTitle>Tool approval</ConfirmationTitle>
             <ConfirmationRequest>
               <div>
-                Approve running <span className="font-medium text-white/86">{resolvedName}</span>.
+                Approve running <span className="font-medium text-[var(--text-secondary)]">{resolvedName}</span>.
               </div>
               {part.input ? (
-                <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-white/6 bg-black/20 px-3 py-2 text-white/58">
+                <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-[var(--border-subtle)] bg-black/20 px-3 py-2 text-[var(--text-muted)]">
                   {JSON.stringify(part.input, null, 2)}
                 </pre>
               ) : null}
@@ -271,6 +274,10 @@ function AssistantParts({
           return <AttachmentRow key={part.id} attachments={[part]} />;
         }
 
+        if (part.type === 'visual') {
+          return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+        }
+
         return (
           <MessageResponse
             key={`text-${index}`}
@@ -310,7 +317,7 @@ function MessageRow({
         <div className="max-w-[min(56%,560px)]">
           <AttachmentRow attachments={fileParts} align="end" />
           {userText ? (
-            <div className="rounded-[22px] border border-white/7 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))] px-[18px] py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="border border-[var(--border-default)] bg-transparent px-4 py-2.5">
               <p className="whitespace-pre-wrap text-[13.5px] leading-[1.65rem] text-text-primary">{userText}</p>
             </div>
           ) : null}
@@ -319,10 +326,10 @@ function MessageRow({
               <button
                 type="button"
                 onClick={() => void copy(userText)}
-                className="rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+                className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
                 title={copied ? 'Copied!' : 'Copy'}
               >
-                {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
             </div>
           ) : null}
@@ -343,23 +350,22 @@ function MessageRow({
 
         <MessageMeta
           latencyMs={message.status === 'complete' ? message.latencyMs : null}
-          modelLabel={message.modelId}
         />
 
         <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             type="button"
             onClick={() => void copy(message.content)}
-            className="rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+            className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
             title={copied ? 'Copied!' : 'Copy'}
           >
-            {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
           {onRegenerate ? (
             <button
               type="button"
               onClick={onRegenerate}
-              className="rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+              className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
               title="Regenerate"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -385,21 +391,21 @@ function StreamingRow({
   const isError = status === 'error';
   const isAborted = status === 'aborted';
 
-  return (
+    return (
     <div className="group flex w-full">
       <div className="min-w-0 max-w-[min(100%,76ch)] flex-1">
         {isError ? (
-          <div className="rounded-2xl border border-error-border bg-error-bg p-4">
+          <div className="border border-error-border bg-error-bg p-4">
             <div className="flex items-start gap-3">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-error-text">Something went wrong</p>
+                <p className="text-sm font-normal text-error-text">Something went wrong</p>
                 <p className="mt-1 text-xs text-error-text/80">{errorMessage}</p>
               </div>
             </div>
           </div>
         ) : isAborted ? (
-          <div className="rounded-2xl border border-border-subtle bg-bg-subtle p-4">
+          <div className="border border-border-subtle bg-bg-subtle p-4">
             <div className="flex items-start gap-3">
               <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
               <p className="text-sm text-text-muted">Generation stopped</p>
@@ -409,7 +415,7 @@ function StreamingRow({
           <AssistantParts content="" isStreaming latencyMs={null} parts={parts} />
         )}
 
-        {modelLabel ? <MessageMeta modelLabel={modelLabel} /> : null}
+        {modelLabel ? <MessageMeta latencyMs={null} /> : null}
       </div>
     </div>
   );
@@ -438,9 +444,15 @@ function estimateHistoryRowHeight(message: ChatMessage) {
 
   const toolCount = message.parts.filter((part) => part.type === 'tool').length;
   const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
+  const visualCount = message.parts.filter((part) => part.type === 'visual').length;
   return Math.min(
     560,
-    156 + Math.ceil(message.content.length / 100) * 24 + toolCount * 84 + reasoningCount * 56 + fileCount * 28,
+    156 +
+      Math.ceil(message.content.length / 100) * 24 +
+      toolCount * 84 +
+      reasoningCount * 56 +
+      visualCount * 320 +
+      fileCount * 28,
   );
 }
 
@@ -448,10 +460,7 @@ function SuggestionsState({ onSuggestionClick }: { onSuggestionClick: (prompt: s
   return (
     <ConversationEmptyState>
       <div className="flex w-full max-w-xl flex-col items-center text-center">
-        <div className="flex items-center justify-center">
-          <img src={appIcon} alt="Atlas" className="size-20 object-contain" />
-        </div>
-        <h2 className="mt-5 text-[26px] font-medium tracking-[-0.025em] text-text-primary">What can I help with?</h2>
+        <h2 className="xai-mono text-[26px] font-light tracking-[-0.025em] text-text-primary">What can I help with?</h2>
         <p className="mt-2 max-w-md text-[14px] leading-6 text-text-tertiary">
           Start with a prompt below or type your own message.
         </p>
@@ -462,7 +471,7 @@ function SuggestionsState({ onSuggestionClick }: { onSuggestionClick: (prompt: s
               key={text}
               type="button"
               onClick={() => onSuggestionClick(prompt)}
-              className="flex items-center gap-3 rounded-xl border border-border-medium bg-bg-hover px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary"
+              className="flex items-center gap-3 border border-border-medium bg-bg-hover px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary"
             >
               <Icon className="h-4 w-4 shrink-0 text-text-muted" />
               <span className="truncate">{text}</span>
@@ -625,8 +634,8 @@ export function ChatWindow({
   if (showSetupPrompt) {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-10 lg:px-12">
-        <div className="mx-auto w-full max-w-2xl rounded-[24px] border border-warning-border bg-warning-bg p-6 text-center">
-          <h2 className="text-lg font-medium text-text-primary">Add your API key to start</h2>
+        <div className="mx-auto w-full max-w-2xl border border-warning-border bg-warning-bg p-6 text-center">
+          <h2 className="text-lg font-normal text-text-primary">Add your API key to start</h2>
           <p className="mt-2 text-sm text-text-tertiary">
             Credentials are stored in your OS keychain. Nothing leaves your machine.
           </p>
@@ -659,7 +668,7 @@ export function ChatWindow({
                 type="button"
                 onClick={() => void loadOlderMessages()}
                 disabled={isLoadingOlder}
-                className="inline-flex h-9 items-center gap-2 rounded-full border border-border-default bg-bg-subtle px-4 text-[12.5px] font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex h-9 items-center gap-2 border border-border-default bg-bg-subtle px-4 text-[12.5px] font-normal text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isLoadingOlder ? 'animate-spin' : ''}`} />
                 <span>{isLoadingOlder ? 'Loading older messages…' : 'Load older messages'}</span>

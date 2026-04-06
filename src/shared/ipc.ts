@@ -13,10 +13,19 @@ export const IPC_CHANNELS = {
   conversationsDelete: 'conversations:delete',
   chatStart: 'chat:start',
   chatAbort: 'chat:abort',
+  chatOpenVisualWindow: 'chat:openVisualWindow',
   chatEvent: 'chat:event',
+  visualsSave: 'visuals:save',
+  visualsList: 'visuals:list',
+  visualsGet: 'visuals:get',
+  visualsSearch: 'visuals:search',
+  visualsDelete: 'visuals:delete',
   diagnosticsGetSnapshot: 'diagnostics:getSnapshot',
   updatesGetState: 'updates:getState',
   updatesCheck: 'updates:check',
   updatesPerformPrimaryAction: 'updates:performPrimaryAction',
-  updatesEvent: 'updates:event'
+  updatesEvent: 'updates:event',
+  posthogGetAnonymousId: 'posthog:getAnonymousId',
+  posthogCaptureEvent: 'posthog:captureEvent',
+  posthogGetTelemetryEnabled: 'posthog:getTelemetryEnabled'
 } as const;

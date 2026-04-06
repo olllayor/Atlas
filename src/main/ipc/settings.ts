@@ -57,6 +57,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setThemeMode(appearancePatch.themeMode);
       }
 
+      if (appearancePatch?.designTheme) {
+        settingsRepo.setDesignTheme(appearancePatch.designTheme);
+      }
+
       if (typeof appearancePatch?.uiFontSize === 'number') {
         settingsRepo.setUiFontSize(appearancePatch.uiFontSize);
       }

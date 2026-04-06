@@ -37,10 +37,10 @@ export function AppUpdateButton({ updateState, onClick }: AppUpdateButtonProps) 
     );
   const toneClass =
     updateState.status === 'downloaded'
-      ? 'border-[#5d78d8]/18 bg-[#5d78d8]/10 text-[#dbe5ff] hover:border-[#6c87eb]/24 hover:bg-[#5d78d8]/14'
+      ? 'border-[var(--border-strong)] bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-active)] hover:text-white'
       : updateState.status === 'downloading'
-        ? 'border-white/6 bg-white/[0.025] text-white/54'
-        : 'border-white/6 bg-white/[0.025] text-white/68 hover:border-white/10 hover:bg-white/[0.045] hover:text-white/82';
+        ? 'border-[var(--border-default)] bg-transparent text-[var(--text-faint)]'
+        : 'border-[var(--border-default)] bg-transparent text-[var(--text-tertiary)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]';
 
   return (
     <div
@@ -51,8 +51,8 @@ export function AppUpdateButton({ updateState, onClick }: AppUpdateButtonProps) 
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-xl border px-2.5 text-[11.5px] font-medium tracking-[0.01em] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] backdrop-blur-sm transition ${toneClass} ${
-          disabled ? 'cursor-default' : 'active:scale-[0.985]'
+        className={`inline-flex h-8 items-center gap-1.5 border px-2.5 text-[11.5px] font-medium tracking-[0.01em] transition ${toneClass} ${
+          disabled ? 'cursor-default' : ''
         }`}
       >
         {icon}

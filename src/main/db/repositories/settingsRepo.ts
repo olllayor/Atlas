@@ -7,7 +7,7 @@ import {
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
 } from '../../../shared/contracts';
-import type { CredentialStatus, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import type { CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
@@ -88,6 +88,15 @@ export class SettingsRepo {
 
   setThemeMode(value: ThemeMode) {
     this.setJsonSetting('themeMode', value);
+  }
+
+  getDesignTheme(): DesignTheme {
+    const value = this.getJsonSetting<DesignTheme>('designTheme', DEFAULT_SETTINGS_APPEARANCE.designTheme);
+    return value === 'xai' || value === 'default' || value === 'cursor' ? value : DEFAULT_SETTINGS_APPEARANCE.designTheme;
+  }
+
+  setDesignTheme(value: DesignTheme) {
+    this.setJsonSetting('designTheme', value);
   }
 
   getUiFontSize() {

@@ -144,10 +144,10 @@ export const ContextTrigger = ({
     <HoverCardTrigger asChild>
       <button
         type="button"
-        className={cn(
-          "relative inline-flex size-[34px] items-center justify-center rounded-full border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] text-[9px] font-semibold tabular-nums text-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-white/16 hover:bg-white/8 hover:text-white",
-          className
-        )}
+          className={cn(
+            "relative inline-flex size-[34px] items-center justify-center border border-[var(--border-default)] bg-[var(--bg-hover)] text-[9px] font-normal tabular-nums text-[var(--text-tertiary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-active)] hover:text-[var(--text-secondary)]",
+            className
+          )}
         {...props}
       >
         <svg
@@ -160,7 +160,7 @@ export const ContextTrigger = ({
             cy="16"
             r="14"
             fill="none"
-            stroke="rgba(255,255,255,0.12)"
+            stroke="rgba(255,255,255,0.15)"
             strokeWidth="2"
           />
           <circle
@@ -168,7 +168,7 @@ export const ContextTrigger = ({
             cy="16"
             r="14"
             fill="none"
-            stroke="rgba(110,141,255,0.95)"
+            stroke="rgba(255,255,255,0.6)"
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             strokeLinecap="round"
@@ -188,10 +188,10 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
     side="top"
     align="end"
     sideOffset={12}
-    className={cn(
-      "w-[292px] rounded-[12px] border border-white/10 bg-[#171717]/98 p-0 text-text-primary shadow-[0_18px_48px_rgba(0,0,0,0.38)] backdrop-blur-xl",
-      className
-    )}
+      className={cn(
+        "w-[292px] border border-[var(--border-default)] bg-bg-elevated p-0 text-text-primary",
+        className
+      )}
     {...props}
   />
 );
@@ -209,13 +209,13 @@ export const ContextContentHeader = ({
     <div className={cn("px-4 pt-3.5", className)} {...props}>
       {children ?? (
         <div className="space-y-1.5">
-          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-white/42">
+          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
             Context Window
           </div>
-          <div className="text-[13px] font-medium leading-none tracking-tight text-white/92">
-            <span className="tabular-nums font-semibold text-white">{percentageLabel}%</span>
-            <span className="px-1.5 text-white/32">•</span>
-            <span className="text-[13px] font-medium text-white/92">
+          <div className="text-[13px] font-medium leading-none tracking-tight text-[var(--text-primary)]">
+            <span className="tabular-nums font-normal text-white">{percentageLabel}%</span>
+            <span className="px-1.5 text-[var(--text-faint)]">•</span>
+            <span className="text-[13px] font-medium text-[var(--text-primary)]">
               {formatTokenCount(usedTokens)}/{formatTokenCount(maxTokens)} context used
             </span>
           </div>
@@ -235,11 +235,11 @@ export const ContextContentBody = ({
   const { processedTokens } = useContextData();
 
   return (
-    <div className={cn("px-4 pt-2 text-[13px] leading-none text-white/56", className)} {...props}>
+    <div className={cn("px-4 pt-2 text-[13px] leading-none text-[var(--text-secondary)]", className)} {...props}>
       {children ?? (
         <span>
           Total processed:{" "}
-          <span className="tabular-nums text-white/70">{formatTokenCount(processedTokens)} tokens</span>
+          <span className="tabular-nums text-[var(--text-secondary)]">{formatTokenCount(processedTokens)} tokens</span>
         </span>
       )}
     </div>
@@ -259,7 +259,7 @@ export const ContextContentFooter = ({
   return (
     <div
       className={cn(
-        "px-4 pb-3.5 pt-2 text-[13px] leading-[1.25] text-white/44",
+        "px-4 pb-3.5 pt-2 text-[13px] leading-[1.25] text-[var(--text-muted)]",
         className
       )}
       {...props}

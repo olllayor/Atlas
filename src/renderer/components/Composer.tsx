@@ -1,4 +1,5 @@
 import { PlusIcon } from '@radix-ui/react-icons';
+import { Palette } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
@@ -63,6 +64,7 @@ type ComposerProps = {
   onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
   isRefreshingModels?: boolean;
+  onOpenGallery: () => void;
 };
 
 const ComposerAttachmentItem = memo(
@@ -96,19 +98,19 @@ const ComposerAttachmentItem = memo(
       <AttachmentHoverCard>
         <AttachmentHoverCardTrigger asChild>
           <Attachment
-            className="h-7 max-w-[148px] gap-1.5 rounded-full border-white/8 bg-white/[0.035] pl-1.5 pr-1 text-text-secondary hover:bg-white/[0.055] hover:text-text-primary"
+            className="h-7 max-w-[148px] gap-1.5 border border-[var(--border-default)] bg-[var(--bg-subtle)] pl-1.5 pr-1 text-text-secondary hover:bg-[var(--bg-hover)] hover:text-text-primary"
             data={attachment}
             onRemove={handleRemove}
           >
-            <div className="flex size-[18px] shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-white/[0.06]">
+            <div className="flex size-[18px] shrink-0 items-center justify-center overflow-hidden bg-[var(--bg-hover)]">
               {inlinePreview}
             </div>
             <AttachmentInfo className="min-w-0 max-w-[92px] flex-none text-[11px] leading-none text-inherit" />
-            <AttachmentRemove className="!ml-0 !size-4 shrink-0 rounded-full !p-0 !opacity-100 text-white/35 transition hover:bg-white/[0.08] hover:text-white [&>svg]:size-[10px]" />
+            <AttachmentRemove className="!ml-0 !size-4 shrink-0 !p-0 !opacity-100 text-[var(--text-faint)] transition hover:bg-[var(--bg-active)] hover:text-white [&>svg]:size-[10px]" />
           </Attachment>
         </AttachmentHoverCardTrigger>
         <AttachmentHoverCardContent
-          className="max-w-[240px] rounded-md border-white/10 bg-[#2f333d] px-2.5 py-1.5 text-[12px] font-medium text-white shadow-lg"
+          className="max-w-[240px] border border-[var(--border-default)] bg-bg-elevated px-2.5 py-1.5 text-[12px] font-normal text-white"
           side="top"
           sideOffset={6}
         >
@@ -159,6 +161,7 @@ function ComposerFooter({
   selectedModel,
   selectedModelId,
   contextStats,
+  onOpenGallery,
 }: {
   attachmentError: string | null;
   disabled: boolean;
@@ -185,6 +188,7 @@ function ComposerFooter({
     };
     usedTokens: number;
   } | null;
+  onOpenGallery: () => void;
 }) {
   const attachments = usePromptInputAttachments();
   const unsupportedReason = getAttachmentCapabilityError(selectedModel, attachments.files);
@@ -199,17 +203,25 @@ function ComposerFooter({
 
   return (
     <>
-      {footerMessage ? <div className="px-4 pb-2 text-[11px] leading-5 text-[#ffbd8a]">{footerMessage}</div> : null}
+      {footerMessage ? <div className="px-4 pb-2 text-[11px] leading-5 text-[var(--text-tertiary)]">{footerMessage}</div> : null}
 
       <PromptInputFooter className="flex items-center justify-between px-3.5 pb-3 pt-0.5">
         <PromptInputTools className="flex items-center gap-1">
           <PromptInputButton
-            className="size-8 rounded-full border border-white/8 bg-white/[0.03] text-white/58 hover:bg-white/[0.07] hover:text-white"
+            className="size-8 border border-[var(--border-default)] bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-white"
             disabled={disabled || isStreaming}
             onClick={() => attachments.openFileDialog()}
             tooltip="Attach from disk"
           >
             <PlusIcon className="h-4 w-4" />
+          </PromptInputButton>
+
+          <PromptInputButton
+            className="size-8 rounded-full border border-white/8 bg-white/[0.03] text-white/58 hover:bg-white/[0.07] hover:text-white"
+            onClick={onOpenGallery}
+            tooltip="Visual Gallery"
+          >
+            <Palette className="h-4 w-4" />
           </PromptInputButton>
 
           <ModelSelector
@@ -243,7 +255,7 @@ function ComposerFooter({
           ) : null}
 
           <PromptInputSubmit
-            className="inline-flex size-8 items-center justify-center rounded-full bg-[#2b468f] text-white shadow-[0_8px_20px_rgba(43,70,143,0.24)] transition hover:bg-[#3553a8] disabled:cursor-not-allowed disabled:opacity-30"
+            className="inline-flex size-8 items-center justify-center bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-30"
             disabled={isStreaming ? false : !hasSubmittableContent || disabled || Boolean(unsupportedReason)}
             onStop={onAbort}
             size="icon-sm"
@@ -273,6 +285,7 @@ export function Composer({
   onComposerFocusChange,
   onRefreshModels,
   isRefreshingModels,
+  onOpenGallery,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -362,7 +375,7 @@ export function Composer({
       <div className="mx-auto max-w-content-max">
         <PromptInput
           accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
-          className="overflow-hidden rounded-[22px] border border-white/7 bg-[linear-gradient(180deg,rgba(30,34,41,0.92),rgba(24,27,34,0.96))] shadow-[0_14px_30px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] transition-all focus-within:border-white/11 focus-within:bg-[linear-gradient(180deg,rgba(34,38,46,0.95),rgba(25,29,36,0.98))]"
+          className="overflow-hidden border border-[var(--border-default)] bg-bg-base transition-colors focus-within:border-[var(--border-strong)]"
           globalDrop
           maxFileSize={MAX_ATTACHMENT_SIZE_BYTES}
           maxFiles={MAX_ATTACHMENT_COUNT}
@@ -382,7 +395,7 @@ export function Composer({
               disabled={disabled}
               rows={1}
               placeholder="Message..."
-              className="w-full min-h-10.5 resize-none border-0 bg-transparent px-0 py-0 text-[14.5px] leading-6 text-text-primary outline-none placeholder:text-white/28 disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full min-h-10.5 resize-none border-0 bg-transparent px-0 py-0 text-[14.5px] leading-6 text-text-primary outline-none placeholder:text-[var(--text-faint)] disabled:cursor-not-allowed disabled:opacity-60"
               style={{ maxHeight: '180px' }}
               name="message"
             />
@@ -407,6 +420,7 @@ export function Composer({
             selectedModel={selectedModel}
             selectedModelId={selectedModelId}
             contextStats={contextStats}
+            onOpenGallery={onOpenGallery}
           />
         </PromptInput>
       </div>

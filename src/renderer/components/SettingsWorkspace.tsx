@@ -23,6 +23,7 @@ import type {
   AppUpdateSnapshot,
   ConversationPage,
   ConversationStats,
+  DesignTheme,
   DiagnosticsSnapshot,
   FontFamilyOverride,
   KeybindingCommand,
@@ -70,6 +71,7 @@ type SettingsWorkspaceProps = {
   onSaveKey: () => void;
   onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onDesignThemeChange: (theme: DesignTheme) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
@@ -126,6 +128,7 @@ export function SettingsWorkspace({
   onSaveKey,
   onValidateKey,
   onThemeModeChange,
+  onDesignThemeChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
@@ -137,8 +140,7 @@ export function SettingsWorkspace({
 }: SettingsWorkspaceProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      <aside className="relative flex w-[292px] shrink-0 flex-col border-r border-border-subtle bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0)_15%),var(--bg-panel)]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.04),transparent_34%)]" />
+      <aside className="relative flex w-[292px] shrink-0 flex-col border-r border-border-subtle bg-bg-base">
         <div
           className="relative h-[52px] shrink-0 border-b border-border-subtle"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
@@ -148,7 +150,7 @@ export function SettingsWorkspace({
           <button
             type="button"
             onClick={onBack}
-            className="flex h-9 w-full items-center gap-2 rounded-xl px-3 text-left text-[13px] font-medium text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
+            className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] font-normal text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
           >
             <ArrowLeftIcon className="h-4 w-4 shrink-0" />
             <span>Back to app</span>
@@ -164,9 +166,9 @@ export function SettingsWorkspace({
                   key={item.key}
                   type="button"
                   onClick={() => onNavigate(item.key)}
-                  className={`flex h-9 w-full items-center gap-2.5 rounded-xl px-3 text-left text-[13px] transition ${
+                  className={`flex h-9 w-full items-center gap-2.5 px-3 text-left text-[13px] font-normal transition ${
                     isActive
-                      ? 'bg-[linear-gradient(180deg,rgba(255,255,255,0.075),rgba(255,255,255,0.04))] font-medium text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                      ? 'border-l-2 border-[var(--border-strong)] bg-[var(--bg-ghost)] text-text-primary'
                       : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
                   }`}
                 >
@@ -178,7 +180,7 @@ export function SettingsWorkspace({
           </nav>
 
           <div className="mt-6 border-t border-border-subtle pt-4">
-            <div className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-text-faint">
+            <div className="mb-2 px-3 text-[10px] font-normal uppercase tracking-[0.16em] text-text-faint">
               Soon
             </div>
             <div className="space-y-1">
@@ -188,7 +190,7 @@ export function SettingsWorkspace({
                 return (
                   <div
                     key={item.label}
-                    className="flex h-9 items-center gap-2.5 rounded-xl px-3 text-[13px] text-text-faint/75"
+                    className="flex h-9 items-center gap-2.5 px-3 text-[13px] text-text-faint/75"
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span>{item.label}</span>
@@ -200,8 +202,7 @@ export function SettingsWorkspace({
         </div>
       </aside>
 
-      <main className="relative min-w-0 flex-1 bg-[radial-gradient(circle_at_top,rgba(110,125,193,0.12),transparent_22%),linear-gradient(180deg,var(--bg-surface),var(--bg-base))]">
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_20%,transparent_80%,rgba(255,255,255,0.02))]" />
+      <main className="relative min-w-0 flex-1 bg-bg-base">
         <div
           className="relative h-[52px] shrink-0 border-b border-border-subtle"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
@@ -209,7 +210,7 @@ export function SettingsWorkspace({
 
         <div className="relative h-[calc(100vh-52px)] overflow-y-auto">
           <div className="mx-auto w-full max-w-[760px] px-10 pb-16 pt-8">
-            <h1 className="text-[20px] font-semibold tracking-[-0.025em] text-text-primary">
+            <h1 className="text-[20px] font-normal tracking-[-0.025em] text-text-primary">
               {sectionTitle(activeSection)}
             </h1>
 
@@ -237,6 +238,7 @@ export function SettingsWorkspace({
                 <AppearancePage
                   settings={settings}
                   onThemeModeChange={onThemeModeChange}
+                  onDesignThemeChange={onDesignThemeChange}
                   onUiFontSizeChange={onUiFontSizeChange}
                   onCodeFontSizeChange={onCodeFontSizeChange}
                   onUiFontFamilyChange={onUiFontFamilyChange}
@@ -348,7 +350,7 @@ function GeneralPage({
                   ? 'A key is already saved. Paste to replace it.'
                   : metadata.keyPlaceholder
               }
-              className="h-10 min-w-0 flex-1 rounded-xl border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
+              className="h-10 min-w-0 flex-1 border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
             />
             <div className="flex gap-2">
               <ActionButton onClick={onSaveKey} disabled={isSaving} variant="primary">
@@ -421,6 +423,7 @@ function GeneralPage({
 function AppearancePage({
   settings,
   onThemeModeChange,
+  onDesignThemeChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
@@ -428,6 +431,7 @@ function AppearancePage({
 }: {
   settings: SettingsSummary | null;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onDesignThemeChange: (theme: DesignTheme) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
@@ -435,6 +439,7 @@ function AppearancePage({
 }) {
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
+  const designTheme = appearance.designTheme;
 
   return (
     <>
@@ -444,6 +449,12 @@ function AppearancePage({
           description="Choose whether Atlas follows your system appearance or stays fixed."
         >
           <ThemeModePicker current={themeMode} onChange={onThemeModeChange} />
+        </SettingsStackedRow>
+        <SettingsStackedRow
+          title="Design theme"
+          description="Choose a design system aesthetic for the interface."
+        >
+          <DesignThemePicker current={designTheme} onChange={onDesignThemeChange} />
         </SettingsStackedRow>
       </SettingsGroup>
 
@@ -580,7 +591,7 @@ function KeyboardPage({
               >
                 <div className="flex items-start justify-between gap-5">
                   <div className="min-w-0">
-                    <div className="text-[14px] font-medium text-text-primary">{definition.title}</div>
+                    <div className="text-[14px] font-normal text-text-primary">{definition.title}</div>
                     <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{definition.description}</div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -590,9 +601,9 @@ function KeyboardPage({
                         setCapturingCommand((current) => (current === definition.command ? null : definition.command))
                       }
                       onKeyDown={isCapturing ? handleCapture(definition.command) : undefined}
-                      className={`inline-flex h-9 min-w-[128px] items-center justify-center rounded-xl border px-3 font-mono text-[12px] transition ${
+                      className={`inline-flex h-9 min-w-[128px] items-center justify-center border px-3 font-mono text-[12px] transition ${
                         isCapturing
-                          ? 'border-white/20 bg-white/[0.06] text-white'
+                          ? 'border-[var(--border-strong)] bg-[var(--bg-hover)] text-white'
                           : 'border-border-default bg-bg-subtle text-text-primary hover:bg-bg-hover'
                       }`}
                     >
@@ -602,7 +613,7 @@ function KeyboardPage({
                   </div>
                 </div>
                 {conflicts.length > 0 ? (
-                  <div className="mt-3 text-[11.5px] text-[#ffbd8a]">
+                  <div className="mt-3 text-[11.5px] text-[var(--text-muted)]">
                     Also bound to{' '}
                     {conflicts.map((command) => APP_COMMANDS_BY_ID[command].title).join(', ')}. The last matching rule wins.
                   </div>
@@ -635,8 +646,8 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
             </div>
             {provider.meterValue != null ? (
               <div className="mt-3 flex items-center gap-3">
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-bg-subtle">
-                  <div className="h-full rounded-full bg-text-secondary/80" style={{ width: `${provider.meterValue}%` }} />
+                <div className="h-2 flex-1 overflow-hidden bg-bg-subtle">
+                  <div className="h-full bg-[var(--text-muted)]" style={{ width: `${provider.meterValue}%` }} />
                 </div>
                 <span className="w-12 text-right text-[12px] text-text-tertiary">{provider.meterLabel}</span>
               </div>
@@ -702,8 +713,8 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
 function SettingsGroup({ title, children }: PropsWithChildren<{ title: string }>) {
   return (
     <section>
-      <div className="mb-3 text-[13px] font-medium text-text-secondary">{title}</div>
-      <div className="overflow-hidden rounded-[18px] border border-border-default bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))]">
+      <div className="mb-3 text-[13px] font-normal text-text-secondary">{title}</div>
+      <div className="overflow-hidden border border-border-default bg-[var(--bg-subtle)]">
         {children}
       </div>
     </section>
@@ -718,7 +729,7 @@ function SettingsRow({
   return (
     <div className="flex items-start justify-between gap-5 border-t border-border-subtle px-4 py-4 first:border-t-0">
       <div className="min-w-0">
-        <div className="text-[14px] font-medium text-text-primary">{title}</div>
+        <div className="text-[14px] font-normal text-text-primary">{title}</div>
         <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{description}</div>
       </div>
       <div className="shrink-0">{children}</div>
@@ -733,7 +744,7 @@ function SettingsStackedRow({
 }: PropsWithChildren<{ title: string; description: string }>) {
   return (
     <div className="border-t border-border-subtle px-4 py-4 first:border-t-0">
-      <div className="text-[14px] font-medium text-text-primary">{title}</div>
+      <div className="text-[14px] font-normal text-text-primary">{title}</div>
       <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{description}</div>
       <div className="mt-4">{children}</div>
     </div>
@@ -744,7 +755,7 @@ function DisabledRow({ title, description }: { title: string; description: strin
   return (
     <div className="flex items-start justify-between gap-4 border-t border-border-subtle px-4 py-4 first:border-t-0">
       <div className="min-w-0 opacity-70">
-        <div className="text-[14px] font-medium text-text-secondary">{title}</div>
+        <div className="text-[14px] font-normal text-text-secondary">{title}</div>
         <div className="mt-1 text-[12.5px] leading-5 text-text-muted">{description}</div>
       </div>
       <StatusPill tone="muted">Soon</StatusPill>
@@ -771,12 +782,12 @@ function NumberStepper({
         type="button"
         onClick={() => onChange(defaultValue)}
         disabled={value === defaultValue}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-border-default bg-bg-subtle text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+        className="inline-flex h-9 w-9 items-center justify-center border border-border-default bg-bg-subtle text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
         title="Reset"
       >
         <ReloadIcon className="h-4 w-4" />
       </button>
-      <div className="inline-flex h-9 items-center overflow-hidden rounded-[12px] border border-border-default bg-bg-subtle">
+      <div className="inline-flex h-9 items-center border border-border-default bg-bg-subtle">
         <button
           type="button"
           onClick={() => onChange(Math.max(min, value - 1))}
@@ -786,7 +797,7 @@ function NumberStepper({
         >
           -
         </button>
-        <span className="inline-flex h-full min-w-[56px] items-center justify-center border-x border-border-subtle px-3 text-[13px] font-medium tabular-nums text-text-primary">
+        <span className="inline-flex h-full min-w-[56px] items-center justify-center border-x border-border-subtle px-3 text-[13px] font-normal tabular-nums text-text-primary">
           {value}
         </span>
         <button
@@ -851,7 +862,7 @@ function FontFamilyField({
       onChange={handleChange}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      className="h-9 min-w-[190px] rounded-[10px] border border-border-default bg-bg-subtle px-3 text-[13px] font-medium text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong placeholder:text-text-muted"
+      className="h-9 min-w-[190px] border border-border-default bg-bg-subtle px-3 text-[13px] font-normal text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong placeholder:text-text-muted"
       spellCheck={false}
     />
   );
@@ -865,7 +876,7 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
   ];
 
   return (
-    <div className="inline-flex rounded-[14px] border border-border-default bg-bg-subtle p-1">
+    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
       {items.map((item) => {
         const Icon = item.icon;
         const isActive = item.mode === current;
@@ -875,13 +886,44 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
             key={item.mode}
             type="button"
             onClick={() => onChange(item.mode)}
-            className={`inline-flex h-9 items-center gap-2 rounded-[10px] px-3 text-[13px] font-medium transition ${
+            className={`inline-flex h-9 items-center gap-2 px-3 text-[13px] font-normal transition ${
               isActive
-                ? 'bg-bg-elevated text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                ? 'bg-bg-elevated text-text-primary'
                 : 'text-text-tertiary hover:text-text-primary'
             }`}
           >
             <Icon className="h-4 w-4" />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {
+  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
+    { theme: 'xai', label: 'xAI', description: 'Brutalist monochrome' },
+    { theme: 'default', label: 'Default', description: 'Modern balanced' },
+    { theme: 'cursor', label: 'Cursor', description: 'Warm minimalism' },
+  ];
+
+  return (
+    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+      {items.map((item) => {
+        const isActive = item.theme === current;
+
+        return (
+          <button
+            key={item.theme}
+            type="button"
+            onClick={() => onChange(item.theme)}
+            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
+              isActive
+                ? 'bg-bg-elevated text-text-primary'
+                : 'text-text-tertiary hover:text-text-primary'
+            }`}
+          >
             <span>{item.label}</span>
           </button>
         );
@@ -900,7 +942,7 @@ function ProviderPicker({
   const items: ProviderId[] = ['openrouter', 'glm'];
 
   return (
-    <div className="mb-4 inline-flex rounded-[14px] border border-border-default bg-bg-subtle p-1">
+    <div className="mb-4 inline-flex border border-border-default bg-bg-subtle p-1">
       {items.map((providerId) => {
         const isActive = providerId === current;
 
@@ -909,9 +951,9 @@ function ProviderPicker({
             key={providerId}
             type="button"
             onClick={() => onChange(providerId)}
-            className={`inline-flex h-9 items-center rounded-[10px] px-3 text-[13px] font-medium transition ${
+            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
               isActive
-                ? 'bg-bg-elevated text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+                ? 'bg-bg-elevated text-text-primary'
                 : 'text-text-tertiary hover:text-text-primary'
             }`}
           >
@@ -938,7 +980,7 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex h-9 items-center gap-2 rounded-xl px-3 text-[12.5px] font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`inline-flex h-9 items-center gap-2 px-3 text-[12.5px] font-normal transition disabled:cursor-not-allowed disabled:opacity-60 ${
         variant === 'primary'
           ? 'bg-bg-button text-text-inverse hover:bg-bg-button-hover'
           : 'border border-border-default bg-bg-subtle text-text-primary hover:bg-bg-hover'
@@ -965,12 +1007,12 @@ function Switch({
       aria-checked={checked}
       aria-label={ariaLabel}
       onClick={() => onCheckedChange(!checked)}
-      className={`relative inline-flex h-7 w-11 items-center rounded-full transition ${
-        checked ? 'bg-text-secondary/85' : 'bg-bg-subtle'
+      className={`relative inline-flex h-7 w-11 items-center transition ${
+        checked ? 'bg-[var(--bg-active)]' : 'bg-bg-subtle'
       }`}
     >
       <span
-        className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${checked ? 'translate-x-[22px]' : 'translate-x-[4px]'}`}
+        className={`h-5 w-5 bg-white transition ${checked ? 'translate-x-[22px]' : 'translate-x-[4px]'}`}
       />
     </button>
   );
@@ -982,13 +1024,13 @@ function StatusPill({
 }: PropsWithChildren<{ tone?: 'success' | 'warning' | 'muted' }>) {
   const toneClass =
     tone === 'success'
-      ? 'border-success-border bg-success-bg text-success-text'
+      ? 'border-[var(--border-strong)] bg-[var(--bg-hover)] text-[var(--text-secondary)]'
       : tone === 'warning'
-        ? 'border-warning-border bg-warning-bg text-warning-text'
+        ? 'border-[var(--border-default)] bg-[var(--bg-ghost)] text-[var(--text-tertiary)]'
         : 'border-border-default bg-bg-subtle text-text-tertiary';
 
   return (
-    <span className={`inline-flex h-7 items-center rounded-full border px-2.5 text-[11px] font-medium ${toneClass}`}>
+    <span className={`inline-flex h-7 items-center border px-2.5 text-[11px] font-normal ${toneClass}`}>
       {children}
     </span>
   );
@@ -996,7 +1038,7 @@ function StatusPill({
 
 function ValueBadge({ children }: PropsWithChildren) {
   return (
-    <span className="inline-flex h-8 min-w-[84px] items-center justify-center rounded-xl border border-border-default bg-bg-subtle px-3 text-[12.5px] font-medium text-text-primary">
+    <span className="inline-flex h-8 min-w-[84px] items-center justify-center border border-border-default bg-bg-subtle px-3 text-[12.5px] font-normal text-text-primary">
       {children}
     </span>
   );

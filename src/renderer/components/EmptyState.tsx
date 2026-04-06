@@ -41,7 +41,7 @@ export function EmptyState({ onSuggestionClick }: EmptyStateProps) {
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
           </svg>
         </div>
-        <h1 className="text-xl font-semibold bg-gradient-to-r from-gradient-start to-gradient-end bg-clip-text text-transparent">
+        <h1 className="font-code-sans text-xl font-normal text-[var(--text-secondary)]">
           Atlas
         </h1>
       </div>
@@ -53,10 +53,10 @@ export function EmptyState({ onSuggestionClick }: EmptyStateProps) {
             key={text}
             type="button"
             onClick={() => onSuggestionClick(prompt)}
-            className="flex items-center gap-3 rounded-xl border border-border-medium bg-bg-hover px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary"
+            className="flex items-center gap-3 border border-border-medium px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary"
           >
             <Icon className="h-4 w-4 shrink-0 text-text-muted" />
-            <span className="truncate">{text}</span>
+            <span className="truncate font-normal">{text}</span>
           </button>
         ))}
       </div>

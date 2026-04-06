@@ -112,6 +112,7 @@ export class ModelRegistry {
         null,
       appearance: {
         themeMode: this.settingsRepo.getThemeMode(),
+        designTheme: this.settingsRepo.getDesignTheme(),
         uiFontSize: this.settingsRepo.getUiFontSize(),
         codeFontSize: this.settingsRepo.getCodeFontSize(),
         uiFontFamily: this.settingsRepo.getUiFontFamily(),

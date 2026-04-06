@@ -5,6 +5,7 @@ import type {
   ChatReasoningPart,
   ChatTextPart,
   ChatToolPart,
+  ChatVisualPart,
   MessageRole,
   StreamEvent
 } from './contracts';
@@ -270,6 +271,46 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
           approved: false
         }
       }));
+    case 'visual-start': {
+      const visualPart: ChatVisualPart = {
+        id: event.visualId,
+        type: 'visual',
+        content: '',
+        state: 'streaming',
+        title: event.title
+      };
+      const existingIndex = parts.findIndex((part) => part.type === 'visual' && part.id === event.visualId);
+      if (existingIndex === -1) {
+        return [...parts, visualPart];
+      }
+
+      return parts.map((part, index) =>
+        index === existingIndex && part.type === 'visual'
+          ? { ...part, state: 'streaming' as const, title: event.title ?? part.title }
+          : part
+      );
+    }
+    case 'visual-complete': {
+      const existingIndex = parts.findIndex((part) => part.type === 'visual' && part.id === event.visualId);
+      if (existingIndex === -1) {
+        return [
+          ...parts,
+          {
+            id: event.visualId,
+            type: 'visual',
+            content: event.content,
+            state: 'done',
+            title: event.title,
+          } satisfies ChatVisualPart,
+        ];
+      }
+
+      return parts.map(part =>
+        part.type === 'visual' && part.id === event.visualId
+          ? { ...part, content: event.content, state: 'done' as const, title: event.title ?? part.title }
+          : part
+      );
+    }
     default:
       return parts;
   }
@@ -278,6 +319,13 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
 export function finalizeMessageParts(parts: ChatMessagePart[]) {
   return parts.map((part) => {
     if (part.type === 'text' || part.type === 'reasoning') {
+      return {
+        ...part,
+        state: 'done' as const
+      };
+    }
+
+    if (part.type === 'visual' && part.state === 'streaming') {
       return {
         ...part,
         state: 'done' as const

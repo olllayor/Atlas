@@ -54,7 +54,7 @@ type RefreshModelsOptions = {
   silent?: boolean;
 };
 
-type AppView = 'chat' | 'settings';
+type AppView = 'chat' | 'settings' | 'landing';
 
 type AppState = {
   bootstrapping: boolean;
@@ -95,6 +95,8 @@ type AppState = {
   createConversation: () => Promise<void>;
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
+  openLanding: () => void;
+  closeLanding: () => void;
   setSettingsSection: (section: SettingsSection) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
@@ -506,6 +508,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       modelPickerOpen: false
     }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
+  openLanding: () => set({ activeView: 'landing' }),
+  closeLanding: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
@@ -994,7 +998,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       event.type === 'tool-input-available' ||
       event.type === 'tool-output-available' ||
       event.type === 'tool-output-error' ||
-      event.type === 'tool-output-denied'
+      event.type === 'tool-output-denied' ||
+      event.type === 'visual-start' ||
+      event.type === 'visual-complete'
     ) {
       set((state) => {
         const draft = state.draftsByConversation[conversationId];

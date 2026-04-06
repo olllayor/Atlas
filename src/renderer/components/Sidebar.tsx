@@ -27,6 +27,7 @@ type SidebarProps = {
   onCreate: () => void;
   onDelete: (conversationId: string) => void;
   onOpenSettings: (section?: SettingsSection) => void;
+  onOpenLanding: () => void;
   onRefreshModels: () => void;
   onCheckForUpdates: () => void;
   onToggleCollapsed: () => void;
@@ -67,6 +68,7 @@ export function Sidebar({
   onCreate,
   onDelete,
   onOpenSettings,
+  onOpenLanding,
   onRefreshModels,
   onCheckForUpdates,
   onToggleCollapsed,
@@ -75,31 +77,30 @@ export function Sidebar({
 
   return (
     <aside
-      className={`relative flex shrink-0 flex-col overflow-hidden ${
+      className={`relative flex shrink-0 flex-col overflow-hidden bg-bg-base ${
         collapsed
-          ? '-mr-px w-[72px] bg-transparent'
-          : 'border-r border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)_16%),linear-gradient(180deg,#0d1015,#090b0f)]'
-      } ${collapsed ? '' : 'w-[284px]'}`}
-      style={{ viewTransitionName: 'app-sidebar' }}
+          ? '-mr-px'
+          : 'border-r border-[var(--border-default)]'
+      }`}
+      style={{
+        viewTransitionName: 'app-sidebar',
+        width: collapsed ? 'var(--sidebar-width-collapsed)' : 'var(--sidebar-width)',
+      }}
     >
-      {!collapsed ? (
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.03),transparent_34%)]" />
-      ) : null}
-
       {/* macOS title bar area - traffic lights + centered app name */}
       <div
         className={`relative flex h-[52px] items-center ${
-          collapsed ? 'justify-start gap-2 px-2.5' : 'border-b border-white/6'
+          collapsed ? 'justify-start gap-2 px-2.5'         : 'border-b border-[var(--border-default)]'
         }`}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        {!collapsed ? <div className="w-[78px] shrink-0" /> : null}
+        {!collapsed ? <div className="w-20 shrink-0" /> : null}
 
         {/* Centered app name */}
         {!collapsed && (
           <div className="flex flex-1 items-center justify-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#7c8cff]" />
-            <h1 className="text-sm font-semibold tracking-[0.01em] text-white/96">Atlas</h1>
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--text-tertiary)]" />
+            <h1 className="text-sm font-normal tracking-[0.01em] text-[var(--text-secondary)]">Atlas</h1>
           </div>
         )}
 
@@ -110,12 +111,12 @@ export function Sidebar({
                 type="button"
                 onClick={onToggleCollapsed}
                 aria-label="Show sidebar"
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+                className="flex h-9 w-9 items-center justify-center text-text-muted transition hover:bg-[var(--bg-hover)] hover:text-text-primary"
               >
                 <SidebarToggleIcon />
               </button>
               {showSidebarToggleShortcutHint && sidebarToggleShortcutLabel ? (
-                <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border border-white/10 bg-[#141922]/92 px-1.5 py-1 font-mono text-[10px] leading-none text-white/62 shadow-[0_10px_30px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+                <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap border border-[var(--border-default)] bg-bg-base px-1.5 py-1 font-mono text-[10px] leading-none text-[var(--text-tertiary)]">
                   {sidebarToggleShortcutLabel}
                 </span>
               ) : null}
@@ -126,12 +127,12 @@ export function Sidebar({
                 type="button"
                 onClick={onCreate}
                 aria-label="New chat"
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+                className="flex h-9 w-9 items-center justify-center text-text-muted transition hover:bg-[var(--bg-hover)] hover:text-text-primary"
               >
                 <Pencil2Icon className="h-4 w-4" />
               </button>
               {showNewChatShortcutHint && newChatShortcutLabel ? (
-                <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border border-white/10 bg-[#141922]/92 px-1.5 py-1 font-mono text-[10px] leading-none text-white/62 shadow-[0_10px_30px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+                <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap border border-[var(--border-default)] bg-bg-base px-1.5 py-1 font-mono text-[10px] leading-none text-[var(--text-tertiary)]">
                   {newChatShortcutLabel}
                 </span>
               ) : null}
@@ -142,11 +143,11 @@ export function Sidebar({
             type="button"
             onClick={onToggleCollapsed}
             aria-label="Hide sidebar"
-            className="mr-2 rounded-lg p-1.5 text-text-muted transition hover:bg-white/6 hover:text-text-primary"
+            className="mr-2 p-1.5 text-text-muted transition hover:bg-[var(--bg-hover)] hover:text-text-primary"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             {showSidebarToggleShortcutHint && sidebarToggleShortcutLabel ? (
-              <span className="inline-flex min-w-[30px] items-center justify-center rounded-md border border-white/10 bg-white/[0.07] px-1.5 py-1 font-mono text-[10px] leading-none text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+              <span className="inline-flex min-w-[30px] items-center justify-center border border-[var(--border-default)] bg-[var(--bg-hover)] px-1.5 py-1 font-mono text-[10px] leading-none text-[var(--text-tertiary)]">
                 {sidebarToggleShortcutLabel}
               </span>
             ) : (
@@ -161,14 +162,14 @@ export function Sidebar({
           <button
             type="button"
             onClick={onCreate}
-            className="group relative flex w-full items-center gap-2 rounded-xl border border-white/6 bg-white/[0.02] px-3 py-2 text-[13px] font-medium text-white/72 transition hover:border-white/10 hover:bg-white/[0.045] hover:text-white"
+            className="group relative flex w-full items-center gap-2 border border-[var(--border-default)] bg-transparent px-3 py-2 text-[13px] font-normal text-[var(--text-tertiary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-white"
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/7 bg-white/[0.03] text-white/58 transition group-hover:border-white/10 group-hover:bg-white/[0.05] group-hover:text-white/74">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-subtle)] text-[var(--text-muted)] transition group-hover:border-[var(--border-strong)] group-hover:bg-[var(--bg-hover)] group-hover:text-[var(--text-secondary)]">
               <Pencil2Icon className="h-3.5 w-3.5" />
             </span>
             <span>New chat</span>
             {showNewChatShortcutHint && newChatShortcutLabel ? (
-              <span className="absolute right-2 top-1/2 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-white/10 bg-white/[0.07] px-1.5 font-mono text-[10px] leading-none text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+              <span className="absolute right-2 top-1/2 inline-flex h-5 -translate-y-1/2 items-center border border-[var(--border-default)] bg-[var(--bg-hover)] px-1.5 font-mono text-[10px] leading-none text-[var(--text-tertiary)]">
                 {newChatShortcutLabel}
               </span>
             ) : null}
@@ -178,7 +179,7 @@ export function Sidebar({
 
       {!collapsed ? (
         <div className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto px-3">
-          <div className="px-2 pb-2 pt-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/32">
+          <div className="px-2 pb-2 pt-1 text-[10px] font-normal uppercase tracking-[0.16em] text-[var(--text-faint)]">
             Conversations
           </div>
 
@@ -194,10 +195,10 @@ export function Sidebar({
                       setPendingDeleteId(null);
                       onSelect(item.id);
                     }}
-                    className={`flex w-full items-center ${collapsed ? 'justify-center gap-0 px-0 py-2.5' : item.isRunning ? 'gap-2.5 px-3 py-2' : 'gap-0 px-3 py-1.5'} rounded-xl text-left transition ${
+                    className={`flex w-full items-center ${collapsed ? 'justify-center gap-0 px-0 py-2.5' : item.isRunning ? 'gap-2.5 px-3 py-2' : 'gap-0 px-3 py-1.5'} text-left transition ${
                       isActive
-                        ? 'border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.045))] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-                        : 'border border-transparent text-text-tertiary hover:bg-white/[0.04] hover:text-text-secondary'
+                        ? 'border border-[var(--border-strong)] bg-[var(--bg-hover)] text-white'
+                        : 'border border-transparent text-text-tertiary hover:bg-[var(--bg-hover)] hover:text-text-secondary'
                     } ${!collapsed ? (isDeletePending ? 'pr-[92px]' : 'pr-8') : ''}`}
                   >
                     <SidebarConversationRow
@@ -226,7 +227,7 @@ export function Sidebar({
                               setPendingDeleteId(null);
                               onDelete(item.id);
                             }}
-                            className="flex h-6 items-center gap-1 rounded-md bg-rose-500/16 px-2 text-[10px] font-medium text-rose-200 transition hover:bg-rose-500/24 hover:text-rose-100"
+                            className="flex h-6 items-center gap-1 border border-[var(--border-strong)] bg-[var(--bg-hover)] px-2 text-[10px] font-normal text-[var(--text-secondary)] transition hover:bg-[var(--bg-active)] hover:text-white"
                           >
                             <Check className="h-3 w-3" />
                             <span>Delete</span>
@@ -238,7 +239,7 @@ export function Sidebar({
                               event.stopPropagation();
                               setPendingDeleteId(null);
                             }}
-                            className="flex h-6 w-6 items-center justify-center rounded-md text-white/34 transition hover:bg-white/[0.05] hover:text-white/72"
+                            className="flex h-6 w-6 items-center justify-center text-[var(--text-faint)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--text-tertiary)]"
                           >
                             <X className="h-3.5 w-3.5" />
                           </button>
@@ -251,7 +252,7 @@ export function Sidebar({
                             event.stopPropagation();
                             setPendingDeleteId(item.id);
                           }}
-                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/30 opacity-0 transition hover:bg-rose-500/10 hover:text-rose-300 group-hover:opacity-100"
+                          className="flex h-6 w-6 items-center justify-center text-[var(--text-faint)] opacity-0 transition hover:bg-[var(--bg-hover)] hover:text-[var(--text-tertiary)] group-hover:opacity-100"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -268,7 +269,7 @@ export function Sidebar({
       )}
 
       {!collapsed ? (
-        <div className="border-t border-white/6 px-3 py-3">
+        <div className="border-t border-[var(--border-default)] px-3 py-3">
           <SidebarSettingsMenu
             collapsed={collapsed}
             settings={settings}
@@ -278,6 +279,7 @@ export function Sidebar({
             loadedMessageCount={loadedMessageCount}
             settingsShortcutLabel={settingsShortcutLabel}
             onOpenSettings={onOpenSettings}
+            onOpenLanding={onOpenLanding}
             onRefreshModels={onRefreshModels}
             onCheckForUpdates={onCheckForUpdates}
           />

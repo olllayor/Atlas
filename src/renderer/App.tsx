@@ -2,9 +2,10 @@ import { useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
-import type { AppUpdateSnapshot, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
+import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { PROVIDER_METADATA } from '../shared/providerMetadata';
+import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
 import { Composer } from './components/Composer';
@@ -13,8 +14,10 @@ import { AppUpdateButton } from './components/AppUpdateButton';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { Sidebar } from './components/Sidebar';
+import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
+import { XAILandingPage } from './components/XAILandingPage';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
 import {
   isEditableTarget,
@@ -25,9 +28,11 @@ import {
   shouldShowShortcutHintForCommand,
 } from './lib/keybindings';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
+import { captureEvent, identifyUser } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { runViewTransition } from './lib/viewTransitions';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
+import { notify } from './lib/notify';
 
 function LoadingScreen() {
   return (
@@ -115,6 +120,7 @@ function buildFontFamilyValue(override: FontFamilyOverride, fallbackVariable: '-
 export default function App() {
   const [composerValue, setComposerValue] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const [showConversationJumpHints, setShowConversationJumpHints] = useState(false);
   const [showNewChatShortcutHint, setShowNewChatShortcutHint] = useState(false);
   const [showSidebarToggleShortcutHint, setShowSidebarToggleShortcutHint] = useState(false);
@@ -179,6 +185,8 @@ export default function App() {
     abortConversation,
     deleteConversation,
     handleStreamEvent,
+    openLanding,
+    closeLanding,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -234,6 +242,8 @@ export default function App() {
       abortConversation: state.abortConversation,
       deleteConversation: state.deleteConversation,
       handleStreamEvent: state.handleStreamEvent,
+      openLanding: state.openLanding,
+      closeLanding: state.closeLanding,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -343,6 +353,7 @@ export default function App() {
   const runCommand = useEffectEvent((command: KeybindingCommand) => {
     if (command === 'app.commandPalette.toggle') {
       setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
       setCommandPaletteOpen(!commandPaletteOpen);
       return;
     }
@@ -350,6 +361,7 @@ export default function App() {
     if (command === 'chat.new') {
       setCommandPaletteOpen(false);
       setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.CONVERSATION_CREATED);
       void createConversation();
       return;
     }
@@ -368,6 +380,7 @@ export default function App() {
 
     if (command === 'settings.open') {
       setCommandPaletteOpen(false);
+      captureEvent(POSTHOG_EVENTS.SETTINGS_OPENED);
       runViewTransition(() => {
         openSettings('general');
       });
@@ -415,6 +428,7 @@ export default function App() {
 
   useEffect(() => {
     void bootstrap();
+    void identifyUser();
   }, [bootstrap]);
 
   useEffect(() => prewarmMessageRendering(), []);
@@ -466,6 +480,10 @@ export default function App() {
       mediaQuery.removeEventListener('change', applyTheme);
     };
   }, [themeMode]);
+
+  useEffect(() => {
+    document.documentElement.dataset.designTheme = appearance.designTheme;
+  }, [appearance.designTheme]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -562,7 +580,9 @@ export default function App() {
   }
 
   const content =
-    activeView === 'settings' ? (
+    activeView === 'landing' ? (
+      <XAILandingPage onBackToApp={() => closeLanding()} />
+    ) : activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
         updateState={updateState}
@@ -584,15 +604,56 @@ export default function App() {
         onNavigate={setSettingsSection}
         onSelectProvider={setActiveCredentialProvider}
         onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveProviderKey()}
-        onValidateKey={() => void validateProviderKey()}
-        onThemeModeChange={(mode) => void updatePreferences({ appearance: { themeMode: mode } })}
-        onUiFontSizeChange={(value) => void updatePreferences({ appearance: { uiFontSize: value } })}
-        onCodeFontSizeChange={(value) => void updatePreferences({ appearance: { codeFontSize: value } })}
-        onUiFontFamilyChange={(value) => void updatePreferences({ appearance: { uiFontFamily: value } })}
-        onCodeFontFamilyChange={(value) => void updatePreferences({ appearance: { codeFontFamily: value } })}
-        onUpdateKeybindings={(rules) => void updatePreferences({ keyboard: { keybindings: rules } })}
-        onToggleFreeModels={(value) => void updatePreferences({ showFreeOnlyByDefault: value })}
+        onSaveKey={() => {
+          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_SAVED, { providerId: activeCredentialProviderId });
+          void saveProviderKey();
+        }}
+        onValidateKey={() => {
+          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_VALIDATED, { providerId: activeCredentialProviderId });
+          void validateProviderKey();
+        }}
+        onThemeModeChange={(mode) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'themeMode', value: mode });
+          void updatePreferences({ appearance: { themeMode: mode } });
+          const modeLabel = mode === 'system' ? 'System' : mode === 'dark' ? 'Dark' : 'Light';
+          notify({ tone: 'info', title: `Theme mode: ${modeLabel}` });
+        }}
+        onDesignThemeChange={(theme) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'designTheme', value: theme });
+          void updatePreferences({ appearance: { designTheme: theme } });
+          const themeLabel = theme === 'default' ? 'Default' : theme === 'xai' ? 'xAI' : 'Cursor';
+          notify({ tone: 'info', title: `Design theme: ${themeLabel}` });
+        }}
+        onUiFontSizeChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontSize', value });
+          void updatePreferences({ appearance: { uiFontSize: value } });
+          notify({ tone: 'info', title: `UI font size: ${value}px` });
+        }}
+        onCodeFontSizeChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontSize', value });
+          void updatePreferences({ appearance: { codeFontSize: value } });
+          notify({ tone: 'info', title: `Code font size: ${value}px` });
+        }}
+        onUiFontFamilyChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontFamily', value });
+          void updatePreferences({ appearance: { uiFontFamily: value } });
+          const fontLabel = value === 'system' ? 'System' : value === 'mono' ? 'Monospace' : 'System';
+          notify({ tone: 'info', title: `UI font: ${fontLabel}` });
+        }}
+        onCodeFontFamilyChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontFamily', value });
+          void updatePreferences({ appearance: { codeFontFamily: value } });
+          const fontLabel = value === 'system' ? 'System' : value === 'mono' ? 'Monospace' : 'System';
+          notify({ tone: 'info', title: `Code font: ${fontLabel}` });
+        }}
+        onUpdateKeybindings={(rules) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'keybindings' });
+          void updatePreferences({ keyboard: { keybindings: rules } });
+        }}
+        onToggleFreeModels={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'showFreeOnlyByDefault', value });
+          void updatePreferences({ showFreeOnlyByDefault: value });
+        }}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {
             void performUpdatePrimaryAction();
@@ -618,6 +679,7 @@ export default function App() {
         onSaveKey={() => void saveProviderKey()}
         onValidateKey={() => void validateProviderKey()}
         onContinue={() => {
+          captureEvent(POSTHOG_EVENTS.ONBOARDING_COMPLETED);
           setShowOnboarding(false);
           setOnboardingDone(true);
         }}
@@ -626,7 +688,7 @@ export default function App() {
       <div
         className={`flex h-screen overflow-hidden ${
           sidebarCollapsed
-            ? 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
+            ? 'bg-bg-base'
             : 'bg-bg-base'
         }`}
       >
@@ -650,22 +712,16 @@ export default function App() {
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
+          onOpenLanding={() => openLanding()}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
         />
 
         <div
-          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden ${
-            sidebarCollapsed
-              ? 'bg-transparent'
-              : 'bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]'
-          }`}
+          className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-base`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
-          {!sidebarCollapsed ? (
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" />
-          ) : null}
           {/* Draggable title bar area for main content - matches sidebar height */}
           <div
             className={`relative h-[52px] shrink-0 ${sidebarCollapsed ? '' : 'border-b border-white/6'}`}
@@ -699,6 +755,10 @@ export default function App() {
               onChange={setComposerValue}
               onSend={(message) => {
                 const fallbackValue = message.text;
+                captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
+                  hasFiles: message.files && message.files.length > 0,
+                  fileCount: message.files?.length ?? 0,
+                });
                 return sendMessage({
                   text: message.text,
                   files: message.files,
@@ -707,15 +767,22 @@ export default function App() {
                   .catch(() => setComposerValue(fallbackValue));
               }}
               onAbort={() => {
-                if (selectedConversationId) void abortConversation(selectedConversationId);
+                if (selectedConversationId) {
+                  captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+                  void abortConversation(selectedConversationId);
+                }
               }}
               onSelectModel={(modelId) => {
-                if (selectedConversationId) setSelectedModel(selectedConversationId, modelId);
+                if (selectedConversationId) {
+                  captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
+                  setSelectedModel(selectedConversationId, modelId);
+                }
               }}
               onModelPickerOpenChange={setModelPickerOpen}
               onComposerFocusChange={setComposerFocused}
               onRefreshModels={() => void refreshModels()}
               isRefreshingModels={isRefreshingModels}
+              onOpenGallery={() => setGalleryOpen(true)}
             />
           </RendererErrorBoundary>
         </div>
@@ -730,6 +797,14 @@ export default function App() {
         onOpenChange={setCommandPaletteOpen}
         onSelect={runCommand}
         open={commandPaletteOpen}
+      />
+      <VisualGallery
+        isOpen={galleryOpen}
+        onClose={() => setGalleryOpen(false)}
+        onSelect={(visual) => {
+          setGalleryOpen(false);
+          setComposerValue(visual.content);
+        }}
       />
       {content}
     </TooltipProvider>

@@ -1,35 +1,37 @@
 @import 'tailwindcss';
 
 /* ============================================
-   LAYER 1: Semantic CSS Custom Properties
-   Override these on [data-theme="*"] to theme.
+   THEME CONTRACT
+   All CSS custom properties that every component uses.
+   Values are set by theme files (themes/*.css) via [data-theme] selectors.
+   Default values below = the 'default' theme.
    ============================================ */
 
-:root {
+:root,
+[data-theme='default'] {
   color-scheme: dark;
 
-  /* Backgrounds - 5-tier elevation */
+  /* Backgrounds */
   --bg-base: #07080b;
   --bg-panel: #0b0d12;
   --bg-surface: #101319;
   --bg-elevated: #151922;
   --bg-code: rgba(0, 0, 0, 0.3);
 
-  /* Backgrounds - white opacity scale */
   --bg-subtle: rgba(255, 255, 255, 0.03);
   --bg-ghost: rgba(255, 255, 255, 0.04);
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.12);
   --bg-button: #ffffff;
-  --bg-button-hover: rgba(255, 255, 255, 0.9);
+  --bg-button-hover: rgba(255, 255, 255, 0.88);
 
   /* Borders */
   --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-medium: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-medium: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.28);
 
-  /* Text - 6-tier scale */
+  /* Text */
   --text-primary: #ffffff;
   --text-secondary: #cbd5e1;
   --text-tertiary: #94a3b8;
@@ -37,19 +39,17 @@
   --text-faint: #475569;
   --text-inverse: #000000;
 
-  /* Semantic - success */
+  /* Semantic */
   --success: #34d399;
   --success-bg: rgba(52, 211, 153, 0.15);
   --success-border: rgba(52, 211, 153, 0.2);
   --success-text: #a7f3d0;
 
-  /* Semantic - warning */
   --warning: #fbbf24;
   --warning-bg: rgba(245, 158, 11, 0.05);
   --warning-border: rgba(245, 158, 11, 0.2);
   --warning-text: #fde68a;
 
-  /* Semantic - error */
   --error: #fb7185;
   --error-bg: rgba(244, 63, 94, 0.1);
   --error-border: rgba(244, 63, 94, 0.2);
@@ -71,19 +71,17 @@
   /* Typography */
   --ui-font-size: 15px;
   --code-font-size: 13px;
-  --font-ui-system:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
-    'Segoe UI Symbol';
-  --font-mono-system:
-    'SF Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace;
-  --font-ui-family: var(--font-ui-system);
+  --font-ui-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-mono-system: 'SF Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace;
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
 
   /* Layout */
   --content-max: clamp(680px, 102vw, 860px);
-  --sidebar-expanded: 284px;
-  --sidebar-collapsed: 68px;
+  --sidebar-width: 17.75rem; /* 284px at default font size */
+  --sidebar-width-collapsed: 4.5rem; /* 72px at default font size */
+  --sidebar-expanded: 284px; /* deprecated - use --sidebar-width */
+  --sidebar-collapsed: 68px; /* deprecated - use --sidebar-width-collapsed */
 
   /* Border radius */
   --radius-sm: 0.375rem;
@@ -91,6 +89,7 @@
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
   --radius-2xl: 1.25rem;
+  --radius-subtle: 4px;
   --radius-full: 9999px;
 
   /* Shadows */
@@ -100,88 +99,16 @@
   --duration-fast: 150ms;
   --duration-normal: 200ms;
   --duration-slow: 400ms;
-
-  /* Gradients */
-  --gradient-start: var(--text-primary);
-  --gradient-end: var(--text-tertiary);
-
-  /* macOS-specific adjustments */
-  --macos-titlebar-height: 0px;
-}
-
-html {
-  font-size: var(--ui-font-size);
+  --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* ============================================
-   FUTURE THEME: Light
-   Uncomment and adjust values when ready.
-   ============================================ */
-
-[data-theme='light'] {
-  color-scheme: light;
-
-  --bg-base: #ffffff;
-  --bg-panel: #f8f9fa;
-  --bg-surface: #f1f3f5;
-  --bg-elevated: #e9ecef;
-  --bg-code: rgba(0, 0, 0, 0.05);
-
-  --bg-subtle: rgba(0, 0, 0, 0.02);
-  --bg-ghost: rgba(0, 0, 0, 0.03);
-  --bg-hover: rgba(0, 0, 0, 0.04);
-  --bg-active: rgba(0, 0, 0, 0.06);
-  --bg-button: #111827;
-  --bg-button-hover: rgba(17, 24, 39, 0.9);
-
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border-default: rgba(0, 0, 0, 0.08);
-  --border-medium: rgba(0, 0, 0, 0.12);
-  --border-strong: rgba(0, 0, 0, 0.2);
-
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-tertiary: #6b7280;
-  --text-muted: #9ca3af;
-  --text-faint: #d1d5db;
-  --text-inverse: #ffffff;
-
-  --success: #059669;
-  --success-bg: rgba(5, 150, 105, 0.1);
-  --success-border: rgba(5, 150, 105, 0.2);
-  --success-text: #047857;
-
-  --warning: #d97706;
-  --warning-bg: rgba(217, 119, 6, 0.08);
-  --warning-border: rgba(217, 119, 6, 0.2);
-  --warning-text: #b45309;
-
-  --error: #e11d48;
-  --error-bg: rgba(225, 29, 72, 0.08);
-  --error-border: rgba(225, 29, 72, 0.15);
-  --error-text: #be123c;
-
-  --toast-bg: rgba(236, 242, 255, 0.98);
-  --toast-border: rgba(147, 174, 228, 0.65);
-  --toast-text: #38507f;
-  --toast-icon: #5974a8;
-  --toast-close: rgba(56, 80, 127, 0.48);
-  --toast-close-hover: rgba(33, 50, 84, 0.9);
-
-  --overlay: rgba(0, 0, 0, 0.3);
-  --scrollbar: rgba(0, 0, 0, 0.15);
-  --scrollbar-hover: rgba(0, 0, 0, 0.25);
-
-  --shadow-elevated: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
-}
-
-/* ============================================
-   LAYER 2: Tailwind @theme mapping
-   Maps semantic CSS vars → Tailwind utilities
+   Tailwind @theme mapping
+   Maps semantic CSS vars → Tailwind utilities.
    ============================================ */
 
 @theme {
-  /* shadcn/ui theme variables for ai-elements compatibility */
+  /* shadcn/ui theme variables */
   --color-background: var(--bg-base);
   --color-foreground: var(--text-primary);
   --color-card: var(--bg-elevated);
@@ -192,9 +119,9 @@ html {
   --color-primary-foreground: var(--text-inverse);
   --color-secondary: var(--bg-active);
   --color-secondary-foreground: var(--text-primary);
-  --color-muted: var(--bg-hover);
+  --color-muted: var(--bg-ghost);
   --color-muted-foreground: var(--text-muted);
-  --color-accent: var(--bg-hover);
+  --color-accent: var(--bg-active);
   --color-accent-foreground: var(--text-primary);
   --color-destructive: var(--error);
   --color-destructive-foreground: var(--text-primary);
@@ -257,8 +184,10 @@ html {
   --font-mono: var(--font-code-mono);
 
   --spacing-content-max: var(--content-max);
-  --spacing-sidebar-expanded: var(--sidebar-expanded);
-  --spacing-sidebar-collapsed: var(--sidebar-collapsed);
+  --spacing-sidebar-width: var(--sidebar-width);
+  --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
+  --spacing-sidebar-expanded: var(--sidebar-expanded); /* deprecated */
+  --spacing-sidebar-collapsed: var(--sidebar-collapsed); /* deprecated */
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
@@ -272,9 +201,6 @@ html {
   --duration-fast: var(--duration-fast);
   --duration-normal: var(--duration-normal);
   --duration-slow: var(--duration-slow);
-
-  --color-gradient-start: var(--gradient-start);
-  --color-gradient-end: var(--gradient-end);
 }
 
 /* ============================================
@@ -291,11 +217,14 @@ body,
 body {
   font-family: var(--font-ui-family);
   font-optical-sizing: auto;
-  background:
-    radial-gradient(circle at top, rgba(79, 102, 255, 0.09), transparent 30%),
-    radial-gradient(circle at 78% 16%, rgba(255, 255, 255, 0.03), transparent 24%), var(--bg-base);
+  background: var(--bg-base);
   color: var(--text-primary);
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre, .font-mono, [class*="GeistMono"] {
   -webkit-font-smoothing: antialiased;
 }
 
@@ -308,6 +237,28 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+/* ============================================
+   Focus rings
+   ============================================ */
+
+*:focus-visible {
+  outline: none;
+}
+
+/* ============================================
+   Motion — targeted, snappy
+   ============================================ */
+
+button, input, [role="option"], [role="button"] {
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--easing-default);
+}
+
+.panel, .drawer, aside {
+  transition-duration: var(--duration-normal);
+  transition-timing-function: var(--easing-default);
 }
 
 /* ============================================
@@ -338,7 +289,7 @@ select {
 .markdown-body pre {
   overflow-x: auto;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-sm);
   background: var(--bg-code);
   padding: 1rem;
   font-family: var(--font-mono);
@@ -456,15 +407,19 @@ select {
 }
 
 /* ============================================
-   Utility classes for common patterns
+   Utility classes
    ============================================ */
 
 .btn-primary {
   border-radius: var(--radius-md);
   background: var(--bg-button);
   color: var(--text-inverse);
-  font-weight: 500;
+  font-family: var(--font-mono-system);
   font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 12px 24px;
   transition: background var(--duration-fast) ease;
 }
 
@@ -479,12 +434,25 @@ select {
 
 .btn-secondary {
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-  font-weight: 500;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono-system);
   font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 12px 24px;
   transition: background var(--duration-fast) ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.btn-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .font-code-sans {
@@ -509,27 +477,18 @@ select {
   line-height: 1;
 }
 
-.btn-secondary:hover {
-  background: var(--bg-active);
-}
-
-.btn-secondary:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
 .card {
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-subtle);
 }
 
 .input {
   width: 100%;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-hover);
-  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  padding: 12px 16px;
   font-size: 0.875rem;
   color: var(--text-primary);
   outline: none;
@@ -538,6 +497,7 @@ select {
 
 .input:focus {
   border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--border-strong);
 }
 
 .input::placeholder {
@@ -546,7 +506,7 @@ select {
 
 .section-title {
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text-primary);
 }
 

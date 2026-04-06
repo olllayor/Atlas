@@ -39,7 +39,7 @@ export class RendererErrorBoundary extends Component<
         this.props.fallback ?? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-8 py-10 lg:px-12">
             <div className="w-full max-w-xl rounded-[24px] border border-error-border bg-error-bg p-6 shadow-elevated">
-              <h2 className="text-lg font-semibold text-error-text">Conversation view failed to render</h2>
+              <h2 className="text-lg font-normal text-error-text">Conversation view failed to render</h2>
               <p className="mt-2 text-sm text-error-text/80">
                 The app recovered instead of leaving the window blank. Switching sessions again will retry this view.
               </p>

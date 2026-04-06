@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { BrushSpinner } from "@/components/ui/brush-spinner";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -1241,7 +1242,7 @@ export const PromptInputSubmit = ({
   let Icon = <CornerDownLeftIcon className="size-4" />;
 
   if (status === "submitted") {
-    Icon = <Spinner />;
+    Icon = <BrushSpinner size={16} strokeWidth={2} speed={1.2} />;
   } else if (status === "streaming") {
     Icon = <SquareIcon className="size-4" />;
   } else if (status === "error") {

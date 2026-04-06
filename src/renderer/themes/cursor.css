@@ -1,0 +1,146 @@
+/* ============================================
+   Theme: Cursor — Warm Minimalism
+   Based on Cursor's design system
+   ============================================ */
+
+[data-design-theme='cursor'] {
+  /* Backgrounds - Warm cream palette */
+  --bg-base: #f2f1ed; /* Cursor Cream - page background */
+  --bg-panel: #f7f7f4; /* Surface 100 - lightest surface */
+  --bg-surface: #f2f1ed; /* Surface 200 - primary surface */
+  --bg-elevated: #e6e5e0; /* Surface 400 - card backgrounds */
+  --bg-code: #ebeae5; /* Surface 300 - code blocks */
+
+  --bg-subtle: #ebeae5; /* Surface 300 - button backgrounds */
+  --bg-ghost: #e6e5e0; /* Surface 400 - secondary */
+  --bg-hover: #dcdbd6; /* Surface 500 - hover state (darkened for better visibility) */
+  --bg-active: #d7d6d1; /* Darker for active */
+  --bg-button: #ebeae5; /* Primary button - warm surface */
+  --bg-button-hover: #dcdbd6; /* Button hover (darkened) */
+
+  /* Borders - Warm brown with perceptual uniformity */
+  --border-subtle: rgba(38, 37, 30, 0.08); /* 8% warm brown */
+  --border-default: rgba(38, 37, 30, 0.15); /* 15% warm brown - inputs (increased for visibility) */
+  --border-medium: rgba(38, 37, 30, 0.22); /* 22% warm brown - focus (increased) */
+  --border-strong: rgba(38, 37, 30, 0.35); /* 35% warm brown - emphasis (increased) */
+
+  /* Text - Warm near-black hierarchy */
+  --text-primary: #26251e; /* Cursor Dark - warm near-black */
+  --text-secondary: rgba(38, 37, 30, 0.85); /* 85% warm brown */
+  --text-tertiary: rgba(38, 37, 30, 0.65); /* 65% warm brown */
+  --text-muted: rgba(38, 37, 30, 0.5); /* 50% warm brown */
+  --text-faint: rgba(38, 37, 30, 0.35); /* 35% warm brown */
+  --text-inverse: #f2f1ed; /* Cream text on dark */
+
+  /* Semantic - Warm-shifted semantic colors */
+  --success: #1f8a65; /* Muted teal-green */
+  --success-bg: rgba(31, 138, 101, 0.12);
+  --success-border: rgba(31, 138, 101, 0.25);
+  --success-text: #1f8a65;
+
+  --warning: #c08532; /* Warm gold */
+  --warning-bg: rgba(192, 133, 50, 0.12);
+  --warning-border: rgba(192, 133, 50, 0.25);
+  --warning-text: #c08532;
+
+  --error: #cf2d56; /* Warm crimson-rose */
+  --error-bg: rgba(207, 45, 86, 0.12);
+  --error-border: rgba(207, 45, 86, 0.25);
+  --error-text: #cf2d56;
+
+  /* Accent */
+  --accent: #f54e00; /* Cursor Orange - brand accent */
+  --accent-hover: #cf2d56; /* Warm crimson for hover states */
+  --accent-text: #ffffff;
+
+  /* Toasts - Warm cream with warm borders */
+  --toast-bg: rgba(242, 241, 237, 0.95);
+  --toast-border: rgba(38, 37, 30, 0.1);
+  --toast-text: #26251e;
+  --toast-icon: rgba(38, 37, 30, 0.6);
+  --toast-close: rgba(38, 37, 30, 0.4);
+  --toast-close-hover: rgba(38, 37, 30, 0.7);
+
+  /* UI elements */
+  --overlay: rgba(38, 37, 30, 0.4); /* Warm overlay */
+  --scrollbar: rgba(38, 37, 30, 0.15);
+  --scrollbar-hover: rgba(38, 37, 30, 0.25);
+
+  /* Typography - Cursor's font stack */
+  --font-ui-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono-system: ui-monospace, 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  --font-code-sans: var(--font-ui-family);
+  --font-code-mono: var(--font-mono-system);
+
+  /* Border radius - 8px standard with pill option */
+  --radius-sm: 0.25rem; /* 4px - compact */
+  --radius-md: 0.5rem; /* 8px - standard */
+  --radius-lg: 0.625rem; /* 10px - featured */
+  --radius-xl: 0.75rem; /* 12px */
+  --radius-2xl: 1rem; /* 16px */
+  --radius-subtle: 0.25rem; /* 4px */
+  --radius-full: 9999px; /* Full pill */
+
+  /* Shadows - Atmospheric diffused depth */
+  --shadow-sm: rgba(0, 0, 0, 0.02) 0px 0px 16px, rgba(0, 0, 0, 0.008) 0px 0px 8px;
+  --shadow-md: rgba(0, 0, 0, 0.1) 0px 4px 12px;
+  --shadow-elevated: rgba(0, 0, 0, 0.14) 0px 28px 70px, rgba(0, 0, 0, 0.1) 0px 14px 32px, rgba(38, 37, 30, 0.1) 0px 0px 0px 1px;
+
+  /* Transitions - Smooth warm interactions */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --easing-default: ease;
+
+  /* Override color scheme to light for this warm theme */
+  color-scheme: light;
+}
+
+/* Dark mode variant for Cursor theme */
+[data-theme='dark'][data-design-theme='cursor'] {
+  /* Invert to dark warm palette while maintaining warmth */
+  --bg-base: #26251e; /* Cursor Dark as base */
+  --bg-panel: #2d2c24; /* Slightly lighter */
+  --bg-surface: #34332a; /* Surface layer */
+  --bg-elevated: #3b3a30; /* Elevated surfaces */
+  --bg-code: #2d2c24;
+
+  --bg-subtle: rgba(242, 241, 237, 0.05);
+  --bg-ghost: rgba(242, 241, 237, 0.08);
+  --bg-hover: rgba(242, 241, 237, 0.08);
+  --bg-active: rgba(242, 241, 237, 0.14);
+  --bg-button: #3b3a30;
+  --bg-button-hover: #454439;
+
+  /* Borders in dark mode */
+  --border-subtle: rgba(242, 241, 237, 0.06);
+  --border-default: rgba(242, 241, 237, 0.12);
+  --border-medium: rgba(242, 241, 237, 0.18);
+  --border-strong: rgba(242, 241, 237, 0.32);
+
+  /* Text in dark mode */
+  --text-primary: #f2f1ed;
+  --text-secondary: rgba(242, 241, 237, 0.85);
+  --text-tertiary: rgba(242, 241, 237, 0.6);
+  --text-muted: rgba(242, 241, 237, 0.5);
+  --text-faint: rgba(242, 241, 237, 0.3);
+  --text-inverse: #26251e;
+
+  /* Keep semantic colors vibrant in dark */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --error: #fb7185;
+  --accent: #f54e00;
+  --accent-hover: #ff6b1a;
+
+  /* UI adjustments for dark */
+  --overlay: rgba(0, 0, 0, 0.6);
+  --scrollbar: rgba(242, 241, 237, 0.1);
+  --scrollbar-hover: rgba(242, 241, 237, 0.2);
+
+  --toast-bg: rgba(43, 42, 35, 0.95);
+  --toast-border: rgba(242, 241, 237, 0.1);
+  --toast-text: #f2f1ed;
+
+  color-scheme: dark;
+}

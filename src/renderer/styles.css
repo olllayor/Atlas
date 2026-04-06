@@ -244,8 +244,7 @@ select {
    ============================================ */
 
 *:focus-visible {
-  outline: 2px solid rgba(59, 130, 246, 0.5);
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* ============================================
@@ -497,8 +496,8 @@ button, input, [role="option"], [role="button"] {
 }
 
 .input:focus {
-  border-color: rgba(59, 130, 246, 0.5);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--border-strong);
 }
 
 .input::placeholder {

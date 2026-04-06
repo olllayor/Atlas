@@ -375,7 +375,7 @@ export function Composer({
       <div className="mx-auto max-w-content-max">
         <PromptInput
           accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
-          className="overflow-hidden border border-[var(--border-default)] bg-bg-base transition-colors focus-within:border-[var(--border-strong)] focus-within:ring-2 focus-within:ring-[var(--border-strong)]/20"
+          className="overflow-hidden border border-[var(--border-default)] bg-bg-base transition-colors focus-within:border-[var(--border-strong)]"
           globalDrop
           maxFileSize={MAX_ATTACHMENT_SIZE_BYTES}
           maxFiles={MAX_ATTACHMENT_COUNT}

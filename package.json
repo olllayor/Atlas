@@ -1,6 +1,6 @@
 {
   "name": "atlas-chat",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": false,
   "author": "Olloyor",
   "description": "OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.",

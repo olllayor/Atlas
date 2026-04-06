@@ -28,6 +28,7 @@ const api: RendererApi = {
   chat: {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
     abort: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.chatAbort, requestId),
+    openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {
       const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
         listener(payload);
@@ -39,6 +40,13 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.chatEvent, handler);
       };
     }
+  },
+  visuals: {
+    save: (request) => ipcRenderer.invoke(IPC_CHANNELS.visualsSave, request),
+    list: (limit) => ipcRenderer.invoke(IPC_CHANNELS.visualsList, limit),
+    get: (id) => ipcRenderer.invoke(IPC_CHANNELS.visualsGet, id),
+    search: (query, limit) => ipcRenderer.invoke(IPC_CHANNELS.visualsSearch, query, limit),
+    delete: (id) => ipcRenderer.invoke(IPC_CHANNELS.visualsDelete, id)
   },
   diagnostics: {
     getSnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGetSnapshot)

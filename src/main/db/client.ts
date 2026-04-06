@@ -7,6 +7,7 @@ import type { AttachmentStore } from '../attachments/AttachmentStore';
 import { ConversationsRepo } from './repositories/conversationsRepo';
 import { ModelsRepo } from './repositories/modelsRepo';
 import { SettingsRepo } from './repositories/settingsRepo';
+import { VisualsRepo } from './repositories/visualsRepo';
 import { applySchema } from './schema';
 
 export type SqliteDatabase = InstanceType<typeof Database>;
@@ -16,6 +17,7 @@ export type AppDatabase = {
   conversations: ConversationsRepo;
   models: ModelsRepo;
   settings: SettingsRepo;
+  visuals: VisualsRepo;
 };
 
 export function createAppDatabase(databasePath: string, attachmentStore: AttachmentStore): AppDatabase {
@@ -28,6 +30,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     raw,
     conversations: new ConversationsRepo(raw, attachmentStore),
     models: new ModelsRepo(raw),
-    settings: new SettingsRepo(raw)
+    settings: new SettingsRepo(raw),
+    visuals: new VisualsRepo(raw),
   };
 }

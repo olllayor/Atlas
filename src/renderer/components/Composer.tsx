@@ -1,4 +1,5 @@
 import { PlusIcon } from '@radix-ui/react-icons';
+import { Palette } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
@@ -63,6 +64,7 @@ type ComposerProps = {
   onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
   isRefreshingModels?: boolean;
+  onOpenGallery: () => void;
 };
 
 const ComposerAttachmentItem = memo(
@@ -159,6 +161,7 @@ function ComposerFooter({
   selectedModel,
   selectedModelId,
   contextStats,
+  onOpenGallery,
 }: {
   attachmentError: string | null;
   disabled: boolean;
@@ -185,6 +188,7 @@ function ComposerFooter({
     };
     usedTokens: number;
   } | null;
+  onOpenGallery: () => void;
 }) {
   const attachments = usePromptInputAttachments();
   const unsupportedReason = getAttachmentCapabilityError(selectedModel, attachments.files);
@@ -210,6 +214,14 @@ function ComposerFooter({
             tooltip="Attach from disk"
           >
             <PlusIcon className="h-4 w-4" />
+          </PromptInputButton>
+
+          <PromptInputButton
+            className="size-8 rounded-full border border-white/8 bg-white/[0.03] text-white/58 hover:bg-white/[0.07] hover:text-white"
+            onClick={onOpenGallery}
+            tooltip="Visual Gallery"
+          >
+            <Palette className="h-4 w-4" />
           </PromptInputButton>
 
           <ModelSelector
@@ -273,6 +285,7 @@ export function Composer({
   onComposerFocusChange,
   onRefreshModels,
   isRefreshingModels,
+  onOpenGallery,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -407,6 +420,7 @@ export function Composer({
             selectedModel={selectedModel}
             selectedModelId={selectedModelId}
             contextStats={contextStats}
+            onOpenGallery={onOpenGallery}
           />
         </PromptInput>
       </div>

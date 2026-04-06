@@ -18,6 +18,7 @@ import { registerConversationsIpc } from './ipc/conversations';
 import { registerModelsIpc } from './ipc/models';
 import { registerSettingsIpc } from './ipc/settings';
 import { registerUpdatesIpc } from './ipc/updates';
+import { registerVisualsIpc } from './ipc/visuals';
 import { KeychainStore } from './secrets/keychain';
 import { UpdateService } from './updates/UpdateService';
 import { capturePostHogEvent, getAnonymousId, shutdownPostHog } from './analytics/PostHogClient';
@@ -109,6 +110,7 @@ app.whenReady().then(async () => {
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
+  registerVisualsIpc(database.visuals);
 
   ipcMain.handle(IPC_CHANNELS.posthogGetAnonymousId, () => {
     return getAnonymousId();

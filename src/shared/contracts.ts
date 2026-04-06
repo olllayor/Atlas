@@ -76,7 +76,15 @@ export type ChatToolPart = {
   approval?: ChatToolApproval;
 };
 
-export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart;
+export type ChatVisualPart = {
+  id: string;
+  type: 'visual';
+  content: string;
+  state: ChatPartState;
+  title?: string;
+};
+
+export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart | ChatVisualPart;
 
 export type ModelSummary = {
   id: string;
@@ -247,6 +255,45 @@ export type ChatStartResponse = {
   requestId: string;
 };
 
+export type VisualThemeTokens = {
+  colorScheme: 'light' | 'dark';
+  background: string;
+  panel: string;
+  text: string;
+  mutedText: string;
+  border: string;
+  accent: string;
+  errorBackground: string;
+  errorBorder: string;
+  errorText: string;
+};
+
+export type OpenVisualWindowRequest = {
+  visualId: string;
+  content: string;
+  title?: string;
+  theme: VisualThemeTokens;
+};
+
+export type SavedVisual = {
+  id: string;
+  title: string;
+  content: string;
+  visualType: string;
+  sourceConversationId: string | null;
+  sourceMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SaveVisualRequest = {
+  title: string;
+  content: string;
+  visualType: string;
+  sourceConversationId?: string | null;
+  sourceMessageId?: string | null;
+};
+
 export type StreamChunkEvent = {
   type: 'chunk';
   requestId: string;
@@ -337,6 +384,21 @@ export type StreamErrorEvent = {
   retryable: boolean;
 };
 
+export type StreamVisualStartEvent = {
+  type: 'visual-start';
+  requestId: string;
+  visualId: string;
+  title?: string;
+};
+
+export type StreamVisualCompleteEvent = {
+  type: 'visual-complete';
+  requestId: string;
+  visualId: string;
+  content: string;
+  title?: string;
+};
+
 export type StreamDoneEvent = {
   type: 'done';
   requestId: string;
@@ -352,6 +414,8 @@ export type StreamEvent =
   | StreamToolOutputAvailableEvent
   | StreamToolOutputErrorEvent
   | StreamToolOutputDeniedEvent
+  | StreamVisualStartEvent
+  | StreamVisualCompleteEvent
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamDoneEvent;
@@ -491,7 +555,15 @@ export type RendererApi = {
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
+    openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
+  };
+  visuals: {
+    save: (request: SaveVisualRequest) => Promise<SavedVisual>;
+    list: (limit?: number) => Promise<SavedVisual[]>;
+    get: (id: string) => Promise<SavedVisual | null>;
+    search: (query: string, limit?: number) => Promise<SavedVisual[]>;
+    delete: (id: string) => Promise<boolean>;
   };
   diagnostics: {
     getSnapshot: () => Promise<DiagnosticsSnapshot>;

@@ -35,6 +35,7 @@ import {
 } from './ai-elements/confirmation';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { VisualBlock } from './ai-elements/visual';
 import { useClipboard } from '../hooks/useClipboard';
 
 type ChatWindowProps = {
@@ -61,16 +62,18 @@ const suggestions = [
   { icon: Search, text: 'Research something', prompt: 'Tell me about ' },
 ];
 
-function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; modelLabel?: string | null }) {
-  if (!latencyMs && !modelLabel) {
+function MessageMeta({ latencyMs }: { latencyMs?: number | null }) {
+  if (!latencyMs) {
     return null;
   }
+
+  const seconds = (latencyMs / 1000).toFixed(1);
 
   return (
     <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">
       {latencyMs ? (
-        <span className="app-code-chip inline-flex items-center border border-border-subtle bg-bg-hover px-2.5 py-1 tabular-nums text-text-faint/85">
-          {latencyMs}ms
+        <span className="app-code-chip inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 tabular-nums text-text-faint/85">
+          {seconds}s
         </span>
       ) : null}
       {modelLabel ? (
@@ -271,6 +274,10 @@ function AssistantParts({
           return <AttachmentRow key={part.id} attachments={[part]} />;
         }
 
+        if (part.type === 'visual') {
+          return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+        }
+
         return (
           <MessageResponse
             key={`text-${index}`}
@@ -343,7 +350,6 @@ function MessageRow({
 
         <MessageMeta
           latencyMs={message.status === 'complete' ? message.latencyMs : null}
-          modelLabel={message.modelId}
         />
 
         <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -409,7 +415,7 @@ function StreamingRow({
           <AssistantParts content="" isStreaming latencyMs={null} parts={parts} />
         )}
 
-        {modelLabel ? <MessageMeta modelLabel={modelLabel} /> : null}
+        {modelLabel ? <MessageMeta latencyMs={null} /> : null}
       </div>
     </div>
   );
@@ -438,9 +444,15 @@ function estimateHistoryRowHeight(message: ChatMessage) {
 
   const toolCount = message.parts.filter((part) => part.type === 'tool').length;
   const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
+  const visualCount = message.parts.filter((part) => part.type === 'visual').length;
   return Math.min(
     560,
-    156 + Math.ceil(message.content.length / 100) * 24 + toolCount * 84 + reasoningCount * 56 + fileCount * 28,
+    156 +
+      Math.ceil(message.content.length / 100) * 24 +
+      toolCount * 84 +
+      reasoningCount * 56 +
+      visualCount * 320 +
+      fileCount * 28,
   );
 }
 

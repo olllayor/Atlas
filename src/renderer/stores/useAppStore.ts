@@ -998,7 +998,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       event.type === 'tool-input-available' ||
       event.type === 'tool-output-available' ||
       event.type === 'tool-output-error' ||
-      event.type === 'tool-output-denied'
+      event.type === 'tool-output-denied' ||
+      event.type === 'visual-start' ||
+      event.type === 'visual-complete'
     ) {
       set((state) => {
         const draft = state.draftsByConversation[conversationId];

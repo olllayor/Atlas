@@ -66,6 +66,20 @@ ON messages (conversation_id, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at_id
 ON messages (conversation_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS saved_visuals (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  visual_type TEXT NOT NULL DEFAULT 'iframe',
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  source_message_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_visuals_updated_at
+ON saved_visuals (updated_at DESC);
 `;
 
 export function applySchema(database: SqliteDatabase) {

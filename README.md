@@ -4,19 +4,22 @@
 [![CI](https://github.com/olllayor/Atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/Atlas/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/olllayor/Atlas)](https://github.com/olllayor/Atlas/releases/latest)
 
-Atlas is a local-first desktop chat client for BYOK usage with OpenRouter. The goal is narrow: save your own OpenRouter API key once, browse cached free-tier models, pick one manually, chat with streaming responses, and keep your conversation history on your machine.
+Atlas is a local-first desktop chat client for BYOK AI interactions. Save your API keys once, browse cached model catalogs, pick models manually, chat with streaming responses, and keep your conversation history on your machine.
 
 This repository is open source. The core app scaffold is in place and production builds work. Development startup still has an unresolved Electron runtime issue in this environment, so the project should currently be treated as an early OSS codebase rather than a polished public release.
 
 ## What it does
 
-- OpenRouter-first BYOK flow
-- OS keychain storage for your API key via `keytar`
-- Cached model catalog with free-model filtering
-- Local SQLite persistence for conversations and messages
-- Streaming chat responses from the Electron main process
-- Abort support for in-flight requests
-- Security-oriented Electron architecture with a typed preload bridge
+- **Multi-provider BYOK flow** — OpenRouter, Google GLM, and extensible provider architecture
+- **OS keychain storage** — API keys secured via `keytar` in system keychain
+- **Cached model catalog** — Local SQLite storage with free-model filtering, vision/tool support detection
+- **Streaming chat responses** — Real-time text streaming from Electron main process
+- **Tool calling** — Built-in local tools: file read, grep search, glob search, web search, web fetch, bash execution, model catalog search
+- **Visual rendering** — Markdown, code blocks with syntax highlighting, Mermaid diagrams, Math equations, iframes
+- **Reasoning support** — Expose model reasoning tokens for supported models
+- **Conversation management** — Local SQLite persistence for conversations and messages with full history
+- **Abort support** — Cancel in-flight requests
+- **Security-oriented Electron architecture** — Typed preload bridge, renderer doesn't access secrets
 
 ## Stack
 
@@ -28,11 +31,16 @@ This repository is open source. The core app scaffold is in place and production
 - Tailwind CSS
 - better-sqlite3
 - keytar
+- Vercel AI SDK
 
 ## Current status
 
 - `pnpm build` passes
-- the main app architecture and UI flow are implemented
+- The main app architecture and UI flow are implemented
+- Multi-provider support (OpenRouter, GLM) with extensible architecture
+- Tool calling with built-in local tools
+- Visual rendering (markdown, code, diagrams, math, iframes)
+- Full conversation persistence in SQLite
 - `pnpm dev` is not stable yet in this environment because of an Electron module-resolution/runtime mismatch during startup
 
 If you want to contribute, the highest-value first task is fixing the dev runner so the local development loop matches the build output cleanly.
@@ -57,7 +65,7 @@ pnpm install
 pnpm dev
 ```
 
-Known issue as of March 31, 2026: this currently fails in this environment during Electron startup. See the notes in this README and the source for the current runtime wiring.
+Known issue as of April 7, 2026: this currently fails in this environment during Electron startup. See the notes in this README and the source for the current runtime wiring.
 
 ### Build
 
@@ -121,13 +129,11 @@ Atlas v1 is intentionally small:
 - single-user desktop app
 - local-only storage
 - manual model selection
-- text chat only
 
 Out of scope for v1:
 
 - accounts or cloud sync
-- attachments and vision
-- tools or function calling
+- multi-device sync
 - automatic provider routing
 - hosted backend services
 
@@ -135,6 +141,8 @@ Out of scope for v1:
 
 ### Providers
 
+- [x] OpenRouter — API key support
+- [x] Google GLM — API key support
 - [ ] OpenAI — API key + CLI OAuth login
 - [ ] Google Gemini — API key + CLI OAuth login
 - [ ] Anthropic Claude — API key support
@@ -143,10 +151,10 @@ Out of scope for v1:
 
 ### AI capabilities (powered by Vercel AI SDK)
 
-- [ ] Tool / function calling — model tool use with local tool execution (web search, file read, code exec)
+- [x] Tool / function calling — model tool use with local tool execution (web search, file read, code exec)
 - [ ] Structured output — JSON mode for models that support it (`generateObject` / `streamObject`)
-- [ ] Image input / vision — drag-and-drop images into the composer (multi-modal messages)
-- [ ] Reasoning / thinking — expose model reasoning tokens for supported models
+- [x] Reasoning / thinking — expose model reasoning tokens for supported models
+- [x] Image input / vision — drag-and-drop images into the composer (multi-modal messages)
 - [ ] Prompt templates — save and reuse common prompt patterns
 - [ ] Auto-title conversations — generate titles from first message
 - [ ] Model comparison — send the same prompt to multiple models side by side
@@ -154,30 +162,30 @@ Out of scope for v1:
 
 ### UI/UX
 
+- [x] Keyboard shortcuts — quick model switch, new chat, search, settings
+- [x] Code block copy button — one-click copy on rendered code blocks
+- [x] Syntax highlighting — language-specific code highlighting
 - [ ] Conversation search — full-text search across message history
 - [ ] Message editing — edit and regenerate assistant responses
 - [ ] Branch conversations — fork a conversation at any message
 - [ ] Conversation export — Markdown, JSON, and PDF export per conversation
 - [ ] Import conversations — restore from exported files
-- [ ] Keyboard shortcuts — quick model switch, new chat, search, settings
 - [ ] Custom system prompts — per-conversation or global default
-- [ ] Code block copy button — one-click copy on rendered code blocks
-- [ ] Syntax highlighting — language-specific code highlighting
 - [ ] Theme support — light mode, custom accent colors
 - [ ] Window management — remember window size, position, sidebar state
 
 ### Core features
 
+- [x] Cost tracking — estimated cost per message and per conversation (OpenRouter usage accounting built in)
 - [ ] Conversation memory — long-term memory with vector embeddings stored locally
 - [ ] Session management — named sessions within a conversation, separate context windows
 - [ ] Token budget controls — per-conversation or global max-token limits
-- [ ] Cost tracking — estimated cost per message and per conversation (OpenRouter usage accounting built in)
 - [ ] Offline mode — view history and draft messages without a network connection
 - [ ] Conversation folders / tags — organize conversations with labels
 
 ### Platform
 
-- [ ] Auto-updates — built-in update checker and silent background downloads
+- [x] Auto-updates — built-in update checker and silent background downloads
 - [ ] Native menus — proper macOS/Windows/Linux application menus
 - [ ] Tray icon — background operation with tray notifications
 - [ ] Portable mode — run without installation (Windows/Linux)
@@ -186,10 +194,14 @@ Out of scope for v1:
 ## Repository layout
 
 ```text
-src/main/       Electron main process, OpenRouter client, IPC, DB, keychain
-src/preload/    Typed bridge exposed to the renderer
-src/renderer/   React UI
-src/shared/     Shared contracts and types
+src/main/           Electron main process, providers, tools, IPC, DB, keychain
+src/main/ai/        AI core: providers (OpenRouter, GLM), chat engine, model registry
+src/main/ai/tools/  Built-in tools (file read, grep, glob, web search/fetch, bash)
+src/main/db/       SQLite client and repositories
+src/main/secrets/  OS keychain integration
+src/preload/       Typed bridge exposed to the renderer
+src/renderer/      React UI components
+src/shared/        Shared contracts, types, utilities
 ```
 
 ## Security model

@@ -109,7 +109,7 @@
     "tailwindcss": "4.2.2",
     "tsx": "^4.21.0",
     "typescript": "6.0.2",
-    "vite": "7.3.1"
+    "vite": "7.3.2"
   },
   "build": {
     "appId": "com.olllayor.atlaschat",

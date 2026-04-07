@@ -102,6 +102,17 @@
   --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Border radius override - applies when user disables rounded corners */
+[data-border-radius='none'] {
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-subtle: 0px;
+  /* Keep --radius-full for avatars and truly circular elements */
+}
+
 /* ============================================
    Tailwind @theme mapping
    Maps semantic CSS vars → Tailwind utilities.

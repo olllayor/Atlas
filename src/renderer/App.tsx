@@ -486,6 +486,10 @@ export default function App() {
   }, [appearance.designTheme]);
 
   useEffect(() => {
+    document.documentElement.dataset.borderRadius = appearance.borderRadius;
+  }, [appearance.borderRadius]);
+
+  useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty('--ui-font-size', `${appearance.uiFontSize}px`);
     root.style.setProperty('--code-font-size', `${appearance.codeFontSize}px`);
@@ -623,6 +627,14 @@ export default function App() {
           void updatePreferences({ appearance: { designTheme: theme } });
           const themeLabel = theme === 'default' ? 'Default' : theme === 'xai' ? 'xAI' : 'Cursor';
           notify({ tone: 'info', title: `Design theme: ${themeLabel}` });
+        }}
+        onBorderRadiusChange={(mode) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'borderRadius', value: mode });
+          void updatePreferences({ appearance: { borderRadius: mode } });
+          notify({
+            tone: 'info',
+            title: mode === 'none' ? 'Sharp edges enabled' : 'Border radius: Theme default',
+          });
         }}
         onUiFontSizeChange={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontSize', value });

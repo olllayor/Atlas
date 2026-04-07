@@ -124,4 +124,16 @@ export function applySchema(database: SqliteDatabase) {
   if (!modelColumns.includes('supports_document_input')) {
     database.exec('ALTER TABLE model_cache ADD COLUMN supports_document_input INTEGER NOT NULL DEFAULT 0');
   }
+
+  // Migration: Add border_radius to app_settings
+  const settingsKeys = database
+    .prepare<[], { key: string }>('SELECT key FROM app_settings')
+    .all()
+    .map((row) => row.key);
+
+  if (!settingsKeys.includes('appearance.borderRadius')) {
+    database
+      .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)')
+      .run('appearance.borderRadius', 'theme-default');
+  }
 }

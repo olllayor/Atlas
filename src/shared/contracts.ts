@@ -116,6 +116,7 @@ export type ProviderCredentialSummary = {
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type DesignTheme = 'default' | 'xai' | 'cursor';
 export type FontFamilyOverride = string | null;
+export type BorderRadiusMode = 'theme-default' | 'none';
 
 export const UI_FONT_SIZE_MIN = 13;
 export const UI_FONT_SIZE_MAX = 18;
@@ -124,6 +125,8 @@ export const UI_FONT_SIZE_DEFAULT = 15;
 export const CODE_FONT_SIZE_MIN = 11;
 export const CODE_FONT_SIZE_MAX = 16;
 export const CODE_FONT_SIZE_DEFAULT = 13;
+
+export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
 export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage';
 
@@ -134,6 +137,7 @@ export type SettingsAppearanceSummary = {
   codeFontSize: number;
   uiFontFamily: FontFamilyOverride;
   codeFontFamily: FontFamilyOverride;
+  borderRadius: BorderRadiusMode;
 };
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
@@ -142,7 +146,8 @@ export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   uiFontSize: UI_FONT_SIZE_DEFAULT,
   codeFontSize: CODE_FONT_SIZE_DEFAULT,
   uiFontFamily: null,
-  codeFontFamily: null
+  codeFontFamily: null,
+  borderRadius: DEFAULT_BORDER_RADIUS,
 };
 
 export type SettingsKeyboardSummary = {
@@ -479,6 +484,7 @@ export type SettingsUpdateRequest = {
     codeFontSize?: number;
     uiFontFamily?: FontFamilyOverride;
     codeFontFamily?: FontFamilyOverride;
+    borderRadius?: BorderRadiusMode;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];

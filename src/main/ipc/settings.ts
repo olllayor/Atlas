@@ -77,6 +77,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setCodeFontFamily(appearancePatch.codeFontFamily ?? null);
       }
 
+      if (appearancePatch?.borderRadius) {
+        settingsRepo.setBorderRadius(appearancePatch.borderRadius);
+      }
+
       if (patch?.keyboard?.keybindings) {
         settingsRepo.setKeybindings(patch.keyboard.keybindings);
       }

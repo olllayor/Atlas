@@ -72,6 +72,7 @@ type SettingsWorkspaceProps = {
   onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onDesignThemeChange: (theme: DesignTheme) => void;
+  onBorderRadiusChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
@@ -129,6 +130,7 @@ export function SettingsWorkspace({
   onValidateKey,
   onThemeModeChange,
   onDesignThemeChange,
+  onBorderRadiusChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
@@ -239,6 +241,7 @@ export function SettingsWorkspace({
                   settings={settings}
                   onThemeModeChange={onThemeModeChange}
                   onDesignThemeChange={onDesignThemeChange}
+                  onBorderRadiusChange={onBorderRadiusChange}
                   onUiFontSizeChange={onUiFontSizeChange}
                   onCodeFontSizeChange={onCodeFontSizeChange}
                   onUiFontFamilyChange={onUiFontFamilyChange}
@@ -424,6 +427,7 @@ function AppearancePage({
   settings,
   onThemeModeChange,
   onDesignThemeChange,
+  onBorderRadiusChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
@@ -432,6 +436,7 @@ function AppearancePage({
   settings: SettingsSummary | null;
   onThemeModeChange: (mode: ThemeMode) => void;
   onDesignThemeChange: (theme: DesignTheme) => void;
+  onBorderRadiusChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
@@ -455,6 +460,15 @@ function AppearancePage({
           description="Choose a design system aesthetic for the interface."
         >
           <DesignThemePicker current={designTheme} onChange={onDesignThemeChange} />
+        </SettingsStackedRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Shape">
+        <SettingsStackedRow
+          title="Border radius"
+          description="Control the roundness of UI elements. Theme Default respects each theme's design, Sharp Edges removes all rounded corners."
+        >
+          <BorderRadiusPicker current={appearance.borderRadius} onChange={onBorderRadiusChange} />
         </SettingsStackedRow>
       </SettingsGroup>
 
@@ -923,6 +937,43 @@ function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChan
                 ? 'bg-bg-elevated text-text-primary'
                 : 'text-text-tertiary hover:text-text-primary'
             }`}
+          >
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BorderRadiusPicker({
+  current,
+  onChange,
+}: {
+  current: import('../../shared/contracts').BorderRadiusMode;
+  onChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
+}) {
+  const items: Array<{ mode: import('../../shared/contracts').BorderRadiusMode; label: string }> = [
+    { mode: 'theme-default', label: 'Theme Default' },
+    { mode: 'none', label: 'Sharp Edges' },
+  ];
+
+  return (
+    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+      {items.map((item) => {
+        const isActive = item.mode === current;
+
+        return (
+          <button
+            key={item.mode}
+            type="button"
+            onClick={() => onChange(item.mode)}
+            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
+              isActive
+                ? 'bg-bg-elevated text-text-primary'
+                : 'text-text-tertiary hover:text-text-primary'
+            }`}
+            style={item.mode === 'none' ? { borderRadius: 0 } : undefined}
           >
             <span>{item.label}</span>
           </button>

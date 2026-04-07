@@ -132,9 +132,16 @@ export const ContextTrigger = ({
   ...props
 }: ContextTriggerProps) => {
   const { percentageLabel, percentageValue } = useContextData();
-  const circumference = 2 * Math.PI * 14;
+  const circumference = 2 * Math.PI * 11;
   const progress = Math.max(0.02, Math.min(1, percentageValue / 100));
   const dashOffset = circumference * (1 - progress);
+  
+  // Color based on usage percentage
+  const getProgressColor = (percentage: number) => {
+    if (percentage >= 90) return "var(--error)";
+    if (percentage >= 70) return "var(--warning, #f59e0b)";
+    return "var(--accent-primary, var(--text-secondary))";
+  };
 
   if (children) {
     return <HoverCardTrigger asChild>{children}</HoverCardTrigger>;
@@ -145,37 +152,67 @@ export const ContextTrigger = ({
       <button
         type="button"
           className={cn(
-            "relative inline-flex size-[34px] items-center justify-center border border-[var(--border-default)] bg-[var(--bg-hover)] text-[9px] font-normal tabular-nums text-[var(--text-tertiary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-active)] hover:text-[var(--text-secondary)]",
+            "group relative inline-flex size-8 items-center justify-center border border-[var(--border-default)] bg-gradient-to-b from-[var(--bg-elevated)] to-[var(--bg-subtle)] text-[10px] font-semibold tabular-nums text-[var(--text-primary)] shadow-sm transition-all hover:border-[var(--border-strong)] hover:shadow-md hover:scale-105 active:scale-100",
             className
           )}
         {...props}
       >
+        {/* Outer glow ring */}
+        <svg
+          aria-hidden="true"
+          className="absolute inset-[-1px] -rotate-90 opacity-0 transition-opacity group-hover:opacity-100"
+          viewBox="0 0 34 34"
+        >
+          <circle
+            cx="17"
+            cy="17"
+            r="15"
+            fill="none"
+            stroke={getProgressColor(percentageValue)}
+            strokeWidth="1"
+            opacity="0.3"
+            className="blur-[1px]"
+          />
+        </svg>
+        
+        {/* Main progress ring */}
         <svg
           aria-hidden="true"
           className="absolute inset-0 -rotate-90"
           viewBox="0 0 32 32"
         >
+          {/* Background track */}
           <circle
             cx="16"
             cy="16"
-            r="14"
+            r="11"
             fill="none"
-            stroke="rgba(255,255,255,0.15)"
-            strokeWidth="2"
+            stroke="var(--border-default)"
+            strokeWidth="2.5"
+            opacity="0.3"
           />
+          {/* Progress arc */}
           <circle
             cx="16"
             cy="16"
-            r="14"
+            r="11"
             fill="none"
-            stroke="rgba(255,255,255,0.6)"
+            stroke={getProgressColor(percentageValue)}
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             strokeLinecap="round"
-            strokeWidth="2"
+            strokeWidth="2.5"
+            className="transition-all duration-300"
+            style={{
+              filter: percentageValue >= 70 ? `drop-shadow(0 0 4px ${getProgressColor(percentageValue)})` : 'none'
+            }}
           />
         </svg>
-        <span className="relative z-10">{percentageLabel}</span>
+        
+        {/* Percentage text */}
+        <span className="relative z-10 bg-gradient-to-b from-[var(--text-primary)] to-[var(--text-secondary)] bg-clip-text text-transparent">
+          {percentageLabel}
+        </span>
       </button>
     </HoverCardTrigger>
   );
@@ -189,7 +226,7 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
     align="end"
     sideOffset={12}
       className={cn(
-        "w-[292px] border border-[var(--border-default)] bg-bg-elevated p-0 text-text-primary",
+        "w-[292px] border border-[var(--border-strong)] bg-bg-elevated/95 backdrop-blur-xl p-0 text-text-primary shadow-2xl",
         className
       )}
     {...props}
@@ -212,9 +249,9 @@ export const ContextContentHeader = ({
           <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
             Context Window
           </div>
-          <div className="text-[13px] font-medium leading-none tracking-tight text-[var(--text-primary)]">
-            <span className="tabular-nums font-normal text-white">{percentageLabel}%</span>
-            <span className="px-1.5 text-[var(--text-faint)]">•</span>
+          <div className="text-[13px] font-medium leading-none tracking-tight">
+            <span className="tabular-nums font-semibold text-[var(--text-primary)]">{percentageLabel}%</span>
+            <span className="px-1.5 text-[var(--text-muted)]">•</span>
             <span className="text-[13px] font-medium text-[var(--text-primary)]">
               {formatTokenCount(usedTokens)}/{formatTokenCount(maxTokens)} context used
             </span>
@@ -235,11 +272,11 @@ export const ContextContentBody = ({
   const { processedTokens } = useContextData();
 
   return (
-    <div className={cn("px-4 pt-2 text-[13px] leading-none text-[var(--text-secondary)]", className)} {...props}>
+    <div className={cn("px-4 pt-2 text-[13px] leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
       {children ?? (
         <span>
           Total processed:{" "}
-          <span className="tabular-nums text-[var(--text-secondary)]">{formatTokenCount(processedTokens)} tokens</span>
+          <span className="tabular-nums font-medium text-[var(--text-primary)]">{formatTokenCount(processedTokens)} tokens</span>
         </span>
       )}
     </div>

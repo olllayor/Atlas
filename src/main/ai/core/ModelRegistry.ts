@@ -116,7 +116,8 @@ export class ModelRegistry {
         uiFontSize: this.settingsRepo.getUiFontSize(),
         codeFontSize: this.settingsRepo.getCodeFontSize(),
         uiFontFamily: this.settingsRepo.getUiFontFamily(),
-        codeFontFamily: this.settingsRepo.getCodeFontFamily()
+        codeFontFamily: this.settingsRepo.getCodeFontFamily(),
+        borderRadius: this.settingsRepo.getBorderRadius(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()

@@ -2,12 +2,13 @@ import {
   CODE_FONT_SIZE_DEFAULT,
   CODE_FONT_SIZE_MAX,
   CODE_FONT_SIZE_MIN,
+  DEFAULT_BORDER_RADIUS,
   DEFAULT_SETTINGS_APPEARANCE,
   UI_FONT_SIZE_DEFAULT,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
 } from '../../../shared/contracts';
-import type { CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
@@ -144,6 +145,15 @@ export class SettingsRepo {
 
   setCodeFontFamily(value: FontFamilyOverride) {
     this.setJsonSetting('codeFontFamily', this.normalizeFontFamily(value));
+  }
+
+  getBorderRadius(): BorderRadiusMode {
+    const value = this.getJsonSetting<string>('appearance.borderRadius', DEFAULT_BORDER_RADIUS);
+    return value === 'theme-default' || value === 'none' ? value : DEFAULT_BORDER_RADIUS;
+  }
+
+  setBorderRadius(value: BorderRadiusMode) {
+    this.setJsonSetting('appearance.borderRadius', value);
   }
 
   getKeybindings(): KeybindingRule[] {

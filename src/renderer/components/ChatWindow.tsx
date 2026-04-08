@@ -15,7 +15,7 @@ import {
   StopCircle,
   XCircle,
 } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
 import appIcon from '../../../icon.png';
@@ -67,7 +67,7 @@ function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; mod
     return null;
   }
 
-  const seconds = (latencyMs / 1000).toFixed(1);
+  const seconds = latencyMs ? (latencyMs / 1000).toFixed(1) : null;
 
   return (
     <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">
@@ -115,15 +115,21 @@ function ReasoningRow({
 }
 
 function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> }) {
-  const isOutputState =
+  const isCompletedState =
     part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied';
   const hasInput = part.rawInput != null || part.input != null;
   const hasOutput = part.output != null || Boolean(part.errorText) || part.state === 'output-denied';
   const hasApproval = Boolean(part.approval);
   const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
+  const [isOpen, setIsOpen] = useState(!isCompletedState);
+
+  useEffect(() => {
+    // Keep details open while the tool is in progress, collapse when finalized.
+    setIsOpen(!isCompletedState);
+  }, [isCompletedState]);
 
   return (
-    <Tool className="mb-2.5" defaultOpen={isOutputState}>
+    <Tool className="mb-2.5" onOpenChange={setIsOpen} open={isOpen}>
       <ToolHeader
         type={part.dynamic ? 'dynamic-tool' : `tool-${part.toolName}`}
         toolName={part.toolName}
@@ -292,6 +298,20 @@ function AssistantParts({
   );
 }
 
+function hasRenderableAssistantParts(parts: ChatMessagePart[]) {
+  return parts.some((part) => {
+    if (part.type === 'text') {
+      return part.text.trim().length > 0;
+    }
+
+    if (part.type === 'reasoning') {
+      return part.text?.trim().length > 0;
+    }
+
+    return true;
+  });
+}
+
 function MessageRow({
   message,
   deferRichContent = false,
@@ -390,8 +410,9 @@ function StreamingRow({
 }) {
   const isError = status === 'error';
   const isAborted = status === 'aborted';
+  const hasParts = hasRenderableAssistantParts(parts);
 
-    return (
+  return (
     <div className="group flex w-full">
       <div className="min-w-0 max-w-[min(100%,76ch)] flex-1">
         {isError ? (
@@ -405,12 +426,15 @@ function StreamingRow({
             </div>
           </div>
         ) : isAborted ? (
-          <div className="border border-border-subtle bg-bg-subtle p-4">
-            <div className="flex items-start gap-3">
-              <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
-              <p className="text-sm text-text-muted">Generation stopped</p>
+          <>
+            {hasParts ? <AssistantParts content="" latencyMs={null} parts={parts} /> : null}
+            <div className={cn('border border-border-subtle bg-bg-subtle p-4', hasParts ? 'mt-3' : undefined)}>
+              <div className="flex items-start gap-3">
+                <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
+                <p className="text-sm text-text-muted">Generation stopped</p>
+              </div>
             </div>
-          </div>
+          </>
         ) : (
           <AssistantParts content="" isStreaming latencyMs={null} parts={parts} />
         )}

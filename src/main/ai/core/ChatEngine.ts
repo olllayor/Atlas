@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BrowserWindow } from 'electron/main';
+import type { BrowserWindow } from 'electron';
 
 import type {
   ChatMessagePart,
@@ -17,32 +17,20 @@ import {
   getContentPreviewText,
   sumAttachmentSize,
 } from '../../../shared/attachments';
-import {
-  applyStreamEventToParts,
-  buildFallbackMessageParts,
-  finalizeMessageParts,
-  getReasoningContentFromParts,
-  getTextContentFromParts
-} from '../../../shared/messageParts';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
-import { VisualStreamParser } from '../../../shared/visualParser';
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
-import { shouldPersistResponseMessages } from './persistResponseMessages';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
-import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools } from '../tools/builtInTools';
-import { VISUAL_PROMPT } from './VISUAL_PROMPT';
-import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
-import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
+import { normalizeError } from './ErrorNormalizer';
 import type { ProviderRegistry } from './providerRegistry';
-import { getProviderOrThrow } from './providerRegistry';
+import type { ExecuteTurnResult } from './ChatSessionRuntime';
+import { ChatSessionRuntime } from './ChatSessionRuntime';
 
 type ActiveRequest = {
   controller: AbortController;
   window: BrowserWindow;
   onWindowClosed: () => void;
-  visualParser: VisualStreamParser;
 };
 
 type BufferedRequestEvents = {
@@ -59,9 +47,15 @@ export class ChatEngine {
   constructor(
     private readonly conversationsRepo: ConversationsRepo,
     private readonly modelsRepo: ModelsRepo,
-    private readonly keychain: KeychainStore,
-    private readonly providers: ProviderRegistry,
-    private readonly attachmentStore: AttachmentStore
+    keychain: KeychainStore,
+    providers: ProviderRegistry,
+    private readonly attachmentStore: AttachmentStore,
+    private readonly runtime: Pick<ChatSessionRuntime, 'executeTurn'> = new ChatSessionRuntime(
+      conversationsRepo,
+      modelsRepo,
+      keychain,
+      providers
+    )
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -95,14 +89,13 @@ export class ChatEngine {
 
     const requestId = randomUUID();
     const controller = new AbortController();
-    const visualParser = new VisualStreamParser();
     const onWindowClosed = () => {
       controller.abort();
       this.clearBufferedEvents(requestId);
       this.activeRequests.delete(requestId);
     };
     window.once('closed', onWindowClosed);
-    this.activeRequests.set(requestId, { controller, window, onWindowClosed, visualParser });
+    this.activeRequests.set(requestId, { controller, window, onWindowClosed });
 
     const persistedParts = this.persistInputParts(request.conversationId, requestId, inputParts);
     this.conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
@@ -161,6 +154,7 @@ export class ChatEngine {
   }
 
   async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
+    const { BrowserWindow } = await import('electron');
     const srcdoc = buildVisualSrcDoc({
       visualId: request.visualId,
       content: request.content,
@@ -198,46 +192,16 @@ export class ChatEngine {
     }
 
     try {
-      const apiKey = await this.keychain.getSecret(request.providerId);
-      const provider = getProviderOrThrow(this.providers, request.providerId);
-
-      if (!apiKey) {
-        throw new MissingCredentialError('No API key is saved for the selected provider.');
-      }
-
-      const result = await this.executeWithRetry(requestId, request, provider, apiKey, active.controller.signal);
-      const messageId = this.conversationsRepo.addMessage({
-        conversationId: request.conversationId,
-        role: 'assistant',
-        content: getTextContentFromParts(result.parts) || result.content,
-        reasoning: getReasoningContentFromParts(result.parts) ?? result.reasoning ?? null,
-        parts: result.parts,
-        responseMessages: shouldPersistResponseMessages(result.responseMessages ?? null, request.enableTools)
-          ? result.responseMessages ?? null
-          : null,
-        status: 'complete',
-        providerId: request.providerId,
-        modelId: request.modelId,
-        inputTokens: result.inputTokens ?? null,
-        outputTokens: result.outputTokens ?? null,
-        reasoningTokens: result.reasoningTokens ?? null,
-        latencyMs: result.latencyMs ?? null
-      });
-
-      this.sendEvent(active.window, {
-        type: 'meta',
+      const result = await this.runtime.executeTurn({
         requestId,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        reasoningTokens: result.reasoningTokens,
-        latencyMs: result.latencyMs
+        request,
+        signal: active.controller.signal,
+        emitEvent: (event) => {
+          this.sendEvent(active.window, event);
+        }
       });
 
-      this.sendEvent(active.window, {
-        type: 'done',
-        requestId,
-        messageId
-      });
+      this.sendCompletionEvents(active.window, requestId, result);
     } catch (error) {
       const normalized = normalizeError(error);
       this.sendEvent(active.window, {
@@ -255,239 +219,21 @@ export class ChatEngine {
     }
   }
 
-  private async executeWithRetry(
-    requestId: string,
-    request: ChatStartRequest,
-    provider: ProviderAdapter,
-    apiKey: string,
-    signal: AbortSignal
-  ): Promise<ProviderStreamResult & { parts: ChatMessagePart[] }> {
-    let attempt = 0;
-    let streamedAnyResponse = false;
+  private sendCompletionEvents(window: BrowserWindow, requestId: string, result: ExecuteTurnResult) {
+    this.sendEvent(window, {
+      type: 'meta',
+      requestId,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      reasoningTokens: result.reasoningTokens,
+      latencyMs: result.latencyMs
+    });
 
-    while (true) {
-      try {
-        const active = this.activeRequests.get(requestId);
-        if (!active) {
-          throw new Error('The chat request is no longer active.');
-        }
-
-        active.visualParser.reset();
-        let parts: ChatMessagePart[] = [];
-        let lastTextPartId = 'assistant-text';
-
-        const result = await provider.streamChat({
-          apiKey,
-          modelId: request.modelId,
-          messages: this.conversationsRepo.getModelHistory(request.conversationId),
-          system: request.enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT,
-          tools: request.enableTools ? createBuiltInTools(this.modelsRepo) : undefined,
-          temperature: request.temperature,
-          maxOutputTokens: request.maxOutputTokens,
-          signal,
-          onChunk: (event) => {
-            streamedAnyResponse = true;
-            lastTextPartId = event.id;
-            parts = this.applyParsedChunks({
-              activeWindow: active.window,
-              parts,
-              parsed: active.visualParser.feed(event.delta, requestId),
-              requestId,
-              textPartId: event.id,
-              emitToRenderer: true,
-            });
-          },
-          onReasoningChunk: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-            this.sendEvent(active.window, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-          },
-          onToolInputStart: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputDelta: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputError: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputDenied: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
-            });
-          }
-        });
-        parts = this.applyParsedChunks({
-          activeWindow: active.window,
-          parts,
-          parsed: active.visualParser.flush(requestId),
-          requestId,
-          textPartId: lastTextPartId,
-          emitToRenderer: true,
-        });
-
-        parts = finalizeMessageParts(parts);
-
-        if (parts.length === 0) {
-          parts = buildFallbackMessageParts({
-            content: result.content,
-            reasoning: result.reasoning,
-            role: 'assistant'
-          });
-        }
-
-        return {
-          ...result,
-          parts
-        };
-      } catch (error) {
-        const normalized = normalizeError(error);
-        const canRetry = attempt === 0 && normalized.retryable && !streamedAnyResponse && !signal.aborted;
-
-        if (!canRetry) {
-          throw error;
-        }
-
-        attempt += 1;
-        await sleep(450 + Math.floor(Math.random() * 350));
-      }
-    }
-  }
-
-  private applyParsedChunks({
-    activeWindow,
-    parts,
-    parsed,
-    requestId,
-    textPartId,
-    emitToRenderer,
-  }: {
-    activeWindow: BrowserWindow;
-    parts: ChatMessagePart[];
-    parsed: ReturnType<VisualStreamParser['feed']>;
-    requestId: string;
-    textPartId: string;
-    emitToRenderer: boolean;
-  }) {
-    let nextParts = parts;
-
-    for (const item of parsed) {
-      if (item.type === 'text') {
-        const event: StreamEvent = {
-          type: 'chunk',
-          requestId,
-          id: textPartId,
-          delta: item.content,
-        };
-        nextParts = applyStreamEventToParts(nextParts, event);
-        if (emitToRenderer) {
-          this.sendEvent(activeWindow, event);
-        }
-        continue;
-      }
-
-      if (item.type === 'visual_start') {
-        const event: StreamEvent = {
-          type: 'visual-start',
-          requestId,
-          visualId: item.visualId!,
-          title: item.title,
-        };
-        nextParts = applyStreamEventToParts(nextParts, event);
-        if (emitToRenderer) {
-          this.sendEvent(activeWindow, event);
-        }
-        continue;
-      }
-
-      const event: StreamEvent = {
-        type: 'visual-complete',
-        requestId,
-        visualId: item.visualId!,
-        content: item.content,
-        title: item.title,
-      };
-      nextParts = applyStreamEventToParts(nextParts, event);
-      if (emitToRenderer) {
-        this.sendEvent(activeWindow, event);
-      }
-    }
-
-    return nextParts;
+    this.sendEvent(window, {
+      type: 'done',
+      requestId,
+      messageId: result.messageId
+    });
   }
 
   private sendEvent(window: BrowserWindow, event: StreamEvent) {

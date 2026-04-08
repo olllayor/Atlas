@@ -10,7 +10,7 @@ import type { ProviderAdapter, ProviderStreamRequest, ProviderStreamResult } fro
 
 const GLM_BASE_URL = 'https://api.z.ai/api/paas/v4';
 const GLM_FIRST_RESPONSE_TIMEOUT_MS = 300_000;
-const GLM_DEFAULT_MAX_OUTPUT_TOKENS = 2048;
+const GLM_DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 const GLM_HARD_MAX_OUTPUT_TOKENS = 8192;
 
 function buildHeaders(apiKey: string) {

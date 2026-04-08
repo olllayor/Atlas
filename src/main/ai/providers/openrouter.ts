@@ -30,8 +30,9 @@ type OpenRouterModelsResponse = {
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_FIRST_RESPONSE_TIMEOUT_MS = 300_000;
-const OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+const OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 const OPENROUTER_HARD_MAX_OUTPUT_TOKENS = 8192;
+const OPENROUTER_TOOL_STEP_LIMIT = 128;
 
 function isZeroPrice(value: string | number | undefined) {
   if (typeof value === 'number') {
@@ -160,7 +161,7 @@ export class OpenRouterProvider implements ProviderAdapter {
         system: request.system,
         messages: request.messages,
         tools: request.tools,
-        stopWhen: hasTools ? stepCountIs(6) : undefined,
+        stopWhen: hasTools ? stepCountIs(OPENROUTER_TOOL_STEP_LIMIT) : undefined,
         temperature: request.temperature ?? 0.65,
         maxOutputTokens,
         abortSignal: signal,

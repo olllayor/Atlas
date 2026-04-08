@@ -22,6 +22,21 @@ function createRequest(overrides: Partial<ChatStartRequest> = {}): ChatStartRequ
   };
 }
 
+function createHistory(turnCount: number): ModelMessage[] {
+  const history: ModelMessage[] = [];
+  for (let index = 0; index < turnCount; index += 1) {
+    history.push({
+      role: 'user',
+      content: `User turn ${index}: include bounded context management`,
+    });
+    history.push({
+      role: 'assistant',
+      content: `Assistant turn ${index}: acknowledged with concise plan`,
+    });
+  }
+  return history;
+}
+
 function createRuntime(options: {
   provider: ProviderAdapter;
   history?: ModelMessage[];
@@ -348,6 +363,113 @@ test('ChatSessionRuntime does not retry when the request signal is already abort
       emitEvent: () => undefined,
     }),
     RequestTimeoutError,
+  );
+
+  assert.equal(attempts, 1);
+});
+
+test('ChatSessionRuntime compiles older history into system addendum and keeps recent messages raw', async () => {
+  const history = createHistory(12);
+  let capturedMessages: ModelMessage[] | null = null;
+  let capturedSystem: string | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedMessages = request.messages;
+      capturedSystem = request.system;
+      return {
+        content: 'Context compiled',
+        latencyMs: 7,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, history });
+
+  await runtime.executeTurn({
+    requestId: 'request-context',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.ok(capturedMessages);
+  assert.equal(capturedMessages!.length, 20);
+  assert.ok(capturedSystem?.includes('ContextManager memory for older turns.'));
+});
+
+test('ChatSessionRuntime retries once with aggressive compaction when prompt is too long before streaming', async () => {
+  const history = createHistory(12);
+  let attempts = 0;
+  const messageCounts: number[] = [];
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      attempts += 1;
+      messageCounts.push(request.messages.length);
+
+      if (attempts === 1) {
+        throw new Error('Maximum context length exceeded for this model');
+      }
+
+      return {
+        content: 'Recovered with aggressive compaction',
+        latencyMs: 11,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, history });
+
+  await runtime.executeTurn({
+    requestId: 'request-retry-compact',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(messageCounts[0], 20);
+  assert.equal(messageCounts[1], 12);
+});
+
+test('ChatSessionRuntime does not retry prompt-too-long compaction after partial streamed output', async () => {
+  const history = createHistory(12);
+  let attempts = 0;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      attempts += 1;
+      request.onChunk({ id: 'assistant-text', delta: 'partial output' });
+      throw new Error('Prompt is too long for this model context window');
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, history });
+
+  await assert.rejects(
+    runtime.executeTurn({
+      requestId: 'request-no-retry-after-stream',
+      request: createRequest(),
+      signal: new AbortController().signal,
+      emitEvent: () => undefined,
+    }),
+    Error,
   );
 
   assert.equal(attempts, 1);

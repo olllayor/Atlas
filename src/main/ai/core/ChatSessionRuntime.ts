@@ -17,6 +17,8 @@ import type { ProviderRegistry } from './providerRegistry';
 import { getProviderOrThrow } from './providerRegistry';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import { VISUAL_PROMPT } from './VISUAL_PROMPT';
+import type { ContextBuildMode } from './ContextManager';
+import { ContextManager } from './ContextManager';
 
 export type ExecuteTurnRequest = {
   requestId: string;
@@ -45,6 +47,7 @@ export class ChatSessionRuntime {
     private readonly modelsRepo: ModelsRepo,
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
+    private readonly contextManager: Pick<ContextManager, 'buildModelInput'> = new ContextManager(),
   ) {}
 
   async executeTurn({ requestId, request, signal, emitEvent }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
@@ -95,8 +98,13 @@ export class ChatSessionRuntime {
     return this.conversationsRepo.getModelHistory(conversationId);
   }
 
-  private buildSystemPrompt(enableTools: boolean | undefined) {
-    return enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
+  private buildSystemPrompt(enableTools: boolean | undefined, contextAddendum: string | null) {
+    const base = enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
+    if (!contextAddendum) {
+      return base;
+    }
+
+    return `${base}\n\n${contextAddendum}`;
   }
 
   private buildTools(enableTools: boolean | undefined) {
@@ -120,6 +128,7 @@ export class ChatSessionRuntime {
   }): Promise<ProviderStreamResult & { parts: ChatMessagePart[] }> {
     let attempt = 0;
     let streamedAnyResponse = false;
+    let compactionMode: ContextBuildMode = 'standard';
 
     while (true) {
       const turnState: TurnState = {
@@ -127,13 +136,18 @@ export class ChatSessionRuntime {
         lastTextPartId: 'assistant-text',
         visualParser: new VisualStreamParser(),
       };
+      const modelInput = this.contextManager.buildModelInput({
+        conversationId: request.conversationId,
+        history: this.selectModelHistory(request.conversationId),
+        mode: compactionMode,
+      });
 
       try {
         const result = await provider.streamChat({
           apiKey,
           modelId: request.modelId,
-          messages: this.selectModelHistory(request.conversationId),
-          system: this.buildSystemPrompt(request.enableTools),
+          messages: modelInput.recentMessages,
+          system: this.buildSystemPrompt(request.enableTools, modelInput.systemContextAddendum),
           tools: this.buildTools(request.enableTools),
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
@@ -199,6 +213,17 @@ export class ChatSessionRuntime {
         };
       } catch (error) {
         const normalized = normalizeError(error);
+        const shouldRetryWithCompaction =
+          compactionMode === 'standard' &&
+          !streamedAnyResponse &&
+          !signal.aborted &&
+          this.isPromptTooLongError(error, normalized.message);
+
+        if (shouldRetryWithCompaction) {
+          compactionMode = 'aggressive';
+          continue;
+        }
+
         const canRetry = attempt === 0 && normalized.retryable && !streamedAnyResponse && !signal.aborted;
 
         if (!canRetry) {
@@ -209,6 +234,59 @@ export class ChatSessionRuntime {
         await sleep(450 + Math.floor(Math.random() * 350));
       }
     }
+  }
+
+  private isPromptTooLongError(error: unknown, normalizedMessage: string) {
+    const status = this.readErrorStatus(error);
+    if (status != null && status !== 400 && status !== 413 && status !== 422) {
+      return false;
+    }
+
+    const message = `${normalizedMessage} ${this.readErrorMessage(error)}`.toLowerCase();
+    if (!message) {
+      return false;
+    }
+
+    return (
+      message.includes('maximum context length') ||
+      message.includes('max context length') ||
+      message.includes('context length exceeded') ||
+      message.includes('context window') ||
+      message.includes('prompt is too long') ||
+      message.includes('input is too long') ||
+      message.includes('request is too large') ||
+      message.includes('too many tokens') ||
+      message.includes('token limit exceeded') ||
+      message.includes('prompt tokens') ||
+      message.includes('context overflow')
+    );
+  }
+
+  private readErrorStatus(error: unknown) {
+    if (error == null || typeof error !== 'object') {
+      return null;
+    }
+
+    const candidate = (error as { status?: unknown; statusCode?: unknown }).statusCode
+      ?? (error as { status?: unknown; statusCode?: unknown }).status;
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    return null;
+  }
+
+  private readErrorMessage(error: unknown) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (error == null || typeof error !== 'object') {
+      return '';
+    }
+
+    const message = (error as { message?: unknown }).message;
+    return typeof message === 'string' ? message : '';
   }
 
   private applyEvent(turnState: TurnState, event: StreamEvent, emitEvent: (event: StreamEvent) => void) {

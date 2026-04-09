@@ -1,18 +1,24 @@
+import type { ApprovalDecision } from '../../../shared/contracts';
+
 type PendingApproval = {
   approvalId: string;
   toolCallId: string;
+  conversationId: string;
   toolName?: string;
+  toolType?: string | null;
   reason?: string;
+  sessionScopeKey?: string | null;
 };
 
 type ApprovalResponse = {
   approvalId: string;
-  approved: boolean;
+  decision: ApprovalDecision;
   reason?: string;
 };
 
 export class ToolApprovalController {
   private readonly pendingByRequest = new Map<string, Map<string, PendingApproval>>();
+  private readonly grantedScopesByConversation = new Map<string, Set<string>>();
 
   setPendingApprovals(requestId: string, approvals: PendingApproval[]) {
     const next = new Map<string, PendingApproval>();
@@ -20,6 +26,10 @@ export class ToolApprovalController {
       next.set(approval.approvalId, approval);
     }
     this.pendingByRequest.set(requestId, next);
+  }
+
+  hasConversationScopeGrant(conversationId: string, scopeKey: string) {
+    return this.grantedScopesByConversation.get(conversationId)?.has(scopeKey) ?? false;
   }
 
   getPendingApproval(requestId: string, approvalId: string) {
@@ -37,11 +47,20 @@ export class ToolApprovalController {
     }
 
     this.pendingByRequest.get(requestId)?.delete(response.approvalId);
+
+    if (response.decision === 'accept_for_session' && pending.sessionScopeKey) {
+      const existing = this.grantedScopesByConversation.get(pending.conversationId);
+      if (existing) {
+        existing.add(pending.sessionScopeKey);
+      } else {
+        this.grantedScopesByConversation.set(pending.conversationId, new Set([pending.sessionScopeKey]));
+      }
+    }
+
     return {
       ...pending,
-      approved: response.approved,
+      decision: response.decision,
       reason: response.reason,
     };
   }
 }
-

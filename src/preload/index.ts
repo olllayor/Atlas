@@ -29,6 +29,8 @@ const api: RendererApi = {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
     abort: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.chatAbort, requestId),
     respondToolApproval: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRespondToolApproval, request),
+    getRuntimeState: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetRuntimeState, request),
+    recoverEvents: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRecoverEvents, request),
     openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {
       const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {

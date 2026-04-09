@@ -12,6 +12,8 @@ import type {
   ModelSummary,
   ProviderCredentialSummary,
   ProviderId,
+  RuntimeEventEnvelope,
+  RuntimeStateSnapshot,
   SettingsSection,
   SettingsSummary,
   SettingsUpdateRequest,
@@ -26,8 +28,9 @@ import {
   normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../shared/attachments';
-import { applyStreamEventToParts, buildUserMessageParts } from '../../shared/messageParts';
+import { applyStreamEventToParts, buildUserMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../shared/messageParts';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { applyRuntimeEventToMessageParts } from '../../shared/runtimeActivity';
 import {
   DEFAULT_CONVERSATION_PAGE_SIZE,
   compactConversationPage,
@@ -85,6 +88,7 @@ type AppState = {
   selectedModelIdByConversation: Record<string, string>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
+  runtimeSequenceByConversation: Record<string, number>;
   updateState: AppUpdateSnapshot;
   bootstrap: () => Promise<void>;
   refreshModels: (options?: RefreshModelsOptions) => Promise<void>;
@@ -232,31 +236,167 @@ function resolveConversationIdForRequest(
   return null;
 }
 
-function applyOptimisticApprovalResponseToParts(
-  parts: ChatMessagePart[],
-  approvalId: string,
-  approved: boolean,
-  reason?: string
+function buildDraftFromRuntimeSnapshot(snapshot: RuntimeStateSnapshot, currentDraft?: DraftState) {
+  const streamingAssistant = [...snapshot.messages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.status === 'streaming');
+
+  if (!streamingAssistant || snapshot.providerSession?.status !== 'active') {
+    return undefined;
+  }
+
+  return {
+    requestId: snapshot.providerSession.requestId,
+    providerId: snapshot.providerSession.providerId,
+    modelId: snapshot.providerSession.modelId,
+    parts: streamingAssistant.parts,
+    status: 'streaming' as const,
+    startedAt: currentDraft?.startedAt ?? streamingAssistant.createdAt,
+    inputTokens: streamingAssistant.inputTokens ?? currentDraft?.inputTokens,
+    outputTokens: streamingAssistant.outputTokens ?? currentDraft?.outputTokens,
+    reasoningTokens: streamingAssistant.reasoningTokens ?? currentDraft?.reasoningTokens,
+    latencyMs: streamingAssistant.latencyMs ?? currentDraft?.latencyMs,
+  };
+}
+
+function applyRuntimeSnapshotToStore(
+  state: AppState,
+  conversationId: string,
+  snapshot: RuntimeStateSnapshot,
 ) {
-  let changed = false;
-  const next = parts.map((part) => {
-    if (part.type !== 'tool' || part.approval?.id !== approvalId) {
-      return part;
+  const existingDetail = state.conversationDetails[conversationId];
+  const detail = {
+    conversation: snapshot.conversation ?? existingDetail?.conversation ?? {
+      id: conversationId,
+      title: 'Session',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      defaultProviderId: null,
+      defaultModelId: null,
+    },
+    messages: snapshot.messages,
+    hasOlder: existingDetail?.hasOlder ?? false,
+    nextCursor: existingDetail?.nextCursor ?? null,
+    limit: existingDetail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
+  };
+  const nextDraft = buildDraftFromRuntimeSnapshot(snapshot, state.draftsByConversation[conversationId]);
+  const nextDrafts = { ...state.draftsByConversation };
+
+  if (nextDraft) {
+    nextDrafts[conversationId] = nextDraft;
+  } else {
+    delete nextDrafts[conversationId];
+  }
+
+  return {
+    conversationDetails: {
+      ...state.conversationDetails,
+      [conversationId]: detail,
+    },
+    draftsByConversation: nextDrafts,
+    runtimeSequenceByConversation: {
+      ...state.runtimeSequenceByConversation,
+      [conversationId]: snapshot.lastSequence,
+    },
+  };
+}
+
+function applyRecoveredRuntimeEventsToStore(
+  state: AppState,
+  conversationId: string,
+  events: RuntimeEventEnvelope[],
+) {
+  const currentSequence = state.runtimeSequenceByConversation[conversationId] ?? 0;
+  const nextEvents = events.filter((event) => event.sequence > currentSequence);
+  if (nextEvents.length === 0) {
+    return state;
+  }
+
+  let nextDrafts = state.draftsByConversation;
+  let nextConversationDetails = state.conversationDetails;
+  let nextRequestToConversation = state.requestToConversation;
+  let nextRuntimeSequenceByConversation = state.runtimeSequenceByConversation;
+
+  let draft = state.draftsByConversation[conversationId];
+  const detail = state.conversationDetails[conversationId];
+  let nextMessages = detail?.messages ?? null;
+
+  for (const event of nextEvents) {
+    if (nextRequestToConversation[event.requestId] !== conversationId) {
+      if (nextRequestToConversation === state.requestToConversation) {
+        nextRequestToConversation = { ...state.requestToConversation };
+      }
+      nextRequestToConversation[event.requestId] = conversationId;
     }
 
-    changed = true;
-    return {
-      ...part,
-      state: 'approval-responded' as const,
-      approval: {
-        id: part.approval.id,
-        approved,
-        reason: reason ?? part.approval.reason,
-      },
-    };
-  });
+    if (draft?.requestId === event.requestId) {
+      const nextParts = applyRuntimeEventToMessageParts(draft.parts, event);
+      if (nextParts !== draft.parts) {
+        if (nextDrafts === state.draftsByConversation) {
+          nextDrafts = { ...state.draftsByConversation };
+        }
+        draft = {
+          ...draft,
+          parts: nextParts,
+        };
+        nextDrafts[conversationId] = draft;
+      }
+    }
 
-  return changed ? next : parts;
+    if (detail && nextMessages) {
+      const messageIndex = nextMessages.findIndex((message) => message.id === event.messageId);
+      if (messageIndex !== -1) {
+        const message = nextMessages[messageIndex];
+        const nextParts = applyRuntimeEventToMessageParts(message.parts, event);
+
+        if (nextParts !== message.parts) {
+          if (nextConversationDetails === state.conversationDetails) {
+            nextConversationDetails = { ...state.conversationDetails };
+          }
+          if (nextMessages === detail.messages) {
+            nextMessages = [...detail.messages];
+          }
+
+          nextMessages[messageIndex] = {
+            ...message,
+            parts: nextParts,
+            content: getTextContentFromParts(nextParts),
+            reasoning: getReasoningContentFromParts(nextParts),
+          };
+
+          nextConversationDetails[conversationId] = {
+            ...detail,
+            messages: nextMessages,
+          };
+        }
+      }
+    }
+  }
+
+  const latestSequence = nextEvents[nextEvents.length - 1]?.sequence ?? currentSequence;
+  if (latestSequence !== currentSequence) {
+    if (nextRuntimeSequenceByConversation === state.runtimeSequenceByConversation) {
+      nextRuntimeSequenceByConversation = { ...state.runtimeSequenceByConversation };
+    }
+    nextRuntimeSequenceByConversation[conversationId] = latestSequence;
+  }
+
+  if (
+    nextDrafts === state.draftsByConversation &&
+    nextConversationDetails === state.conversationDetails &&
+    nextRequestToConversation === state.requestToConversation &&
+    nextRuntimeSequenceByConversation === state.runtimeSequenceByConversation
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    draftsByConversation: nextDrafts,
+    conversationDetails: nextConversationDetails,
+    requestToConversation: nextRequestToConversation,
+    runtimeSequenceByConversation: nextRuntimeSequenceByConversation,
+  };
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -287,6 +427,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedModelIdByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
+  runtimeSequenceByConversation: {},
   updateState: { status: 'idle' },
 
   bootstrap: async () => {
@@ -305,9 +446,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const selectedConversationId = conversations[0]?.id ?? null;
-      const [detail, models, updateState, conversationStats, diagnostics] = await Promise.all([
+      const [detail, runtimeState, models, updateState, conversationStats, diagnostics] = await Promise.all([
         selectedConversationId
           ? window.atlasChat.conversations.getPage(selectedConversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
+          : Promise.resolve(null),
+        selectedConversationId
+          ? window.atlasChat.chat.getRuntimeState({ conversationId: selectedConversationId })
           : Promise.resolve(null),
         window.atlasChat.models.list({
           freeOnly: settings.showFreeOnlyByDefault,
@@ -333,7 +477,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         diagnostics,
         activeCredentialProviderId,
         selectedConversationId,
-        conversationDetails: detail && selectedConversationId ? { [selectedConversationId]: detail } : {},
+        conversationDetails:
+          selectedConversationId && runtimeState
+            ? {
+                [selectedConversationId]: {
+                  conversation: runtimeState.conversation ?? detail!.conversation,
+                  messages: runtimeState.messages,
+                  hasOlder: detail?.hasOlder ?? false,
+                  nextCursor: detail?.nextCursor ?? null,
+                  limit: detail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
+                },
+              }
+            : detail && selectedConversationId ? { [selectedConversationId]: detail } : {},
+        runtimeSequenceByConversation:
+          selectedConversationId && runtimeState ? { [selectedConversationId]: runtimeState.lastSequence } : {},
+        draftsByConversation:
+          selectedConversationId && runtimeState
+            ? { [selectedConversationId]: buildDraftFromRuntimeSnapshot(runtimeState) }
+            : {},
         updateState,
         selectedModelIdByConversation:
           defaultModelId && selectedConversationId
@@ -453,12 +614,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
-      const detail = await window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE });
+      const [detail, runtimeState] = await Promise.all([
+        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
+        window.atlasChat.chat.getRuntimeState({ conversationId }),
+      ]);
       set((current) => ({
-        conversationDetails: {
-          ...current.conversationDetails,
-          [conversationId]: detail
-        },
+        ...applyRuntimeSnapshotToStore(current, conversationId, runtimeState),
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
         selectedModelIdByConversation:
@@ -466,8 +627,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...current.selectedModelIdByConversation,
                 [conversationId]:
+                  runtimeState.conversation?.defaultModelId ??
                   detail.conversation.defaultModelId ??
-                  chooseDefaultModel(current.models, detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
+                  chooseDefaultModel(current.models, runtimeState.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
                   ''
               }
             : current.selectedModelIdByConversation
@@ -991,67 +1153,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return state;
       }
 
-      const draft = state.draftsByConversation[conversationId];
-      const detail = state.conversationDetails[conversationId];
-      const nextDetails = { ...state.conversationDetails };
-
-      if (detail) {
-        let updatedMessage = false;
-        const messages = detail.messages.map((message) => {
-          if (message.role !== 'assistant' || message.status !== 'streaming') {
-            return message;
-          }
-
-          const nextParts = applyOptimisticApprovalResponseToParts(
-            message.parts,
-            request.approvalId,
-            request.approved,
-            request.reason
-          );
-
-          if (nextParts === message.parts) {
-            return message;
-          }
-
-          updatedMessage = true;
-          return {
-            ...message,
-            parts: nextParts
-          };
-        });
-
-        if (updatedMessage) {
-          nextDetails[conversationId] = {
-            ...detail,
-            messages
-          };
-        }
-      }
-
-      if (!draft) {
-        return {
-          conversationDetails: nextDetails,
-          requestToConversation: {
-            ...state.requestToConversation,
-            [request.requestId]: conversationId
-          }
-        };
-      }
-
       return {
-        conversationDetails: nextDetails,
-        draftsByConversation: {
-          ...state.draftsByConversation,
-          [conversationId]: {
-            ...draft,
-            parts: applyOptimisticApprovalResponseToParts(
-              draft.parts,
-              request.approvalId,
-              request.approved,
-              request.reason
-            )
-          }
-        },
         requestToConversation: {
           ...state.requestToConversation,
           [request.requestId]: conversationId
@@ -1074,6 +1176,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
       const { [conversationId]: _deletedDraft, ...restDrafts } = current.draftsByConversation;
       const { [conversationId]: _deletedModel, ...restSelectedModels } = current.selectedModelIdByConversation;
+      const { [conversationId]: _deletedSequence, ...restSequences } = current.runtimeSequenceByConversation;
       const { [conversationId]: _loadingOlder, ...restLoadingOlder } = current.isLoadingOlderByConversation;
       const requestToConversation = Object.fromEntries(
         Object.entries(current.requestToConversation).filter(([, mappedConversationId]) => mappedConversationId !== conversationId)
@@ -1089,6 +1192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
+        runtimeSequenceByConversation: restSequences,
         isLoadingOlderByConversation: restLoadingOlder,
         inactiveConversationIds: current.inactiveConversationIds.filter((id) => id !== conversationId),
         requestToConversation,
@@ -1127,7 +1231,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   handleStreamEvent: async (event) => {
     const state = get();
-    const conversationId = resolveConversationIdForRequest(event.requestId, state);
+    const conversationId =
+      event.type === 'runtime-sync'
+        ? event.conversationId
+        : resolveConversationIdForRequest(event.requestId, state);
 
     if (!conversationId) {
       return;
@@ -1140,6 +1247,33 @@ export const useAppStore = create<AppState>((set, get) => ({
           [event.requestId]: conversationId
         }
       }));
+    }
+
+    if (event.type === 'runtime-sync') {
+      const currentSequence = get().runtimeSequenceByConversation[conversationId] ?? 0;
+      if (event.sequence <= currentSequence) {
+        return;
+      }
+
+      const recovery = await window.atlasChat.chat.recoverEvents({
+        conversationId,
+        afterSequence: currentSequence,
+      });
+
+      if (recovery.events.length === 0) {
+        const snapshot = await window.atlasChat.chat.getRuntimeState({ conversationId });
+        set((current) => ({
+          ...applyRuntimeSnapshotToStore(current, conversationId, snapshot),
+          requestToConversation: {
+            ...current.requestToConversation,
+            [event.requestId]: conversationId,
+          },
+        }));
+        return;
+      }
+
+      set((current) => applyRecoveredRuntimeEventsToStore(current, conversationId, recovery.events));
+      return;
     }
 
     if (

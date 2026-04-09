@@ -5,6 +5,8 @@ import {
   Bug,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   FileText,
@@ -19,24 +21,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useStickToBottom } from 'use-stick-to-bottom';
 
 import appIcon from '../../../icon.png';
-import type { ChatMessage, ChatMessagePart, ConversationPage } from '../../shared/contracts';
+import type { ApprovalDecision, ChatMessage, ChatMessagePart, ConversationPage } from '../../shared/contracts';
 import { getMessageFileParts } from '../../shared/attachments';
 import { cn } from '../lib/utils';
 import type { DraftStateLike } from './types';
 import { Attachment, AttachmentInfo, AttachmentPreview, Attachments } from './ai-elements/attachments';
 import { ConversationEmptyState } from './ai-elements/conversation';
 import { MessageResponse } from './ai-elements/message';
-import {
-  Confirmation,
-  ConfirmationAction,
-  ConfirmationActions,
-  ConfirmationAccepted,
-  ConfirmationRejected,
-  ConfirmationRequest,
-  ConfirmationTitle,
-} from './ai-elements/confirmation';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { ToolInput, ToolOutput } from './ai-elements/tool';
 import { VisualBlock } from './ai-elements/visual';
 import { useClipboard } from '../hooks/useClipboard';
 
@@ -49,7 +42,7 @@ type ChatWindowProps = {
   onOpenSettings: () => void;
   onSuggestionClick: (prompt: string) => void;
   onLoadOlderMessages: (conversationId: string) => Promise<void>;
-  onRespondToolApproval: (request: { requestId: string; approvalId: string; approved: boolean; reason?: string }) => Promise<void>;
+  onRespondToolApproval: (request: { requestId: string; approvalId: string; decision: ApprovalDecision; reason?: string }) => Promise<void>;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
@@ -64,6 +57,63 @@ const suggestions = [
   { icon: PenTool, text: 'Help me write', prompt: 'Help me write an email that ' },
   { icon: Search, text: 'Research something', prompt: 'Tell me about ' },
 ];
+
+function getToolStatusLabel(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
+  switch (state) {
+    case 'approval-requested':
+      return 'Needs approval';
+    case 'approval-responded':
+      return 'Approved';
+    case 'output-available':
+      return 'Done';
+    case 'output-error':
+      return 'Error';
+    case 'output-denied':
+      return 'Denied';
+    case 'output-partial':
+      return 'Partial';
+    case 'input-streaming':
+      return 'Queued';
+    default:
+      return 'Running';
+  }
+}
+
+function getToolStatusClasses(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
+  switch (state) {
+    case 'approval-requested':
+      return {
+        dot: 'bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.12)]',
+        badge: 'border-amber-400/25 bg-amber-400/10 text-amber-100',
+        summary: 'text-amber-100/80',
+      };
+    case 'output-available':
+    case 'approval-responded':
+      return {
+        dot: 'bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.12)]',
+        badge: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100',
+        summary: 'text-text-faint',
+      };
+    case 'output-error':
+      return {
+        dot: 'bg-rose-400 shadow-[0_0_0_3px_rgba(251,113,133,0.14)]',
+        badge: 'border-rose-400/20 bg-rose-400/10 text-rose-100',
+        summary: 'text-rose-100/80',
+      };
+    case 'output-denied':
+      return {
+        dot: 'bg-zinc-400 shadow-[0_0_0_3px_rgba(161,161,170,0.12)]',
+        badge: 'border-zinc-400/20 bg-zinc-400/10 text-zinc-200',
+        summary: 'text-zinc-300/80',
+      };
+    default:
+      return {
+        dot: 'bg-sky-400 shadow-[0_0_0_3px_rgba(56,189,248,0.12)]',
+        badge: 'border-sky-400/20 bg-sky-400/10 text-sky-100',
+        summary: 'text-text-faint',
+      };
+  }
+}
 
 function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; modelLabel?: string | null }) {
   if (!latencyMs && !modelLabel) {
@@ -124,14 +174,13 @@ function ToolRow({
   part: Extract<ChatMessagePart, { type: 'tool' }>;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
-  const isCompletedState =
-    part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied';
   const hasInput = part.rawInput != null || part.input != null;
   const hasOutput = part.output != null || Boolean(part.errorText) || part.state === 'output-denied';
   const hasApproval = Boolean(part.approval);
+  const hasDetails = hasInput || hasOutput;
   const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
-  const [isOpen, setIsOpen] = useState(!isCompletedState);
-  const [submittingApproval, setSubmittingApproval] = useState<null | 'approve' | 'deny'>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [submittingApproval, setSubmittingApproval] = useState<null | ApprovalDecision>(null);
   const approvalRequestId = part.requestId;
   const approvalId = part.approval?.id;
   const canRespondApproval =
@@ -141,24 +190,51 @@ function ToolRow({
     : `${resolvedName} was not run because permission was denied.`;
   const deniedMessage =
     typeof part.output === 'string' && part.output.trim() ? part.output : fallbackDeniedMessage;
+  const statusLabel = getToolStatusLabel(part.state);
+  const statusClasses = getToolStatusClasses(part.state);
+  const headerSummary = useMemo(() => {
+    const approvalReason = part.approval?.reason?.trim();
+    if (part.state === 'approval-requested') {
+      return approvalReason || 'Waiting for approval';
+    }
+
+    if (part.state === 'output-error') {
+      return part.errorText?.trim() || 'Execution failed';
+    }
+
+    if (part.state === 'output-denied') {
+      return deniedMessage;
+    }
+
+    if (typeof part.output === 'string' && part.output.trim()) {
+      return part.output.trim().replace(/\s+/g, ' ');
+    }
+
+    if (typeof part.rawInput === 'string' && part.rawInput.trim()) {
+      return part.rawInput.trim().replace(/\s+/g, ' ');
+    }
+
+    return hasOutput ? 'Result available' : 'Running';
+  }, [deniedMessage, hasOutput, part.approval?.reason, part.errorText, part.output, part.rawInput, part.state]);
 
   useEffect(() => {
-    // Keep details open while the tool is in progress, collapse when finalized.
-    setIsOpen(!isCompletedState);
-  }, [isCompletedState]);
+    const shouldForceOpen =
+      part.state === 'approval-requested' || part.state === 'output-error' || part.state === 'output-denied';
+    setIsOpen(shouldForceOpen);
+  }, [part.state]);
 
   const sendApproval = useCallback(
-    async (approved: boolean) => {
+    async (decision: ApprovalDecision) => {
       if (!canRespondApproval || !approvalRequestId || !approvalId || submittingApproval) {
         return;
       }
 
-      setSubmittingApproval(approved ? 'approve' : 'deny');
+      setSubmittingApproval(decision);
       try {
         await onRespondToolApproval({
           requestId: approvalRequestId,
           approvalId,
-          approved,
+          decision,
         });
       } finally {
         setSubmittingApproval(null);
@@ -168,71 +244,107 @@ function ToolRow({
   );
 
   return (
-    <Tool className="mb-2.5" onOpenChange={setIsOpen} open={isOpen}>
-      <ToolHeader
-        type={part.dynamic ? 'dynamic-tool' : `tool-${part.toolName}`}
-        toolName={part.toolName}
-        title={part.title}
-        state={part.state}
-      />
-      {hasInput || hasOutput || hasApproval ? (
-        <ToolContent>
-          <Confirmation
-            approval={part.approval}
-            state={part.state}
-            className={hasInput || hasOutput ? 'mb-3' : undefined}
-          >
-            <ConfirmationTitle>Tool approval</ConfirmationTitle>
-            <ConfirmationRequest>
-              <div>
-                Approve running <span className="font-medium text-[var(--text-secondary)]">{resolvedName}</span>.
+    <div className="relative mb-1.5 pl-5">
+      <span className="absolute left-[7px] top-0 bottom-[-10px] w-px bg-border-subtle/80" aria-hidden />
+      <span className={cn('absolute left-[4px] top-[11px] size-[7px] rounded-full', statusClasses.dot)} aria-hidden />
+
+      <div className="rounded-[10px] px-2.5 py-1.5 transition hover:bg-bg-hover/60">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[12.5px] font-medium tracking-[-0.01em] text-text-primary">
+                {resolvedName}
+              </span>
+              <span className={cn('min-w-0 truncate text-[11px] leading-5', statusClasses.summary)}>
+                {headerSummary}
+              </span>
+            </div>
+
+            {part.state === 'approval-requested' ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10.5px] text-text-faint">
+                  {part.approval?.reason?.trim() || 'Permission required before execution.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('accept')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-emerald-400/25 bg-emerald-400/10 px-2 text-[10.5px] text-emerald-100 transition hover:bg-emerald-400/15 disabled:opacity-60"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('accept_for_session')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-border-default bg-bg-subtle px-2 text-[10.5px] text-text-secondary transition hover:bg-bg-hover disabled:opacity-60"
+                >
+                  Session
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('decline')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-rose-400/20 bg-rose-400/10 px-2 text-[10.5px] text-rose-100 transition hover:bg-rose-400/15 disabled:opacity-60"
+                >
+                  Deny
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('cancel')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-border-default bg-transparent px-2 text-[10.5px] text-text-faint transition hover:bg-bg-hover disabled:opacity-60"
+                >
+                  Cancel
+                </button>
               </div>
-              <div className="mt-1 text-[var(--text-faint)]">
-                {part.approval?.reason?.trim()
-                  ? part.approval.reason
-                  : 'Permission is required because this tool can access external resources or execute commands.'}
+            ) : null}
+
+            {part.state === 'approval-responded' && part.approval?.approved ? (
+              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-emerald-100/80">
+                <CheckCircle2 className="size-3" />
+                <span>Approval granted</span>
               </div>
-              {part.input ? (
-                <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-[var(--border-subtle)] bg-black/20 px-3 py-2 text-[var(--text-muted)]">
-                  {JSON.stringify(part.input, null, 2)}
-                </pre>
-              ) : null}
-            </ConfirmationRequest>
-            <ConfirmationActions>
-              <ConfirmationAction
-                onClick={() => void sendApproval(true)}
-                disabled={!canRespondApproval || submittingApproval != null}
+            ) : null}
+
+            {(part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) ? (
+              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-zinc-300/80">
+                <XCircle className="size-3" />
+                <span>{deniedMessage}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className={cn('inline-flex h-5 items-center border px-1.5 text-[9px] uppercase tracking-[0.12em]', statusClasses.badge)}>
+              {statusLabel}
+            </span>
+            {hasDetails ? (
+              <button
+                type="button"
+                onClick={() => setIsOpen((current) => !current)}
+                className="inline-flex size-5 items-center justify-center text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+                title={isOpen ? 'Hide details' : 'Show details'}
               >
-                Approve
-              </ConfirmationAction>
-              <ConfirmationAction
-                variant="outline"
-                onClick={() => void sendApproval(false)}
-                disabled={!canRespondApproval || submittingApproval != null}
-              >
-                Deny
-              </ConfirmationAction>
-            </ConfirmationActions>
-            <ConfirmationAccepted>
-              <CheckCircle2 className="size-4" />
-              <span>Tool execution approved</span>
-            </ConfirmationAccepted>
-            <ConfirmationRejected>
-              <XCircle className="size-4" />
-              <span>Tool execution rejected</span>
-            </ConfirmationRejected>
-          </Confirmation>
-          {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
-          {hasOutput ? (
-            <ToolOutput
-              errorText={part.state === 'output-denied' ? deniedMessage : part.errorText}
-              output={part.output}
-              className={hasInput ? 'mt-3' : undefined}
-            />
-          ) : null}
-        </ToolContent>
-      ) : null}
-    </Tool>
+                {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {isOpen && hasDetails ? (
+          <div className="mt-2 space-y-2 border-l border-border-subtle/70 pl-3">
+            {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
+            {hasOutput ? (
+              <ToolOutput
+                errorText={part.state === 'output-denied' ? deniedMessage : part.errorText}
+                output={part.output}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -546,7 +658,7 @@ function estimateHistoryRowHeight(message: ChatMessage) {
     560,
     156 +
       Math.ceil(message.content.length / 100) * 24 +
-      toolCount * 84 +
+      toolCount * 52 +
       reasoningCount * 56 +
       visualCount * 320 +
       fileCount * 28,
@@ -593,7 +705,7 @@ export function ChatWindow({
 }: ChatWindowProps) {
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useStickToBottom({
     initial: 'instant',
-    resize: 'smooth',
+    resize: draft?.status === 'streaming' ? 'instant' : 'smooth',
   });
   const pendingPrependRef = useRef<{
     conversationId: string;

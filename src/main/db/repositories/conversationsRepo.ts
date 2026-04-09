@@ -15,11 +15,14 @@ import type {
   MessageRole,
   MessageStatus,
   ProviderId,
-  ToolExecutionRecord
+  ToolExecutionRecord,
+  WorkLogEntry
 } from '../../../shared/contracts';
 import { decodeConversationPageCursor, encodeConversationPageCursor } from '../../../shared/conversationPaging';
 import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
+import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
 import type { SqliteDatabase } from '../client';
+import type { RuntimeStateRepo } from './runtimeStateRepo';
 import type { ToolExecutionsRepo } from './toolExecutionsRepo';
 
 type ConversationRow = {
@@ -179,11 +182,90 @@ function hydrateMessagePartsWithToolExecutions(message: ChatMessage, toolExecuti
     return message;
   }
 
-  const nonToolParts = message.parts.filter((part) => part.type !== 'tool');
   const toolParts = toolExecutions.map(buildToolPartFromRecord);
+  return mergeToolParts(message, toolParts);
+}
+
+function hydrateMessagePartsWithActivities(message: ChatMessage, activities: WorkLogEntry[]) {
+  if (activities.length === 0) {
+    return message;
+  }
+
+  const latestByToolIdentity = new Map<string, WorkLogEntry>();
+  for (const activity of activities) {
+    const toolIdentity = activity.toolCallId ?? activity.approvalId;
+    if (!toolIdentity) {
+      continue;
+    }
+
+    const current = latestByToolIdentity.get(toolIdentity);
+    if (!current || current.sequence <= activity.sequence) {
+      latestByToolIdentity.set(toolIdentity, activity);
+    }
+  }
+
+  const toolParts = [...latestByToolIdentity.values()]
+    .sort((left, right) => left.sequence - right.sequence)
+    .map(workLogEntryToChatToolPart);
+
+  return mergeToolParts(message, toolParts);
+}
+
+function mergeToolParts(message: ChatMessage, toolParts: ChatToolPart[]) {
+  if (toolParts.length === 0) {
+    return message;
+  }
+
+  const replacementsByToolCallId = new Map<string, ChatToolPart>();
+  const replacementsByApprovalId = new Map<string, ChatToolPart>();
+  const usedReplacementIds = new Set<string>();
+
+  for (const part of toolParts) {
+    replacementsByToolCallId.set(part.toolCallId, part);
+    if (part.approval?.id) {
+      replacementsByApprovalId.set(part.approval.id, part);
+    }
+  }
+
+  let changed = false;
+  const mergedParts = message.parts.map((part) => {
+    if (part.type !== 'tool') {
+      return part;
+    }
+
+    const replacement =
+      replacementsByToolCallId.get(part.toolCallId) ??
+      (part.approval?.id ? replacementsByApprovalId.get(part.approval.id) : undefined);
+
+    if (!replacement) {
+      return part;
+    }
+
+    usedReplacementIds.add(replacement.id);
+    changed = true;
+    const mergedApprovalId = replacement.approval?.id ?? part.approval?.id;
+
+    return {
+      ...part,
+      ...replacement,
+      approval: mergedApprovalId
+        ? {
+            id: mergedApprovalId,
+            approved: replacement.approval?.approved ?? part.approval?.approved,
+            reason: replacement.approval?.reason ?? part.approval?.reason,
+          }
+        : undefined,
+    };
+  });
+
+  const unseenToolParts = toolParts.filter((part) => !usedReplacementIds.has(part.id));
+  if (!changed && unseenToolParts.length === 0) {
+    return message;
+  }
+
   return {
     ...message,
-    parts: [...nonToolParts, ...toolParts],
+    parts: unseenToolParts.length > 0 ? [...mergedParts, ...unseenToolParts] : mergedParts,
   };
 }
 
@@ -293,6 +375,10 @@ const NOOP_TOOL_EXECUTIONS_REPO: Pick<ToolExecutionsRepo, 'listByMessageIds'> = 
   listByMessageIds: () => [],
 };
 
+const NOOP_RUNTIME_STATE_REPO: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = {
+  listActivitiesByMessageIds: () => [],
+};
+
 export class ConversationsRepo {
   constructor(
     private readonly db: SqliteDatabase,
@@ -301,6 +387,7 @@ export class ConversationsRepo {
       'deleteConversationAttachments' | 'readAttachmentData'
     > = NOOP_ATTACHMENT_STORE,
     private readonly toolExecutionsRepo: Pick<ToolExecutionsRepo, 'listByMessageIds'> = NOOP_TOOL_EXECUTIONS_REPO,
+    private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
   ) {}
 
   list() {
@@ -615,6 +702,27 @@ export class ConversationsRepo {
 
   private hydrateMessagesWithToolExecutions(messages: ChatMessage[]) {
     const messageIds = messages.map((message) => message.id);
+    const activities = this.runtimeStateRepo.listActivitiesByMessageIds(messageIds);
+    if (activities.length > 0) {
+      const byMessageId = new Map<string, WorkLogEntry[]>();
+      for (const activity of activities) {
+        if (!activity.messageId) {
+          continue;
+        }
+
+        const bucket = byMessageId.get(activity.messageId);
+        if (bucket) {
+          bucket.push(activity);
+        } else {
+          byMessageId.set(activity.messageId, [activity]);
+        }
+      }
+
+      return messages.map((message) =>
+        hydrateMessagePartsWithActivities(message, byMessageId.get(message.id) ?? [])
+      );
+    }
+
     const toolExecutions = this.toolExecutionsRepo.listByMessageIds(messageIds);
     if (toolExecutions.length === 0) {
       return messages;

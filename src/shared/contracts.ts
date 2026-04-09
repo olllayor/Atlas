@@ -463,6 +463,14 @@ export type StreamDoneEvent = {
   messageId: string;
 };
 
+export type RuntimeSyncEvent = {
+  type: 'runtime-sync';
+  conversationId: string;
+  requestId: string;
+  eventId: string;
+  sequence: number;
+};
+
 export type StreamEvent =
   | StreamChunkEvent
   | StreamReasoningEvent
@@ -478,12 +486,156 @@ export type StreamEvent =
   | StreamVisualCompleteEvent
   | StreamMetaEvent
   | StreamErrorEvent
-  | StreamDoneEvent;
+  | StreamDoneEvent
+  | RuntimeSyncEvent;
+
+export type ActivityType =
+  | 'message.delta'
+  | 'message.completed'
+  | 'reasoning.delta'
+  | 'tool.started'
+  | 'tool.updated'
+  | 'tool.completed'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'runtime.warning'
+  | 'runtime.error'
+  | 'turn.started'
+  | 'turn.completed';
+
+export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
+
+export type CanonicalToolType =
+  | 'command_execution'
+  | 'file_change'
+  | 'mcp_tool_call'
+  | 'dynamic_tool_call'
+  | 'web_search'
+  | 'image_view';
+
+export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
+
+export type RuntimeEventEnvelope = {
+  eventId: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  sequence: number;
+  occurredAt: string;
+  activityType: ActivityType;
+  tone: ActivityTone;
+  toolType?: CanonicalToolType | null;
+  messageId?: string | null;
+  toolCallId?: string | null;
+  approvalId?: string | null;
+  provider: ProviderId | 'system';
+  providerEventType?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type WorkLogEntryStatus =
+  | 'running'
+  | 'pending_approval'
+  | 'completed'
+  | 'error'
+  | 'denied'
+  | 'stale'
+  | 'resolved';
+
+export type WorkLogEntry = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  messageId: string | null;
+  activityType: ActivityType;
+  tone: ActivityTone;
+  toolType: CanonicalToolType | null;
+  toolCallId: string | null;
+  approvalId: string | null;
+  title: string;
+  summary: string | null;
+  status: WorkLogEntryStatus;
+  sequence: number;
+  isFinal: boolean;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ApprovalRequestStatus = 'pending' | 'resolved' | 'stale';
+
+export type ApprovalRequestRecord = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  messageId: string | null;
+  toolCallId: string;
+  toolName: string | null;
+  toolType: CanonicalToolType | null;
+  reason: string | null;
+  status: ApprovalRequestStatus;
+  decision: ApprovalDecision | null;
+  sessionScopeKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeCheckpointSummary = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  sequence: number;
+  pendingApprovalCount: number;
+  fileChangeSummary: string | null;
+  createdAt: string;
+};
+
+export type RuntimeProviderSession = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  providerId: ProviderId;
+  modelId: string;
+  status: 'active' | 'completed' | 'aborted' | 'interrupted';
+  lastSequence: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeStateSnapshot = {
+  conversationId: string;
+  conversation: ConversationDetail['conversation'] | null;
+  lastSequence: number;
+  checkpointSequence: number;
+  messages: ChatMessage[];
+  activities: WorkLogEntry[];
+  pendingApprovals: ApprovalRequestRecord[];
+  providerSession: RuntimeProviderSession | null;
+  latestCheckpoint: RuntimeCheckpointSummary | null;
+};
+
+export type RuntimeStateRequest = {
+  conversationId: string;
+};
+
+export type RecoverEventsRequest = {
+  conversationId: string;
+  afterSequence: number;
+};
+
+export type RecoverEventsResponse = {
+  conversationId: string;
+  events: RuntimeEventEnvelope[];
+  lastSequence: number;
+};
 
 export type ToolApprovalResponseRequest = {
   requestId: string;
   approvalId: string;
-  approved: boolean;
+  decision: ApprovalDecision;
   reason?: string;
 };
 
@@ -624,6 +776,8 @@ export type RendererApi = {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
     respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
+    getRuntimeState: (request: RuntimeStateRequest) => Promise<RuntimeStateSnapshot>;
+    recoverEvents: (request: RecoverEventsRequest) => Promise<RecoverEventsResponse>;
     openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
   };

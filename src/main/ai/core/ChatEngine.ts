@@ -4,20 +4,27 @@ import type { ModelMessage } from 'ai';
 import type { BrowserWindow } from 'electron';
 
 import type {
+  ApprovalDecision,
   ChatMessagePart,
-  ToolApprovalResponseRequest,
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
   OpenVisualWindowRequest,
-  StreamEvent
+  RecoverEventsResponse,
+  RuntimeStateSnapshot,
+  StreamEvent,
+  ToolApprovalResponseRequest,
 } from '../../../shared/contracts';
 import {
-  applyStreamEventToParts,
   finalizeMessageParts,
   getReasoningContentFromParts,
   getTextContentFromParts,
 } from '../../../shared/messageParts';
+import {
+  applyRuntimeEventToMessageParts,
+  buildApprovalScopeKey,
+  inferCanonicalToolType,
+} from '../../../shared/runtimeActivity';
 import {
   MAX_ATTACHMENT_COUNT,
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
@@ -29,6 +36,7 @@ import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../sha
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
+import type { RuntimeStateRepo } from '../../db/repositories/runtimeStateRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import { normalizeError } from './ErrorNormalizer';
 import { ToolApprovalController } from './ToolApprovalController';
@@ -40,10 +48,12 @@ import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 
 type ActiveRequest = {
+  requestId: string;
   controller: AbortController;
   window: BrowserWindow;
   onWindowClosed: () => void;
   request: ChatStartRequest;
+  turnId: string;
   assistantMessageId: string;
   parts: ChatMessagePart[];
   responseMessages: ModelMessage[];
@@ -53,10 +63,43 @@ type ActiveRequest = {
 
 type BufferedRequestEvents = {
   timer: ReturnType<typeof setTimeout> | null;
-  events: Map<string, StreamEvent>;
+  events: Map<string, Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>>;
 };
 
 const STREAM_BATCH_INTERVAL_MS = 33;
+
+const NOOP_RUNTIME_STATE_REPO: Pick<
+  RuntimeStateRepo,
+  | 'createTurn'
+  | 'startProviderSession'
+  | 'recordEvent'
+  | 'getLatestCheckpoint'
+  | 'getLastSequence'
+  | 'listActivitiesByConversation'
+  | 'listPendingApprovals'
+  | 'getLatestProviderSession'
+  | 'listEventsAfter'
+  | 'completeTurn'
+  | 'updateProviderSession'
+  | 'createCheckpoint'
+> = {
+  createTurn: () => undefined,
+  startProviderSession: () => 'noop-session',
+  recordEvent: (input) => ({
+    ...input,
+    occurredAt: new Date().toISOString(),
+    sequence: 0,
+  }),
+  getLatestCheckpoint: () => null,
+  getLastSequence: () => 0,
+  listActivitiesByConversation: () => [],
+  listPendingApprovals: () => [],
+  getLatestProviderSession: () => null,
+  listEventsAfter: (conversationId) => ({ conversationId, events: [], lastSequence: 0 }),
+  completeTurn: () => undefined,
+  updateProviderSession: () => undefined,
+  createCheckpoint: () => randomUUID(),
+};
 
 function formatToolNameForDeniedCopy(toolName?: string) {
   if (!toolName) {
@@ -94,6 +137,21 @@ export class ChatEngine {
       keychain,
       providers
     ),
+    private readonly runtimeStateRepo: Pick<
+      RuntimeStateRepo,
+      | 'createTurn'
+      | 'startProviderSession'
+      | 'recordEvent'
+      | 'getLatestCheckpoint'
+      | 'getLastSequence'
+      | 'listActivitiesByConversation'
+      | 'listPendingApprovals'
+      | 'getLatestProviderSession'
+      | 'listEventsAfter'
+      | 'completeTurn'
+      | 'updateProviderSession'
+      | 'createCheckpoint'
+    > = NOOP_RUNTIME_STATE_REPO,
     private readonly toolStateStore?: ToolStateStore,
     private readonly approvalController = new ToolApprovalController(),
   ) {}
@@ -129,6 +187,7 @@ export class ChatEngine {
 
     const requestId = randomUUID();
     const assistantMessageId = randomUUID();
+    const turnId = randomUUID();
     const controller = new AbortController();
     const onWindowClosed = () => {
       controller.abort();
@@ -158,11 +217,44 @@ export class ChatEngine {
       modelId: request.modelId,
     });
 
+    this.runtimeStateRepo.createTurn({
+      id: turnId,
+      conversationId: request.conversationId,
+      requestId,
+      assistantMessageId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+    });
+    this.runtimeStateRepo.startProviderSession({
+      conversationId: request.conversationId,
+      turnId,
+      requestId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+    });
+    this.runtimeStateRepo.recordEvent({
+      eventId: randomUUID(),
+      conversationId: request.conversationId,
+      turnId,
+      requestId,
+      activityType: 'turn.started',
+      tone: 'info',
+      provider: request.providerId,
+      providerEventType: 'turn.started',
+      messageId: assistantMessageId,
+      payload: {
+        providerId: request.providerId,
+        modelId: request.modelId,
+      },
+    });
+
     this.activeRequests.set(requestId, {
+      requestId,
       controller,
       window,
       onWindowClosed,
       request,
+      turnId,
       assistantMessageId,
       parts: [],
       responseMessages: [],
@@ -223,6 +315,27 @@ export class ChatEngine {
     active?.controller.abort();
   }
 
+  getRuntimeState({ conversationId }: { conversationId: string }): RuntimeStateSnapshot {
+    const detail = this.conversationsRepo.get(conversationId);
+    const latestCheckpoint = this.runtimeStateRepo.getLatestCheckpoint(conversationId);
+
+    return {
+      conversationId,
+      conversation: detail.conversation,
+      lastSequence: this.runtimeStateRepo.getLastSequence(conversationId),
+      checkpointSequence: latestCheckpoint?.sequence ?? 0,
+      messages: detail.messages,
+      activities: this.runtimeStateRepo.listActivitiesByConversation(conversationId),
+      pendingApprovals: this.runtimeStateRepo.listPendingApprovals(conversationId),
+      providerSession: this.runtimeStateRepo.getLatestProviderSession(conversationId),
+      latestCheckpoint,
+    };
+  }
+
+  recoverEvents({ conversationId, afterSequence }: { conversationId: string; afterSequence: number }): RecoverEventsResponse {
+    return this.runtimeStateRepo.listEventsAfter(conversationId, afterSequence);
+  }
+
   async respondToolApproval(request: ToolApprovalResponseRequest) {
     const active = this.activeRequests.get(request.requestId);
     if (!active) {
@@ -231,7 +344,7 @@ export class ChatEngine {
 
     const resolved = this.approvalController.respond(request.requestId, {
       approvalId: request.approvalId,
-      approved: request.approved,
+      decision: request.decision,
       reason: request.reason,
     });
 
@@ -239,24 +352,48 @@ export class ChatEngine {
       throw new Error('Approval request was not found.');
     }
 
-    this.sendEvent(active.window, {
-      type: 'tool-approval-responded',
+    const sessionScopeKey = resolved.sessionScopeKey ?? null;
+    this.recordRuntimeEnvelope(active, {
+      eventId: randomUUID(),
+      conversationId: active.request.conversationId,
+      turnId: active.turnId,
       requestId: request.requestId,
-      approvalId: request.approvalId,
+      activityType: 'approval.resolved',
+      tone: 'approval',
+      provider: active.request.providerId,
+      providerEventType: 'tool-approval-responded',
+      messageId: active.assistantMessageId,
       toolCallId: resolved.toolCallId,
-      approved: request.approved,
-      reason: request.reason,
+      approvalId: request.approvalId,
+      toolType: resolved.toolType ? (resolved.toolType as never) : undefined,
+      payload: {
+        toolName: resolved.toolName,
+        decision: request.decision,
+        reason: request.reason,
+        sessionScopeKey,
+      },
     });
 
-    if (!request.approved) {
-      this.sendEvent(active.window, {
-        type: 'tool-output-denied',
+    if (request.decision === 'decline' || request.decision === 'cancel') {
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
         requestId: request.requestId,
+        activityType: 'tool.completed',
+        tone: 'tool',
+        provider: active.request.providerId,
+        providerEventType: 'tool-output-denied',
+        messageId: active.assistantMessageId,
         toolCallId: resolved.toolCallId,
-        toolName: resolved.toolName,
-        reason:
-          request.reason?.trim() ||
-          `${formatToolNameForDeniedCopy(resolved.toolName)} was not run because permission was denied.`,
+        toolType: resolved.toolType ? (resolved.toolType as never) : undefined,
+        payload: {
+          toolName: resolved.toolName,
+          status: 'denied',
+          reason:
+            request.reason?.trim() ||
+            `${formatToolNameForDeniedCopy(resolved.toolName)} was not run because permission was denied.`,
+        },
       });
 
       const finalizedParts = finalizeMessageParts(active.parts);
@@ -348,18 +485,40 @@ export class ChatEngine {
         messagesOverride,
         initialParts: active.parts,
         emitEvent: (event) => {
-          this.sendEvent(active.window, event);
+          this.handleRuntimeStreamEvent(active, event);
         },
       });
 
-      active.parts = result.parts;
+      active.parts = result.parts ?? active.parts;
       if (result.responseMessages?.length) {
         active.responseMessages.push(...result.responseMessages);
       }
 
       if (result.status === 'awaiting_approval') {
         active.awaitingApproval = true;
-        this.approvalController.setPendingApprovals(requestId, result.pendingApprovals);
+        const pendingApprovals = result.pendingApprovals.map((approval) => {
+          const toolType = inferCanonicalToolType({ toolName: approval.toolName });
+          return {
+            ...approval,
+            conversationId: request.conversationId,
+            toolType,
+            sessionScopeKey: buildApprovalScopeKey(toolType, approval.toolName),
+          };
+        });
+        this.approvalController.setPendingApprovals(requestId, pendingApprovals);
+        this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(request.conversationId), 'awaiting_approval');
+        const autoApproved = pendingApprovals.find(
+          (approval) =>
+            approval.sessionScopeKey &&
+            this.approvalController.hasConversationScopeGrant(request.conversationId, approval.sessionScopeKey),
+        );
+        if (autoApproved) {
+          void this.respondToolApproval({
+            requestId,
+            approvalId: autoApproved.approvalId,
+            decision: 'accept',
+          });
+        }
         return;
       }
 
@@ -375,12 +534,31 @@ export class ChatEngine {
     } catch (error) {
       const normalized = normalizeError(error);
       active.tracker?.markRequestError(normalized.code, normalized.message);
+      this.flushBufferedEvents(requestId);
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId,
+        activityType: 'runtime.error',
+        tone: 'error',
+        provider: active.request.providerId,
+        providerEventType: 'error',
+        messageId: active.assistantMessageId,
+        payload: {
+          code: normalized.code,
+          message: normalized.message,
+          retryable: normalized.retryable,
+        },
+      });
       this.conversationsRepo.updateMessage({
         messageId: active.assistantMessageId,
         status: 'error',
         errorCode: normalized.code,
         parts: finalizeMessageParts(active.parts),
       });
+      this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(active.request.conversationId), 'aborted');
+      this.runtimeStateRepo.updateProviderSession(requestId, { status: 'aborted' });
       this.sendEvent(active.window, {
         type: 'error',
         requestId,
@@ -393,6 +571,54 @@ export class ChatEngine {
   }
 
   private sendCompletionEvents(window: BrowserWindow, requestId: string, result: ExecuteTurnResult) {
+    const active = this.activeRequests.get(requestId);
+    const finalParts = result.parts ?? active?.parts ?? [];
+    if (active) {
+      this.flushBufferedEvents(requestId);
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId,
+        activityType: 'message.completed',
+        tone: 'info',
+        provider: active.request.providerId,
+        providerEventType: 'message.completed',
+        messageId: active.assistantMessageId,
+        payload: {
+          content: getTextContentFromParts(finalParts),
+          reasoning: getReasoningContentFromParts(finalParts),
+        },
+      });
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId,
+        activityType: 'turn.completed',
+        tone: 'info',
+        provider: active.request.providerId,
+        providerEventType: 'turn.completed',
+        messageId: active.assistantMessageId,
+        payload: {
+          inputTokens: result.inputTokens ?? null,
+          outputTokens: result.outputTokens ?? null,
+          reasoningTokens: result.reasoningTokens ?? null,
+          latencyMs: result.latencyMs ?? null,
+        },
+      });
+
+      const lastSequence = this.runtimeStateRepo.getLastSequence(active.request.conversationId);
+      this.runtimeStateRepo.completeTurn(active.turnId, lastSequence, 'completed');
+      this.runtimeStateRepo.updateProviderSession(requestId, { status: 'completed', lastSequence });
+      this.runtimeStateRepo.createCheckpoint({
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        sequence: lastSequence,
+        pendingApprovals: this.runtimeStateRepo.listPendingApprovals(active.request.conversationId),
+      });
+    }
+
     this.sendEvent(window, {
       type: 'meta',
       requestId,
@@ -422,8 +648,12 @@ export class ChatEngine {
     this.approvalController.clearRequest(requestId);
   }
 
-  private sendEvent(window: BrowserWindow, event: StreamEvent) {
-    this.recordRequestEvent(event);
+  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {
+    active.tracker?.handleEvent(event);
+
+    if (event.type === 'meta' || event.type === 'done' || event.type === 'error' || event.type === 'runtime-sync') {
+      return;
+    }
 
     if (event.type === 'chunk' || event.type === 'reasoning' || event.type === 'tool-input-delta') {
       this.queueBufferedEvent(event.requestId, event);
@@ -431,31 +661,12 @@ export class ChatEngine {
     }
 
     this.flushBufferedEvents(event.requestId);
-    this.sendToWindow(window, event);
+    this.recordStreamEvent(active, event);
   }
 
-  private recordRequestEvent(event: StreamEvent) {
-    const active = this.activeRequests.get(event.requestId);
-    if (!active) {
-      return;
-    }
-
-    if (
-      event.type === 'chunk' ||
-      event.type === 'reasoning' ||
-      event.type === 'tool-input-start' ||
-      event.type === 'tool-input-delta' ||
-      event.type === 'tool-input-available' ||
-      event.type === 'tool-approval-requested' ||
-      event.type === 'tool-approval-responded' ||
-      event.type === 'tool-output-available' ||
-      event.type === 'tool-output-error' ||
-      event.type === 'tool-output-denied' ||
-      event.type === 'visual-start' ||
-      event.type === 'visual-complete'
-    ) {
-      active.parts = applyStreamEventToParts(active.parts, event);
-      active.tracker?.handleEvent(event);
+  private recordStreamEvent(active: ActiveRequest, event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' }>) {
+    for (const envelope of this.normalizeStreamEvent(active, event)) {
+      this.recordRuntimeEnvelope(active, envelope);
     }
   }
 
@@ -515,7 +726,9 @@ export class ChatEngine {
     }
 
     for (const event of buffered.events.values()) {
-      if (!this.sendToWindow(active.window, event)) {
+      try {
+        this.recordStreamEvent(active, event);
+      } catch {
         active.controller.abort();
         active.window.removeListener('closed', active.onWindowClosed);
         this.clearBufferedEvents(requestId);
@@ -541,6 +754,247 @@ export class ChatEngine {
     buffered.events.clear();
   }
 
+  private sendEvent(window: BrowserWindow, event: StreamEvent) {
+    this.sendToWindow(window, event);
+  }
+
+  private normalizeStreamEvent(
+    active: ActiveRequest,
+    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' }>
+  ) {
+    const base = {
+      conversationId: active.request.conversationId,
+      turnId: active.turnId,
+      requestId: active.requestId ?? event.requestId,
+      provider: active.request.providerId,
+      messageId: active.assistantMessageId,
+    };
+
+    switch (event.type) {
+      case 'chunk':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: { delta: event.delta, partId: event.id },
+        }];
+      case 'reasoning':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'reasoning.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: { delta: event.delta, partId: event.id },
+        }];
+      case 'tool-input-start':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.started' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+          },
+        }];
+      case 'tool-input-delta':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.updated' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          providerEventType: event.type,
+          payload: {
+            delta: event.delta,
+            summary: event.delta,
+          },
+        }];
+      case 'tool-input-available':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.updated' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+          },
+        }];
+      case 'tool-output-available':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: event.preliminary ? 'tool.updated' : 'tool.completed',
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            output: event.output,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+            status: event.preliminary ? 'running' : 'completed',
+            summary: typeof event.output === 'string' ? event.output : undefined,
+          },
+        }];
+      case 'tool-output-error':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.completed' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            errorText: event.errorText,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+            status: 'error',
+            summary: event.errorText,
+          },
+        }];
+      case 'tool-output-denied':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.completed' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            reason: event.reason,
+            status: 'denied',
+            summary: event.reason,
+          },
+        }];
+      case 'tool-approval-requested': {
+        const toolType = inferCanonicalToolType({ toolName: event.toolName });
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'approval.requested' as const,
+          tone: 'approval' as const,
+          toolCallId: event.toolCallId,
+          approvalId: event.approvalId,
+          toolType,
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            reason: event.reason,
+            sessionScopeKey: buildApprovalScopeKey(toolType, event.toolName),
+          },
+        }];
+      }
+      case 'tool-approval-responded':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'approval.resolved' as const,
+          tone: 'approval' as const,
+          toolCallId: event.toolCallId,
+          approvalId: event.approvalId,
+          providerEventType: event.type,
+          payload: {
+            decision: event.approved ? 'accept' : 'decline',
+            reason: event.reason,
+          },
+        }];
+      case 'visual-start':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: {
+            kind: 'visual-start',
+            visualId: event.visualId,
+            title: event.title,
+          },
+        }];
+      case 'visual-complete':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.completed' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: {
+            kind: 'visual-complete',
+            visualId: event.visualId,
+            content: event.content,
+            title: event.title,
+          },
+        }];
+    }
+  }
+
+  private recordRuntimeEnvelope(
+    active: ActiveRequest,
+    input: {
+      eventId: string;
+      conversationId: string;
+      turnId: string;
+      requestId: string;
+      activityType: any;
+      tone: any;
+      provider: any;
+      providerEventType?: string;
+      payload: Record<string, unknown>;
+      messageId?: string;
+      toolCallId?: string;
+      approvalId?: string;
+      toolType?: any;
+    },
+  ) {
+    const envelope = this.runtimeStateRepo.recordEvent({
+      ...input,
+      messageId: input.messageId ?? active.assistantMessageId,
+    });
+
+    active.parts = applyRuntimeEventToMessageParts(active.parts, envelope);
+    this.conversationsRepo.updateMessage({
+      messageId: active.assistantMessageId,
+      content: getTextContentFromParts(active.parts),
+      reasoning: getReasoningContentFromParts(active.parts),
+      parts: active.parts,
+      providerId: active.request.providerId,
+      modelId: active.request.modelId,
+    });
+
+    this.sendToWindow(active.window, {
+      type: 'runtime-sync',
+      conversationId: active.request.conversationId,
+      requestId: active.requestId ?? active.assistantMessageId,
+      eventId: envelope.eventId,
+      sequence: envelope.sequence,
+    });
+  }
+
   private sendToWindow(window: BrowserWindow, event: StreamEvent) {
     if (window.isDestroyed() || window.webContents.isDestroyed()) {
       return false;
@@ -556,16 +1010,16 @@ export class ChatEngine {
 
   private getBufferedEventKey(event: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>) {
     if (event.type === 'tool-input-delta') {
-      return `${event.type}:${event.toolCallId}`;
+      return `message:${event.requestId}:tool:${event.toolCallId}`;
     }
 
-    return `${event.type}:${event.id}`;
+    return `message:${event.requestId}:${event.type}:${event.id}`;
   }
 
   private mergeBufferedEvents(
-    existing: StreamEvent | undefined,
+    existing: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }> | undefined,
     next: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>
-  ): StreamEvent {
+  ): Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }> {
     if (!existing) {
       return next;
     }

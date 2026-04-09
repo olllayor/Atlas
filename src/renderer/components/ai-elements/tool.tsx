@@ -108,7 +108,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+          className="gap-1 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-tertiary)]"
         >
           <CircleDashed className="size-3 animate-spin" />
           Pending
@@ -118,7 +118,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+          className="gap-1 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-tertiary)]"
         >
           <Wrench className="size-3" />
           Running
@@ -128,7 +128,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-secondary)]"
+          className="gap-1 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-secondary)]"
         >
           <ShieldAlert className="size-3" />
           Awaiting Approval
@@ -138,7 +138,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+          className="gap-1 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-tertiary)]"
         >
           <ArrowRightLeft className="size-3" />
           Responded
@@ -148,7 +148,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-secondary)]"
+          className="gap-1 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-secondary)]"
         >
           <CheckCircle2 className="size-3" />
           Completed
@@ -158,7 +158,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+          className="gap-1 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-tertiary)]"
         >
           <Loader2 className="size-3 animate-spin" />
           Partial
@@ -168,7 +168,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-secondary)]"
+          className="gap-1 border-[var(--border-strong)] bg-[var(--bg-hover)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-secondary)]"
         >
           <CircleAlert className="size-3" />
           Error
@@ -178,7 +178,7 @@ export function getStatusBadge(state: ToolState) {
       return (
         <Badge
           variant="outline"
-          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+          className="gap-1 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[9px] font-normal text-[var(--text-tertiary)]"
         >
           <Ban className="size-3" />
           Denied
@@ -204,10 +204,10 @@ export const Tool = ({
   defaultOpen = true,
   ...props
 }: ToolProps) => (
-    <Collapsible
+  <Collapsible
     defaultOpen={defaultOpen}
     className={cn(
-      "group/tool w-full overflow-hidden border border-[var(--border-default)] bg-[var(--bg-subtle)]",
+      "group/tool w-full overflow-hidden border border-[var(--border-default)] bg-[var(--bg-subtle)]/70",
       className
     )}
     {...props}
@@ -219,6 +219,7 @@ type ToolHeaderOwnProps = {
   state: ToolState;
   title?: string;
   toolName?: string;
+  summary?: string;
 };
 
 export type ToolHeaderProps = Omit<ComponentProps<typeof CollapsibleTrigger>, "type"> &
@@ -230,6 +231,7 @@ export const ToolHeader = ({
   state,
   title,
   toolName,
+  summary,
   ...props
 }: ToolHeaderProps) => {
   const resolvedName = useMemo(() => {
@@ -245,33 +247,37 @@ export const ToolHeader = ({
   }, [title, toolName, type]);
 
   const metaLabel = type === "dynamic-tool" ? "Dynamic tool call" : "Tool execution";
+  const detailLabel = summary?.trim() ? summary.trim() : metaLabel;
 
   return (
     <CollapsibleTrigger
       className={cn(
-        "flex w-full items-center justify-between gap-3.5 px-3.5 py-3 text-left transition hover:bg-[var(--bg-subtle)]",
+        "flex w-full items-center justify-between gap-2.5 px-2.5 py-2 text-left transition hover:bg-[var(--bg-hover)]",
         className
       )}
       {...props}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span className="inline-flex size-9 shrink-0 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-hover)] text-[var(--text-tertiary)]">
-          <Wrench className="size-3.5" />
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex size-7 shrink-0 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-hover)] text-[var(--text-tertiary)]">
+          <Wrench className="size-3.25" />
         </span>
-        <div className="min-w-0">
-          <div className="truncate text-[13.5px] font-normal tracking-[-0.02em] text-[var(--text-secondary)]">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-medium tracking-[-0.015em] text-[var(--text-secondary)]">
             {resolvedName}
           </div>
-          <div className="truncate pt-0.5 text-[10.5px] text-[var(--text-faint)]">
-            {metaLabel}
+          <div className="truncate pt-0.5 text-[10px] leading-4 text-[var(--text-faint)]">
+            {detailLabel}
           </div>
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-1.5">
         {getStatusBadge(state)}
-        <span className="inline-flex size-7.5 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-subtle)] text-[var(--text-faint)] transition group-hover/tool:text-[var(--text-tertiary)]">
-          <ChevronDown className="size-3.25 transition-transform group-data-[state=open]/tool:rotate-180" />
+        <span
+          className="inline-flex size-6 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-subtle)] text-[var(--text-faint)] transition group-hover/tool:text-[var(--text-tertiary)]"
+          title={metaLabel}
+        >
+          <ChevronDown className="size-3 transition-transform group-data-[state=open]/tool:rotate-180" />
         </span>
       </div>
     </CollapsibleTrigger>
@@ -282,7 +288,7 @@ export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
 
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   <CollapsibleContent
-    className={cn("border-t border-[var(--border-default)] px-3.5 pb-3.5 pt-3", className)}
+    className={cn("border-t border-[var(--border-default)] px-2.5 pb-2.5 pt-2.5", className)}
     {...props}
   />
 );
@@ -302,8 +308,8 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
       )}
       {...props}
     >
-      <div className="flex items-center justify-between border-b border-[var(--border-default)] px-3 py-2">
-        <span className="text-[9.5px] font-normal uppercase tracking-[0.14em] text-[var(--text-faint)]">
+      <div className="flex items-center justify-between border-b border-[var(--border-default)] px-2.5 py-1.5">
+        <span className="text-[9px] font-normal uppercase tracking-[0.14em] text-[var(--text-faint)]">
           Input
         </span>
       </div>
@@ -327,7 +333,7 @@ export const ToolOutput = ({
     return (
       <div
         className={cn(
-          "border border-[var(--border-strong)] bg-[var(--bg-hover)] px-3 py-3 text-[var(--text-secondary)]",
+          "border border-[var(--border-strong)] bg-[var(--bg-hover)] px-2.5 py-2.5 text-[var(--text-secondary)]",
           className
         )}
         {...props}
@@ -335,10 +341,10 @@ export const ToolOutput = ({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-[var(--text-secondary)]" />
           <div className="min-w-0">
-            <div className="text-[10px] font-normal uppercase tracking-[0.14em] text-[var(--text-tertiary)]">
+            <div className="text-[9px] font-normal uppercase tracking-[0.14em] text-[var(--text-tertiary)]">
               Error
             </div>
-            <div className="mt-1 text-[12.5px] leading-5 text-[var(--text-secondary)]">
+            <div className="mt-1 text-[12px] leading-5 text-[var(--text-secondary)]">
               {errorText}
             </div>
           </div>
@@ -359,12 +365,12 @@ export const ToolOutput = ({
       )}
       {...props}
     >
-      <div className="flex items-center justify-between border-b border-[var(--border-default)] px-3 py-2">
-        <span className="text-[9.5px] font-normal uppercase tracking-[0.14em] text-[var(--text-faint)]">
+      <div className="flex items-center justify-between border-b border-[var(--border-default)] px-2.5 py-1.5">
+        <span className="text-[9px] font-normal uppercase tracking-[0.14em] text-[var(--text-faint)]">
           Output
         </span>
       </div>
-      <div className="px-3 py-2.5 text-[12.5px] leading-[1.65] text-[var(--text-secondary)]">
+      <div className="px-2.5 py-2 text-[12px] leading-[1.6] text-[var(--text-secondary)]">
         {typeof output === "string" ? (
           <MessageResponse>{output}</MessageResponse>
         ) : (

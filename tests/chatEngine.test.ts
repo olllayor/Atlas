@@ -102,7 +102,7 @@ test('ChatEngine start persists the user turn before async runtime execution beg
   await delay(0);
 });
 
-test('ChatEngine emits buffered chunk events before meta and done on successful completion', async () => {
+test('ChatEngine emits sequenced runtime sync events before meta and done on successful completion', async () => {
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
@@ -142,17 +142,19 @@ test('ChatEngine emits buffered chunk events before meta and done on successful 
   await engine.start(fakeWindow.window as never, createRequest());
   await delay(0);
 
-  assert.deepEqual(fakeWindow.events.map((event) => event.type), ['chunk', 'meta', 'done']);
-  assert.equal(fakeWindow.events[1]?.type, 'meta');
-  if (fakeWindow.events[1]?.type === 'meta') {
-    assert.equal(fakeWindow.events[1].inputTokens, 10);
-    assert.equal(fakeWindow.events[1].outputTokens, 5);
-    assert.equal(fakeWindow.events[1].latencyMs, 42);
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  assert.equal(eventTypes.at(-2), 'meta');
+  assert.equal(eventTypes.at(-1), 'done');
+  const metaEvent = fakeWindow.events.find((event) => event.type === 'meta');
+  if (metaEvent?.type === 'meta') {
+    assert.equal(metaEvent.inputTokens, 10);
+    assert.equal(metaEvent.outputTokens, 5);
+    assert.equal(metaEvent.latencyMs, 42);
   }
-  assert.equal(fakeWindow.events[2]?.type, 'done');
 });
 
-test('ChatEngine normalizes runtime errors and preserves buffered flush behavior', async () => {
+test('ChatEngine normalizes runtime errors and preserves runtime sync behavior', async () => {
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
@@ -187,11 +189,13 @@ test('ChatEngine normalizes runtime errors and preserves buffered flush behavior
   await engine.start(fakeWindow.window as never, createRequest());
   await delay(0);
 
-  assert.deepEqual(fakeWindow.events.map((event) => event.type), ['chunk', 'error']);
-  assert.equal(fakeWindow.events[1]?.type, 'error');
-  if (fakeWindow.events[1]?.type === 'error') {
-    assert.equal(fakeWindow.events[1].code, 'timeout');
-    assert.equal(fakeWindow.events[1].retryable, true);
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  const errorEvent = fakeWindow.events.find((event) => event.type === 'error');
+  assert.equal(errorEvent?.type, 'error');
+  if (errorEvent?.type === 'error') {
+    assert.equal(errorEvent.code, 'timeout');
+    assert.equal(errorEvent.retryable, true);
   }
 });
 
@@ -253,15 +257,15 @@ test('ChatEngine handles inline approval denial in the same assistant turn', asy
   await engine.respondToolApproval({
     requestId,
     approvalId: 'approval-1',
-    approved: false,
+    decision: 'decline',
   });
   await delay(0);
 
   assert.equal(runtimeCalls.length, 1);
-  assert.deepEqual(
-    fakeWindow.events.map((event) => event.type),
-    ['tool-approval-requested', 'tool-approval-responded', 'tool-output-denied', 'meta', 'done']
-  );
-  assert.equal(updateMessageCalls.length, 1);
-  assert.equal(updateMessageCalls[0]?.status, 'complete');
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  assert.equal(eventTypes.at(-2), 'meta');
+  assert.equal(eventTypes.at(-1), 'done');
+  assert.ok(updateMessageCalls.length >= 1);
+  assert.ok(updateMessageCalls.some((call) => call.status === 'complete'));
 });

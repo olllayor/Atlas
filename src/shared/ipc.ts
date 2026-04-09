@@ -14,6 +14,8 @@ export const IPC_CHANNELS = {
   chatStart: 'chat:start',
   chatAbort: 'chat:abort',
   chatRespondToolApproval: 'chat:respondToolApproval',
+  chatGetRuntimeState: 'chat:getRuntimeState',
+  chatRecoverEvents: 'chat:recoverEvents',
   chatOpenVisualWindow: 'chat:openVisualWindow',
   chatEvent: 'chat:event',
   visualsSave: 'visuals:save',

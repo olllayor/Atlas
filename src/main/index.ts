@@ -87,7 +87,12 @@ app.whenReady().then(async () => {
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
   const toolStateStore = new ToolStateStore(database.toolExecutions);
   const interruptedMessageIds = toolStateStore.reconcileInterrupted();
+  const interruptedRuntimeSessions = database.runtimeState.reconcileInterruptedSessions();
   database.conversations.markMessagesError(interruptedMessageIds, 'interrupted');
+  database.conversations.markMessagesError(
+    interruptedRuntimeSessions.map((session) => session.assistantMessageId),
+    'interrupted',
+  );
   const keychain = new KeychainStore();
   const openRouter = new OpenRouterProvider();
   const glm = new GlmProvider();
@@ -109,6 +114,7 @@ app.whenReady().then(async () => {
     providers,
     attachmentStore,
     undefined,
+    database.runtimeState,
     toolStateStore,
   );
 

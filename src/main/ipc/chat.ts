@@ -27,6 +27,19 @@ export function registerChatIpc(chatEngine: ChatEngine) {
     await chatEngine.respondToolApproval(request);
   });
 
+  ipcMain.handle(IPC_CHANNELS.chatGetRuntimeState, async (event, request: { conversationId: string }) => {
+    assertTrustedSender(event);
+    return chatEngine.getRuntimeState(request);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.chatRecoverEvents,
+    async (event, request: { conversationId: string; afterSequence: number }) => {
+      assertTrustedSender(event);
+      return chatEngine.recoverEvents(request);
+    },
+  );
+
   ipcMain.handle(IPC_CHANNELS.chatOpenVisualWindow, async (event, request: OpenVisualWindowRequest) => {
     assertTrustedSender(event);
 

@@ -13,6 +13,7 @@ export const IPC_CHANNELS = {
   conversationsDelete: 'conversations:delete',
   chatStart: 'chat:start',
   chatAbort: 'chat:abort',
+  chatRespondToolApproval: 'chat:respondToolApproval',
   chatOpenVisualWindow: 'chat:openVisualWindow',
   chatEvent: 'chat:event',
   visualsSave: 'visuals:save',

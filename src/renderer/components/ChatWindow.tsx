@@ -28,6 +28,8 @@ import { ConversationEmptyState } from './ai-elements/conversation';
 import { MessageResponse } from './ai-elements/message';
 import {
   Confirmation,
+  ConfirmationAction,
+  ConfirmationActions,
   ConfirmationAccepted,
   ConfirmationRejected,
   ConfirmationRequest,
@@ -47,6 +49,7 @@ type ChatWindowProps = {
   onOpenSettings: () => void;
   onSuggestionClick: (prompt: string) => void;
   onLoadOlderMessages: (conversationId: string) => Promise<void>;
+  onRespondToolApproval: (request: { requestId: string; approvalId: string; approved: boolean; reason?: string }) => Promise<void>;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
@@ -114,7 +117,13 @@ function ReasoningRow({
   );
 }
 
-function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> }) {
+function ToolRow({
+  part,
+  onRespondToolApproval,
+}: {
+  part: Extract<ChatMessagePart, { type: 'tool' }>;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+}) {
   const isCompletedState =
     part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied';
   const hasInput = part.rawInput != null || part.input != null;
@@ -122,11 +131,41 @@ function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> })
   const hasApproval = Boolean(part.approval);
   const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
   const [isOpen, setIsOpen] = useState(!isCompletedState);
+  const [submittingApproval, setSubmittingApproval] = useState<null | 'approve' | 'deny'>(null);
+  const approvalRequestId = part.requestId;
+  const approvalId = part.approval?.id;
+  const canRespondApproval =
+    part.state === 'approval-requested' && Boolean(approvalRequestId) && Boolean(approvalId);
+  const fallbackDeniedMessage = /search/i.test(resolvedName)
+    ? 'Search was not run because permission was denied.'
+    : `${resolvedName} was not run because permission was denied.`;
+  const deniedMessage =
+    typeof part.output === 'string' && part.output.trim() ? part.output : fallbackDeniedMessage;
 
   useEffect(() => {
     // Keep details open while the tool is in progress, collapse when finalized.
     setIsOpen(!isCompletedState);
   }, [isCompletedState]);
+
+  const sendApproval = useCallback(
+    async (approved: boolean) => {
+      if (!canRespondApproval || !approvalRequestId || !approvalId || submittingApproval) {
+        return;
+      }
+
+      setSubmittingApproval(approved ? 'approve' : 'deny');
+      try {
+        await onRespondToolApproval({
+          requestId: approvalRequestId,
+          approvalId,
+          approved,
+        });
+      } finally {
+        setSubmittingApproval(null);
+      }
+    },
+    [approvalId, approvalRequestId, canRespondApproval, onRespondToolApproval, submittingApproval]
+  );
 
   return (
     <Tool className="mb-2.5" onOpenChange={setIsOpen} open={isOpen}>
@@ -148,12 +187,32 @@ function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> })
               <div>
                 Approve running <span className="font-medium text-[var(--text-secondary)]">{resolvedName}</span>.
               </div>
+              <div className="mt-1 text-[var(--text-faint)]">
+                {part.approval?.reason?.trim()
+                  ? part.approval.reason
+                  : 'Permission is required because this tool can access external resources or execute commands.'}
+              </div>
               {part.input ? (
                 <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-[var(--border-subtle)] bg-black/20 px-3 py-2 text-[var(--text-muted)]">
                   {JSON.stringify(part.input, null, 2)}
                 </pre>
               ) : null}
             </ConfirmationRequest>
+            <ConfirmationActions>
+              <ConfirmationAction
+                onClick={() => void sendApproval(true)}
+                disabled={!canRespondApproval || submittingApproval != null}
+              >
+                Approve
+              </ConfirmationAction>
+              <ConfirmationAction
+                variant="outline"
+                onClick={() => void sendApproval(false)}
+                disabled={!canRespondApproval || submittingApproval != null}
+              >
+                Deny
+              </ConfirmationAction>
+            </ConfirmationActions>
             <ConfirmationAccepted>
               <CheckCircle2 className="size-4" />
               <span>Tool execution approved</span>
@@ -166,7 +225,7 @@ function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> })
           {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
           {hasOutput ? (
             <ToolOutput
-              errorText={part.state === 'output-denied' ? 'Tool execution was denied.' : part.errorText}
+              errorText={part.state === 'output-denied' ? deniedMessage : part.errorText}
               output={part.output}
               className={hasInput ? 'mt-3' : undefined}
             />
@@ -244,12 +303,14 @@ function AssistantParts({
   latencyMs,
   parts,
   deferRichContent = false,
+  onRespondToolApproval,
 }: {
   content: string;
   isStreaming?: boolean;
   latencyMs?: number | null;
   parts: ChatMessagePart[];
   deferRichContent?: boolean;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   if (deferRichContent) {
     return <AssistantTextFallback content={content} />;
@@ -273,7 +334,7 @@ function AssistantParts({
         }
 
         if (part.type === 'tool') {
-          return <ToolRow key={part.toolCallId} part={part} />;
+          return <ToolRow key={part.toolCallId} part={part} onRespondToolApproval={onRespondToolApproval} />;
         }
 
         if (part.type === 'file') {
@@ -316,10 +377,12 @@ function MessageRow({
   message,
   deferRichContent = false,
   onRegenerate,
+  onRespondToolApproval,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
   onRegenerate?: () => void;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   const { copied, copy } = useClipboard();
   const isAssistant = message.role === 'assistant';
@@ -366,6 +429,7 @@ function MessageRow({
           latencyMs={message.status === 'complete' ? message.latencyMs : null}
           parts={message.parts}
           deferRichContent={deferRichContent}
+          onRespondToolApproval={onRespondToolApproval}
         />
 
         <MessageMeta
@@ -402,11 +466,13 @@ function StreamingRow({
   modelLabel,
   errorMessage,
   status,
+  onRespondToolApproval,
 }: {
   parts: ChatMessagePart[];
   modelLabel?: string;
   errorMessage?: string;
   status: 'streaming' | 'error' | 'aborted';
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   const isError = status === 'error';
   const isAborted = status === 'aborted';
@@ -427,7 +493,14 @@ function StreamingRow({
           </div>
         ) : isAborted ? (
           <>
-            {hasParts ? <AssistantParts content="" latencyMs={null} parts={parts} /> : null}
+            {hasParts ? (
+              <AssistantParts
+                content=""
+                latencyMs={null}
+                parts={parts}
+                onRespondToolApproval={onRespondToolApproval}
+              />
+            ) : null}
             <div className={cn('border border-border-subtle bg-bg-subtle p-4', hasParts ? 'mt-3' : undefined)}>
               <div className="flex items-start gap-3">
                 <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
@@ -436,7 +509,7 @@ function StreamingRow({
             </div>
           </>
         ) : (
-          <AssistantParts content="" isStreaming latencyMs={null} parts={parts} />
+          <AssistantParts content="" isStreaming latencyMs={null} parts={parts} onRespondToolApproval={onRespondToolApproval} />
         )}
 
         {modelLabel ? <MessageMeta latencyMs={null} /> : null}
@@ -516,6 +589,7 @@ export function ChatWindow({
   onOpenSettings,
   onSuggestionClick,
   onLoadOlderMessages,
+  onRespondToolApproval,
 }: ChatWindowProps) {
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useStickToBottom({
     initial: 'instant',
@@ -724,7 +798,11 @@ export function ChatWindow({
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                   >
-                    <MessageRow message={message} deferRichContent={isOutsideVisibleRange} />
+                    <MessageRow
+                      message={message}
+                      deferRichContent={isOutsideVisibleRange}
+                      onRespondToolApproval={onRespondToolApproval}
+                    />
                   </div>
                 );
               })}
@@ -732,7 +810,7 @@ export function ChatWindow({
           ) : (
             <div className="space-y-[26px]">
               {messages.map((message) => (
-                <MessageRow key={message.id} message={message} />
+                <MessageRow key={message.id} message={message} onRespondToolApproval={onRespondToolApproval} />
               ))}
             </div>
           )}
@@ -744,6 +822,7 @@ export function ChatWindow({
                 modelLabel={draft.modelId}
                 errorMessage={draft.errorMessage}
                 status={draft.status}
+                onRespondToolApproval={onRespondToolApproval}
               />
             </div>
           ) : null}

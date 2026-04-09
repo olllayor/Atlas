@@ -58,6 +58,31 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tool_executions (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  request_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  input_preview TEXT,
+  input_json TEXT,
+  state TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  partial_output_preview TEXT,
+  final_output_preview TEXT,
+  output_json TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  requires_approval INTEGER NOT NULL DEFAULT 0,
+  approval_id TEXT,
+  approved_at TEXT,
+  denied_at TEXT,
+  approval_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
 ON conversations (updated_at DESC);
 
@@ -66,6 +91,18 @@ ON messages (conversation_id, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at_id
 ON messages (conversation_id, created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_tool_executions_conversation
+ON tool_executions (conversation_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_tool_executions_message
+ON tool_executions (message_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_tool_executions_request
+ON tool_executions (request_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_tool_executions_state
+ON tool_executions (state);
 
 CREATE TABLE IF NOT EXISTS saved_visuals (
   id TEXT PRIMARY KEY,
@@ -109,6 +146,26 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!columns.includes('response_messages_json')) {
     database.exec('ALTER TABLE messages ADD COLUMN response_messages_json TEXT');
+  }
+
+  const toolExecutionColumns = database
+    .prepare<
+      [],
+      {
+        name: string;
+      }
+    >('PRAGMA table_info(tool_executions)')
+    .all()
+    .map((column) => column.name);
+
+  if (toolExecutionColumns.length > 0) {
+    if (!toolExecutionColumns.includes('input_json')) {
+      database.exec('ALTER TABLE tool_executions ADD COLUMN input_json TEXT');
+    }
+
+    if (!toolExecutionColumns.includes('output_json')) {
+      database.exec('ALTER TABLE tool_executions ADD COLUMN output_json TEXT');
+    }
   }
 
   const modelColumns = database

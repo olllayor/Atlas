@@ -15,6 +15,7 @@ import type {
   SettingsSection,
   SettingsSummary,
   SettingsUpdateRequest,
+  ToolApprovalResponseRequest,
   StreamEvent
 } from '../../shared/contracts';
 import {
@@ -115,6 +116,7 @@ type AppState = {
   selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: { text: string; files: ChatInputFilePart[] }) => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
+  respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => Promise<void>;
 };
@@ -193,6 +195,68 @@ function collectRendererHeapBytes() {
   }).memory;
 
   return memory?.usedJSHeapSize ?? null;
+}
+
+function resolveConversationIdForRequest(
+  requestId: string,
+  state: Pick<AppState, 'requestToConversation' | 'draftsByConversation' | 'conversationDetails' | 'selectedConversationId'>
+) {
+  const direct = state.requestToConversation[requestId];
+  if (direct) {
+    return direct;
+  }
+
+  for (const [conversationId, draft] of Object.entries(state.draftsByConversation)) {
+    if (draft?.requestId === requestId) {
+      return conversationId;
+    }
+  }
+
+  for (const [conversationId, detail] of Object.entries(state.conversationDetails)) {
+    const hasMatchingToolPart = detail.messages.some((message) =>
+      message.parts.some((part) => part.type === 'tool' && part.requestId === requestId)
+    );
+    if (hasMatchingToolPart) {
+      return conversationId;
+    }
+  }
+
+  const streamingConversations = Object.entries(state.conversationDetails).filter(([, detail]) =>
+    detail.messages.some((message) => message.role === 'assistant' && message.status === 'streaming')
+  );
+
+  if (streamingConversations.length === 1) {
+    return streamingConversations[0][0];
+  }
+
+  return null;
+}
+
+function applyOptimisticApprovalResponseToParts(
+  parts: ChatMessagePart[],
+  approvalId: string,
+  approved: boolean,
+  reason?: string
+) {
+  let changed = false;
+  const next = parts.map((part) => {
+    if (part.type !== 'tool' || part.approval?.id !== approvalId) {
+      return part;
+    }
+
+    changed = true;
+    return {
+      ...part,
+      state: 'approval-responded' as const,
+      approval: {
+        id: part.approval.id,
+        approved,
+        reason: reason ?? part.approval.reason,
+      },
+    };
+  });
+
+  return changed ? next : parts;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -920,6 +984,84 @@ export const useAppStore = create<AppState>((set, get) => ({
     await window.atlasChat.chat.abort(draft.requestId);
   },
 
+  respondToolApproval: async (request) => {
+    set((state) => {
+      const conversationId = resolveConversationIdForRequest(request.requestId, state);
+      if (!conversationId) {
+        return state;
+      }
+
+      const draft = state.draftsByConversation[conversationId];
+      const detail = state.conversationDetails[conversationId];
+      const nextDetails = { ...state.conversationDetails };
+
+      if (detail) {
+        let updatedMessage = false;
+        const messages = detail.messages.map((message) => {
+          if (message.role !== 'assistant' || message.status !== 'streaming') {
+            return message;
+          }
+
+          const nextParts = applyOptimisticApprovalResponseToParts(
+            message.parts,
+            request.approvalId,
+            request.approved,
+            request.reason
+          );
+
+          if (nextParts === message.parts) {
+            return message;
+          }
+
+          updatedMessage = true;
+          return {
+            ...message,
+            parts: nextParts
+          };
+        });
+
+        if (updatedMessage) {
+          nextDetails[conversationId] = {
+            ...detail,
+            messages
+          };
+        }
+      }
+
+      if (!draft) {
+        return {
+          conversationDetails: nextDetails,
+          requestToConversation: {
+            ...state.requestToConversation,
+            [request.requestId]: conversationId
+          }
+        };
+      }
+
+      return {
+        conversationDetails: nextDetails,
+        draftsByConversation: {
+          ...state.draftsByConversation,
+          [conversationId]: {
+            ...draft,
+            parts: applyOptimisticApprovalResponseToParts(
+              draft.parts,
+              request.approvalId,
+              request.approved,
+              request.reason
+            )
+          }
+        },
+        requestToConversation: {
+          ...state.requestToConversation,
+          [request.requestId]: conversationId
+        }
+      };
+    });
+
+    await window.atlasChat.chat.respondToolApproval(request);
+  },
+
   deleteConversation: async (conversationId) => {
     const state = get();
     const draft = state.draftsByConversation[conversationId];
@@ -984,10 +1126,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   handleStreamEvent: async (event) => {
-    const conversationId = get().requestToConversation[event.requestId];
+    const state = get();
+    const conversationId = resolveConversationIdForRequest(event.requestId, state);
 
     if (!conversationId) {
       return;
+    }
+
+    if (!state.requestToConversation[event.requestId]) {
+      set((current) => ({
+        requestToConversation: {
+          ...current.requestToConversation,
+          [event.requestId]: conversationId
+        }
+      }));
     }
 
     if (
@@ -996,6 +1148,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       event.type === 'tool-input-start' ||
       event.type === 'tool-input-delta' ||
       event.type === 'tool-input-available' ||
+      event.type === 'tool-approval-requested' ||
+      event.type === 'tool-approval-responded' ||
       event.type === 'tool-output-available' ||
       event.type === 'tool-output-error' ||
       event.type === 'tool-output-denied' ||
@@ -1004,18 +1158,53 @@ export const useAppStore = create<AppState>((set, get) => ({
     ) {
       set((state) => {
         const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
+        const detail = state.conversationDetails[conversationId];
+
+        const nextDrafts = { ...state.draftsByConversation };
+        const nextDetails = { ...state.conversationDetails };
+        let changed = false;
+
+        if (draft) {
+          nextDrafts[conversationId] = {
+            ...draft,
+            parts: applyStreamEventToParts(draft.parts, event)
+          };
+          changed = true;
+        }
+
+        if (detail) {
+          const streamingAssistantIndex = [...detail.messages]
+            .map((message, index) => ({ message, index }))
+            .reverse()
+            .find(({ message }) => message.role === 'assistant' && message.status === 'streaming')?.index;
+
+          if (streamingAssistantIndex != null) {
+            const nextMessages = detail.messages.map((message, index) => {
+              if (index !== streamingAssistantIndex) {
+                return message;
+              }
+
+              return {
+                ...message,
+                parts: applyStreamEventToParts(message.parts, event)
+              };
+            });
+
+            nextDetails[conversationId] = {
+              ...detail,
+              messages: nextMessages
+            };
+            changed = true;
+          }
+        }
+
+        if (!changed) {
           return state;
         }
 
         return {
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              parts: applyStreamEventToParts(draft.parts, event)
-            }
-          }
+          draftsByConversation: nextDrafts,
+          conversationDetails: nextDetails
         };
       });
       return;
@@ -1024,21 +1213,58 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (event.type === 'meta') {
       set((state) => {
         const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
+        const detail = state.conversationDetails[conversationId];
+        const nextDrafts = { ...state.draftsByConversation };
+        const nextDetails = { ...state.conversationDetails };
+        let changed = false;
+
+        if (draft) {
+          nextDrafts[conversationId] = {
+            ...draft,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            reasoningTokens: event.reasoningTokens,
+            latencyMs: event.latencyMs
+          };
+          changed = true;
+        }
+
+        if (detail) {
+          const streamingAssistantIndex = [...detail.messages]
+            .map((message, index) => ({ message, index }))
+            .reverse()
+            .find(({ message }) => message.role === 'assistant' && message.status === 'streaming')?.index;
+
+          if (streamingAssistantIndex != null) {
+            const nextMessages = detail.messages.map((message, index) => {
+              if (index !== streamingAssistantIndex) {
+                return message;
+              }
+
+              return {
+                ...message,
+                inputTokens: event.inputTokens ?? message.inputTokens,
+                outputTokens: event.outputTokens ?? message.outputTokens,
+                reasoningTokens: event.reasoningTokens ?? message.reasoningTokens,
+                latencyMs: event.latencyMs ?? message.latencyMs
+              };
+            });
+
+            nextDetails[conversationId] = {
+              ...detail,
+              messages: nextMessages
+            };
+            changed = true;
+          }
+        }
+
+        if (!changed) {
           return state;
         }
 
         return {
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              reasoningTokens: event.reasoningTokens,
-              latencyMs: event.latencyMs
-            }
-          }
+          draftsByConversation: nextDrafts,
+          conversationDetails: nextDetails
         };
       });
       return;
@@ -1056,11 +1282,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set((state) => {
         const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
-          return state;
-        }
-
         const { [event.requestId]: _omitted, ...restRequests } = state.requestToConversation;
+        const nextDrafts = { ...state.draftsByConversation };
+
+        if (draft) {
+          nextDrafts[conversationId] = {
+            ...draft,
+            status: event.code === 'aborted' ? 'aborted' : 'error',
+            errorMessage: event.message
+          };
+        } else {
+          delete nextDrafts[conversationId];
+        }
 
         return {
           requestToConversation: restRequests,
@@ -1071,14 +1304,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           conversations,
           conversationStats,
           diagnostics,
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              status: event.code === 'aborted' ? 'aborted' : 'error',
-              errorMessage: event.message
-            }
-          }
+          draftsByConversation: nextDrafts
         };
       });
 

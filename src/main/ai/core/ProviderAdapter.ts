@@ -1,4 +1,4 @@
-import type { ModelMessage, ToolSet } from 'ai';
+import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
 
 import type { ModelSummary, ProviderId } from '../../../shared/contracts';
 
@@ -8,6 +8,7 @@ export type ProviderStreamRequest = {
   messages: ModelMessage[];
   system?: string;
   tools?: ToolSet;
+  toolChoice?: ToolChoice<ToolSet>;
   temperature?: number;
   maxOutputTokens?: number;
   signal: AbortSignal;
@@ -53,6 +54,14 @@ export type ProviderStreamRequest = {
   }) => void;
   onToolOutputDenied?: (event: {
     toolCallId: string;
+    toolName?: string;
+    reason?: string;
+  }) => void;
+  onToolApprovalRequested?: (event: {
+    approvalId: string;
+    toolCallId: string;
+    toolName?: string;
+    reason?: string;
   }) => void;
 };
 

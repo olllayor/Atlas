@@ -6,6 +6,7 @@ import { ChatEngine } from './ai/core/ChatEngine';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
+import { ToolStateStore } from './ai/tools/ToolStateStore';
 import { AttachmentStore } from './attachments/AttachmentStore';
 import { GlmProvider } from './ai/providers/glm';
 import { OpenRouterProvider } from './ai/providers/openrouter';
@@ -84,6 +85,9 @@ app.whenReady().then(async () => {
 
   const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
+  const toolStateStore = new ToolStateStore(database.toolExecutions);
+  const interruptedMessageIds = toolStateStore.reconcileInterrupted();
+  database.conversations.markMessagesError(interruptedMessageIds, 'interrupted');
   const keychain = new KeychainStore();
   const openRouter = new OpenRouterProvider();
   const glm = new GlmProvider();
@@ -98,7 +102,15 @@ app.whenReady().then(async () => {
   }
 
   const modelRegistry = new ModelRegistry(database.models, database.settings, keychain, providers);
-  const chatEngine = new ChatEngine(database.conversations, database.models, keychain, providers, attachmentStore);
+  const chatEngine = new ChatEngine(
+    database.conversations,
+    database.models,
+    keychain,
+    providers,
+    attachmentStore,
+    undefined,
+    toolStateStore,
+  );
 
   registerSettingsIpc({
     settingsRepo: database.settings,

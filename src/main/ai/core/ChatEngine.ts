@@ -1,15 +1,23 @@
 import { randomUUID } from 'node:crypto';
 
+import type { ModelMessage } from 'ai';
 import type { BrowserWindow } from 'electron';
 
 import type {
   ChatMessagePart,
+  ToolApprovalResponseRequest,
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
   OpenVisualWindowRequest,
   StreamEvent
 } from '../../../shared/contracts';
+import {
+  applyStreamEventToParts,
+  finalizeMessageParts,
+  getReasoningContentFromParts,
+  getTextContentFromParts,
+} from '../../../shared/messageParts';
 import {
   MAX_ATTACHMENT_COUNT,
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
@@ -23,14 +31,24 @@ import type { ConversationsRepo } from '../../db/repositories/conversationsRepo'
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import { normalizeError } from './ErrorNormalizer';
+import { ToolApprovalController } from './ToolApprovalController';
 import type { ProviderRegistry } from './providerRegistry';
 import type { ExecuteTurnResult } from './ChatSessionRuntime';
 import { ChatSessionRuntime } from './ChatSessionRuntime';
+import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
+import type { ToolStateStore } from '../tools/ToolStateStore';
+import { shouldPersistResponseMessages } from './persistResponseMessages';
 
 type ActiveRequest = {
   controller: AbortController;
   window: BrowserWindow;
   onWindowClosed: () => void;
+  request: ChatStartRequest;
+  assistantMessageId: string;
+  parts: ChatMessagePart[];
+  responseMessages: ModelMessage[];
+  awaitingApproval: boolean;
+  tracker: ToolExecutionTracker | null;
 };
 
 type BufferedRequestEvents = {
@@ -39,6 +57,26 @@ type BufferedRequestEvents = {
 };
 
 const STREAM_BATCH_INTERVAL_MS = 33;
+
+function formatToolNameForDeniedCopy(toolName?: string) {
+  if (!toolName) {
+    return 'Tool';
+  }
+
+  if (/search/i.test(toolName)) {
+    return 'Search';
+  }
+
+  const normalized = toolName.replace(/[_-]+/g, ' ').trim();
+  if (!normalized) {
+    return 'Tool';
+  }
+
+  return normalized
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
 
 export class ChatEngine {
   private readonly activeRequests = new Map<string, ActiveRequest>();
@@ -55,7 +93,9 @@ export class ChatEngine {
       modelsRepo,
       keychain,
       providers
-    )
+    ),
+    private readonly toolStateStore?: ToolStateStore,
+    private readonly approvalController = new ToolApprovalController(),
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -88,14 +128,13 @@ export class ChatEngine {
     }
 
     const requestId = randomUUID();
+    const assistantMessageId = randomUUID();
     const controller = new AbortController();
     const onWindowClosed = () => {
       controller.abort();
-      this.clearBufferedEvents(requestId);
-      this.activeRequests.delete(requestId);
+      this.cleanupRequest(requestId);
     };
     window.once('closed', onWindowClosed);
-    this.activeRequests.set(requestId, { controller, window, onWindowClosed });
 
     const persistedParts = this.persistInputParts(request.conversationId, requestId, inputParts);
     this.conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
@@ -107,6 +146,37 @@ export class ChatEngine {
       status: 'complete',
       providerId: request.providerId,
       modelId: request.modelId
+    });
+    this.conversationsRepo.addMessage({
+      id: assistantMessageId,
+      conversationId: request.conversationId,
+      role: 'assistant',
+      content: '',
+      parts: [],
+      status: 'streaming',
+      providerId: request.providerId,
+      modelId: request.modelId,
+    });
+
+    this.activeRequests.set(requestId, {
+      controller,
+      window,
+      onWindowClosed,
+      request,
+      assistantMessageId,
+      parts: [],
+      responseMessages: [],
+      awaitingApproval: false,
+      tracker: this.toolStateStore
+        ? new ToolExecutionTracker(
+            {
+              conversationId: request.conversationId,
+              messageId: assistantMessageId,
+              requestId,
+            },
+            this.toolStateStore,
+          )
+        : null,
     });
 
     setImmediate(() => {
@@ -153,6 +223,84 @@ export class ChatEngine {
     active?.controller.abort();
   }
 
+  async respondToolApproval(request: ToolApprovalResponseRequest) {
+    const active = this.activeRequests.get(request.requestId);
+    if (!active) {
+      throw new Error('Approval target is no longer active.');
+    }
+
+    const resolved = this.approvalController.respond(request.requestId, {
+      approvalId: request.approvalId,
+      approved: request.approved,
+      reason: request.reason,
+    });
+
+    if (!resolved) {
+      throw new Error('Approval request was not found.');
+    }
+
+    this.sendEvent(active.window, {
+      type: 'tool-approval-responded',
+      requestId: request.requestId,
+      approvalId: request.approvalId,
+      toolCallId: resolved.toolCallId,
+      approved: request.approved,
+      reason: request.reason,
+    });
+
+    if (!request.approved) {
+      this.sendEvent(active.window, {
+        type: 'tool-output-denied',
+        requestId: request.requestId,
+        toolCallId: resolved.toolCallId,
+        toolName: resolved.toolName,
+        reason:
+          request.reason?.trim() ||
+          `${formatToolNameForDeniedCopy(resolved.toolName)} was not run because permission was denied.`,
+      });
+
+      const finalizedParts = finalizeMessageParts(active.parts);
+      this.conversationsRepo.updateMessage({
+        messageId: active.assistantMessageId,
+        content: getTextContentFromParts(finalizedParts),
+        reasoning: getReasoningContentFromParts(finalizedParts),
+        parts: finalizedParts,
+        responseMessages: shouldPersistResponseMessages(active.responseMessages, active.request.enableTools)
+          ? active.responseMessages
+          : null,
+        status: 'complete',
+        providerId: active.request.providerId,
+        modelId: active.request.modelId,
+      });
+
+      this.sendCompletionEvents(active.window, request.requestId, {
+        messageId: active.assistantMessageId,
+        status: 'completed',
+        parts: finalizedParts,
+        responseMessages: active.responseMessages,
+        pendingApprovals: [],
+      });
+      this.cleanupRequest(request.requestId, active);
+      return;
+    }
+
+    const history = this.conversationsRepo.getModelHistory(active.request.conversationId);
+    const approvalMessage: ModelMessage = {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-approval-response',
+          approvalId: request.approvalId,
+          approved: true,
+          ...(request.reason?.trim() ? { reason: request.reason.trim() } : {}),
+        },
+      ],
+    } as ModelMessage;
+
+    active.awaitingApproval = false;
+    void this.runRequest(request.requestId, active.request, [...history, ...active.responseMessages, approvalMessage]);
+  }
+
   async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
     const { BrowserWindow } = await import('electron');
     const srcdoc = buildVisualSrcDoc({
@@ -185,7 +333,7 @@ export class ChatEngine {
     window.show();
   }
 
-  private async runRequest(requestId: string, request: ChatStartRequest) {
+  private async runRequest(requestId: string, request: ChatStartRequest, messagesOverride?: ModelMessage[]) {
     const active = this.activeRequests.get(requestId);
     if (!active) {
       return;
@@ -196,14 +344,43 @@ export class ChatEngine {
         requestId,
         request,
         signal: active.controller.signal,
+        assistantMessageId: active.assistantMessageId,
+        messagesOverride,
+        initialParts: active.parts,
         emitEvent: (event) => {
           this.sendEvent(active.window, event);
-        }
+        },
       });
 
+      active.parts = result.parts;
+      if (result.responseMessages?.length) {
+        active.responseMessages.push(...result.responseMessages);
+      }
+
+      if (result.status === 'awaiting_approval') {
+        active.awaitingApproval = true;
+        this.approvalController.setPendingApprovals(requestId, result.pendingApprovals);
+        return;
+      }
+
+      if (shouldPersistResponseMessages(active.responseMessages, request.enableTools)) {
+        this.conversationsRepo.updateMessage({
+          messageId: active.assistantMessageId,
+          responseMessages: active.responseMessages,
+        });
+      }
+
       this.sendCompletionEvents(active.window, requestId, result);
+      this.cleanupRequest(requestId, active);
     } catch (error) {
       const normalized = normalizeError(error);
+      active.tracker?.markRequestError(normalized.code, normalized.message);
+      this.conversationsRepo.updateMessage({
+        messageId: active.assistantMessageId,
+        status: 'error',
+        errorCode: normalized.code,
+        parts: finalizeMessageParts(active.parts),
+      });
       this.sendEvent(active.window, {
         type: 'error',
         requestId,
@@ -211,11 +388,7 @@ export class ChatEngine {
         message: normalized.message,
         retryable: normalized.retryable
       });
-    } finally {
-      active.window.removeListener('closed', active.onWindowClosed);
-      this.flushBufferedEvents(requestId);
-      this.bufferedEvents.delete(requestId);
-      this.activeRequests.delete(requestId);
+      this.cleanupRequest(requestId, active);
     }
   }
 
@@ -236,7 +409,22 @@ export class ChatEngine {
     });
   }
 
+  private cleanupRequest(requestId: string, active?: ActiveRequest) {
+    const target = active ?? this.activeRequests.get(requestId);
+    if (!target) {
+      return;
+    }
+
+    target.window.removeListener('closed', target.onWindowClosed);
+    this.flushBufferedEvents(requestId);
+    this.bufferedEvents.delete(requestId);
+    this.activeRequests.delete(requestId);
+    this.approvalController.clearRequest(requestId);
+  }
+
   private sendEvent(window: BrowserWindow, event: StreamEvent) {
+    this.recordRequestEvent(event);
+
     if (event.type === 'chunk' || event.type === 'reasoning' || event.type === 'tool-input-delta') {
       this.queueBufferedEvent(event.requestId, event);
       return;
@@ -244,6 +432,31 @@ export class ChatEngine {
 
     this.flushBufferedEvents(event.requestId);
     this.sendToWindow(window, event);
+  }
+
+  private recordRequestEvent(event: StreamEvent) {
+    const active = this.activeRequests.get(event.requestId);
+    if (!active) {
+      return;
+    }
+
+    if (
+      event.type === 'chunk' ||
+      event.type === 'reasoning' ||
+      event.type === 'tool-input-start' ||
+      event.type === 'tool-input-delta' ||
+      event.type === 'tool-input-available' ||
+      event.type === 'tool-approval-requested' ||
+      event.type === 'tool-approval-responded' ||
+      event.type === 'tool-output-available' ||
+      event.type === 'tool-output-error' ||
+      event.type === 'tool-output-denied' ||
+      event.type === 'visual-start' ||
+      event.type === 'visual-complete'
+    ) {
+      active.parts = applyStreamEventToParts(active.parts, event);
+      active.tracker?.handleEvent(event);
+    }
   }
 
   private queueBufferedEvent(

@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain } from 'electron/main';
 
-import type { ChatStartRequest, OpenVisualWindowRequest } from '../../shared/contracts';
+import type { ChatStartRequest, OpenVisualWindowRequest, ToolApprovalResponseRequest } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { ChatEngine } from '../ai/core/ChatEngine';
 import { assertTrustedSender } from './security';
@@ -20,6 +20,11 @@ export function registerChatIpc(chatEngine: ChatEngine) {
   ipcMain.handle(IPC_CHANNELS.chatAbort, (event, requestId: string) => {
     assertTrustedSender(event);
     chatEngine.abort(requestId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.chatRespondToolApproval, async (event, request: ToolApprovalResponseRequest) => {
+    assertTrustedSender(event);
+    await chatEngine.respondToolApproval(request);
   });
 
   ipcMain.handle(IPC_CHANNELS.chatOpenVisualWindow, async (event, request: OpenVisualWindowRequest) => {

@@ -8,6 +8,7 @@ import test from 'node:test';
 import type { SqliteDatabase } from '../src/main/db/client.js';
 import { AttachmentStore } from '../src/main/attachments/AttachmentStore.js';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo.js';
+import { ToolExecutionsRepo } from '../src/main/db/repositories/toolExecutionsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
 import { decodeConversationPageCursor } from '../src/shared/conversationPaging.js';
 
@@ -192,4 +193,78 @@ test('ConversationsRepo rebuilds attachment-backed user history from stored file
   assert.equal(filePart?.filename, 'note.txt');
   assert.equal(filePart?.mediaType, 'text/plain');
   assert.equal(new TextDecoder().decode(filePart?.data), 'hello');
+});
+
+test('ConversationsRepo hydrates assistant tool parts from tool_executions and ignores empty streaming placeholders in preview', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-conversations-tools-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction:
+      <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) =>
+      (...args: TArgs) => {
+        raw.exec('BEGIN');
+        try {
+          const result = callback(...args);
+          raw.exec('COMMIT');
+          return result;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      },
+  } as unknown as SqliteDatabase;
+  applySchema(database);
+  const toolExecutions = new ToolExecutionsRepo(database);
+  const conversations = new ConversationsRepo(database, undefined, toolExecutions);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+  conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'user',
+    content: 'Find docs for this API',
+    status: 'complete',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+    createdAt: createTimestamp(0),
+  });
+  const assistantMessageId = conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: '',
+    status: 'streaming',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+    createdAt: createTimestamp(1),
+  });
+
+  toolExecutions.save({
+    id: 'tool-1',
+    conversationId: conversation.id,
+    messageId: assistantMessageId,
+    requestId: 'request-1',
+    toolName: 'web_search',
+    state: 'partial',
+    inputPreview: '{"query":"api docs"}',
+    partialOutputPreview: 'Found 3 matching results…',
+  });
+
+  const [summary] = conversations.list();
+  assert.equal(summary?.lastMessagePreview, 'Find docs for this API');
+
+  const page = conversations.getPage(conversation.id, { limit: 10 });
+  const assistant = page.messages.find((message) => message.id === assistantMessageId);
+  const toolPart = assistant?.parts.find((part) => part.type === 'tool');
+  assert.equal(toolPart?.type, 'tool');
+  if (toolPart?.type === 'tool') {
+    assert.equal(toolPart.state, 'output-partial');
+    assert.equal(toolPart.requestId, 'request-1');
+    assert.equal(toolPart.output, 'Found 3 matching results…');
+  }
 });

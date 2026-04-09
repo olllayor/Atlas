@@ -21,11 +21,22 @@ export type ChatPartState = 'streaming' | 'done';
 export type ChatToolState =
   | 'input-streaming'
   | 'input-available'
+  | 'output-partial'
   | 'approval-requested'
   | 'approval-responded'
   | 'output-available'
   | 'output-error'
   | 'output-denied';
+
+export type ToolExecutionState =
+  | 'queued'
+  | 'running'
+  | 'approval_requested'
+  | 'approved'
+  | 'denied'
+  | 'partial'
+  | 'completed'
+  | 'error';
 
 export type ChatTextPart = {
   id: string;
@@ -63,6 +74,7 @@ export type ChatToolPart = {
   id: string;
   type: 'tool';
   toolCallId: string;
+  requestId?: string;
   toolName: string;
   state: ChatToolState;
   rawInput?: string;
@@ -85,6 +97,27 @@ export type ChatVisualPart = {
 };
 
 export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart | ChatVisualPart;
+
+export type ToolExecutionRecord = {
+  id: string;
+  conversationId: string;
+  messageId: string;
+  requestId: string;
+  toolName: string;
+  inputPreview: string | null;
+  state: ToolExecutionState;
+  startedAt: string | null;
+  finishedAt: string | null;
+  partialOutputPreview: string | null;
+  finalOutputPreview: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  requiresApproval: boolean;
+  approvalId: string | null;
+  approvedAt: string | null;
+  deniedAt: string | null;
+  approvalReason: string | null;
+};
 
 export type ModelSummary = {
   id: string;
@@ -370,6 +403,26 @@ export type StreamToolOutputDeniedEvent = {
   type: 'tool-output-denied';
   requestId: string;
   toolCallId: string;
+  toolName?: string;
+  reason?: string;
+};
+
+export type StreamToolApprovalRequestedEvent = {
+  type: 'tool-approval-requested';
+  requestId: string;
+  approvalId: string;
+  toolCallId: string;
+  toolName?: string;
+  reason?: string;
+};
+
+export type StreamToolApprovalRespondedEvent = {
+  type: 'tool-approval-responded';
+  requestId: string;
+  approvalId: string;
+  toolCallId: string;
+  approved: boolean;
+  reason?: string;
 };
 
 export type StreamMetaEvent = {
@@ -419,11 +472,20 @@ export type StreamEvent =
   | StreamToolOutputAvailableEvent
   | StreamToolOutputErrorEvent
   | StreamToolOutputDeniedEvent
+  | StreamToolApprovalRequestedEvent
+  | StreamToolApprovalRespondedEvent
   | StreamVisualStartEvent
   | StreamVisualCompleteEvent
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamDoneEvent;
+
+export type ToolApprovalResponseRequest = {
+  requestId: string;
+  approvalId: string;
+  approved: boolean;
+  reason?: string;
+};
 
 export type UsageMetricState = 'available' | 'loading' | 'unavailable' | 'not_connected';
 
@@ -561,6 +623,7 @@ export type RendererApi = {
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
+    respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
     openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
   };

@@ -27,6 +27,7 @@ export type ToolPart = ToolUIPart<any> | DynamicToolUIPart;
 type ToolState =
   | "input-streaming"
   | "input-available"
+  | "output-partial"
   | "output-available"
   | "output-error"
   | "approval-requested"
@@ -151,6 +152,16 @@ export function getStatusBadge(state: ToolState) {
         >
           <CheckCircle2 className="size-3" />
           Completed
+        </Badge>
+      );
+    case "output-partial":
+      return (
+        <Badge
+          variant="outline"
+          className="gap-1.25 border-[var(--border-default)] bg-[var(--bg-subtle)] px-2.25 py-0.75 text-[9.5px] font-normal text-[var(--text-tertiary)]"
+        >
+          <Loader2 className="size-3 animate-spin" />
+          Partial
         </Badge>
       );
     case "output-error":

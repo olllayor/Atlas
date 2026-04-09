@@ -183,6 +183,7 @@ export default function App() {
     selectConversationByIndex,
     sendMessage,
     abortConversation,
+    respondToolApproval,
     deleteConversation,
     handleStreamEvent,
     openLanding,
@@ -240,6 +241,7 @@ export default function App() {
       selectConversationByIndex: state.selectConversationByIndex,
       sendMessage: state.sendMessage,
       abortConversation: state.abortConversation,
+      respondToolApproval: state.respondToolApproval,
       deleteConversation: state.deleteConversation,
       handleStreamEvent: state.handleStreamEvent,
       openLanding: state.openLanding,
@@ -752,6 +754,7 @@ export default function App() {
               onOpenSettings={() => runViewTransition(() => openSettings())}
               onSuggestionClick={(prompt) => setComposerValue(prompt)}
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
+              onRespondToolApproval={(request) => respondToolApproval(request)}
             />
 
             <Composer

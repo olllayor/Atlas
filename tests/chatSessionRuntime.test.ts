@@ -116,6 +116,7 @@ test('ChatSessionRuntime preserves current history and omits tools when disabled
 test('ChatSessionRuntime includes tool prompt and persists provider response messages when tools are enabled', async () => {
   let capturedSystem: string | undefined;
   let capturedTools: unknown;
+  let capturedToolChoice: unknown;
 
   const provider: ProviderAdapter = {
     providerId: 'openrouter',
@@ -126,6 +127,7 @@ test('ChatSessionRuntime includes tool prompt and persists provider response mes
     async streamChat(request) {
       capturedSystem = request.system;
       capturedTools = request.tools;
+      capturedToolChoice = request.toolChoice;
 
       return {
         content: 'Tools enabled answer',
@@ -147,7 +149,41 @@ test('ChatSessionRuntime includes tool prompt and persists provider response mes
   assert.ok(capturedSystem?.includes(TOOL_USE_SYSTEM_PROMPT));
   assert.ok(capturedSystem?.includes(VISUAL_PROMPT));
   assert.ok(capturedTools && typeof capturedTools === 'object');
+  assert.equal(capturedToolChoice, undefined);
   assert.deepEqual(addMessageCalls[0]?.responseMessages, [{ role: 'assistant', content: 'Tools enabled answer' }]);
+});
+
+test('ChatSessionRuntime forces bash tool choice for explicit shell execution requests', async () => {
+  let capturedToolChoice: unknown;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedToolChoice = request.toolChoice;
+      return {
+        content: '',
+        responseMessages: [],
+        latencyMs: 5,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+  await runtime.executeTurn({
+    requestId: 'request-shell-choice',
+    request: createRequest({
+      enableTools: true,
+      messages: [{ role: 'user', content: 'Use a shell command to show the git status for this repo.' }],
+    }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.deepEqual(capturedToolChoice, { type: 'tool', toolName: 'bash' });
 });
 
 test('ChatSessionRuntime normalizes streamed text, reasoning, tool, and visual events into final assistant parts', async () => {
@@ -254,6 +290,75 @@ test('ChatSessionRuntime falls back to message parts when provider returns conte
   const parts = addMessageCalls[0]?.parts as ChatMessagePart[] | undefined;
   assert.ok(parts?.some((part) => part.type === 'text'));
   assert.ok(parts?.some((part) => part.type === 'reasoning'));
+});
+
+test('ChatSessionRuntime falls back to responseMessages to recover missing approval-request stream chunks', async () => {
+  const emitted: StreamEvent[] = [];
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      return {
+        content: '',
+        responseMessages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'tool-1',
+                toolName: 'web_fetch',
+                input: { url: 'https://example.com', prompt: 'summarize' },
+              },
+              {
+                type: 'tool-approval-request',
+                approvalId: 'approval-1',
+                toolCallId: 'tool-1',
+              },
+            ],
+          } as ModelMessage,
+        ],
+        latencyMs: 10,
+      };
+    },
+  };
+
+  const { runtime, addMessageCalls } = createRuntime({ provider });
+
+  const result = await runtime.executeTurn({
+    requestId: 'request-approval-fallback',
+    request: createRequest({ enableTools: true }),
+    signal: new AbortController().signal,
+    emitEvent: (event) => emitted.push(event),
+  });
+
+  assert.equal(result.status, 'awaiting_approval');
+  assert.equal(result.pendingApprovals.length, 1);
+  assert.equal(result.pendingApprovals[0]?.approvalId, 'approval-1');
+  assert.equal(result.pendingApprovals[0]?.toolCallId, 'tool-1');
+  assert.equal(result.pendingApprovals[0]?.toolName, 'web_fetch');
+
+  const approvalEvents = emitted.filter((event) => event.type === 'tool-approval-requested');
+  assert.equal(approvalEvents.length, 1);
+  if (approvalEvents[0]?.type === 'tool-approval-requested') {
+    assert.equal(approvalEvents[0].approvalId, 'approval-1');
+    assert.equal(approvalEvents[0].toolCallId, 'tool-1');
+    assert.equal(approvalEvents[0].toolName, 'web_fetch');
+  }
+
+  assert.equal(addMessageCalls.length, 1);
+  assert.equal(addMessageCalls[0]?.status, 'streaming');
+  const parts = addMessageCalls[0]?.parts as ChatMessagePart[] | undefined;
+  const toolPart = parts?.find((part) => part.type === 'tool');
+  assert.equal(toolPart?.type, 'tool');
+  if (toolPart?.type === 'tool') {
+    assert.equal(toolPart.state, 'approval-requested');
+    assert.equal(toolPart.approval?.id, 'approval-1');
+  }
 });
 
 test('ChatSessionRuntime retries once for retryable pre-stream failures', async () => {

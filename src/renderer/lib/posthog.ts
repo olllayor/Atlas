@@ -26,12 +26,36 @@ export function initPostHog() {
   }
 }
 
-export async function syncTelemetryStatus() {
+export async function syncTelemetryStatus(): Promise<boolean> {
   try {
     telemetryEnabled = await window.atlasChat.posthog.isTelemetryEnabled();
+    applyTelemetryStateToClient();
+    return telemetryEnabled;
   } catch {
     // Default to enabled
     telemetryEnabled = true;
+    return telemetryEnabled;
+  }
+}
+
+export async function setTelemetryEnabled(enabled: boolean): Promise<boolean> {
+  try {
+    const next = await window.atlasChat.posthog.setTelemetryEnabled(enabled);
+    telemetryEnabled = next;
+    applyTelemetryStateToClient();
+    return next;
+  } catch (err) {
+    console.warn('[PostHog] Failed to update telemetry preference:', err);
+    return telemetryEnabled;
+  }
+}
+
+function applyTelemetryStateToClient() {
+  if (!initialized) return;
+  if (telemetryEnabled) {
+    posthog.opt_in_capturing();
+  } else {
+    posthog.opt_out_capturing();
   }
 }
 

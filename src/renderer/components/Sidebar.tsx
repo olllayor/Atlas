@@ -89,7 +89,7 @@ export function Sidebar({
     >
       {/* macOS title bar area - traffic lights + centered app name */}
       <div
-        className={`relative flex h-[52px] items-center ${
+        className={`relative flex h-titlebar-height items-center ${
           collapsed ? 'justify-start gap-2 px-2.5'         : 'border-b border-[var(--border-default)]'
         }`}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
@@ -195,11 +195,11 @@ export function Sidebar({
                       setPendingDeleteId(null);
                       onSelect(item.id);
                     }}
-                    className={`flex w-full items-center ${collapsed ? 'justify-center gap-0 px-0 py-2.5' : item.isRunning ? 'gap-2.5 px-3 py-2' : 'gap-0 px-3 py-1.5'} text-left transition ${
+                    className={`relative flex w-full items-center ${collapsed ? 'justify-center gap-0 px-0 py-2.5' : item.isRunning ? 'gap-2.5 px-3 py-2' : 'gap-0 px-3 py-1.5'} pr-8 text-left transition ${
                       isActive
                         ? 'border border-[var(--border-strong)] bg-[var(--bg-hover)] text-white'
                         : 'border border-transparent text-text-tertiary hover:bg-[var(--bg-hover)] hover:text-text-secondary'
-                    } ${!collapsed ? (isDeletePending ? 'pr-[92px]' : 'pr-8') : ''}`}
+                    }`}
                   >
                     <SidebarConversationRow
                       isActive={isActive}
@@ -213,6 +213,11 @@ export function Sidebar({
                       status={item.status}
                       hideTimestamp={isDeletePending}
                     />
+                    {isDeletePending ? (
+                      <span className="pointer-events-none absolute inset-y-0 right-7 flex items-center bg-gradient-to-l from-[var(--bg-hover)] via-[var(--bg-hover)] to-transparent pl-6 pr-2 text-[10px] font-normal uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
+                        Delete this chat?
+                      </span>
+                    ) : null}
                   </button>
 
                   {!collapsed ? (
@@ -268,23 +273,21 @@ export function Sidebar({
         <div className="flex-1" />
       )}
 
-      {!collapsed ? (
-        <div className="border-t border-[var(--border-default)] px-3 py-3">
-          <SidebarSettingsMenu
-            collapsed={collapsed}
-            settings={settings}
-            updateState={updateState}
-            isRefreshingModels={isRefreshingModels}
-            conversationStats={conversationStats}
-            loadedMessageCount={loadedMessageCount}
-            settingsShortcutLabel={settingsShortcutLabel}
-            onOpenSettings={onOpenSettings}
-            onOpenLanding={onOpenLanding}
-            onRefreshModels={onRefreshModels}
-            onCheckForUpdates={onCheckForUpdates}
-          />
-        </div>
-      ) : null}
+      <div className={`border-t border-[var(--border-default)] px-2 py-2 ${collapsed ? 'flex justify-center' : ''}`}>
+        <SidebarSettingsMenu
+          collapsed={collapsed}
+          settings={settings}
+          updateState={updateState}
+          isRefreshingModels={isRefreshingModels}
+          conversationStats={conversationStats}
+          loadedMessageCount={loadedMessageCount}
+          settingsShortcutLabel={settingsShortcutLabel}
+          onOpenSettings={onOpenSettings}
+          onOpenLanding={onOpenLanding}
+          onRefreshModels={onRefreshModels}
+          onCheckForUpdates={onCheckForUpdates}
+        />
+      </div>
     </aside>
   );
 }

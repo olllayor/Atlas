@@ -1,6 +1,8 @@
 import type { AppUpdateSnapshot } from '../../shared/contracts';
 import { DownloadIcon, LoaderCircleIcon, RotateCcwIcon } from 'lucide-react';
 
+import { SlotLabel } from './ui/slot-label';
+
 type AppUpdateButtonProps = {
   updateState: AppUpdateSnapshot;
   onClick: () => void;
@@ -11,7 +13,7 @@ function getButtonLabel(updateState: AppUpdateSnapshot) {
     case 'available':
       return 'Update';
     case 'downloading':
-      return 'Downloading...';
+      return 'Downloading…';
     case 'downloaded':
       return 'Restart';
     default:
@@ -51,12 +53,13 @@ export function AppUpdateButton({ updateState, onClick }: AppUpdateButtonProps) 
         type="button"
         onClick={onClick}
         disabled={disabled}
+        aria-label={label}
         className={`inline-flex h-8 items-center gap-1.5 border px-2.5 text-[11.5px] font-medium tracking-[0.01em] transition ${toneClass} ${
           disabled ? 'cursor-default' : ''
         }`}
       >
         {icon}
-        {label}
+        <SlotLabel text={label ?? ''} />
       </button>
     </div>
   );

@@ -171,6 +171,7 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
+        requestId: event.requestId,
         toolName: event.toolName,
         state: 'input-streaming',
         rawInput: part?.rawInput ?? '',
@@ -188,6 +189,7 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
+        requestId: event.requestId,
         toolName: part?.toolName ?? 'tool',
         state: 'input-streaming',
         rawInput: `${part?.rawInput ?? ''}${event.delta}`,
@@ -205,6 +207,7 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
+        requestId: event.requestId,
         toolName: event.toolName,
         state: 'input-available',
         rawInput: part?.rawInput ?? stringifyJson(event.input),
@@ -217,13 +220,57 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         preliminary: part?.preliminary,
         approval: part?.approval
       }));
+    case 'tool-approval-requested':
+      return upsertToolPart(parts, event.toolCallId, (part) => ({
+        id: part?.id ?? event.toolCallId,
+        type: 'tool',
+        toolCallId: event.toolCallId,
+        requestId: event.requestId,
+        toolName: part?.toolName ?? event.toolName ?? 'tool',
+        state: 'approval-requested',
+        rawInput: part?.rawInput,
+        input: part?.input,
+        output: part?.output,
+        errorText: undefined,
+        dynamic: part?.dynamic,
+        providerExecuted: part?.providerExecuted,
+        title: part?.title,
+        preliminary: part?.preliminary,
+        approval: {
+          id: event.approvalId,
+          reason: event.reason,
+        },
+      }));
+    case 'tool-approval-responded':
+      return upsertToolPart(parts, event.toolCallId, (part) => ({
+        id: part?.id ?? event.toolCallId,
+        type: 'tool',
+        toolCallId: event.toolCallId,
+        requestId: event.requestId,
+        toolName: part?.toolName ?? 'tool',
+        state: 'approval-responded',
+        rawInput: part?.rawInput,
+        input: part?.input,
+        output: part?.output,
+        errorText: undefined,
+        dynamic: part?.dynamic,
+        providerExecuted: part?.providerExecuted,
+        title: part?.title,
+        preliminary: part?.preliminary,
+        approval: {
+          id: event.approvalId,
+          approved: event.approved,
+          reason: event.reason,
+        },
+      }));
     case 'tool-output-available':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
+        requestId: event.requestId,
         toolName: event.toolName,
-        state: 'output-available',
+        state: event.preliminary ? 'output-partial' : 'output-available',
         rawInput: part?.rawInput ?? stringifyJson(event.input),
         input: event.input ?? part?.input,
         output: event.output,
@@ -239,6 +286,7 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
+        requestId: event.requestId,
         toolName: event.toolName,
         state: 'output-error',
         rawInput: part?.rawInput ?? stringifyJson(event.input),
@@ -256,18 +304,19 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         id: part?.id ?? event.toolCallId,
         type: 'tool',
         toolCallId: event.toolCallId,
-        toolName: part?.toolName ?? 'tool',
+        requestId: event.requestId,
+        toolName: event.toolName ?? part?.toolName ?? 'tool',
         state: 'output-denied',
         rawInput: part?.rawInput,
         input: part?.input,
-        output: undefined,
+        output: event.reason ?? part?.output,
         errorText: undefined,
         dynamic: part?.dynamic,
         providerExecuted: part?.providerExecuted,
         title: part?.title,
         preliminary: false,
         approval: {
-          id: event.toolCallId,
+          id: part?.approval?.id ?? event.toolCallId,
           approved: false
         }
       }));

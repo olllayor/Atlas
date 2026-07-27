@@ -84,6 +84,7 @@ export function createBuiltInTools(modelsRepo: ModelsRepo) {
     web_fetch: tool({
       description:
         'Fetch a URL and extract text content relevant to the provided prompt. Use this after web search when you need page content, not just links.',
+      needsApproval: true,
       inputSchema: z.object({
         url: z.string().trim().url().describe('Fully qualified URL to fetch'),
         prompt: z.string().trim().min(1).describe('What information should be extracted from the page')
@@ -94,6 +95,7 @@ export function createBuiltInTools(modelsRepo: ModelsRepo) {
     bash: tool({
       description:
         'Run a shell command in the local working directory. This integration currently enforces a read-only safety policy and should not be used for file edits.',
+      needsApproval: true,
       inputSchema: z.object({
         command: z.string().trim().min(1).describe('Shell command to execute'),
         timeout: z.number().int().min(100).max(120_000).optional().describe('Execution timeout in milliseconds'),

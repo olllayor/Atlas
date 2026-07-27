@@ -1,5 +1,5 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { streamText } from 'ai';
+import { stepCountIs, streamText } from 'ai';
 
 import { getGlmSeedModels } from '../../../shared/providerCatalogs';
 import {
@@ -12,6 +12,7 @@ const GLM_BASE_URL = 'https://api.z.ai/api/paas/v4';
 const GLM_FIRST_RESPONSE_TIMEOUT_MS = 300_000;
 const GLM_DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 const GLM_HARD_MAX_OUTPUT_TOKENS = 8192;
+const GLM_TOOL_STEP_LIMIT = 128;
 
 function buildHeaders(apiKey: string) {
   return {
@@ -88,12 +89,17 @@ export class GlmProvider implements ProviderAdapter {
     let outputTokens: number | undefined;
     let reasoningTokens: number | undefined;
     let streamError: unknown;
+    const toolNameByCallId = new Map<string, string>();
+    const hasTools = request.tools != null && Object.keys(request.tools).length > 0;
 
     try {
       const result = streamText({
         model: glm(request.modelId),
         system: request.system,
         messages: request.messages,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+        stopWhen: hasTools ? stepCountIs(GLM_TOOL_STEP_LIMIT) : undefined,
         providerOptions: {
           glm: {
             thinking: {
@@ -122,6 +128,117 @@ export class GlmProvider implements ProviderAdapter {
             request.onReasoningChunk?.({
               id: chunk.id,
               delta: chunk.text
+            });
+            return;
+          }
+
+          if (chunk.type === 'tool-input-start') {
+            request.onToolInputStart?.({
+              toolCallId: chunk.id,
+              toolName: chunk.toolName,
+              dynamic: chunk.dynamic,
+              providerExecuted: chunk.providerExecuted,
+              title: chunk.title,
+            });
+            return;
+          }
+
+          if (chunk.type === 'tool-input-delta') {
+            request.onToolInputDelta?.({
+              toolCallId: chunk.id,
+              delta: chunk.delta,
+            });
+            return;
+          }
+
+          if (chunk.type === 'tool-call') {
+            toolNameByCallId.set(chunk.toolCallId, chunk.toolName);
+            request.onToolInputAvailable?.({
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              input: chunk.input,
+              dynamic: chunk.dynamic,
+              providerExecuted: chunk.providerExecuted,
+              title: chunk.title,
+            });
+            return;
+          }
+
+          if (chunk.type === 'tool-result') {
+            const deniedOutput =
+              chunk.output != null &&
+              typeof chunk.output === 'object' &&
+              'type' in chunk.output &&
+              (chunk.output as { type?: unknown }).type === 'execution-denied';
+
+            if (deniedOutput) {
+              request.onToolOutputDenied?.({
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName ?? toolNameByCallId.get(chunk.toolCallId),
+                reason:
+                  typeof (chunk.output as { reason?: unknown }).reason === 'string'
+                    ? (chunk.output as { reason: string }).reason
+                    : undefined,
+              });
+              return;
+            }
+
+            request.onToolOutputAvailable?.({
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              input: chunk.input,
+              output: chunk.output,
+              dynamic: chunk.dynamic,
+              preliminary: chunk.preliminary,
+              providerExecuted: chunk.providerExecuted,
+              title: chunk.title,
+            });
+            return;
+          }
+
+          const approvalChunk = chunk as {
+            type?: unknown;
+            approvalId?: unknown;
+            toolCallId?: unknown;
+            toolCall?: { toolCallId?: unknown; toolName?: unknown };
+            reason?: unknown;
+          };
+
+          if (
+            approvalChunk.type === 'tool-approval-request' &&
+            typeof approvalChunk.approvalId === 'string'
+          ) {
+            const approvalToolCallId =
+              typeof approvalChunk.toolCallId === 'string'
+                ? approvalChunk.toolCallId
+                : typeof approvalChunk.toolCall?.toolCallId === 'string'
+                  ? approvalChunk.toolCall.toolCallId
+                  : null;
+
+            if (!approvalToolCallId) {
+              return;
+            }
+
+            request.onToolApprovalRequested?.({
+              approvalId: approvalChunk.approvalId,
+              toolCallId: approvalToolCallId,
+              toolName:
+                toolNameByCallId.get(approvalToolCallId) ??
+                (typeof approvalChunk.toolCall?.toolName === 'string' ? approvalChunk.toolCall.toolName : undefined),
+              reason: typeof approvalChunk.reason === 'string' ? approvalChunk.reason : undefined,
+            });
+          }
+        },
+        experimental_onToolCallFinish: ({ success, toolCall, error }) => {
+          if (!success) {
+            request.onToolOutputError?.({
+              toolCallId: toolCall.toolCallId,
+              toolName: toolCall.toolName,
+              input: toolCall.input,
+              errorText: error instanceof Error ? error.message : String(error),
+              dynamic: toolCall.dynamic,
+              providerExecuted: toolCall.providerExecuted,
+              title: toolCall.title,
             });
           }
         },

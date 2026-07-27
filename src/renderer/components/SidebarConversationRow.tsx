@@ -68,12 +68,10 @@ export function SidebarConversationRow({
           <div
             className={`truncate pt-0.5 ui-text-size-minus-4 leading-4 ${
               status === 'streaming'
-                ? 'animate-pulse text-[var(--text-faint)]'
+                ? 'animate-pulse text-[var(--text-tertiary)]'
                 : status === 'error'
                   ? 'text-[var(--text-tertiary)]'
-                  : status === 'aborted'
-                    ? 'text-[var(--text-faint)]'
-                    : 'text-[var(--text-faint)]'
+                  : 'text-[var(--text-faint)]'
             }`}
             title={secondaryLabel}
           >

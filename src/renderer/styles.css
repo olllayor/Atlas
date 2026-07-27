@@ -16,6 +16,7 @@
   --bg-panel: #0b0d12;
   --bg-surface: #101319;
   --bg-elevated: #151922;
+  --bg-overlay: #1a1e29;
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -83,6 +84,9 @@
   --sidebar-expanded: 284px; /* deprecated - use --sidebar-width */
   --sidebar-collapsed: 68px; /* deprecated - use --sidebar-width-collapsed */
 
+  /* Shared titlebar height used by both the sidebar header and the main panel. */
+  --titlebar-height: 3.25rem; /* 52px at default font size */
+
   /* Border radius */
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
@@ -122,9 +126,9 @@
   /* shadcn/ui theme variables */
   --color-background: var(--bg-base);
   --color-foreground: var(--text-primary);
-  --color-card: var(--bg-elevated);
+  --color-card: var(--bg-overlay);
   --color-card-foreground: var(--text-primary);
-  --color-popover: var(--bg-elevated);
+  --color-popover: var(--bg-overlay);
   --color-popover-foreground: var(--text-primary);
   --color-primary: var(--bg-button);
   --color-primary-foreground: var(--text-inverse);
@@ -145,6 +149,7 @@
   --color-bg-panel: var(--bg-panel);
   --color-bg-surface: var(--bg-surface);
   --color-bg-elevated: var(--bg-elevated);
+  --color-bg-overlay: var(--bg-overlay);
   --color-bg-code: var(--bg-code);
   --color-bg-subtle: var(--bg-subtle);
   --color-bg-ghost: var(--bg-ghost);
@@ -199,6 +204,7 @@
   --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
   --spacing-sidebar-expanded: var(--sidebar-expanded); /* deprecated */
   --spacing-sidebar-collapsed: var(--sidebar-collapsed); /* deprecated */
+  --spacing-titlebar-height: var(--titlebar-height);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
@@ -254,8 +260,20 @@ select {
    Focus rings
    ============================================ */
 
-*:focus-visible {
+/*
+ * Focus rings — only show on keyboard navigation.
+ * Mouse clicks should not leave a permanent ring.
+ * The default ring uses --border-strong which is
+ * visible on every theme.
+ */
+*:focus {
   outline: none;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+  border-radius: var(--radius-subtle);
 }
 
 /* ============================================

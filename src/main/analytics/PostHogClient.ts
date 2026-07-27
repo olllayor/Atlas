@@ -8,6 +8,7 @@ import { POSTHOG_CONFIG, isTelemetryEnabled } from '../../shared/posthog';
 
 const ANONYMOUS_ID_FILENAME = 'anonymous_id';
 const FIRST_LAUNCH_FLAG_FILENAME = 'first_launch_done';
+const TELEMETRY_PREFERENCE_FILENAME = 'telemetry_enabled';
 
 function resolveAnonymousIdPath() {
   return join(app.getPath('userData'), ANONYMOUS_ID_FILENAME);
@@ -15,6 +16,29 @@ function resolveAnonymousIdPath() {
 
 function resolveFirstLaunchFlagPath() {
   return join(app.getPath('userData'), FIRST_LAUNCH_FLAG_FILENAME);
+}
+
+function resolveTelemetryPreferencePath() {
+  return join(app.getPath('userData'), TELEMETRY_PREFERENCE_FILENAME);
+}
+
+function readTelemetryPreferenceFile(): boolean | null {
+  try {
+    const path = resolveTelemetryPreferencePath();
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, 'utf-8').trim().toLowerCase();
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function telemetryEnabledWithPreference(): boolean {
+  const fileValue = readTelemetryPreferenceFile();
+  if (fileValue !== null) return fileValue;
+  return isTelemetryEnabled();
 }
 
 function isFirstLaunch(): boolean {
@@ -89,7 +113,7 @@ export function getAnonymousId() {
 }
 
 export function capturePostHogEvent(event: string, properties?: Record<string, unknown>) {
-  if (!isTelemetryEnabled()) return;
+  if (!telemetryEnabledWithPreference()) return;
 
   const posthog = getPostHogClient();
   if (!posthog) return;
@@ -109,7 +133,7 @@ export function capturePostHogEvent(event: string, properties?: Record<string, u
 
 export function captureFirstLaunchIfNeeded() {
   if (!isFirstLaunch()) return;
-  if (!isTelemetryEnabled()) {
+  if (!telemetryEnabledWithPreference()) {
     markFirstLaunchComplete();
     return;
   }
@@ -118,6 +142,22 @@ export function captureFirstLaunchIfNeeded() {
   capturePostHogEvent('first launch', {
     install_date: new Date().toISOString(),
   });
+}
+
+export function getTelemetryEnabled(): boolean {
+  return telemetryEnabledWithPreference();
+}
+
+export function setTelemetryEnabled(enabled: boolean): boolean {
+  try {
+    const userDataDir = app.getPath('userData');
+    mkdirSync(userDataDir, { recursive: true });
+    writeFileSync(resolveTelemetryPreferencePath(), enabled ? 'true' : 'false', 'utf-8');
+    return enabled;
+  } catch (err) {
+    console.warn('[PostHog] Failed to persist telemetry preference:', err);
+    return isTelemetryEnabled();
+  }
 }
 
 export async function shutdownPostHog() {

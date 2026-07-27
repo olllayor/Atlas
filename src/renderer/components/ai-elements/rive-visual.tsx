@@ -155,7 +155,7 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
             {title?.trim() || 'Rive animation'}
           </div>
           <div className="text-[11px] text-text-muted">
-            {isReady ? 'Playing' : 'Loading...'}
+            {isReady ? 'Playing' : 'Loading…'}
           </div>
         </div>
         <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">

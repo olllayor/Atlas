@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useCallback } from 'react';
 import { Search, X, Trash2, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { SavedVisual } from '../../../shared/contracts';
@@ -57,24 +58,42 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
     return 'Chart';
   };
 
+  // Type badges use the theme's semantic surface + text tokens, so the
+  // gallery reads correctly on every theme (xai, default, cursor).
   const typeBadgeColor = (type: string) => {
     switch (type) {
       case 'Diagram':
-        return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+        return 'bg-bg-elevated text-text-secondary border-border-default';
       case 'Animation':
-        return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+        return 'bg-bg-elevated text-text-secondary border-border-default';
       default:
-        return 'bg-green-500/10 text-green-400 border-green-500/20';
+        return 'bg-bg-elevated text-text-secondary border-border-default';
     }
   };
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+      }
+    },
+    [onClose]
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, handleKeyDown]);
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="relative flex h-[80vh] w-[90vw] max-w-5xl flex-col rounded-2xl border border-border/50 bg-bg-surface shadow-2xl">
+      <div className="relative flex h-[80vh] w-[90vw] max-w-5xl flex-col rounded-2xl border border-border-default bg-bg-surface shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-border/50 px-6 py-4">
+        <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">Visual Gallery</h2>
             <p className="text-xs text-text-muted">Browse and reuse your saved visuals</p>
@@ -88,7 +107,7 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
         </div>
 
         {/* Search */}
-        <div className="border-b border-border/50 px-6 py-3">
+        <div className="border-b border-border-default px-6 py-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
             <input
@@ -96,7 +115,7 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
               placeholder="Search visuals..."
-              className="w-full rounded-lg border border-border/50 bg-bg-base py-2 pl-10 pr-4 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+              className="w-full rounded-lg border border-border-default bg-bg-base py-2 pl-10 pr-4 text-sm text-text-primary placeholder:text-text-muted focus:border-border-strong focus:outline-none"
             />
           </div>
         </div>
@@ -104,7 +123,7 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
         {/* Content */}
         <div className="flex flex-1 overflow-hidden">
           {/* Visual list */}
-          <div className="w-80 border-r border-border/50 overflow-y-auto">
+          <div className="w-80 border-r border-border-default overflow-y-auto">
             {isLoading ? (
               <div className="flex h-40 items-center justify-center">
                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-text-muted" />
@@ -171,14 +190,15 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
                     </p>
                   </div>
                   <button
+                    type="button"
                     onClick={() => onSelect(selectedVisual)}
-                    className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition hover:bg-accent/90"
+                    className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
                   >
                     <Eye className="h-4 w-4" />
                     Insert into conversation
                   </button>
                 </div>
-                <div className="rounded-xl border border-border/50 bg-bg-subtle/35 overflow-hidden">
+                <div className="overflow-hidden rounded-xl border border-border-default bg-bg-elevated">
                   <iframe
                     srcDoc={selectedVisual.content}
                     sandbox="allow-scripts"

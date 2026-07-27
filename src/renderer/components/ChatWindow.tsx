@@ -5,36 +5,33 @@ import {
   Bug,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   FileText,
+  ImageIcon,
   Lightbulb,
+  PaperclipIcon,
   PenTool,
   RefreshCw,
   Search,
   StopCircle,
+  Wrench,
   XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
-import appIcon from '../../../icon.png';
-import type { ChatMessage, ChatMessagePart, ConversationPage } from '../../shared/contracts';
+import type { ApprovalDecision, ChatMessage, ChatMessagePart, ConversationPage } from '../../shared/contracts';
 import { getMessageFileParts } from '../../shared/attachments';
 import { cn } from '../lib/utils';
 import type { DraftStateLike } from './types';
 import { Attachment, AttachmentInfo, AttachmentPreview, Attachments } from './ai-elements/attachments';
 import { ConversationEmptyState } from './ai-elements/conversation';
 import { MessageResponse } from './ai-elements/message';
-import {
-  Confirmation,
-  ConfirmationAccepted,
-  ConfirmationRejected,
-  ConfirmationRequest,
-  ConfirmationTitle,
-} from './ai-elements/confirmation';
 import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { ToolInput, ToolOutput } from './ai-elements/tool';
 import { VisualBlock } from './ai-elements/visual';
 import { useClipboard } from '../hooks/useClipboard';
 
@@ -47,11 +44,15 @@ type ChatWindowProps = {
   onOpenSettings: () => void;
   onSuggestionClick: (prompt: string) => void;
   onLoadOlderMessages: (conversationId: string) => Promise<void>;
+  onRespondToolApproval: (request: { requestId: string; approvalId: string; decision: ApprovalDecision; reason?: string }) => Promise<void>;
+  onRetryLastMessage?: () => void;
+  hasTools?: boolean;
+  hasVision?: boolean;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
 const HISTORY_TRAILING_OVERSCAN = 2;
-const HISTORY_GAP_PX = 26;
+const HISTORY_GAP_PX = 22;
 
 const suggestions = [
   { icon: Lightbulb, text: 'Explain a concept', prompt: 'Explain quantum computing in simple terms' },
@@ -61,6 +62,63 @@ const suggestions = [
   { icon: PenTool, text: 'Help me write', prompt: 'Help me write an email that ' },
   { icon: Search, text: 'Research something', prompt: 'Tell me about ' },
 ];
+
+function getToolStatusLabel(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
+  switch (state) {
+    case 'approval-requested':
+      return 'Needs approval';
+    case 'approval-responded':
+      return 'Approved';
+    case 'output-available':
+      return 'Done';
+    case 'output-error':
+      return 'Error';
+    case 'output-denied':
+      return 'Denied';
+    case 'output-partial':
+      return 'Partial';
+    case 'input-streaming':
+      return 'Queued';
+    default:
+      return 'Running';
+  }
+}
+
+function getToolStatusClasses(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
+  switch (state) {
+    case 'approval-requested':
+      return {
+        dot: 'bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.12)]',
+        badge: 'border-amber-400/25 bg-amber-400/10 text-amber-100',
+        summary: 'text-amber-100/80',
+      };
+    case 'output-available':
+    case 'approval-responded':
+      return {
+        dot: 'bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.12)]',
+        badge: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100',
+        summary: 'text-text-faint',
+      };
+    case 'output-error':
+      return {
+        dot: 'bg-rose-400 shadow-[0_0_0_3px_rgba(251,113,133,0.14)]',
+        badge: 'border-rose-400/20 bg-rose-400/10 text-rose-100',
+        summary: 'text-rose-100/80',
+      };
+    case 'output-denied':
+      return {
+        dot: 'bg-zinc-400 shadow-[0_0_0_3px_rgba(161,161,170,0.12)]',
+        badge: 'border-zinc-400/20 bg-zinc-400/10 text-zinc-200',
+        summary: 'text-zinc-300/80',
+      };
+    default:
+      return {
+        dot: 'bg-sky-400 shadow-[0_0_0_3px_rgba(56,189,248,0.12)]',
+        badge: 'border-sky-400/20 bg-sky-400/10 text-sky-100',
+        summary: 'text-text-faint',
+      };
+  }
+}
 
 function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; modelLabel?: string | null }) {
   if (!latencyMs && !modelLabel) {
@@ -114,66 +172,198 @@ function ReasoningRow({
   );
 }
 
-function ToolRow({ part }: { part: Extract<ChatMessagePart, { type: 'tool' }> }) {
-  const isCompletedState =
-    part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied';
+function ToolRow({
+  part,
+  onRespondToolApproval,
+}: {
+  part: Extract<ChatMessagePart, { type: 'tool' }>;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+}) {
   const hasInput = part.rawInput != null || part.input != null;
   const hasOutput = part.output != null || Boolean(part.errorText) || part.state === 'output-denied';
   const hasApproval = Boolean(part.approval);
+  const hasDetails = hasInput || hasOutput;
   const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
-  const [isOpen, setIsOpen] = useState(!isCompletedState);
+  const [isOpen, setIsOpen] = useState(false);
+  const [submittingApproval, setSubmittingApproval] = useState<null | ApprovalDecision>(null);
+  const approvalRequestId = part.requestId;
+  const approvalId = part.approval?.id;
+  const canRespondApproval =
+    part.state === 'approval-requested' && Boolean(approvalRequestId) && Boolean(approvalId);
+  const fallbackDeniedMessage = /search/i.test(resolvedName)
+    ? 'Search was not run because permission was denied.'
+    : `${resolvedName} was not run because permission was denied.`;
+  const deniedMessage =
+    typeof part.output === 'string' && part.output.trim() ? part.output : fallbackDeniedMessage;
+  const statusLabel = getToolStatusLabel(part.state);
+  const statusClasses = getToolStatusClasses(part.state);
+  const fetchMode =
+    part.toolName === 'web_fetch' && typeof part.output === 'object' && part.output !== null
+      ? (part.output as { fetchMode?: string }).fetchMode
+      : undefined;
+  const headerSummary = useMemo(() => {
+    const approvalReason = part.approval?.reason?.trim();
+    if (part.state === 'approval-requested') {
+      return approvalReason || 'Waiting for approval';
+    }
+
+    if (part.state === 'output-error') {
+      return part.errorText?.trim() || 'Execution failed';
+    }
+
+    if (part.state === 'output-denied') {
+      return deniedMessage;
+    }
+
+    if (typeof part.output === 'string' && part.output.trim()) {
+      return part.output.trim().replace(/\s+/g, ' ');
+    }
+
+    if (typeof part.rawInput === 'string' && part.rawInput.trim()) {
+      return part.rawInput.trim().replace(/\s+/g, ' ');
+    }
+
+    return hasOutput ? 'Result available' : 'Running';
+  }, [deniedMessage, hasOutput, part.approval?.reason, part.errorText, part.output, part.rawInput, part.state]);
 
   useEffect(() => {
-    // Keep details open while the tool is in progress, collapse when finalized.
-    setIsOpen(!isCompletedState);
-  }, [isCompletedState]);
+    const shouldForceOpen =
+      part.state === 'approval-requested' || part.state === 'output-error' || part.state === 'output-denied';
+    setIsOpen(shouldForceOpen);
+  }, [part.state]);
+
+  const sendApproval = useCallback(
+    async (decision: ApprovalDecision) => {
+      if (!canRespondApproval || !approvalRequestId || !approvalId || submittingApproval) {
+        return;
+      }
+
+      setSubmittingApproval(decision);
+      try {
+        await onRespondToolApproval({
+          requestId: approvalRequestId,
+          approvalId,
+          decision,
+        });
+      } finally {
+        setSubmittingApproval(null);
+      }
+    },
+    [approvalId, approvalRequestId, canRespondApproval, onRespondToolApproval, submittingApproval]
+  );
 
   return (
-    <Tool className="mb-2.5" onOpenChange={setIsOpen} open={isOpen}>
-      <ToolHeader
-        type={part.dynamic ? 'dynamic-tool' : `tool-${part.toolName}`}
-        toolName={part.toolName}
-        title={part.title}
-        state={part.state}
-      />
-      {hasInput || hasOutput || hasApproval ? (
-        <ToolContent>
-          <Confirmation
-            approval={part.approval}
-            state={part.state}
-            className={hasInput || hasOutput ? 'mb-3' : undefined}
-          >
-            <ConfirmationTitle>Tool approval</ConfirmationTitle>
-            <ConfirmationRequest>
-              <div>
-                Approve running <span className="font-medium text-[var(--text-secondary)]">{resolvedName}</span>.
+    <div className="relative mb-1.5 pl-5">
+      <span className="absolute left-[7px] top-0 bottom-[-10px] w-px bg-border-subtle/80" aria-hidden />
+      <span className={cn('absolute left-[4px] top-[11px] size-[7px] rounded-full', statusClasses.dot)} aria-hidden />
+
+      <div className="rounded-[10px] px-2.5 py-1.5 transition hover:bg-bg-hover/60">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[12.5px] font-medium tracking-[-0.01em] text-text-primary">
+                {resolvedName}
+              </span>
+              <span className={cn('min-w-0 truncate text-[11px] leading-5', statusClasses.summary)}>
+                {headerSummary}
+              </span>
+            </div>
+
+            {part.state === 'approval-requested' ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10.5px] text-text-faint">
+                  {part.approval?.reason?.trim() || 'Permission required before execution.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('accept')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-emerald-400/25 bg-emerald-400/10 px-2 text-[10.5px] text-emerald-100 transition hover:bg-emerald-400/15 disabled:opacity-60"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('accept_for_session')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-border-default bg-bg-subtle px-2 text-[10.5px] text-text-secondary transition hover:bg-bg-hover disabled:opacity-60"
+                >
+                  Session
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('decline')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-rose-400/20 bg-rose-400/10 px-2 text-[10.5px] text-rose-100 transition hover:bg-rose-400/15 disabled:opacity-60"
+                >
+                  Deny
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendApproval('cancel')}
+                  disabled={!canRespondApproval || submittingApproval != null}
+                  className="inline-flex h-6 items-center border border-border-default bg-transparent px-2 text-[10.5px] text-text-faint transition hover:bg-bg-hover disabled:opacity-60"
+                >
+                  Cancel
+                </button>
               </div>
-              {part.input ? (
-                <pre className="app-code-compact mt-2 overflow-x-auto rounded-[12px] border border-[var(--border-subtle)] bg-black/20 px-3 py-2 text-[var(--text-muted)]">
-                  {JSON.stringify(part.input, null, 2)}
-                </pre>
-              ) : null}
-            </ConfirmationRequest>
-            <ConfirmationAccepted>
-              <CheckCircle2 className="size-4" />
-              <span>Tool execution approved</span>
-            </ConfirmationAccepted>
-            <ConfirmationRejected>
-              <XCircle className="size-4" />
-              <span>Tool execution rejected</span>
-            </ConfirmationRejected>
-          </Confirmation>
-          {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
-          {hasOutput ? (
-            <ToolOutput
-              errorText={part.state === 'output-denied' ? 'Tool execution was denied.' : part.errorText}
-              output={part.output}
-              className={hasInput ? 'mt-3' : undefined}
-            />
-          ) : null}
-        </ToolContent>
-      ) : null}
-    </Tool>
+            ) : null}
+
+            {part.state === 'approval-responded' && part.approval?.approved ? (
+              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-emerald-100/80">
+                <CheckCircle2 className="size-3" />
+                <span>Approval granted</span>
+              </div>
+            ) : null}
+
+            {(part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) ? (
+              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-zinc-300/80">
+                <XCircle className="size-3" />
+                <span>{deniedMessage}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {fetchMode === 'jina-reader' ? (
+              <span
+                title="The page was blocked on direct fetch, so Atlas proxied the request through r.jina.ai. The URL is shared with the reader service."
+                className="inline-flex h-5 items-center border border-border-default bg-bg-subtle px-1.5 text-[9px] font-normal uppercase tracking-[0.12em] text-text-tertiary"
+              >
+                Via Jina
+              </span>
+            ) : null}
+            <span className={cn('inline-flex h-5 items-center border px-1.5 text-[9px] uppercase tracking-[0.12em]', statusClasses.badge)}>
+              {statusLabel}
+            </span>
+            {hasDetails ? (
+              <button
+                type="button"
+                onClick={() => setIsOpen((current) => !current)}
+                className="inline-flex size-5 items-center justify-center text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+                title={isOpen ? 'Hide details' : 'Show details'}
+                aria-label={isOpen ? 'Hide reasoning details' : 'Show reasoning details'}
+                aria-expanded={isOpen}
+              >
+                {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {isOpen && hasDetails ? (
+          <div className="mt-2 space-y-2 border-l border-border-subtle/70 pl-3">
+            {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
+            {hasOutput ? (
+              <ToolOutput
+                errorText={part.state === 'output-denied' ? deniedMessage : part.errorText}
+                output={part.output}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -244,12 +434,14 @@ function AssistantParts({
   latencyMs,
   parts,
   deferRichContent = false,
+  onRespondToolApproval,
 }: {
   content: string;
   isStreaming?: boolean;
   latencyMs?: number | null;
   parts: ChatMessagePart[];
   deferRichContent?: boolean;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   if (deferRichContent) {
     return <AssistantTextFallback content={content} />;
@@ -257,7 +449,13 @@ function AssistantParts({
 
   if (parts.length === 0) {
     return isStreaming ? (
-      <div className="text-[13.5px] font-medium text-text-muted">Thinking...</div>
+      <div className="inline-flex items-center gap-2 text-[13.5px] font-medium text-text-muted">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-text-muted opacity-60" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-text-secondary" />
+        </span>
+        Thinking…
+      </div>
     ) : (
       <AssistantTextFallback content={content} />
     );
@@ -273,7 +471,7 @@ function AssistantParts({
         }
 
         if (part.type === 'tool') {
-          return <ToolRow key={part.toolCallId} part={part} />;
+          return <ToolRow key={part.toolCallId} part={part} onRespondToolApproval={onRespondToolApproval} />;
         }
 
         if (part.type === 'file') {
@@ -316,10 +514,12 @@ function MessageRow({
   message,
   deferRichContent = false,
   onRegenerate,
+  onRespondToolApproval,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
   onRegenerate?: () => void;
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   const { copied, copy } = useClipboard();
   const isAssistant = message.role === 'assistant';
@@ -337,7 +537,7 @@ function MessageRow({
         <div className="max-w-[min(56%,560px)]">
           <AttachmentRow attachments={fileParts} align="end" />
           {userText ? (
-            <div className="border border-[var(--border-default)] bg-transparent px-4 py-2.5">
+            <div className="border border-[var(--border-default)] bg-[var(--bg-subtle)] px-4 py-2.5">
               <p className="whitespace-pre-wrap text-[13.5px] leading-[1.65rem] text-text-primary">{userText}</p>
             </div>
           ) : null}
@@ -348,6 +548,7 @@ function MessageRow({
                 onClick={() => void copy(userText)}
                 className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
                 title={copied ? 'Copied!' : 'Copy'}
+                aria-label={copied ? 'Copied to clipboard' : 'Copy message'}
               >
                 {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
               </button>
@@ -366,6 +567,7 @@ function MessageRow({
           latencyMs={message.status === 'complete' ? message.latencyMs : null}
           parts={message.parts}
           deferRichContent={deferRichContent}
+          onRespondToolApproval={onRespondToolApproval}
         />
 
         <MessageMeta
@@ -378,6 +580,7 @@ function MessageRow({
             onClick={() => void copy(message.content)}
             className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
             title={copied ? 'Copied!' : 'Copy'}
+            aria-label={copied ? 'Copied to clipboard' : 'Copy assistant response'}
           >
             {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
@@ -386,7 +589,8 @@ function MessageRow({
               type="button"
               onClick={onRegenerate}
               className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
-              title="Regenerate"
+              title="Regenerate response"
+              aria-label="Regenerate response"
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
@@ -402,11 +606,15 @@ function StreamingRow({
   modelLabel,
   errorMessage,
   status,
+  onRespondToolApproval,
+  onRetry,
 }: {
   parts: ChatMessagePart[];
   modelLabel?: string;
   errorMessage?: string;
   status: 'streaming' | 'error' | 'aborted';
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+  onRetry?: () => void;
 }) {
   const isError = status === 'error';
   const isAborted = status === 'aborted';
@@ -423,11 +631,28 @@ function StreamingRow({
                 <p className="text-sm font-normal text-error-text">Something went wrong</p>
                 <p className="mt-1 text-xs text-error-text/80">{errorMessage}</p>
               </div>
+              {onRetry ? (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="inline-flex h-7 shrink-0 items-center gap-1.5 border border-error-border bg-transparent px-2.5 text-[11.5px] font-normal text-error-text transition hover:border-error-text hover:bg-error-bg hover:text-white"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Retry</span>
+                </button>
+              ) : null}
             </div>
           </div>
         ) : isAborted ? (
           <>
-            {hasParts ? <AssistantParts content="" latencyMs={null} parts={parts} /> : null}
+            {hasParts ? (
+              <AssistantParts
+                content=""
+                latencyMs={null}
+                parts={parts}
+                onRespondToolApproval={onRespondToolApproval}
+              />
+            ) : null}
             <div className={cn('border border-border-subtle bg-bg-subtle p-4', hasParts ? 'mt-3' : undefined)}>
               <div className="flex items-start gap-3">
                 <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
@@ -436,10 +661,10 @@ function StreamingRow({
             </div>
           </>
         ) : (
-          <AssistantParts content="" isStreaming latencyMs={null} parts={parts} />
+          <AssistantParts content="" isStreaming latencyMs={null} parts={parts} onRespondToolApproval={onRespondToolApproval} />
         )}
 
-        {modelLabel ? <MessageMeta latencyMs={null} /> : null}
+        {modelLabel ? <MessageMeta latencyMs={null} modelLabel={modelLabel} /> : null}
       </div>
     </div>
   );
@@ -473,32 +698,63 @@ function estimateHistoryRowHeight(message: ChatMessage) {
     560,
     156 +
       Math.ceil(message.content.length / 100) * 24 +
-      toolCount * 84 +
+      toolCount * 52 +
       reasoningCount * 56 +
       visualCount * 320 +
       fileCount * 28,
   );
 }
 
-function SuggestionsState({ onSuggestionClick }: { onSuggestionClick: (prompt: string) => void }) {
+function SuggestionsState({
+  onSuggestionClick,
+  hasTools,
+  hasVision,
+}: {
+  onSuggestionClick: (prompt: string) => void;
+  hasTools: boolean;
+  hasVision: boolean;
+}) {
+  const affordances: Array<{ icon: React.ComponentType<{ className?: string }>; label: string; hint: string }> = [
+    { icon: PaperclipIcon, label: 'Drop files', hint: 'PDF, image, or text — the model sees attachments' },
+    { icon: ImageIcon, label: 'Paste images', hint: hasVision ? 'Your current model supports vision' : 'Switch to a vision-capable model to read images' },
+  ];
+  if (hasTools) {
+    affordances.push({ icon: Wrench, label: 'Tools enabled', hint: 'Web search, file read, bash, grep, glob' });
+  }
+
   return (
     <ConversationEmptyState>
       <div className="flex w-full max-w-xl flex-col items-center text-center">
-        <h2 className="xai-mono text-[26px] font-light tracking-[-0.025em] text-text-primary">What can I help with?</h2>
-        <p className="mt-2 max-w-md text-[14px] leading-6 text-text-tertiary">
+        <h2 className="text-[28px] font-light leading-[1.15] tracking-[-0.02em] text-text-primary">
+          What can I help with?
+        </h2>
+        <p className="mt-3 max-w-md text-[14px] leading-6 text-text-tertiary">
           Start with a prompt below or type your own message.
         </p>
 
-        <div className="mt-8 grid w-full max-w-lg grid-cols-2 gap-3">
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+          {affordances.map(({ icon: Icon, label, hint }) => (
+            <span
+              key={label}
+              title={hint}
+              className="inline-flex items-center gap-1.5 border border-[var(--border-subtle)] bg-bg-elevated px-2.5 py-1 text-[11px] font-normal text-[var(--text-muted)]"
+            >
+              <Icon className="h-3 w-3" aria-hidden="true" />
+              <span>{label}</span>
+            </span>
+          ))}
+        </div>
+
+        <div className="mt-6 grid w-full max-w-lg grid-cols-2 gap-3">
           {suggestions.map(({ icon: Icon, text, prompt }) => (
             <button
               key={text}
               type="button"
               onClick={() => onSuggestionClick(prompt)}
-              className="flex items-center gap-3 border border-border-medium bg-bg-hover px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary"
+              className="group flex items-center gap-3 border border-border-medium bg-bg-elevated px-4 py-3 text-left text-sm text-text-tertiary transition hover:border-[var(--border-strong)] hover:bg-bg-active hover:text-text-primary"
             >
-              <Icon className="h-4 w-4 shrink-0 text-text-muted" />
-              <span className="truncate">{text}</span>
+              <Icon className="h-4 w-4 shrink-0 text-text-muted transition group-hover:text-text-secondary" />
+              <span className="truncate font-normal">{text}</span>
             </button>
           ))}
         </div>
@@ -516,10 +772,14 @@ export function ChatWindow({
   onOpenSettings,
   onSuggestionClick,
   onLoadOlderMessages,
+  onRespondToolApproval,
+  onRetryLastMessage,
+  hasTools = false,
+  hasVision = false,
 }: ChatWindowProps) {
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useStickToBottom({
     initial: 'instant',
-    resize: 'smooth',
+    resize: draft?.status === 'streaming' ? 'instant' : 'smooth',
   });
   const pendingPrependRef = useRef<{
     conversationId: string;
@@ -527,7 +787,7 @@ export function ChatWindow({
     previousScrollHeight: number;
   } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
-  const conversationId = detail?.conversation.id ?? null;
+  const conversationId = detail?.conversation?.id ?? null;
   const messages = detail?.messages ?? [];
   const hasOlder = detail?.hasOlder ?? false;
   const nextCursor = detail?.nextCursor ?? null;
@@ -580,6 +840,7 @@ export function ChatWindow({
       };
     }
 
+    if (!detail?.conversation) return;
     await onLoadOlderMessages(detail.conversation.id);
   }, [detail, hasOlder, isLoadingOlder, messages.length, onLoadOlderMessages, scrollRef]);
 
@@ -588,7 +849,7 @@ export function ChatWindow({
   }, [conversationId]);
 
   useLayoutEffect(() => {
-    if (!detail) {
+    if (!detail?.conversation) {
       return;
     }
 
@@ -646,10 +907,12 @@ export function ChatWindow({
           <ConversationEmptyState
             icon={<RefreshCw className="h-10 w-10 animate-spin text-text-muted" />}
             title="Loading conversation"
+          role="status"
+          aria-live="polite"
             description="Fetching the latest messages for this session."
           />
         ) : (
-          <SuggestionsState onSuggestionClick={onSuggestionClick} />
+          <SuggestionsState onSuggestionClick={onSuggestionClick} hasTools={hasTools} hasVision={hasVision} />
         )}
       </div>
     );
@@ -702,7 +965,7 @@ export function ChatWindow({
 
           {showSuggestions ? (
             <div className="flex flex-1 items-center justify-center">
-              <SuggestionsState onSuggestionClick={onSuggestionClick} />
+              <SuggestionsState onSuggestionClick={onSuggestionClick} hasTools={hasTools} hasVision={hasVision} />
             </div>
           ) : shouldRenderVirtualizedHistory ? (
             <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
@@ -724,15 +987,19 @@ export function ChatWindow({
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                   >
-                    <MessageRow message={message} deferRichContent={isOutsideVisibleRange} />
+                    <MessageRow
+                      message={message}
+                      deferRichContent={isOutsideVisibleRange}
+                      onRespondToolApproval={onRespondToolApproval}
+                    />
                   </div>
                 );
               })}
             </div>
           ) : (
-            <div className="space-y-[26px]">
+            <div className="space-y-[22px]">
               {messages.map((message) => (
-                <MessageRow key={message.id} message={message} />
+                <MessageRow key={message.id} message={message} onRespondToolApproval={onRespondToolApproval} />
               ))}
             </div>
           )}
@@ -744,6 +1011,8 @@ export function ChatWindow({
                 modelLabel={draft.modelId}
                 errorMessage={draft.errorMessage}
                 status={draft.status}
+                onRespondToolApproval={onRespondToolApproval}
+                onRetry={onRetryLastMessage}
               />
             </div>
           ) : null}
@@ -754,7 +1023,7 @@ export function ChatWindow({
         <button
           type="button"
           onClick={() => void scrollToBottom({ animation: 'smooth' })}
-          className="absolute bottom-4 left-1/2 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-border-medium bg-bg-elevated px-4 text-sm text-text-primary shadow-elevated transition hover:bg-bg-active"
+          className="absolute bottom-4 left-1/2 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-border-medium bg-bg-overlay px-4 text-sm text-text-primary shadow-elevated transition hover:bg-bg-active"
         >
           <ArrowDown className="h-4 w-4" />
           <span>Jump to latest</span>

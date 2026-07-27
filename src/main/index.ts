@@ -6,6 +6,7 @@ import { ChatEngine } from './ai/core/ChatEngine';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
+import { ToolStateStore } from './ai/tools/ToolStateStore';
 import { AttachmentStore } from './attachments/AttachmentStore';
 import { GlmProvider } from './ai/providers/glm';
 import { OpenRouterProvider } from './ai/providers/openrouter';
@@ -21,9 +22,9 @@ import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
 import { KeychainStore } from './secrets/keychain';
 import { UpdateService } from './updates/UpdateService';
-import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, shutdownPostHog } from './analytics/PostHogClient';
+import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
 import { IPC_CHANNELS } from '../shared/ipc';
-import { POSTHOG_EVENTS, isTelemetryEnabled } from '../shared/posthog';
+import { POSTHOG_EVENTS } from '../shared/posthog';
 
 const APP_NAME = 'Atlas';
 const DATABASE_FILENAME = 'atlas-chat.db';
@@ -84,6 +85,14 @@ app.whenReady().then(async () => {
 
   const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
+  const toolStateStore = new ToolStateStore(database.toolExecutions);
+  const interruptedMessageIds = toolStateStore.reconcileInterrupted();
+  const interruptedRuntimeSessions = database.runtimeState.reconcileInterruptedSessions();
+  database.conversations.markMessagesError(interruptedMessageIds, 'interrupted');
+  database.conversations.markMessagesError(
+    interruptedRuntimeSessions.map((session) => session.assistantMessageId),
+    'interrupted',
+  );
   const keychain = new KeychainStore();
   const openRouter = new OpenRouterProvider();
   const glm = new GlmProvider();
@@ -98,7 +107,16 @@ app.whenReady().then(async () => {
   }
 
   const modelRegistry = new ModelRegistry(database.models, database.settings, keychain, providers);
-  const chatEngine = new ChatEngine(database.conversations, database.models, keychain, providers, attachmentStore);
+  const chatEngine = new ChatEngine(
+    database.conversations,
+    database.models,
+    keychain,
+    providers,
+    attachmentStore,
+    undefined,
+    database.runtimeState,
+    toolStateStore,
+  );
 
   registerSettingsIpc({
     settingsRepo: database.settings,
@@ -121,7 +139,11 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(IPC_CHANNELS.posthogGetTelemetryEnabled, () => {
-    return isTelemetryEnabled();
+    return getTelemetryEnabled();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.posthogSetTelemetryEnabled, (_event: Electron.IpcMainInvokeEvent, enabled: boolean) => {
+    return setTelemetryEnabled(enabled);
   });
 
   const window = createWindow();

@@ -3,6 +3,7 @@ import {
   ChevronRightIcon,
   DesktopIcon,
   GearIcon,
+  LockClosedIcon,
   MoonIcon,
   ReloadIcon,
   SunIcon,
@@ -45,6 +46,7 @@ import {
 import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
+import { SlotLabel } from './ui/slot-label';
 import type { ShortcutPlatform } from '../lib/keybindings';
 import {
   createShortcutFromKeyboardEvent,
@@ -81,6 +83,8 @@ type SettingsWorkspaceProps = {
   onToggleFreeModels: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
+  telemetryEnabled: boolean;
+  onTelemetryChange: (enabled: boolean) => void;
 };
 
 type NavItem = {
@@ -98,6 +102,7 @@ const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: GearIcon },
+  { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
   { key: 'usage', label: 'Usage', icon: TimerIcon },
 ];
 
@@ -139,6 +144,8 @@ export function SettingsWorkspace({
   onToggleFreeModels,
   onUpdateAction,
   onRefreshModels,
+  telemetryEnabled,
+  onTelemetryChange,
 }: SettingsWorkspaceProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
@@ -258,6 +265,13 @@ export function SettingsWorkspace({
               ) : null}
 
               {activeSection === 'usage' ? <UsagePage usageSummary={usageSummary} /> : null}
+
+              {activeSection === 'privacy' ? (
+                <PrivacyPage
+                  telemetryEnabled={telemetryEnabled}
+                  onTelemetryChange={onTelemetryChange}
+                />
+              ) : null}
             </div>
           </div>
         </div>
@@ -277,6 +291,10 @@ function sectionTitle(section: SettingsSection) {
 
   if (section === 'usage') {
     return 'Usage';
+  }
+
+  if (section === 'privacy') {
+    return 'Privacy';
   }
 
   return 'General';
@@ -357,10 +375,10 @@ function GeneralPage({
             />
             <div className="flex gap-2">
               <ActionButton onClick={onSaveKey} disabled={isSaving} variant="primary">
-                {isSaving ? 'Saving…' : 'Save'}
+                <SlotLabel text={isSaving ? 'Saving…' : 'Save'} />
               </ActionButton>
               <ActionButton onClick={onValidateKey} disabled={isValidating}>
-                {isValidating ? 'Validating…' : 'Validate'}
+                <SlotLabel text={isValidating ? 'Validating…' : 'Validate'} />
               </ActionButton>
             </div>
           </div>
@@ -890,7 +908,11 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
   ];
 
   return (
-    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+    <div
+      role="radiogroup"
+      aria-label="Theme mode"
+      className="inline-flex border border-border-default bg-bg-subtle p-1"
+    >
       {items.map((item) => {
         const Icon = item.icon;
         const isActive = item.mode === current;
@@ -899,6 +921,8 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
           <button
             key={item.mode}
             type="button"
+            role="radio"
+            aria-checked={isActive}
             onClick={() => onChange(item.mode)}
             className={`inline-flex h-9 items-center gap-2 px-3 text-[13px] font-normal transition ${
               isActive
@@ -923,7 +947,11 @@ function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChan
   ];
 
   return (
-    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+    <div
+      role="radiogroup"
+      aria-label="Design theme"
+      className="inline-flex border border-border-default bg-bg-subtle p-1"
+    >
       {items.map((item) => {
         const isActive = item.theme === current;
 
@@ -931,6 +959,8 @@ function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChan
           <button
             key={item.theme}
             type="button"
+            role="radio"
+            aria-checked={isActive}
             onClick={() => onChange(item.theme)}
             className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
               isActive
@@ -959,7 +989,11 @@ function BorderRadiusPicker({
   ];
 
   return (
-    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+    <div
+      role="radiogroup"
+      aria-label="Border radius"
+      className="inline-flex border border-border-default bg-bg-subtle p-1"
+    >
       {items.map((item) => {
         const isActive = item.mode === current;
 
@@ -967,6 +1001,8 @@ function BorderRadiusPicker({
           <button
             key={item.mode}
             type="button"
+            role="radio"
+            aria-checked={isActive}
             onClick={() => onChange(item.mode)}
             className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
               isActive
@@ -1296,3 +1332,47 @@ function estimateMessageCost(
     return undefined;
   }
 }
+
+// =============================================================================
+// Privacy page
+// =============================================================================
+function PrivacyPage({
+  telemetryEnabled,
+  onTelemetryChange,
+}: {
+  telemetryEnabled: boolean;
+  onTelemetryChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <SettingsGroup title="Usage analytics">
+        <SettingsRow
+          title="Share anonymous usage events"
+          description="Atlas can send anonymous event data (app launched, model selected, preferences updated) to help prioritize fixes. No message content, file names, or API keys are ever sent. Disabling this takes effect immediately."
+        >
+          <Switch
+            checked={telemetryEnabled}
+            onCheckedChange={onTelemetryChange}
+            ariaLabel="Share anonymous usage events"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Local data">
+        <SettingsRow
+          title="Conversation history"
+          description="All conversations and messages are stored locally in a SQLite database under your user data directory. They never leave your machine unless you explicitly use a tool that does so (e.g. web search or web fetch)."
+        >
+          <span className="text-[11px] uppercase tracking-[0.12em] text-text-faint">Local only</span>
+        </SettingsRow>
+        <SettingsRow
+          title="API keys"
+          description="Provider keys are stored in the operating system keychain via the keytar library. The renderer never has direct access to key values — only a boolean indicating whether a key is configured."
+        >
+          <span className="text-[11px] uppercase tracking-[0.12em] text-text-faint">OS keychain</span>
+        </SettingsRow>
+      </SettingsGroup>
+    </div>
+  );
+}
+

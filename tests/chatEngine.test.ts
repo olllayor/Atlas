@@ -8,7 +8,7 @@ import { RequestTimeoutError } from '../src/main/ai/core/ErrorNormalizer.js';
 import type { ExecuteTurnRequest, ExecuteTurnResult } from '../src/main/ai/core/ChatSessionRuntime.js';
 import type { ChatStartRequest, StreamEvent } from '../src/shared/contracts.js';
 
-function createRequest(): ChatStartRequest {
+function createRequest(overrides: Partial<ChatStartRequest> = {}): ChatStartRequest {
   return {
     conversationId: 'conversation-1',
     providerId: 'openrouter',
@@ -16,6 +16,7 @@ function createRequest(): ChatStartRequest {
     messages: [{ role: 'user', content: 'Hello from user' }],
     enableTools: false,
     temperature: 0.65,
+    ...overrides,
   };
 }
 
@@ -66,6 +67,7 @@ test('ChatEngine start persists the user turn before async runtime execution beg
         addedMessages.push(input);
         return 'user-message-1';
       },
+      updateMessage: () => undefined,
     } as never,
     {
       getById: () => ({ supportsTools: false }),
@@ -90,19 +92,22 @@ test('ChatEngine start persists the user turn before async runtime execution beg
   const response = await engine.start(window as never, createRequest());
 
   assert.equal(typeof response.requestId, 'string');
-  assert.equal(addedMessages.length, 1);
+  assert.equal(addedMessages.length, 2);
   assert.equal(addedMessages[0]?.role, 'user');
+  assert.equal(addedMessages[1]?.role, 'assistant');
+  assert.equal(addedMessages[1]?.status, 'streaming');
   assert.equal(runtimeCalls.length, 0);
 
   releaseRuntime?.();
   await delay(0);
 });
 
-test('ChatEngine emits buffered chunk events before meta and done on successful completion', async () => {
+test('ChatEngine emits sequenced runtime sync events before meta and done on successful completion', async () => {
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
       addMessage: () => 'user-message-1',
+      updateMessage: () => undefined,
     } as never,
     {
       getById: () => ({ supportsTools: false }),
@@ -137,21 +142,24 @@ test('ChatEngine emits buffered chunk events before meta and done on successful 
   await engine.start(fakeWindow.window as never, createRequest());
   await delay(0);
 
-  assert.deepEqual(fakeWindow.events.map((event) => event.type), ['chunk', 'meta', 'done']);
-  assert.equal(fakeWindow.events[1]?.type, 'meta');
-  if (fakeWindow.events[1]?.type === 'meta') {
-    assert.equal(fakeWindow.events[1].inputTokens, 10);
-    assert.equal(fakeWindow.events[1].outputTokens, 5);
-    assert.equal(fakeWindow.events[1].latencyMs, 42);
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  assert.equal(eventTypes.at(-2), 'meta');
+  assert.equal(eventTypes.at(-1), 'done');
+  const metaEvent = fakeWindow.events.find((event) => event.type === 'meta');
+  if (metaEvent?.type === 'meta') {
+    assert.equal(metaEvent.inputTokens, 10);
+    assert.equal(metaEvent.outputTokens, 5);
+    assert.equal(metaEvent.latencyMs, 42);
   }
-  assert.equal(fakeWindow.events[2]?.type, 'done');
 });
 
-test('ChatEngine normalizes runtime errors and preserves buffered flush behavior', async () => {
+test('ChatEngine normalizes runtime errors and preserves runtime sync behavior', async () => {
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
       addMessage: () => 'user-message-1',
+      updateMessage: () => undefined,
     } as never,
     {
       getById: () => ({ supportsTools: false }),
@@ -181,10 +189,83 @@ test('ChatEngine normalizes runtime errors and preserves buffered flush behavior
   await engine.start(fakeWindow.window as never, createRequest());
   await delay(0);
 
-  assert.deepEqual(fakeWindow.events.map((event) => event.type), ['chunk', 'error']);
-  assert.equal(fakeWindow.events[1]?.type, 'error');
-  if (fakeWindow.events[1]?.type === 'error') {
-    assert.equal(fakeWindow.events[1].code, 'timeout');
-    assert.equal(fakeWindow.events[1].retryable, true);
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  const errorEvent = fakeWindow.events.find((event) => event.type === 'error');
+  assert.equal(errorEvent?.type, 'error');
+  if (errorEvent?.type === 'error') {
+    assert.equal(errorEvent.code, 'timeout');
+    assert.equal(errorEvent.retryable, true);
   }
+});
+
+test('ChatEngine handles inline approval denial in the same assistant turn', async () => {
+  const runtimeCalls: ExecuteTurnRequest[] = [];
+  const updateMessageCalls: Array<Record<string, unknown>> = [];
+  const engine = new ChatEngine(
+    {
+      setDefaults: () => undefined,
+      addMessage: () => 'user-message-1',
+      updateMessage: (input: Record<string, unknown>) => {
+        updateMessageCalls.push(input);
+      },
+      getModelHistory: () => [],
+    } as never,
+    {
+      getById: () => ({ supportsTools: true }),
+    } as never,
+    {} as never,
+    new Map() as never,
+    {
+      persistAttachment: () => {
+        throw new Error('Attachments should not be persisted in this test.');
+      },
+    } as never,
+    {
+      async executeTurn({ requestId, emitEvent }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
+        runtimeCalls.push({ requestId, emitEvent } as ExecuteTurnRequest);
+        emitEvent({
+          type: 'tool-approval-requested',
+          requestId,
+          approvalId: 'approval-1',
+          toolCallId: 'tool-1',
+          toolName: 'search',
+          reason: 'Needs permission to search the web',
+        });
+        return {
+          messageId: 'assistant-message-1',
+          status: 'awaiting_approval',
+          parts: [],
+          responseMessages: [],
+          pendingApprovals: [
+            {
+              approvalId: 'approval-1',
+              toolCallId: 'tool-1',
+              toolName: 'search',
+              reason: 'Needs permission to search the web',
+            },
+          ],
+        };
+      },
+    }
+  );
+
+  const fakeWindow = createFakeWindow();
+  const { requestId } = await engine.start(fakeWindow.window as never, createRequest({ enableTools: true }));
+  await delay(0);
+
+  await engine.respondToolApproval({
+    requestId,
+    approvalId: 'approval-1',
+    decision: 'decline',
+  });
+  await delay(0);
+
+  assert.equal(runtimeCalls.length, 1);
+  const eventTypes = fakeWindow.events.map((event) => event.type);
+  assert.ok(eventTypes.includes('runtime-sync'));
+  assert.equal(eventTypes.at(-2), 'meta');
+  assert.equal(eventTypes.at(-1), 'done');
+  assert.ok(updateMessageCalls.length >= 1);
+  assert.ok(updateMessageCalls.some((call) => call.status === 'complete'));
 });

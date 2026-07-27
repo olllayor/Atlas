@@ -152,6 +152,7 @@ export class OpenRouterProvider implements ProviderAdapter {
     let outputTokens: number | undefined;
     let reasoningTokens: number | undefined;
     let streamError: unknown;
+    const toolNameByCallId = new Map<string, string>();
     const hasTools = request.tools != null && Object.keys(request.tools).length > 0;
     const maxOutputTokens = resolveMaxOutputTokens(request.maxOutputTokens);
 
@@ -161,6 +162,7 @@ export class OpenRouterProvider implements ProviderAdapter {
         system: request.system,
         messages: request.messages,
         tools: request.tools,
+        toolChoice: request.toolChoice,
         stopWhen: hasTools ? stepCountIs(OPENROUTER_TOOL_STEP_LIMIT) : undefined,
         temperature: request.temperature ?? 0.65,
         maxOutputTokens,
@@ -207,6 +209,7 @@ export class OpenRouterProvider implements ProviderAdapter {
           }
 
           if (chunk.type === 'tool-call') {
+            toolNameByCallId.set(chunk.toolCallId, chunk.toolName);
             request.onToolInputAvailable?.({
               toolCallId: chunk.toolCallId,
               toolName: chunk.toolName,
@@ -219,6 +222,24 @@ export class OpenRouterProvider implements ProviderAdapter {
           }
 
           if (chunk.type === 'tool-result') {
+            const deniedOutput =
+              chunk.output != null &&
+              typeof chunk.output === 'object' &&
+              'type' in chunk.output &&
+              (chunk.output as { type?: unknown }).type === 'execution-denied';
+
+            if (deniedOutput) {
+              request.onToolOutputDenied?.({
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName ?? toolNameByCallId.get(chunk.toolCallId),
+                reason:
+                  typeof (chunk.output as { reason?: unknown }).reason === 'string'
+                    ? (chunk.output as { reason: string }).reason
+                    : undefined,
+              });
+              return;
+            }
+
             request.onToolOutputAvailable?.({
               toolCallId: chunk.toolCallId,
               toolName: chunk.toolName,
@@ -228,6 +249,40 @@ export class OpenRouterProvider implements ProviderAdapter {
               preliminary: chunk.preliminary,
               providerExecuted: chunk.providerExecuted,
               title: chunk.title
+            });
+            return;
+          }
+
+          const approvalChunk = chunk as {
+            type?: unknown;
+            approvalId?: unknown;
+            toolCallId?: unknown;
+            toolCall?: { toolCallId?: unknown; toolName?: unknown };
+            reason?: unknown;
+          };
+
+          if (
+            approvalChunk.type === 'tool-approval-request' &&
+            typeof approvalChunk.approvalId === 'string'
+          ) {
+            const approvalToolCallId =
+              typeof approvalChunk.toolCallId === 'string'
+                ? approvalChunk.toolCallId
+                : typeof approvalChunk.toolCall?.toolCallId === 'string'
+                  ? approvalChunk.toolCall.toolCallId
+                  : null;
+
+            if (!approvalToolCallId) {
+              return;
+            }
+
+            request.onToolApprovalRequested?.({
+              approvalId: approvalChunk.approvalId,
+              toolCallId: approvalToolCallId,
+              toolName:
+                toolNameByCallId.get(approvalToolCallId) ??
+                (typeof approvalChunk.toolCall?.toolName === 'string' ? approvalChunk.toolCall.toolName : undefined),
+              reason: typeof approvalChunk.reason === 'string' ? approvalChunk.reason : undefined,
             });
             return;
           }

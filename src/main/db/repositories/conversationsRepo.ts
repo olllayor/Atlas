@@ -6,6 +6,7 @@ import type { AttachmentStore } from '../../attachments/AttachmentStore';
 import type {
   ChatMessage,
   ChatMessagePart,
+  ChatToolPart,
   ConversationDetail,
   ConversationPage,
   ConversationPageRequest,
@@ -13,11 +14,16 @@ import type {
   ConversationSummary,
   MessageRole,
   MessageStatus,
-  ProviderId
+  ProviderId,
+  ToolExecutionRecord,
+  WorkLogEntry
 } from '../../../shared/contracts';
 import { decodeConversationPageCursor, encodeConversationPageCursor } from '../../../shared/conversationPaging';
 import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
+import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
 import type { SqliteDatabase } from '../client';
+import type { RuntimeStateRepo } from './runtimeStateRepo';
+import type { ToolExecutionsRepo } from './toolExecutionsRepo';
 
 type ConversationRow = {
   id: string;
@@ -79,6 +85,22 @@ type CreateMessageInput = {
   createdAt?: string;
 };
 
+type UpdateMessageInput = {
+  messageId: string;
+  content?: string;
+  reasoning?: string | null;
+  parts?: ChatMessagePart[] | null;
+  responseMessages?: ModelMessage[] | null;
+  status?: MessageStatus;
+  providerId?: ProviderId | null;
+  modelId?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  latencyMs?: number | null;
+  errorCode?: string | null;
+};
+
 function formatConversationTitle(timestamp: Date) {
   const formatter = new Intl.DateTimeFormat('en', {
     month: 'short',
@@ -95,7 +117,156 @@ function parseJson<T>(value: string | null): T | null {
     return null;
   }
 
-  return JSON.parse(value) as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+function mapToolExecutionStateToPartState(record: ToolExecutionRecord): ChatToolPart['state'] {
+  switch (record.state) {
+    case 'queued':
+      return 'input-streaming';
+    case 'running':
+      return 'input-available';
+    case 'approval_requested':
+      return 'approval-requested';
+    case 'approved':
+      return 'approval-responded';
+    case 'denied':
+      return 'output-denied';
+    case 'partial':
+      return 'output-partial';
+    case 'completed':
+      return 'output-available';
+    case 'error':
+      return 'output-error';
+    default:
+      return 'input-available';
+  }
+}
+
+function buildToolPartFromRecord(record: ToolExecutionRecord): ChatToolPart {
+  const outputPreview = record.finalOutputPreview ?? record.partialOutputPreview ?? undefined;
+
+  return {
+    id: record.id,
+    type: 'tool',
+    toolCallId: record.id,
+    requestId: record.requestId,
+    toolName: record.toolName,
+    state: mapToolExecutionStateToPartState(record),
+    rawInput: record.inputPreview ?? undefined,
+    input: record.inputPreview ?? undefined,
+    output: outputPreview,
+    errorText: record.errorMessage ?? undefined,
+    preliminary: record.state === 'partial',
+    approval: record.requiresApproval
+      ? {
+          id: record.approvalId ?? record.id,
+          approved:
+            record.state === 'approved'
+              ? true
+              : record.state === 'denied'
+                ? false
+                : undefined,
+          reason: record.approvalReason ?? undefined,
+        }
+      : undefined,
+  };
+}
+
+function hydrateMessagePartsWithToolExecutions(message: ChatMessage, toolExecutions: ToolExecutionRecord[]) {
+  if (toolExecutions.length === 0) {
+    return message;
+  }
+
+  const toolParts = toolExecutions.map(buildToolPartFromRecord);
+  return mergeToolParts(message, toolParts);
+}
+
+function hydrateMessagePartsWithActivities(message: ChatMessage, activities: WorkLogEntry[]) {
+  if (activities.length === 0) {
+    return message;
+  }
+
+  const latestByToolIdentity = new Map<string, WorkLogEntry>();
+  for (const activity of activities) {
+    const toolIdentity = activity.toolCallId ?? activity.approvalId;
+    if (!toolIdentity) {
+      continue;
+    }
+
+    const current = latestByToolIdentity.get(toolIdentity);
+    if (!current || current.sequence <= activity.sequence) {
+      latestByToolIdentity.set(toolIdentity, activity);
+    }
+  }
+
+  const toolParts = [...latestByToolIdentity.values()]
+    .sort((left, right) => left.sequence - right.sequence)
+    .map(workLogEntryToChatToolPart);
+
+  return mergeToolParts(message, toolParts);
+}
+
+function mergeToolParts(message: ChatMessage, toolParts: ChatToolPart[]) {
+  if (toolParts.length === 0) {
+    return message;
+  }
+
+  const replacementsByToolCallId = new Map<string, ChatToolPart>();
+  const replacementsByApprovalId = new Map<string, ChatToolPart>();
+  const usedReplacementIds = new Set<string>();
+
+  for (const part of toolParts) {
+    replacementsByToolCallId.set(part.toolCallId, part);
+    if (part.approval?.id) {
+      replacementsByApprovalId.set(part.approval.id, part);
+    }
+  }
+
+  let changed = false;
+  const mergedParts = message.parts.map((part) => {
+    if (part.type !== 'tool') {
+      return part;
+    }
+
+    const replacement =
+      replacementsByToolCallId.get(part.toolCallId) ??
+      (part.approval?.id ? replacementsByApprovalId.get(part.approval.id) : undefined);
+
+    if (!replacement) {
+      return part;
+    }
+
+    usedReplacementIds.add(replacement.id);
+    changed = true;
+    const mergedApprovalId = replacement.approval?.id ?? part.approval?.id;
+
+    return {
+      ...part,
+      ...replacement,
+      approval: mergedApprovalId
+        ? {
+            id: mergedApprovalId,
+            approved: replacement.approval?.approved ?? part.approval?.approved,
+            reason: replacement.approval?.reason ?? part.approval?.reason,
+          }
+        : undefined,
+    };
+  });
+
+  const unseenToolParts = toolParts.filter((part) => !usedReplacementIds.has(part.id));
+  if (!changed && unseenToolParts.length === 0) {
+    return message;
+  }
+
+  return {
+    ...message,
+    parts: unseenToolParts.length > 0 ? [...mergedParts, ...unseenToolParts] : mergedParts,
+  };
 }
 
 function mapMessage(row: MessageRow): ChatMessage {
@@ -200,6 +371,14 @@ const NOOP_ATTACHMENT_STORE: Pick<
   readAttachmentData: () => null,
 };
 
+const NOOP_TOOL_EXECUTIONS_REPO: Pick<ToolExecutionsRepo, 'listByMessageIds'> = {
+  listByMessageIds: () => [],
+};
+
+const NOOP_RUNTIME_STATE_REPO: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = {
+  listActivitiesByMessageIds: () => [],
+};
+
 export class ConversationsRepo {
   constructor(
     private readonly db: SqliteDatabase,
@@ -207,6 +386,8 @@ export class ConversationsRepo {
       AttachmentStore,
       'deleteConversationAttachments' | 'readAttachmentData'
     > = NOOP_ATTACHMENT_STORE,
+    private readonly toolExecutionsRepo: Pick<ToolExecutionsRepo, 'listByMessageIds'> = NOOP_TOOL_EXECUTIONS_REPO,
+    private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
   ) {}
 
   list() {
@@ -222,6 +403,11 @@ export class ConversationsRepo {
               SELECT substr(m.content, 1, 160)
               FROM messages m
               WHERE m.conversation_id = c.id
+                AND NOT (
+                  m.role = 'assistant'
+                  AND m.status = 'streaming'
+                  AND trim(m.content) = ''
+                )
               ORDER BY m.created_at DESC
               LIMIT 1
             ) AS lastMessagePreview,
@@ -238,6 +424,7 @@ export class ConversationsRepo {
               FROM messages m
               WHERE m.conversation_id = c.id
                 AND m.role = 'assistant'
+                AND NOT (m.status = 'streaming' AND trim(m.content) = '')
               ORDER BY m.created_at DESC, m.id DESC
               LIMIT 1
             ) AS lastAssistantMessagePreview,
@@ -245,6 +432,11 @@ export class ConversationsRepo {
               SELECT m.created_at
               FROM messages m
               WHERE m.conversation_id = c.id
+                AND NOT (
+                  m.role = 'assistant'
+                  AND m.status = 'streaming'
+                  AND trim(m.content) = ''
+                )
               ORDER BY m.created_at DESC
               LIMIT 1
             ) AS lastMessageAt,
@@ -358,6 +550,8 @@ export class ConversationsRepo {
       .all({ conversationId })
       .map((row: MessageRow) => mapMessage(row));
 
+    const hydratedMessages = this.hydrateMessagesWithToolExecutions(messages);
+
     return {
       conversation: {
         id: conversation.id,
@@ -367,7 +561,7 @@ export class ConversationsRepo {
         defaultProviderId: conversation.default_provider_id,
         defaultModelId: conversation.default_model_id
       },
-      messages
+      messages: hydratedMessages
     };
   }
 
@@ -462,7 +656,7 @@ export class ConversationsRepo {
 
     const hasOlder = rows.length > limit;
     const pageRows = rows.slice(0, limit).reverse();
-    const messages = pageRows.map(mapMessage);
+    const messages = this.hydrateMessagesWithToolExecutions(pageRows.map(mapMessage));
     const oldestMessage = messages[0];
 
     return {
@@ -506,6 +700,49 @@ export class ConversationsRepo {
     };
   }
 
+  private hydrateMessagesWithToolExecutions(messages: ChatMessage[]) {
+    const messageIds = messages.map((message) => message.id);
+    const activities = this.runtimeStateRepo.listActivitiesByMessageIds(messageIds);
+    if (activities.length > 0) {
+      const byMessageId = new Map<string, WorkLogEntry[]>();
+      for (const activity of activities) {
+        if (!activity.messageId) {
+          continue;
+        }
+
+        const bucket = byMessageId.get(activity.messageId);
+        if (bucket) {
+          bucket.push(activity);
+        } else {
+          byMessageId.set(activity.messageId, [activity]);
+        }
+      }
+
+      return messages.map((message) =>
+        hydrateMessagePartsWithActivities(message, byMessageId.get(message.id) ?? [])
+      );
+    }
+
+    const toolExecutions = this.toolExecutionsRepo.listByMessageIds(messageIds);
+    if (toolExecutions.length === 0) {
+      return messages;
+    }
+
+    const byMessageId = new Map<string, ToolExecutionRecord[]>();
+    for (const execution of toolExecutions) {
+      const bucket = byMessageId.get(execution.messageId);
+      if (bucket) {
+        bucket.push(execution);
+      } else {
+        byMessageId.set(execution.messageId, [execution]);
+      }
+    }
+
+    return messages.map((message) =>
+      hydrateMessagePartsWithToolExecutions(message, byMessageId.get(message.id) ?? [])
+    );
+  }
+
   getModelHistory(conversationId: string) {
     const rows = this.db
       .prepare<
@@ -520,6 +757,7 @@ export class ConversationsRepo {
             response_messages_json
           FROM messages
           WHERE conversation_id = @conversationId
+            AND status = 'complete'
           ORDER BY created_at ASC
         `
       )
@@ -570,6 +808,106 @@ export class ConversationsRepo {
         modelId,
         updatedAt: new Date().toISOString()
       });
+  }
+
+  updateMessage(input: UpdateMessageInput) {
+    const row = this.db
+      .prepare<{ messageId: string }, { conversation_id: string }>(
+        'SELECT conversation_id FROM messages WHERE id = @messageId'
+      )
+      .get({ messageId: input.messageId });
+
+    if (!row) {
+      throw new Error(`Message not found: ${input.messageId}`);
+    }
+
+    const updatedAt = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `
+          UPDATE messages
+          SET content = COALESCE(@content, content),
+              reasoning = COALESCE(@reasoning, reasoning),
+              parts_json = CASE WHEN @partsJsonPresent = 1 THEN @partsJson ELSE parts_json END,
+              response_messages_json = CASE WHEN @responseMessagesJsonPresent = 1 THEN @responseMessagesJson ELSE response_messages_json END,
+              status = COALESCE(@status, status),
+              provider_id = COALESCE(@providerId, provider_id),
+              model_id = COALESCE(@modelId, model_id),
+              input_tokens = COALESCE(@inputTokens, input_tokens),
+              output_tokens = COALESCE(@outputTokens, output_tokens),
+              reasoning_tokens = COALESCE(@reasoningTokens, reasoning_tokens),
+              latency_ms = COALESCE(@latencyMs, latency_ms),
+              error_code = CASE WHEN @errorCodePresent = 1 THEN @errorCode ELSE error_code END
+          WHERE id = @messageId
+        `
+      )
+      .run({
+        messageId: input.messageId,
+        content: input.content ?? null,
+        reasoning: input.reasoning ?? null,
+        partsJsonPresent: input.parts !== undefined ? 1 : 0,
+        partsJson: input.parts != null ? JSON.stringify(input.parts) : null,
+        responseMessagesJsonPresent: input.responseMessages !== undefined ? 1 : 0,
+        responseMessagesJson: input.responseMessages != null ? JSON.stringify(input.responseMessages) : null,
+        status: input.status ?? null,
+        providerId: input.providerId ?? null,
+        modelId: input.modelId ?? null,
+        inputTokens: input.inputTokens ?? null,
+        outputTokens: input.outputTokens ?? null,
+        reasoningTokens: input.reasoningTokens ?? null,
+        latencyMs: input.latencyMs ?? null,
+        errorCodePresent: input.errorCode !== undefined ? 1 : 0,
+        errorCode: input.errorCode ?? null,
+      });
+
+    this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET updated_at = @updatedAt
+          WHERE id = @conversationId
+        `
+      )
+      .run({
+        conversationId: row.conversation_id,
+        updatedAt,
+      });
+  }
+
+  markMessagesError(messageIds: string[], errorCode: string) {
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const placeholders = messageIds.map(() => '?').join(', ');
+
+    this.db
+      .prepare<unknown[]>(
+        `
+          UPDATE messages
+          SET status = 'error',
+              error_code = ?,
+              content = CASE WHEN trim(content) = '' THEN 'Tool execution was interrupted.' ELSE content END
+          WHERE id IN (${placeholders})
+        `
+      )
+      .run(errorCode, ...messageIds);
+
+    this.db
+      .prepare<unknown[]>(
+        `
+          UPDATE conversations
+          SET updated_at = ?
+          WHERE id IN (
+            SELECT DISTINCT conversation_id
+            FROM messages
+            WHERE id IN (${placeholders})
+          )
+        `
+      )
+      .run(now, ...messageIds);
   }
 
   addMessage(input: CreateMessageInput) {

@@ -1,7 +1,8 @@
-import { code as codeHighlighter, type HighlightResult } from '@streamdown/code';
 import { Check, Copy, Download } from 'lucide-react';
-import type { CSSProperties } from 'react';
+
+import { SlotLabel } from './ui/slot-label';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 
 import { cn } from '../lib/utils';
 import { useClipboard } from '../hooks/useClipboard';
@@ -14,12 +15,47 @@ type CodeBlockProps = {
   className?: string;
 };
 
-type SupportedLanguage = ReturnType<typeof codeHighlighter.getSupportedLanguages>[number];
+type HighlightResult = {
+  tokens: Array<Array<{ content: string; color?: string; bgColor?: string }>>;
+  bg?: string;
+  fg?: string;
+};
+
+type HighlightCallback = (result: HighlightResult | null) => void;
+type HighlightOptions = {
+  code: string;
+  language: string;
+  themes: string[];
+};
+type CodeHighlighter = {
+  getSupportedLanguages(): string[];
+  getThemes(): string[];
+  highlight(options: HighlightOptions, callback?: HighlightCallback): HighlightResult | null;
+};
 
 const MAX_HIGHLIGHT_CACHE_SIZE = 120;
 const highlightCache = new Map<string, HighlightResult | null>();
 
-const supportedLanguages = new Set<SupportedLanguage>(codeHighlighter.getSupportedLanguages());
+// Lazily import the streamdown code highlighter. Importing the module eagerly
+// pulls in all 700+ shiki language grammars as static data, which is the
+// single largest contributor to the renderer bundle. Keeping the import
+// inside a getter means the highlighter (and the grammars it lazily loads on
+// first use) only lands in memory after a code block actually streams in.
+let highlighterPromise: Promise<CodeHighlighter> | null = null;
+async function loadHighlighter(): Promise<CodeHighlighter> {
+  if (!highlighterPromise) {
+    highlighterPromise = import('@streamdown/code').then((mod) => mod.code as unknown as CodeHighlighter);
+  }
+  return highlighterPromise;
+}
+
+let supportedLanguagesPromise: Promise<Set<string>> | null = null;
+function loadSupportedLanguages(): Promise<Set<string>> {
+  if (!supportedLanguagesPromise) {
+    supportedLanguagesPromise = loadHighlighter().then((highlighter) => new Set(highlighter.getSupportedLanguages()));
+  }
+  return supportedLanguagesPromise;
+}
 
 const languageAliases: Record<string, string> = {
   js: 'javascript',
@@ -40,7 +76,7 @@ const fileExtensions: Record<string, string> = {
   tsx: 'tsx',
   python: 'py',
   bash: 'sh',
-  zsh: 'zsh',
+  zsh: 'sh',
   json: 'json',
   html: 'html',
   css: 'css',
@@ -59,23 +95,21 @@ const fileExtensions: Record<string, string> = {
   kotlin: 'kt',
 };
 
-export const streamdownCodeLanguages = Array.from(
-  new Set<string>([
-    ...supportedLanguages,
-    ...Object.keys(languageAliases),
-    'text',
-  ])
-);
+// Static language list kept for streamdown's renderer match check. We pass
+// this to Streamdown so it knows which languages should hand off to our
+// custom CodeBlock. Streamdown only uses the list to filter — it does not
+// require a real shiki grammar to be present here. See codeLanguages.ts.
 
-function resolveLanguage(language?: string): SupportedLanguage | null {
+
+async function resolveLanguage(language?: string): Promise<string | null> {
   const normalized = language?.trim().toLowerCase();
-
   if (!normalized) {
     return null;
   }
 
-  const aliased = (languageAliases[normalized] ?? normalized) as SupportedLanguage;
-  return supportedLanguages.has(aliased) ? aliased : null;
+  const aliased = languageAliases[normalized] ?? normalized;
+  const supported = await loadSupportedLanguages();
+  return supported.has(aliased) ? aliased : null;
 }
 
 function getDownloadFilename(language?: string) {
@@ -157,9 +191,22 @@ function renderHighlightedCode(result: HighlightResult) {
 export function CodeBlock({ code, language, isIncomplete = false, className }: CodeBlockProps) {
   const { copied, copy } = useClipboard();
   const [highlighted, setHighlighted] = useState<HighlightResult | null>(null);
-
-  const resolvedLanguage = useMemo(() => resolveLanguage(language), [language]);
+  const [resolvedLanguage, setResolvedLanguage] = useState<string | null>(null);
   const languageLabel = (language?.trim() || 'code').toLowerCase();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void resolveLanguage(language).then((value) => {
+      if (!cancelled) {
+        setResolvedLanguage(value);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,25 +227,39 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
       };
     }
 
-    const maybeResult = codeHighlighter.highlight(
-      {
-        code,
-        language: resolvedLanguage,
-        themes: codeHighlighter.getThemes(),
-      },
-      (result) => {
-        if (!cancelled) {
-          setCachedHighlightResult(cacheKey, result);
-          setHighlighted(result);
-        }
-      }
-    );
+    let resolveHighlight: ((value: HighlightResult | null) => void) | null = null;
 
-    setCachedHighlightResult(cacheKey, maybeResult);
-    setHighlighted(maybeResult);
+    const setResult = (value: HighlightResult | null) => {
+      if (cancelled) {
+        return;
+      }
+      setCachedHighlightResult(cacheKey, value);
+      setHighlighted(value);
+    };
+
+    void loadHighlighter().then((highlighter) => {
+      if (cancelled) {
+        return;
+      }
+      const maybeResult = highlighter.highlight(
+        {
+          code,
+          language: resolvedLanguage,
+          themes: highlighter.getThemes(),
+        },
+        (result) => setResult(result),
+      );
+
+      if (resolveHighlight) {
+        resolveHighlight(maybeResult);
+      } else {
+        setResult(maybeResult);
+      }
+    });
 
     return () => {
       cancelled = true;
+      resolveHighlight = null;
     };
   }, [code, isIncomplete, resolvedLanguage]);
 
@@ -240,15 +301,19 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
             className="p-1.5 text-text-muted transition hover:bg-[var(--bg-subtle)] hover:text-text-primary"
             title="Download code"
           >
-            <Download className="h-3.25 w-3.25" />
+            <Download className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
             onClick={handleCopy}
-            className="p-1.5 text-text-muted transition hover:bg-[var(--bg-subtle)] hover:text-text-primary"
+            className="inline-flex items-center gap-1 px-1.5 py-1 text-text-muted transition hover:bg-[var(--bg-subtle)] hover:text-text-primary"
             title={copied ? 'Copied!' : 'Copy code'}
+            aria-label={copied ? 'Copied' : 'Copy code'}
           >
-            {copied ? <Check className="h-3.25 w-3.25 text-[var(--text-tertiary)]" /> : <Copy className="h-3.25 w-3.25" />}
+            {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-tertiary)]" /> : <Copy className="h-3.5 w-3.5" />}
+            <span className="min-w-[34px] text-left text-[11px] font-medium tracking-[0.01em]">
+              <SlotLabel text={copied ? 'Copied' : 'Copy'} />
+            </span>
           </button>
         </div>
       </div>

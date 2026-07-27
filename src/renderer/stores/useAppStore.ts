@@ -12,10 +12,12 @@ import type {
   ModelSummary,
   ProviderCredentialSummary,
   ProviderId,
+  RuntimeStateSnapshot,
   SettingsSection,
   SettingsSummary,
   SettingsUpdateRequest,
-  StreamEvent
+  StreamEvent,
+  ToolApprovalResponseRequest
 } from '../../shared/contracts';
 import {
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
@@ -25,7 +27,6 @@ import {
   normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../shared/attachments';
-import { applyStreamEventToParts, buildUserMessageParts } from '../../shared/messageParts';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
 import {
   DEFAULT_CONVERSATION_PAGE_SIZE,
@@ -35,20 +36,16 @@ import {
   reconcileConversationCache
 } from './conversationCache';
 import { notify } from '../lib/notify';
+import {
+  applyMetaEvent,
+  applyRecoveredRuntimeEventsToStore,
+  applyRuntimeSnapshotToStore,
+  applyStreamingEvent,
+  type DraftState,
+  type RuntimeEventFanOut,
+} from './streamEventReducers';
 
-type DraftState = {
-  requestId: string;
-  providerId: ProviderId;
-  modelId: string;
-  parts: ChatMessagePart[];
-  status: 'streaming' | 'error' | 'aborted';
-  errorMessage?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  reasoningTokens?: number;
-  latencyMs?: number;
-  startedAt: string;
-};
+export type { DraftState };
 
 type RefreshModelsOptions = {
   silent?: boolean;
@@ -84,6 +81,7 @@ type AppState = {
   selectedModelIdByConversation: Record<string, string>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
+  runtimeSequenceByConversation: Record<string, number>;
   updateState: AppUpdateSnapshot;
   bootstrap: () => Promise<void>;
   refreshModels: (options?: RefreshModelsOptions) => Promise<void>;
@@ -114,16 +112,20 @@ type AppState = {
   selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
   selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: { text: string; files: ChatInputFilePart[] }) => Promise<void>;
+  resendLastUserMessage: () => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
+  respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => Promise<void>;
 };
 
+// =============================================================================
+// Pure helpers
+// =============================================================================
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
-
   return 'Unexpected error';
 }
 
@@ -131,15 +133,10 @@ function findCredential(settings: SettingsSummary | null, providerId: ProviderId
   return settings?.providers.find((provider) => provider.providerId === providerId) ?? null;
 }
 
-function findConfiguredCredential(settings: SettingsSummary | null): ProviderCredentialSummary | null {
-  return settings?.providers.find((provider) => provider.hasSecret) ?? null;
-}
-
 function getModelById(models: ModelSummary[], modelId: string | null) {
   if (!modelId) {
     return null;
   }
-
   return models.find((model) => model.id === modelId) ?? null;
 }
 
@@ -166,7 +163,7 @@ function resolveSelectedModelId(
   return models[0]?.id ?? null;
 }
 
-function chooseDefaultModel(models: ModelSummary[], preferredProviderId?: ProviderId | null) {
+export function chooseDefaultModel(models: ModelSummary[], preferredProviderId?: ProviderId | null) {
   const availableModels = models.filter((model) => !model.archived);
   const preferredModels = preferredProviderId
     ? availableModels.filter((model) => model.providerId === preferredProviderId)
@@ -185,16 +182,50 @@ function collectRendererHeapBytes() {
   if (typeof performance === 'undefined') {
     return null;
   }
-
   const memory = (performance as Performance & {
-    memory?: {
-      usedJSHeapSize?: number;
-    };
+    memory?: { usedJSHeapSize?: number };
   }).memory;
-
   return memory?.usedJSHeapSize ?? null;
 }
 
+function resolveConversationIdForRequest(
+  requestId: string,
+  state: Pick<AppState, 'requestToConversation' | 'draftsByConversation' | 'conversationDetails' | 'selectedConversationId'>
+) {
+  const direct = state.requestToConversation[requestId];
+  if (direct) {
+    return direct;
+  }
+
+  for (const [conversationId, draft] of Object.entries(state.draftsByConversation)) {
+    if (draft?.requestId === requestId) {
+      return conversationId;
+    }
+  }
+
+  for (const [conversationId, detail] of Object.entries(state.conversationDetails)) {
+    const hasMatchingToolPart = detail.messages.some((message) =>
+      message.parts.some((part) => part.type === 'tool' && part.requestId === requestId)
+    );
+    if (hasMatchingToolPart) {
+      return conversationId;
+    }
+  }
+
+  const streamingConversations = Object.entries(state.conversationDetails).filter(([, detail]) =>
+    detail.messages.some((message) => message.role === 'assistant' && message.status === 'streaming')
+  );
+
+  if (streamingConversations.length === 1) {
+    return streamingConversations[0][0];
+  }
+
+  return null;
+}
+
+// =============================================================================
+// Store
+// =============================================================================
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
   initialized: false,
@@ -223,13 +254,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedModelIdByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
+  runtimeSequenceByConversation: {},
   updateState: { status: 'idle' },
 
   bootstrap: async () => {
-    set({
-      bootstrapping: true,
-      bootstrapError: null
-    });
+    set({ bootstrapping: true, bootstrapError: null });
 
     try {
       const settings = await window.atlasChat.settings.getSummary();
@@ -241,9 +270,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const selectedConversationId = conversations[0]?.id ?? null;
-      const [detail, models, updateState, conversationStats, diagnostics] = await Promise.all([
+      const [detail, runtimeState, models, updateState, conversationStats, diagnostics] = await Promise.all([
         selectedConversationId
           ? window.atlasChat.conversations.getPage(selectedConversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
+          : Promise.resolve(null),
+        selectedConversationId
+          ? window.atlasChat.chat.getRuntimeState({ conversationId: selectedConversationId })
           : Promise.resolve(null),
         window.atlasChat.models.list({
           freeOnly: settings.showFreeOnlyByDefault,
@@ -263,33 +295,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         bootstrapping: false,
         initialized: true,
         settings,
-        models,
+        models: settings.showFreeOnlyByDefault ? models.filter((model) => model.isFree) : models,
         conversations,
         conversationStats,
         diagnostics,
         activeCredentialProviderId,
         selectedConversationId,
-        conversationDetails: detail && selectedConversationId ? { [selectedConversationId]: detail } : {},
+        conversationDetails: buildBootstrapConversationDetails(selectedConversationId, detail, runtimeState),
+        runtimeSequenceByConversation:
+          selectedConversationId && runtimeState ? { [selectedConversationId]: runtimeState.lastSequence } : {},
+        draftsByConversation:
+          selectedConversationId && runtimeState
+            ? (applyRuntimeSnapshotToStore(
+                {
+                  draftsByConversation: {},
+                  conversationDetails: {},
+                  requestToConversation: {},
+                  runtimeSequenceByConversation: {}
+                },
+                selectedConversationId,
+                runtimeState
+              ).draftsByConversation ?? {})
+            : {},
         updateState,
         selectedModelIdByConversation:
           defaultModelId && selectedConversationId
             ? {
                 [selectedConversationId]:
-                  detail?.conversation.defaultModelId ??
-                  chooseDefaultModel(models, detail?.conversation.defaultProviderId ?? settings.defaultProviderId) ??
+                  detail?.conversation?.defaultModelId ??
+                  chooseDefaultModel(models, detail?.conversation?.defaultProviderId ?? settings.defaultProviderId) ??
                   defaultModelId
               }
             : {}
       });
 
-      if (models.length === 0 || settings.providers.some((provider) => provider.hasSecret)) {
+      if (models.length === 0) {
         void get().refreshModels({ silent: true });
       }
     } catch (error) {
-      set({
-        bootstrapping: false,
-        bootstrapError: getErrorMessage(error)
-      });
+      set({ bootstrapping: false, bootstrapError: getErrorMessage(error) });
     }
   },
 
@@ -321,19 +365,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
 
       if (!silent) {
-        notify({
-          tone: 'success',
-          title: 'Model catalog refreshed.'
-        });
+        notify({ tone: 'success', title: 'Model catalog refreshed.' });
       }
     } catch (error) {
       set({ isRefreshingModels: false });
 
       if (!silent) {
-        notify({
-          tone: 'error',
-          title: getErrorMessage(error)
-        });
+        notify({ tone: 'error', title: getErrorMessage(error) });
       }
     }
   },
@@ -389,12 +427,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
-      const detail = await window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE });
+      const [detail, runtimeState] = await Promise.all([
+        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
+        window.atlasChat.chat.getRuntimeState({ conversationId }),
+      ]);
       set((current) => ({
-        conversationDetails: {
-          ...current.conversationDetails,
-          [conversationId]: detail
-        },
+        ...applyRuntimeSnapshotToStore(current, conversationId, runtimeState),
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
         selectedModelIdByConversation:
@@ -402,8 +440,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...current.selectedModelIdByConversation,
                 [conversationId]:
+                  runtimeState.conversation?.defaultModelId ??
                   detail.conversation.defaultModelId ??
-                  chooseDefaultModel(current.models, detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
+                  chooseDefaultModel(current.models, runtimeState.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
                   ''
               }
             : current.selectedModelIdByConversation
@@ -413,11 +452,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -430,10 +465,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set((current) => ({
-      isLoadingOlderByConversation: {
-        ...current.isLoadingOlderByConversation,
-        [conversationId]: true
-      }
+      isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: true }
     }));
 
     try {
@@ -446,10 +478,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const currentDetail = current.conversationDetails[conversationId];
         if (!currentDetail) {
           return {
-            isLoadingOlderByConversation: {
-              ...current.isLoadingOlderByConversation,
-              [conversationId]: false
-            }
+            isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
           };
         }
 
@@ -468,45 +497,26 @@ export const useAppStore = create<AppState>((set, get) => ({
               limit: page.limit
             }
           },
-          isLoadingOlderByConversation: {
-            ...current.isLoadingOlderByConversation,
-            [conversationId]: false
-          }
+          isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
         };
       });
     } catch (error) {
       set((current) => ({
-        isLoadingOlderByConversation: {
-          ...current.isLoadingOlderByConversation,
-          [conversationId]: false
-        }
+        isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
       }));
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
   createConversation: async () => {
     const created = await window.atlasChat.conversations.create();
     await get().refreshConversationList();
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(created.id);
   },
 
   openSettings: (section = 'general') =>
-    set({
-      activeView: 'settings',
-      settingsSection: section,
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    }),
+    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, modelPickerOpen: false }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
@@ -529,10 +539,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const secret = state.keyDraft.trim();
     const metadata = PROVIDER_METADATA[providerId];
     if (!secret) {
-      notify({
-        tone: 'error',
-        title: `Enter a ${metadata.label} API key before saving.`
-      });
+      notify({ tone: 'error', title: `Enter a ${metadata.label} API key before saving.` });
       return;
     }
 
@@ -540,26 +547,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const settings = await window.atlasChat.settings.saveProviderKey(providerId, secret);
-      set({
-        isSavingKey: false,
-        settings,
-        keyDraft: '',
-        activeCredentialProviderId: providerId
-      });
-
-      notify({
-        tone: 'success',
-        title: `${metadata.label} key saved to the OS keychain.`
-      });
+      set({ isSavingKey: false, settings, keyDraft: '', activeCredentialProviderId: providerId });
+      notify({ tone: 'success', title: `${metadata.label} key saved to the OS keychain.` });
     } catch (error) {
-      set({
-        isSavingKey: false
-      });
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      set({ isSavingKey: false });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -572,26 +564,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const settings = await window.atlasChat.settings.validateProviderKey(providerId, secretOverride);
-      set({
-        isValidatingKey: false,
-        settings,
-        keyDraft: '',
-      });
-
-      notify({
-        tone: 'success',
-        title: `${metadata.label} key validated successfully.`
-      });
+      set({ isValidatingKey: false, settings, keyDraft: '' });
+      notify({ tone: 'success', title: `${metadata.label} key validated successfully.` });
       await get().refreshModels({ silent: true });
     } catch (error) {
-      set({
-        isValidatingKey: false
-      });
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      set({ isValidatingKey: false });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -626,28 +604,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   checkForUpdates: async ({ manual } = {}) => {
     try {
       const snapshot = await window.atlasChat.updates.check();
-
       set({ updateState: snapshot });
 
       if (manual && snapshot.status === 'error') {
-        notify({
-          tone: 'error',
-          title: snapshot.message
-        });
+        notify({ tone: 'error', title: snapshot.message });
       }
-
       if (manual && snapshot.status === 'not-available') {
-        notify({
-          tone: 'info',
-          title: 'Atlas is up to date.'
-        });
+        notify({ tone: 'info', title: 'Atlas is up to date.' });
       }
     } catch (error) {
       if (manual) {
-        notify({
-          tone: 'error',
-          title: getErrorMessage(error)
-        });
+        notify({ tone: 'error', title: getErrorMessage(error) });
       }
     }
   },
@@ -658,10 +625,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSelectedModel: (conversationId, modelId) => {
     set((state) => ({
-      selectedModelIdByConversation: {
-        ...state.selectedModelIdByConversation,
-        [conversationId]: modelId
-      }
+      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId }
     }));
   },
 
@@ -670,23 +634,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const currentIndex = state.conversations.findIndex(
       (conversation) => conversation.id === state.selectedConversationId
     );
-
     if (currentIndex === -1) {
       return;
     }
-
     const nextConversation =
       direction === 'previous' ? state.conversations[currentIndex - 1] : state.conversations[currentIndex + 1];
-
     if (!nextConversation) {
       return;
     }
-
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(nextConversation.id);
   },
 
@@ -695,12 +651,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!conversation) {
       return;
     }
-
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(conversation.id);
   },
 
@@ -733,72 +684,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       resolveSelectedModelId(
         conversationId,
         state.selectedModelIdByConversation,
-        {
-          ...state.conversationDetails,
-          [conversationId]: detail
-        },
+        { ...state.conversationDetails, [conversationId]: detail },
         state.models
-    ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
+      ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
 
     if (!modelId) {
-      notify({
-        tone: 'error',
-        title: 'Refresh the model catalog and select a model before sending.'
-      });
+      notify({ tone: 'error', title: 'Refresh the model catalog and select a model before sending.' });
       return;
     }
 
     const selectedModel = getModelById(state.models, modelId);
     const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
-
     if (!selectedModel || !providerId) {
-      notify({
-        tone: 'error',
-        title: 'Select a valid model before sending.'
-      });
+      notify({ tone: 'error', title: 'Select a valid model before sending.' });
       return;
     }
 
     const unsupportedAttachment = normalizedFiles.find(
       (file) => !isSupportedAttachmentMediaType(file.mediaType, file.filename),
     );
-
     if (unsupportedAttachment) {
-      notify({
-        tone: 'error',
-        title: `${unsupportedAttachment.filename ?? 'This file'} is not a supported attachment type.`,
-      });
+      notify({ tone: 'error', title: `${unsupportedAttachment.filename ?? 'This file'} is not a supported attachment type.` });
       return;
     }
 
     const totalAttachmentBytes = sumAttachmentSize(normalizedFiles);
     if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-      notify({
-        tone: 'error',
-        title: 'Attachments are too large to send together.',
-      });
+      notify({ tone: 'error', title: 'Attachments are too large to send together.' });
       return;
     }
 
     const attachmentCapabilityError = getAttachmentCapabilityError(selectedModel, normalizedFiles);
     if (attachmentCapabilityError) {
-      notify({
-        tone: 'error',
-        title: attachmentCapabilityError,
-      });
+      notify({ tone: 'error', title: attachmentCapabilityError });
       return;
     }
 
     const credential = findCredential(state.settings, providerId);
     if (!credential?.hasSecret) {
-      notify({
-        tone: 'error',
-        title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.`
-      });
-
-      set({
-        activeCredentialProviderId: providerId
-      });
+      notify({ tone: 'error', title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.` });
+      set({ activeCredentialProviderId: providerId });
       return;
     }
 
@@ -820,63 +745,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationId,
         providerId,
         modelId,
-        messages: [
-          {
-            role: 'user' as const,
-            content: previewContent,
-            parts: inputParts,
-          },
-        ],
+        messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
         enableTools: Boolean(selectedModel.supportsTools),
         temperature: 0.65
       });
     } catch (error) {
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error),
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
       throw error;
     }
 
     const now = new Date().toISOString();
-    const optimisticParts = buildUserMessageParts({
-      content: trimmed,
-      parts: inputParts,
-      idPrefix: request.requestId,
-    });
+    const optimisticId = `optimistic-${request.requestId}`;
+    const optimisticMessage = {
+      id: optimisticId,
+      conversationId,
+      role: 'user' as const,
+      content: previewContent,
+      reasoning: null,
+      parts: [{ type: 'text' as const, text: trimmed, state: 'done' as const, id: `${optimisticId}-text-0` }],
+      status: 'complete' as const,
+      providerId,
+      modelId,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      latencyMs: null,
+      errorCode: null,
+      createdAt: now
+    };
 
     set((current) => ({
       conversationDetails: {
         ...current.conversationDetails,
         [conversationId]: {
           ...detail,
-          messages: [
-            ...detail.messages,
-            {
-              id: `optimistic-${request.requestId}`,
-              conversationId,
-              role: 'user' as const,
-              content: previewContent,
-              reasoning: null,
-              parts: optimisticParts,
-              status: 'complete' as const,
-              providerId,
-              modelId,
-              inputTokens: null,
-              outputTokens: null,
-              reasoningTokens: null,
-              latencyMs: null,
-              errorCode: null,
-              createdAt: now
-            }
-          ]
+          messages: [...detail.messages, optimisticMessage]
         }
       },
       conversationStats: current.conversationStats
-        ? {
-            ...current.conversationStats,
-            storedMessageCount: current.conversationStats.storedMessageCount + 1
-          }
+        ? { ...current.conversationStats, storedMessageCount: current.conversationStats.storedMessageCount + 1 }
         : current.conversationStats,
       draftsByConversation: {
         ...current.draftsByConversation,
@@ -885,14 +792,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           providerId,
           modelId,
           parts: [],
-          status: 'streaming' as const,
+          status: 'streaming',
           startedAt: now
         }
       },
-      requestToConversation: {
-        ...current.requestToConversation,
-        [request.requestId]: conversationId
-      },
+      requestToConversation: { ...current.requestToConversation, [request.requestId]: conversationId },
       conversations: current.conversations
         .map((conversation) =>
           conversation.id === conversationId
@@ -911,13 +815,50 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  resendLastUserMessage: async () => {
+    const state = get();
+    const conversationId = state.selectedConversationId;
+    if (!conversationId) {
+      return;
+    }
+    const detail = state.conversationDetails[conversationId];
+    if (!detail) {
+      return;
+    }
+    const lastUser = [...detail.messages].reverse().find((message) => message.role === 'user');
+    if (!lastUser) {
+      return;
+    }
+    const text = lastUser.parts
+      .filter((part): part is Extract<typeof lastUser.parts[number], { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n\n')
+      .trim() || lastUser.content.trim();
+    if (!text) {
+      return;
+    }
+    await get().sendMessage({ text, files: [] });
+  },
+
   abortConversation: async (conversationId) => {
     const draft = get().draftsByConversation[conversationId];
     if (!draft || draft.status !== 'streaming') {
       return;
     }
-
     await window.atlasChat.chat.abort(draft.requestId);
+  },
+
+  respondToolApproval: async (request) => {
+    set((state) => {
+      const conversationId = resolveConversationIdForRequest(request.requestId, state);
+      if (!conversationId) {
+        return state;
+      }
+      return {
+        requestToConversation: { ...state.requestToConversation, [request.requestId]: conversationId }
+      };
+    });
+    await window.atlasChat.chat.respondToolApproval(request);
   },
 
   deleteConversation: async (conversationId) => {
@@ -928,10 +869,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.atlasChat.chat.abort(draft.requestId);
     }
 
+    // Snapshot the previous state so we can roll back if the IPC delete fails.
+    const previousDetail = state.conversationDetails[conversationId];
+    const previousDraft = state.draftsByConversation[conversationId];
+    const previousSelectedModel = state.selectedModelIdByConversation[conversationId];
+    const previousSequence = state.runtimeSequenceByConversation[conversationId];
+    const previousLoadingOlder = state.isLoadingOlderByConversation[conversationId];
+    const previousConversations = state.conversations;
+    const previousSelectedId = state.selectedConversationId;
+    const previousRequestMap = state.requestToConversation;
+
     set((current) => {
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
       const { [conversationId]: _deletedDraft, ...restDrafts } = current.draftsByConversation;
       const { [conversationId]: _deletedModel, ...restSelectedModels } = current.selectedModelIdByConversation;
+      const { [conversationId]: _deletedSequence, ...restSequences } = current.runtimeSequenceByConversation;
       const { [conversationId]: _loadingOlder, ...restLoadingOlder } = current.isLoadingOlderByConversation;
       const requestToConversation = Object.fromEntries(
         Object.entries(current.requestToConversation).filter(([, mappedConversationId]) => mappedConversationId !== conversationId)
@@ -947,6 +899,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
+        runtimeSequenceByConversation: restSequences,
         isLoadingOlderByConversation: restLoadingOlder,
         inactiveConversationIds: current.inactiveConversationIds.filter((id) => id !== conversationId),
         requestToConversation,
@@ -954,7 +907,33 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
 
-    await window.atlasChat.conversations.delete(conversationId);
+    try {
+      await window.atlasChat.conversations.delete(conversationId);
+    } catch (error) {
+      // Roll back the optimistic UI update so the conversation reappears.
+      set((current) => ({
+        conversationDetails: previousDetail
+          ? { ...current.conversationDetails, [conversationId]: previousDetail }
+          : current.conversationDetails,
+        draftsByConversation: previousDraft
+          ? { ...current.draftsByConversation, [conversationId]: previousDraft }
+          : current.draftsByConversation,
+        selectedModelIdByConversation: previousSelectedModel
+          ? { ...current.selectedModelIdByConversation, [conversationId]: previousSelectedModel }
+          : current.selectedModelIdByConversation,
+        runtimeSequenceByConversation: previousSequence
+          ? { ...current.runtimeSequenceByConversation, [conversationId]: previousSequence }
+          : current.runtimeSequenceByConversation,
+        isLoadingOlderByConversation: previousLoadingOlder
+          ? { ...current.isLoadingOlderByConversation, [conversationId]: previousLoadingOlder }
+          : current.isLoadingOlderByConversation,
+        conversations: previousConversations,
+        requestToConversation: previousRequestMap,
+        selectedConversationId: previousSelectedId
+      }));
+      notify({ tone: 'error', title: getErrorMessage(error) });
+      return;
+    }
 
     const [conversations, conversationStats] = await Promise.all([
       window.atlasChat.conversations.list(),
@@ -969,7 +948,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const nextSelectedConversationId = get().selectedConversationId;
-
     set({ conversations, conversationStats });
 
     if (nextSelectedConversationId && conversations.some((conversation) => conversation.id === nextSelectedConversationId)) {
@@ -984,63 +962,57 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   handleStreamEvent: async (event) => {
-    const conversationId = get().requestToConversation[event.requestId];
+    const state = get();
+    const conversationId =
+      event.type === 'runtime-sync'
+        ? event.conversationId
+        : resolveConversationIdForRequest(event.requestId, state);
 
     if (!conversationId) {
       return;
     }
 
-    if (
-      event.type === 'chunk' ||
-      event.type === 'reasoning' ||
-      event.type === 'tool-input-start' ||
-      event.type === 'tool-input-delta' ||
-      event.type === 'tool-input-available' ||
-      event.type === 'tool-output-available' ||
-      event.type === 'tool-output-error' ||
-      event.type === 'tool-output-denied' ||
-      event.type === 'visual-start' ||
-      event.type === 'visual-complete'
-    ) {
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
-          return state;
-        }
+    if (!state.requestToConversation[event.requestId]) {
+      set((current) => ({
+        requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId }
+      }));
+    }
 
-        return {
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              parts: applyStreamEventToParts(draft.parts, event)
-            }
-          }
-        };
+    if (event.type === 'runtime-sync') {
+      const currentSequence = get().runtimeSequenceByConversation[conversationId] ?? 0;
+      if (event.sequence <= currentSequence) {
+        return;
+      }
+      const recovery = await window.atlasChat.chat.recoverEvents({
+        conversationId,
+        afterSequence: currentSequence,
       });
+      if (recovery.events.length === 0) {
+        const snapshot = await window.atlasChat.chat.getRuntimeState({ conversationId });
+        set((current) => ({
+          ...applyRuntimeSnapshotToStore(current, conversationId, snapshot),
+          requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId },
+        }));
+        return;
+      }
+      set((current) => applyRecoveredRuntimeEventsToStore(current, conversationId, recovery.events));
+      return;
+    }
+
+    // Apply a per-stream event (text/reasoning/tool/visual). The pure
+    // reducer handles the fan-out to draft + detail so this branch stays
+    // short and obvious.
+    const streamPatch = applyStreamingEvent(state, conversationId, event);
+    if (streamPatch) {
+      set((current) => ({ ...current, ...streamPatch }));
       return;
     }
 
     if (event.type === 'meta') {
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
-          return state;
-        }
-
-        return {
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              reasoningTokens: event.reasoningTokens,
-              latencyMs: event.latencyMs
-            }
-          }
-        };
-      });
+      const metaPatch = applyMetaEvent(state, conversationId, event);
+      if (metaPatch) {
+        set((current) => ({ ...current, ...metaPatch }));
+      }
       return;
     }
 
@@ -1051,46 +1023,44 @@ export const useAppStore = create<AppState>((set, get) => ({
         window.atlasChat.conversations.getStats(),
         window.atlasChat.diagnostics.getSnapshot()
       ]);
-      const shouldShowNotice =
-        event.code === 'auth_error' || event.code === 'missing_credential';
+      const shouldShowNotice = event.code === 'auth_error' || event.code === 'missing_credential';
 
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        if (!draft) {
-          return state;
+      set((s) => {
+        const draft = s.draftsByConversation[conversationId];
+        const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
+        const nextDrafts = { ...s.draftsByConversation };
+
+        if (draft) {
+          nextDrafts[conversationId] = {
+            ...draft,
+            status: event.code === 'aborted' ? 'aborted' : 'error',
+            errorMessage: event.message
+          };
+        } else {
+          delete nextDrafts[conversationId];
         }
-
-        const { [event.requestId]: _omitted, ...restRequests } = state.requestToConversation;
 
         return {
           requestToConversation: restRequests,
           conversationDetails: {
-            ...state.conversationDetails,
-            [conversationId]: mergeConversationPage(state.conversationDetails[conversationId], page)
+            ...s.conversationDetails,
+            [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
           },
           conversations,
           conversationStats,
           diagnostics,
-          draftsByConversation: {
-            ...state.draftsByConversation,
-            [conversationId]: {
-              ...draft,
-              status: event.code === 'aborted' ? 'aborted' : 'error',
-              errorMessage: event.message
-            }
-          }
+          draftsByConversation: nextDrafts
         };
       });
 
       if (shouldShowNotice) {
-        notify({
-          tone: 'error',
-          title: event.message
-        });
+        notify({ tone: 'error', title: event.message });
       }
       return;
     }
 
+    // Terminal event (finish / completion): drop the draft and refresh from
+    // the main process so the persisted message is the source of truth.
     const [page, conversations, conversationStats, diagnostics] = await Promise.all([
       window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
       window.atlasChat.conversations.list(),
@@ -1098,16 +1068,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.atlasChat.diagnostics.getSnapshot()
     ]);
 
-    set((state) => {
-      const { [conversationId]: draft, ...restDrafts } = state.draftsByConversation;
-      const { [event.requestId]: _omitted, ...restRequests } = state.requestToConversation;
+    set((s) => {
+      const { [conversationId]: draft, ...restDrafts } = s.draftsByConversation;
+      const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
 
       return {
         requestToConversation: restRequests,
         draftsByConversation: restDrafts,
         conversationDetails: {
-          ...state.conversationDetails,
-          [conversationId]: mergeConversationPage(state.conversationDetails[conversationId], page)
+          ...s.conversationDetails,
+          [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
         },
         conversations,
         conversationStats,
@@ -1115,16 +1085,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
   },
-
 }));
 
+// =============================================================================
+// Helpers
+// =============================================================================
+function findConfiguredCredential(settings: SettingsSummary | null): ProviderCredentialSummary | null {
+  return settings?.providers.find((provider) => provider.hasSecret) ?? null;
+}
+
+function buildBootstrapConversationDetails(
+  selectedConversationId: string | null,
+  detail: ConversationPage | null | undefined,
+  runtimeState: RuntimeStateSnapshot | null
+) {
+  if (!selectedConversationId) return {};
+  const mergedConversation = runtimeState?.conversation ?? detail?.conversation ?? null;
+  if (runtimeState && mergedConversation) {
+    return {
+      [selectedConversationId]: {
+        conversation: mergedConversation,
+        messages: runtimeState.messages ?? [],
+        hasOlder: detail?.hasOlder ?? false,
+        nextCursor: detail?.nextCursor ?? null,
+        limit: detail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
+      },
+    };
+  }
+  if (detail) {
+    return { [selectedConversationId]: detail };
+  }
+  return {};
+}
+
+// =============================================================================
+// Selectors
+// =============================================================================
 export function selectLoadedConversationMetrics(state: AppState) {
   return getLoadedConversationCounts(state.conversationDetails);
 }
 
 export function selectDiagnosticsSummary(state: AppState) {
   const loadedMetrics = getLoadedConversationCounts(state.conversationDetails);
-
   return {
     rendererHeapBytes: collectRendererHeapBytes(),
     loadedConversationCount: loadedMetrics.loadedConversationCount,
@@ -1142,3 +1144,6 @@ export function selectDiagnosticsSummary(state: AppState) {
 export function selectCompactedConversationForCache(detail: ConversationPage) {
   return compactConversationPage(detail);
 }
+
+// Re-export helper for tests that need to drive the pure reducers directly.
+export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent };

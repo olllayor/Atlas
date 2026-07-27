@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 
 interface NavProps {
@@ -11,9 +12,15 @@ export function XAINavbar({ onBackToApp }: NavProps) {
     <nav className="fixed top-0 left-0 right-0 z-50 bg-[var(--bg-base)] border-b border-[var(--border-default)]">
       <div className="max-w-[1200px] mx-auto px-6 h-16 flex items-center justify-between">
         <div className="flex items-center gap-8">
-          <a href="#" className="xai-mono text-sm uppercase tracking-[1.4px] text-white hover:text-[var(--text-tertiary)] transition-colors">
+          <button
+            type="button"
+            onClick={() => {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className="xai-mono text-sm uppercase tracking-[1.4px] text-white hover:text-[var(--text-tertiary)] transition-colors"
+          >
             ATLAS
-          </a>
+          </button>
           <div className="hidden md:flex items-center gap-6">
             <a href="#features" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">Features</a>
             <a href="#models" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">Models</a>
@@ -27,8 +34,8 @@ export function XAINavbar({ onBackToApp }: NavProps) {
               APP
             </button>
           )}
-          <button className="xai-btn-primary">
-            GET STARTED
+          <button className="xai-btn-primary" onClick={onBackToApp}>
+            OPEN THE APP
           </button>
         </div>
 
@@ -58,8 +65,8 @@ export function XAINavbar({ onBackToApp }: NavProps) {
               APP
             </button>
           )}
-          <button className="xai-btn-primary w-full">
-            GET STARTED
+          <button className="xai-btn-primary w-full" onClick={onBackToApp}>
+            OPEN THE APP
           </button>
         </div>
       )}

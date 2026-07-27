@@ -1,4 +1,4 @@
-import { CodeBlock, streamdownCodeLanguages } from '@/components/CodeBlock';
+import { CodeBlock } from '@/components/CodeBlock';
 import { cn } from '@/lib/utils';
 import { cjk } from '@streamdown/cjk';
 import { code } from '@streamdown/code';
@@ -6,6 +6,8 @@ import { math } from '@streamdown/math';
 import { mermaid } from '@streamdown/mermaid';
 import type { ComponentProps } from 'react';
 import { Streamdown, type CustomRenderer } from 'streamdown';
+
+import { streamdownCodeLanguages } from './codeLanguages';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
 

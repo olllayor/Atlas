@@ -1,6 +1,12 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
+import {
+  APPROVAL_GATED_TOOL_NAMES,
+  DEFAULT_TOOL_PERMISSION_MODE,
+  SIDE_EFFECTING_TOOL_NAMES
+} from '../../../shared/chatParameters';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import {
   bashToolExecute,
@@ -21,8 +27,37 @@ export const TOOL_USE_SYSTEM_PROMPT = [
   'After a tool finishes, explain the result clearly and concisely.'
 ].join(' ');
 
-export function createBuiltInTools(modelsRepo: ModelsRepo) {
-  return {
+/**
+ * Prompt fragment describing the active permission mode, so the model does not
+ * plan around a tool it will never be offered.
+ */
+export function describeToolPermissionsForPrompt(mode: ToolPermissionMode) {
+  if (mode === 'read-only') {
+    return 'Read-only mode is active: shell and web tools are unavailable this turn. Do not claim to have run them.';
+  }
+
+  if (mode === 'full-access') {
+    return 'Full-access mode is active: every tool runs immediately without asking the user first.';
+  }
+
+  return 'Shell commands and web fetches pause for the user to approve before they run.';
+}
+
+/**
+ * `extraTools` lets optional subsystems (currently Sites) contribute tools
+ * without every caller having to know they exist.
+ *
+ * `mode` decides which tools are offered at all and which pause for approval.
+ * Withholding a tool is stronger than refusing it in a prompt: the model cannot
+ * call something that was never in its tool set.
+ */
+export function createBuiltInTools(
+  modelsRepo: ModelsRepo,
+  extraTools: Record<string, unknown> | null = null,
+  mode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE
+) {
+  const all = {
+    ...(extraTools ?? {}),
     read_file: tool({
       description:
         'Read a local file from an absolute path. Supports text files, notebooks, images, and PDFs. Use offset and limit for large text files.',
@@ -132,7 +167,9 @@ export function createBuiltInTools(modelsRepo: ModelsRepo) {
       strict: true,
       execute: async ({ freeOnly, limit, query, supportsTools, supportsVision }) => {
         const normalizedQuery = query?.toLowerCase();
-        const models = modelsRepo.list({ freeOnly, includeArchived: false });
+        // Same scope as the model picker: never describe a model the user has
+        // no configured provider for.
+        const models = modelsRepo.list({ freeOnly, includeArchived: false, configuredOnly: true });
 
         const matches = models.filter((model) => {
           if (supportsTools != null && model.supportsTools !== supportsTools) {
@@ -165,5 +202,36 @@ export function createBuiltInTools(modelsRepo: ModelsRepo) {
         };
       }
     })
-  } as const;
+  };
+
+  return applyToolPermissionMode(all, mode);
+}
+
+/**
+ * Read-only drops the side-effecting tools; full-access clears the approval
+ * flags so nothing pauses. `ask` is the shape the tools are declared in.
+ */
+function applyToolPermissionMode<T extends Record<string, unknown>>(tools: T, mode: ToolPermissionMode): T {
+  if (mode === 'ask') {
+    return tools;
+  }
+
+  const withheld: readonly string[] = mode === 'read-only' ? SIDE_EFFECTING_TOOL_NAMES : [];
+  const result: Record<string, unknown> = {};
+
+  for (const [name, definition] of Object.entries(tools)) {
+    if (withheld.includes(name)) {
+      continue;
+    }
+
+    if (mode === 'full-access' && (APPROVAL_GATED_TOOL_NAMES as readonly string[]).includes(name)) {
+      // Same tool, approval flag cleared, so it executes without pausing.
+      result[name] = { ...(definition as Record<string, unknown>), needsApproval: false };
+      continue;
+    }
+
+    result[name] = definition;
+  }
+
+  return result as T;
 }

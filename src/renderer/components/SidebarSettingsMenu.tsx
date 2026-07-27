@@ -8,7 +8,7 @@ import {
 } from '@radix-ui/react-icons';
 
 import type { AppUpdateSnapshot, ConversationStats, SettingsSection, SettingsSummary } from '../../shared/contracts';
-import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -39,7 +39,7 @@ function getProfileSubtitle(settings: SettingsSummary | null) {
     return 'No API key configured';
   }
 
-  const metadata = PROVIDER_METADATA[configuredProvider.providerId];
+  const metadata = resolveProviderMetadata(configuredProvider.providerId, settings?.customProviders ?? []);
 
   if (configuredProvider.status === 'valid') {
     return metadata.configuredLabel;

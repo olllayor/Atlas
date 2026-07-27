@@ -1,62 +1,50 @@
 import type { ProviderId } from './contracts';
+import type { CustomProvider } from './customProviders';
+import { isCustomProviderId } from './customProviders';
 
 export type ProviderMetadata = {
   id: ProviderId;
   label: string;
   keyLabel: string;
   keyPlaceholder: string;
-  keyLink: string;
-  keyLinkLabel: string;
   configuredLabel: string;
   needsAttentionLabel: string;
   savedLabel: string;
 };
 
-export const PROVIDER_ORDER: ProviderId[] = ['openrouter', 'glm', 'openai', 'gemini'];
+function buildProviderMetadata(providerId: ProviderId, name: string): ProviderMetadata {
+  return {
+    id: providerId,
+    label: name,
+    keyLabel: 'API key',
+    keyPlaceholder: 'Enter API key',
+    configuredLabel: `${name} configured`,
+    needsAttentionLabel: `${name} needs attention`,
+    savedLabel: `${name} key saved`
+  };
+}
 
-export const PROVIDER_METADATA: Record<ProviderId, ProviderMetadata> = {
-  openrouter: {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    keyLabel: 'OpenRouter API key',
-    keyPlaceholder: 'sk-or-v1-...',
-    keyLink: 'https://openrouter.ai/keys',
-    keyLinkLabel: 'openrouter.ai/keys',
-    configuredLabel: 'OpenRouter configured',
-    needsAttentionLabel: 'OpenRouter needs attention',
-    savedLabel: 'OpenRouter key saved'
-  },
-  glm: {
-    id: 'glm',
-    label: 'GLM',
-    keyLabel: 'GLM API key',
-    keyPlaceholder: 'zai-...',
-    keyLink: 'https://z.ai/',
-    keyLinkLabel: 'z.ai',
-    configuredLabel: 'GLM configured',
-    needsAttentionLabel: 'GLM needs attention',
-    savedLabel: 'GLM key saved'
-  },
-  openai: {
-    id: 'openai',
-    label: 'OpenAI',
-    keyLabel: 'OpenAI API key',
-    keyPlaceholder: 'sk-...',
-    keyLink: 'https://platform.openai.com/api-keys',
-    keyLinkLabel: 'platform.openai.com/api-keys',
-    configuredLabel: 'OpenAI configured',
-    needsAttentionLabel: 'OpenAI needs attention',
-    savedLabel: 'OpenAI key saved'
-  },
-  gemini: {
-    id: 'gemini',
-    label: 'Gemini',
-    keyLabel: 'Gemini API key',
-    keyPlaceholder: 'AIza...',
-    keyLink: 'https://aistudio.google.com/app/apikey',
-    keyLinkLabel: 'aistudio.google.com/app/apikey',
-    configuredLabel: 'Gemini configured',
-    needsAttentionLabel: 'Gemini needs attention',
-    savedLabel: 'Gemini key saved'
+/**
+ * Metadata for any provider id. Every provider is user-configured now, so the
+ * display name comes from the saved configuration rather than a built-in table.
+ */
+export function resolveProviderMetadata(
+  providerId: ProviderId,
+  customProviders: Pick<CustomProvider, 'id' | 'name'>[] = []
+): ProviderMetadata {
+  const configured = customProviders.find((provider) => provider.id === providerId);
+  if (configured) {
+    return buildProviderMetadata(providerId, configured.name);
   }
-};
+
+  // A provider that was deleted, or a legacy id from before the migration.
+  const fallbackName = isCustomProviderId(providerId) ? 'Removed provider' : providerId;
+  return buildProviderMetadata(providerId, fallbackName);
+}
+
+export function resolveProviderLabel(
+  providerId: ProviderId,
+  customProviders: Pick<CustomProvider, 'id' | 'name'>[] = []
+) {
+  return resolveProviderMetadata(providerId, customProviders).label;
+}

@@ -1,4 +1,42 @@
-export type ProviderId = 'openrouter' | 'glm' | 'openai' | 'gemini';
+import type { MentionId } from './mentions';
+import type {
+  CreateSiteRequest,
+  DeleteSiteFileRequest,
+  ExportSiteRequest,
+  ExportSiteResult,
+  OpenSitePreviewRequest,
+  PublishSiteRequest,
+  ReadSiteFileRequest,
+  RollbackSiteRequest,
+  SiteDetail,
+  SitePreviewTarget,
+  SiteReviewChecklist,
+  SiteSummary,
+  WriteSiteFileRequest,
+} from './sites';
+
+/**
+ * Every provider is user-configured, so an id is just the `custom:<slug>` the
+ * app minted when the endpoint was added. Historical ids (`openrouter`, `glm`)
+ * can still appear in old rows until the startup migration rewrites them.
+ */
+export type ProviderId = string;
+
+export type * from './sites';
+export type * from './mentions';
+export type * from './customProviders';
+export type * from './chatParameters';
+
+import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
+import type {
+  CreateCustomProviderRequest,
+  CustomProvider,
+  DiscoverCustomProviderModelsRequest,
+  DiscoveredModel,
+  ProviderPreset,
+  SetCustomProviderModelsRequest,
+  UpdateCustomProviderRequest
+} from './customProviders';
 
 export type {
   KeybindingCommand,
@@ -131,12 +169,42 @@ export type ModelSummary = {
   archived: boolean;
   lastSyncedAt: string;
   lastSeenFreeAt: string | null;
+  /**
+   * Largest completion the upstream model accepts. `null` means the provider
+   * did not advertise one, in which case the adapter falls back to its own
+   * conservative default instead of guessing high and getting a 400.
+   */
+  maxOutputTokens?: number | null;
+  /**
+   * Some models (notably reasoning models) reject `temperature` outright, so
+   * the catalog records whether it is safe to send.
+   */
+  supportsTemperature?: boolean;
+  supportsReasoning?: boolean;
+};
+
+/**
+ * Per-model runtime facts a provider adapter needs to build an accurate
+ * request. Sourced from the model catalog rather than hardcoded per provider.
+ */
+export type ModelRuntimeHints = {
+  contextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  supportsTemperature?: boolean;
+  supportsReasoning?: boolean;
+  supportsTools?: boolean;
 };
 
 export type ListModelsOptions = {
   freeOnly?: boolean;
   includeArchived?: boolean;
   allowStale?: boolean;
+  /**
+   * Restrict to models whose provider is still configured and enabled. The
+   * cache outlives providers — a removed or disabled endpoint leaves rows
+   * behind that must not be offered as selectable models.
+   */
+  configuredOnly?: boolean;
 };
 
 export type ProviderCredentialSummary = {
@@ -161,7 +229,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -187,11 +255,20 @@ export type SettingsKeyboardSummary = {
   keybindings: import('./keybindings').KeybindingRule[];
 };
 
+/** Per-turn chat parameters the composer exposes, persisted across launches. */
+export type SettingsChatSummary = {
+  reasoningEffort: ReasoningEffort;
+  toolPermissionMode: ToolPermissionMode;
+};
+
 export type SettingsSummary = {
   providers: ProviderCredentialSummary[];
+  /** User-configured endpoints, so the UI can label and group them. */
+  customProviders: CustomProvider[];
   defaultProviderId: ProviderId | null;
   appearance: SettingsAppearanceSummary;
   keyboard: SettingsKeyboardSummary;
+  chat: SettingsChatSummary;
   showFreeOnlyByDefault: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
@@ -285,8 +362,14 @@ export type ChatStartRequest = {
   modelId: string;
   messages: ChatInputMessage[];
   enableTools?: boolean;
+  /** Capabilities the user explicitly opted into via composer mentions (`@Sites`). */
+  mentions?: MentionId[];
   temperature?: number;
   maxOutputTokens?: number;
+  /** Thinking budget for this turn. Ignored by models without a thinking mode. */
+  reasoningEffort?: ReasoningEffort;
+  /** What the assistant may do with tools in this turn. */
+  toolPermissionMode?: ToolPermissionMode;
 };
 
 export type ChatStartResponse = {
@@ -703,6 +786,10 @@ export type SettingsUpdateRequest = {
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];
   };
+  chat?: {
+    reasoningEffort?: ReasoningEffort;
+    toolPermissionMode?: ToolPermissionMode;
+  };
 };
 
 export type AppUpdateProgress = {
@@ -764,6 +851,16 @@ export type RendererApi = {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;
     refresh: () => Promise<ModelSummary[]>;
   };
+  providers: {
+    list: () => Promise<CustomProvider[]>;
+    create: (request: CreateCustomProviderRequest) => Promise<CustomProvider>;
+    update: (request: UpdateCustomProviderRequest) => Promise<CustomProvider>;
+    delete: (providerId: ProviderId) => Promise<void>;
+    setModels: (request: SetCustomProviderModelsRequest) => Promise<CustomProvider>;
+    discoverModels: (request: DiscoverCustomProviderModelsRequest) => Promise<DiscoveredModel[]>;
+    testConnection: (request: DiscoverCustomProviderModelsRequest) => Promise<void>;
+    listPresets: () => Promise<ProviderPreset[]>;
+  };
   conversations: {
     list: () => Promise<ConversationSummary[]>;
     create: () => Promise<ConversationSummary>;
@@ -787,6 +884,28 @@ export type RendererApi = {
     get: (id: string) => Promise<SavedVisual | null>;
     search: (query: string, limit?: number) => Promise<SavedVisual[]>;
     delete: (id: string) => Promise<boolean>;
+  };
+  sites: {
+    list: (includeDeleted?: boolean) => Promise<SiteSummary[]>;
+    get: (siteId: string) => Promise<SiteDetail>;
+    create: (request: CreateSiteRequest) => Promise<SiteDetail>;
+    rename: (siteId: string, title: string) => Promise<SiteDetail>;
+    delete: (siteId: string) => Promise<void>;
+    restore: (siteId: string) => Promise<SiteDetail>;
+    purge: (siteId: string) => Promise<void>;
+    readFile: (request: ReadSiteFileRequest) => Promise<string>;
+    writeFile: (request: WriteSiteFileRequest) => Promise<SiteDetail>;
+    deleteFile: (request: DeleteSiteFileRequest) => Promise<SiteDetail>;
+    build: (siteId: string) => Promise<SiteDetail>;
+    review: (siteId: string) => Promise<SiteReviewChecklist>;
+    publish: (request: PublishSiteRequest) => Promise<SiteDetail>;
+    unpublish: (siteId: string) => Promise<SiteDetail>;
+    rollback: (request: RollbackSiteRequest) => Promise<SiteDetail>;
+    resetDraft: (request: RollbackSiteRequest) => Promise<SiteDetail>;
+    previewTarget: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
+    openPreviewWindow: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
+    export: (request: ExportSiteRequest) => Promise<ExportSiteResult>;
+    openInBrowser: (siteId: string, versionId?: string | null) => Promise<string>;
   };
   diagnostics: {
     getSnapshot: () => Promise<DiagnosticsSnapshot>;

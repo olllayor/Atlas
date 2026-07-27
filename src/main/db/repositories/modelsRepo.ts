@@ -1,4 +1,9 @@
-import type { ListModelsOptions, ModelSummary, ProviderId } from '../../../shared/contracts';
+import type {
+  ListModelsOptions,
+  ModelRuntimeHints,
+  ModelSummary,
+  ProviderId
+} from '../../../shared/contracts';
 import type { SqliteDatabase } from '../client';
 
 type ModelRow = {
@@ -13,7 +18,46 @@ type ModelRow = {
   archived: number;
   last_synced_at: string;
   last_seen_free_at: string | null;
+  max_output_tokens: number | null;
+  supports_temperature: number;
+  supports_reasoning: number;
 };
+
+const MODEL_COLUMNS = `
+  model_id,
+  provider_id,
+  label,
+  context_window,
+  is_free,
+  supports_vision,
+  supports_document_input,
+  supports_tools,
+  archived,
+  last_synced_at,
+  last_seen_free_at,
+  max_output_tokens,
+  supports_temperature,
+  supports_reasoning
+`;
+
+function toSummary(row: ModelRow): ModelSummary {
+  return {
+    id: row.model_id,
+    providerId: row.provider_id,
+    label: row.label,
+    contextWindow: row.context_window,
+    isFree: Boolean(row.is_free),
+    supportsVision: Boolean(row.supports_vision),
+    supportsDocumentInput: Boolean(row.supports_document_input),
+    supportsTools: Boolean(row.supports_tools),
+    archived: Boolean(row.archived),
+    lastSyncedAt: row.last_synced_at,
+    lastSeenFreeAt: row.last_seen_free_at,
+    maxOutputTokens: row.max_output_tokens,
+    supportsTemperature: Boolean(row.supports_temperature),
+    supportsReasoning: Boolean(row.supports_reasoning)
+  };
+}
 
 export class ModelsRepo {
   constructor(private readonly db: SqliteDatabase) {}
@@ -22,18 +66,7 @@ export class ModelsRepo {
     const row = this.db
       .prepare<{ modelId: string }, ModelRow>(
         `
-          SELECT
-            model_id,
-            provider_id,
-            label,
-            context_window,
-            is_free,
-            supports_vision,
-            supports_document_input,
-            supports_tools,
-            archived,
-            last_synced_at,
-            last_seen_free_at
+          SELECT ${MODEL_COLUMNS}
           FROM model_cache
           WHERE model_id = @modelId
         `
@@ -44,74 +77,88 @@ export class ModelsRepo {
       return null;
     }
 
+    return toSummary(row);
+  }
+
+  /**
+   * Request-shaping facts for a model. Returns an empty object for unknown
+   * models so callers fall back to provider defaults rather than guessing.
+   */
+  getRuntimeHints(modelId: string): ModelRuntimeHints {
+    const model = this.getById(modelId);
+    if (!model) {
+      return {};
+    }
+
     return {
-      id: row.model_id,
-      providerId: row.provider_id,
-      label: row.label,
-      contextWindow: row.context_window,
-      isFree: Boolean(row.is_free),
-      supportsVision: Boolean(row.supports_vision),
-      supportsDocumentInput: Boolean(row.supports_document_input),
-      supportsTools: Boolean(row.supports_tools),
-      archived: Boolean(row.archived),
-      lastSyncedAt: row.last_synced_at,
-      lastSeenFreeAt: row.last_seen_free_at
-    } satisfies ModelSummary;
+      contextWindow: model.contextWindow,
+      maxOutputTokens: model.maxOutputTokens ?? null,
+      supportsTemperature: model.supportsTemperature ?? true,
+      supportsReasoning: model.supportsReasoning ?? false,
+      supportsTools: model.supportsTools
+    };
   }
 
   list(options: ListModelsOptions = {}) {
     const freeOnly = options.freeOnly ? 1 : 0;
     const includeArchived = options.includeArchived ? 1 : 0;
+    const configuredOnly = options.configuredOnly ? 1 : 0;
 
     const rows = this.db
-      .prepare<
-        { freeOnly: number; includeArchived: number },
-        ModelRow
-      >(
+      .prepare<{ freeOnly: number; includeArchived: number; configuredOnly: number }, ModelRow>(
         `
-          SELECT
-            model_id,
-            provider_id,
-            label,
-            context_window,
-            is_free,
-            supports_vision,
-            supports_document_input,
-            supports_tools,
-            archived,
-            last_synced_at,
-            last_seen_free_at
+          SELECT ${MODEL_COLUMNS}
           FROM model_cache
           WHERE (@freeOnly = 0 OR is_free = 1)
             AND (@includeArchived = 1 OR archived = 0)
+            AND (
+              @configuredOnly = 0
+              OR EXISTS (
+                SELECT 1 FROM custom_providers
+                WHERE custom_providers.id = model_cache.provider_id
+                  AND custom_providers.enabled = 1
+              )
+            )
           ORDER BY is_free DESC, COALESCE(last_seen_free_at, '') DESC, label ASC
         `
       )
-      .all({ freeOnly, includeArchived });
+      .all({ freeOnly, includeArchived, configuredOnly });
 
-    return rows.map<ModelSummary>((row: ModelRow) => ({
-      id: row.model_id,
-      providerId: row.provider_id,
-      label: row.label,
-      contextWindow: row.context_window,
-      isFree: Boolean(row.is_free),
-      supportsVision: Boolean(row.supports_vision),
-      supportsDocumentInput: Boolean(row.supports_document_input),
-      supportsTools: Boolean(row.supports_tools),
-      archived: Boolean(row.archived),
-      lastSyncedAt: row.last_synced_at,
-      lastSeenFreeAt: row.last_seen_free_at
-    }));
+    return rows.map<ModelSummary>(toSummary);
   }
 
-  upsertModels(models: ModelSummary[]) {
+  /**
+   * Drops cached models whose provider no longer exists at all. Disabled
+   * providers are left alone: their models come back when re-enabled, without
+   * needing another catalog fetch.
+   */
+  deleteOrphanedModels() {
+    this.db.exec(
+      `
+        DELETE FROM model_cache
+        WHERE NOT EXISTS (
+          SELECT 1 FROM custom_providers WHERE custom_providers.id = model_cache.provider_id
+        )
+      `
+    );
+  }
+
+  /**
+   * Upserts a provider catalog. When `pruneProviderId` is supplied, models that
+   * provider no longer serves are archived instead of lingering as selectable
+   * entries that 404 at send time.
+   */
+  upsertModels(models: ModelSummary[], options: { pruneProviderId?: ProviderId } = {}) {
     const existingRows = this.db
       .prepare<[], { model_id: string; last_seen_free_at: string | null }>(
         'SELECT model_id, last_seen_free_at FROM model_cache'
       )
       .all();
     const existing = new Map(
-      existingRows.map((row: { model_id: string; last_seen_free_at: string | null }) => [row.model_id, row.last_seen_free_at])
+      existingRows.map((row: { model_id: string; last_seen_free_at: string | null }) => [
+        row.model_id,
+        row.last_seen_free_at
+      ])
     );
 
     const now = new Date().toISOString();
@@ -128,7 +175,10 @@ export class ModelsRepo {
           supports_tools,
           archived,
           last_synced_at,
-          last_seen_free_at
+          last_seen_free_at,
+          max_output_tokens,
+          supports_temperature,
+          supports_reasoning
         )
         VALUES (
           @modelId,
@@ -141,7 +191,10 @@ export class ModelsRepo {
           @supportsTools,
           @archived,
           @lastSyncedAt,
-          @lastSeenFreeAt
+          @lastSeenFreeAt,
+          @maxOutputTokens,
+          @supportsTemperature,
+          @supportsReasoning
         )
         ON CONFLICT(model_id) DO UPDATE SET
           provider_id = excluded.provider_id,
@@ -153,11 +206,30 @@ export class ModelsRepo {
           supports_tools = excluded.supports_tools,
           archived = excluded.archived,
           last_synced_at = excluded.last_synced_at,
-          last_seen_free_at = excluded.last_seen_free_at
+          last_seen_free_at = excluded.last_seen_free_at,
+          max_output_tokens = excluded.max_output_tokens,
+          supports_temperature = excluded.supports_temperature,
+          supports_reasoning = excluded.supports_reasoning
+      `
+    );
+
+    const archiveStatement = this.db.prepare(
+      `
+        UPDATE model_cache
+        SET archived = 1
+        WHERE provider_id = @providerId
+          AND archived = 0
       `
     );
 
     const transaction = this.db.transaction((items: ModelSummary[]) => {
+      // Archive the provider's rows up front, then let the upsert below clear
+      // the flag for everything still in the catalog. Comparing sync
+      // timestamps instead would miss models written in the same millisecond.
+      if (options.pruneProviderId && items.length > 0) {
+        archiveStatement.run({ providerId: options.pruneProviderId });
+      }
+
       for (const model of items) {
         const previousLastSeenFreeAt = existing.get(model.id) ?? null;
 
@@ -172,12 +244,20 @@ export class ModelsRepo {
           supportsTools: model.supportsTools ? 1 : 0,
           archived: model.archived ? 1 : 0,
           lastSyncedAt: now,
-          lastSeenFreeAt: model.isFree ? now : previousLastSeenFreeAt
+          lastSeenFreeAt: model.isFree ? now : previousLastSeenFreeAt,
+          maxOutputTokens: model.maxOutputTokens ?? null,
+          supportsTemperature: (model.supportsTemperature ?? true) ? 1 : 0,
+          supportsReasoning: (model.supportsReasoning ?? false) ? 1 : 0
         });
       }
     });
 
     transaction(models);
+  }
+
+  /** Used when a user-configured provider is removed for good. */
+  deleteByProvider(providerId: ProviderId) {
+    this.db.prepare('DELETE FROM model_cache WHERE provider_id = @providerId').run({ providerId });
   }
 
   getCatalogStats() {

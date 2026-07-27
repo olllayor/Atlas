@@ -743,6 +743,32 @@ export class ConversationsRepo {
     );
   }
 
+  /**
+   * Rewrites every stored reference to a provider id. Used when the built-in
+   * providers were converted into user-configured ones, so old conversations
+   * still resolve to a live provider instead of erroring on send.
+   */
+  remapProviderId(from: ProviderId, to: ProviderId) {
+    const tables = [
+      { table: 'conversations', column: 'default_provider_id' },
+      { table: 'messages', column: 'provider_id' },
+      { table: 'conversation_events', column: 'provider_id' },
+      { table: 'conversation_turns', column: 'provider_id' },
+      { table: 'provider_sessions', column: 'provider_id' },
+    ];
+
+    for (const { table, column } of tables) {
+      try {
+        this.db
+          .prepare(`UPDATE ${table} SET ${column} = @to WHERE ${column} = @from`)
+          .run({ from, to });
+      } catch {
+        // A table from a newer or older schema revision; the remap is
+        // best-effort and must not block startup.
+      }
+    }
+  }
+
   getModelHistory(conversationId: string) {
     const rows = this.db
       .prepare<

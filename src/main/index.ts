@@ -3,13 +3,15 @@ import { join } from 'node:path';
 import { BrowserWindow, app, ipcMain } from 'electron/main';
 
 import { ChatEngine } from './ai/core/ChatEngine';
+import { ChatSessionRuntime } from './ai/core/ChatSessionRuntime';
+import { CustomProviderService } from './ai/core/CustomProviderService';
+import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration';
 import { ModelRegistry } from './ai/core/ModelRegistry';
+import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
 import { AttachmentStore } from './attachments/AttachmentStore';
-import { GlmProvider } from './ai/providers/glm';
-import { OpenRouterProvider } from './ai/providers/openrouter';
 import { createWindow } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
 import { createAppDatabase } from './db/client';
@@ -17,9 +19,15 @@ import { registerDiagnosticsIpc } from './ipc/diagnostics';
 import { registerChatIpc } from './ipc/chat';
 import { registerConversationsIpc } from './ipc/conversations';
 import { registerModelsIpc } from './ipc/models';
+import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
+import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
+import { SiteExporter } from './sites/SiteExporter';
+import { SiteFileStore } from './sites/SiteFileStore';
+import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
+import { SiteService } from './sites/SiteService';
 import { KeychainStore } from './secrets/keychain';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
@@ -32,6 +40,10 @@ const LEGACY_DATABASE_FILENAMES = ['atlas-chat.db', 'cheapchat.db'];
 const LEGACY_USER_DATA_DIRECTORIES = ['Atlas', 'CheapChat', 'cheapchat'];
 
 app.setName(APP_NAME);
+
+// Custom schemes must be declared before the app is ready. `atlas-site` gives
+// previewed sites their own secure origin instead of loading them over file://.
+registerSitePreviewScheme();
 
 async function pathExists(path: string) {
   try {
@@ -77,6 +89,12 @@ async function resolveAttachmentDirectory() {
   return attachmentsPath;
 }
 
+async function resolveSitesDirectory() {
+  const sitesPath = join(app.getPath('userData'), 'sites');
+  await mkdir(sitesPath, { recursive: true });
+  return sitesPath;
+}
+
 app.whenReady().then(async () => {
   const icon = getDockIcon();
   if (icon && process.platform === 'darwin' && app.dock) {
@@ -94,26 +112,73 @@ app.whenReady().then(async () => {
     'interrupted',
   );
   const keychain = new KeychainStore();
-  const openRouter = new OpenRouterProvider();
-  const glm = new GlmProvider();
   const updateService = new UpdateService();
-  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>([
-    [openRouter.providerId, openRouter],
-    [glm.providerId, glm]
-  ]);
+  // Every provider is user-configured; the registry starts empty and is filled
+  // from the database by CustomProviderService below.
+  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>();
 
-  for (const providerId of providers.keys()) {
-    database.settings.syncSecretPresence(providerId, Boolean(await keychain.getSecret(providerId)));
-  }
+  // Upgrade path: convert the former built-in providers into ordinary entries.
+  await migrateLegacyBuiltInProviders({
+    customProvidersRepo: database.customProviders,
+    modelsRepo: database.models,
+    settingsRepo: database.settings,
+    keychain,
+    remapConversationProvider: (from, to) => database.conversations.remapProviderId(from, to)
+  }).catch(() => undefined);
 
-  const modelRegistry = new ModelRegistry(database.models, database.settings, keychain, providers);
+  const modelRegistry = new ModelRegistry(
+    database.models,
+    database.settings,
+    keychain,
+    providers,
+    database.customProviders
+  );
+
+  const customProviderService = new CustomProviderService({
+    repo: database.customProviders,
+    modelsRepo: database.models,
+    settingsRepo: database.settings,
+    keychain,
+    registry: providers,
+    // A configuration change can add, remove or re-point models, so the catalog
+    // is rebuilt rather than left showing endpoints that no longer exist.
+    onProvidersChanged: async () => {
+      await modelRegistry.refresh().catch(() => undefined);
+    }
+  });
+
+  // Adapters for providers saved in a previous session.
+  await customProviderService.syncRegistry();
+  // Drop cached models left behind by providers that no longer exist, so the
+  // catalog does not carry entries nothing can serve.
+  database.models.deleteOrphanedModels();
+
+  const siteFileStore = new SiteFileStore(await resolveSitesDirectory());
+  const siteService = new SiteService(database.sites, siteFileStore);
+  const sitePreviewHost = new SitePreviewHost(siteService, siteFileStore);
+  const siteExporter = new SiteExporter(siteService);
+  sitePreviewHost.registerProtocolHandler();
+
   const chatEngine = new ChatEngine(
     database.conversations,
     database.models,
     keychain,
     providers,
     attachmentStore,
-    undefined,
+    new ChatSessionRuntime(
+      database.conversations,
+      database.models,
+      keychain,
+      providers,
+      undefined,
+      ({ conversationId, mentions }) => {
+        const optedIn = shouldLoadSiteTools({
+          mentions,
+          hasExistingSite: database.sites.hasSiteForConversation(conversationId),
+        });
+        return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
+      },
+    ),
     database.runtimeState,
     toolStateStore,
   );
@@ -124,11 +189,13 @@ app.whenReady().then(async () => {
     keychain
   });
   registerModelsIpc(modelRegistry);
+  registerProvidersIpc(customProviderService);
   registerConversationsIpc(database.conversations);
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
+  registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
   ipcMain.handle(IPC_CHANNELS.posthogGetAnonymousId, () => {
     return getAnonymousId();

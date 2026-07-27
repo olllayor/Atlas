@@ -85,6 +85,14 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setKeybindings(patch.keyboard.keybindings);
       }
 
+      if (patch?.chat?.reasoningEffort) {
+        settingsRepo.setReasoningEffort(patch.chat.reasoningEffort);
+      }
+
+      if (patch?.chat?.toolPermissionMode) {
+        settingsRepo.setToolPermissionMode(patch.chat.toolPermissionMode);
+      }
+
       return modelRegistry.getSettingsSummary();
     }
   );

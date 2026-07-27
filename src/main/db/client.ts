@@ -5,9 +5,11 @@ import Database from 'better-sqlite3';
 
 import type { AttachmentStore } from '../attachments/AttachmentStore';
 import { ConversationsRepo } from './repositories/conversationsRepo';
+import { CustomProvidersRepo } from './repositories/customProvidersRepo';
 import { ModelsRepo } from './repositories/modelsRepo';
 import { RuntimeStateRepo } from './repositories/runtimeStateRepo';
 import { SettingsRepo } from './repositories/settingsRepo';
+import { SitesRepo } from './repositories/sitesRepo';
 import { ToolExecutionsRepo } from './repositories/toolExecutionsRepo';
 import { VisualsRepo } from './repositories/visualsRepo';
 import { applySchema } from './schema';
@@ -20,8 +22,10 @@ export type AppDatabase = {
   runtimeState: RuntimeStateRepo;
   toolExecutions: ToolExecutionsRepo;
   models: ModelsRepo;
+  customProviders: CustomProvidersRepo;
   settings: SettingsRepo;
   visuals: VisualsRepo;
+  sites: SitesRepo;
 };
 
 export function createAppDatabase(databasePath: string, attachmentStore: AttachmentStore): AppDatabase {
@@ -39,7 +43,9 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     runtimeState,
     toolExecutions,
     models: new ModelsRepo(raw),
+    customProviders: new CustomProvidersRepo(raw),
     settings: new SettingsRepo(raw),
     visuals: new VisualsRepo(raw),
+    sites: new SitesRepo(raw),
   };
 }

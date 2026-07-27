@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { ModelRegistry } from '../src/main/ai/core/ModelRegistry.js';
 import type { ProviderRegistry } from '../src/main/ai/core/providerRegistry.js';
+import { CustomProvidersRepo } from '../src/main/db/repositories/customProvidersRepo.js';
 import { ModelsRepo } from '../src/main/db/repositories/modelsRepo.js';
 import { SettingsRepo } from '../src/main/db/repositories/settingsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
@@ -36,11 +37,28 @@ function createDatabase() {
 
   applySchema(database);
 
+  const customProvidersRepo = new CustomProvidersRepo(database);
+
+  /**
+   * The catalog only surfaces models whose provider is configured, so a test
+   * provider needs a real row to be visible.
+   */
+  const configureProvider = (id: ProviderId, name = id) =>
+    customProvidersRepo.create({
+      id,
+      name,
+      baseUrl: `https://${name.toLowerCase()}.example.com/v1`,
+      apiFormat: 'chat-completions',
+      models: []
+    });
+
   return {
     tempDir,
     raw,
     modelsRepo: new ModelsRepo(database),
-    settingsRepo: new SettingsRepo(database)
+    settingsRepo: new SettingsRepo(database),
+    customProvidersRepo,
+    configureProvider
   };
 }
 
@@ -71,13 +89,16 @@ function createModel(id: string, providerId: ProviderId): ModelSummary {
 }
 
 test('ModelRegistry refresh merges provider catalogs and prefers configured provider in settings summary', async (t) => {
-  const { tempDir, raw, modelsRepo, settingsRepo } = createDatabase();
+  const { tempDir, raw, modelsRepo, settingsRepo, configureProvider } = createDatabase();
   const keychain = createKeychain({ openrouter: 'or-key' });
 
   t.after(() => {
     raw.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  configureProvider('openrouter');
+  configureProvider('glm');
 
   const providers: ProviderRegistry = new Map([
     [
@@ -162,13 +183,16 @@ test('ModelRegistry validateProviderKey updates provider credential status', asy
 });
 
 test('ModelRegistry refresh returns available catalogs when another provider refresh fails', async (t) => {
-  const { tempDir, raw, modelsRepo, settingsRepo } = createDatabase();
+  const { tempDir, raw, modelsRepo, settingsRepo, configureProvider } = createDatabase();
   const keychain = createKeychain({ openrouter: 'or-key' });
 
   t.after(() => {
     raw.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  configureProvider('openrouter');
+  configureProvider('glm');
 
   const providers: ProviderRegistry = new Map([
     [

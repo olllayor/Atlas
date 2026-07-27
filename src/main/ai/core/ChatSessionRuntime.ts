@@ -1,6 +1,8 @@
 import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
 
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import type { ChatMessagePart, ChatStartRequest, StreamEvent } from '../../../shared/contracts';
+import type { MentionId } from '../../../shared/mentions';
 import {
   applyStreamEventToParts,
   buildFallbackMessageParts,
@@ -12,9 +14,11 @@ import { VisualStreamParser } from '../../../shared/visualParser';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
-import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools } from '../tools/builtInTools';
+import { DEFAULT_TOOL_PERMISSION_MODE } from '../../../shared/chatParameters';
+import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools, describeToolPermissionsForPrompt } from '../tools/builtInTools';
+import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
 import { formatToolError } from '../tools/ToolErrorFormatter';
-import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
+import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
 import type { ProviderRegistry } from './providerRegistry';
 import { getProviderOrThrow } from './providerRegistry';
@@ -22,6 +26,12 @@ import { shouldPersistResponseMessages } from './persistResponseMessages';
 import { VISUAL_PROMPT } from './VISUAL_PROMPT';
 import type { ContextBuildMode } from './ContextManager';
 import { ContextManager } from './ContextManager';
+
+/** What a turn's Sites gate is evaluated against. */
+export type SiteToolContext = {
+  conversationId: string;
+  mentions: MentionId[];
+};
 
 export type PendingToolApproval = {
   approvalId: string;
@@ -58,6 +68,13 @@ type TurnState = {
   visualParser: VisualStreamParser;
   pendingApprovals: Map<string, PendingToolApproval>;
 };
+
+/**
+ * Retries only ever fire before the first token reaches the user, so raising
+ * the ceiling costs nothing visible and rides out transient 429s and dropped
+ * connections that a single attempt used to surface as a hard failure.
+ */
+const MAX_STREAM_RETRIES = 3;
 
 function extractLatestUserText(request: ChatStartRequest) {
   const latestUserMessage = [...request.messages].reverse().find((message) => message.role === 'user');
@@ -176,6 +193,13 @@ export class ChatSessionRuntime {
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
     private readonly contextManager: Pick<ContextManager, 'buildModelInput'> = new ContextManager(),
+    /**
+     * Supplies the Sites toolset for a turn, or null when the user has not
+     * opted in. Kept as a provider so tools close over the live service and
+     * the gate is evaluated per turn rather than per process.
+     */
+    private readonly siteToolsProvider: ((context: SiteToolContext) => Record<string, unknown> | null) | null =
+      null,
   ) {}
 
   async executeTurn({
@@ -266,8 +290,21 @@ export class ChatSessionRuntime {
     return this.conversationsRepo.getModelHistory(conversationId);
   }
 
-  private buildSystemPrompt(enableTools: boolean | undefined, contextAddendum: string | null) {
-    const base = enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
+  private buildSystemPrompt(
+    enableTools: boolean | undefined,
+    contextAddendum: string | null,
+    siteToolsActive: boolean,
+    toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
+  ) {
+    // The Sites instructions only ship when the Sites tools do, so a turn that
+    // did not opt in is not nudged toward building one.
+    const basePrompt = siteToolsActive
+      ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${SITE_TOOL_SYSTEM_PROMPT}`
+      : TOOL_USE_SYSTEM_PROMPT;
+    // Tell the model what it may actually do, so it does not plan around a tool
+    // that was withheld from its tool set.
+    const toolPrompt = `${basePrompt}\n\n${describeToolPermissionsForPrompt(toolPermissionMode)}`;
+    const base = enableTools ? `${toolPrompt}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
     if (!contextAddendum) {
       return base;
     }
@@ -275,8 +312,15 @@ export class ChatSessionRuntime {
     return `${base}\n\n${contextAddendum}`;
   }
 
-  private buildTools(enableTools: boolean | undefined) {
-    return enableTools ? createBuiltInTools(this.modelsRepo) : undefined;
+  private resolveSiteTools(request: ChatStartRequest) {
+    if (!request.enableTools || !this.siteToolsProvider) {
+      return null;
+    }
+
+    return this.siteToolsProvider({
+      conversationId: request.conversationId,
+      mentions: request.mentions ?? [],
+    });
   }
 
   private async executeWithRetry({
@@ -302,6 +346,16 @@ export class ChatSessionRuntime {
     let streamedAnyResponse = false;
     let compactionMode: ContextBuildMode = 'standard';
 
+    // Resolve once per turn: retries must not change which tools are offered.
+    const siteTools = this.resolveSiteTools(request);
+    const toolPermissionMode = request.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE;
+    const tools = request.enableTools
+      ? createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode)
+      : undefined;
+    // Catalog-derived limits so the adapter can size the request to this model
+    // rather than to a provider-wide constant.
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+
     while (true) {
       const turnState: TurnState = {
         parts: [...(initialParts ?? [])],
@@ -320,11 +374,18 @@ export class ChatSessionRuntime {
           apiKey,
           modelId: request.modelId,
           messages: modelInput.recentMessages,
-          system: this.buildSystemPrompt(request.enableTools, modelInput.systemContextAddendum),
-          tools: this.buildTools(request.enableTools),
+          system: this.buildSystemPrompt(
+            request.enableTools,
+            modelInput.systemContextAddendum,
+            siteTools != null,
+            toolPermissionMode,
+          ),
+          tools,
           toolChoice: inferToolChoice(request),
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
+          modelHints,
+          reasoningEffort: request.reasoningEffort,
           signal,
           onChunk: (event) => {
             streamedAnyResponse = true;
@@ -438,14 +499,22 @@ export class ChatSessionRuntime {
           continue;
         }
 
-        const canRetry = attempt === 0 && normalized.retryable && !streamedAnyResponse && !signal.aborted;
+        const canRetry =
+          attempt < MAX_STREAM_RETRIES && normalized.retryable && !streamedAnyResponse && !signal.aborted;
 
         if (!canRetry) {
           throw error;
         }
 
+        // Honour the provider's own Retry-After when it sent one, otherwise
+        // back off exponentially instead of hammering with a fixed short delay.
+        const delayMs = computeRetryDelayMs(attempt, normalized.retryAfterMs);
         attempt += 1;
-        await sleep(450 + Math.floor(Math.random() * 350));
+        await sleep(delayMs);
+
+        if (signal.aborted) {
+          throw error;
+        }
       }
     }
   }

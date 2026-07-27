@@ -4,7 +4,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
-import { PROVIDER_METADATA } from '../shared/providerMetadata';
+import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
+import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
@@ -13,6 +14,7 @@ import { OnboardingFlow } from './components/OnboardingFlow';
 import { AppUpdateButton } from './components/AppUpdateButton';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
+import { SitesWorkspace } from './components/sites/SitesWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
@@ -195,6 +197,8 @@ export default function App() {
     handleStreamEvent,
     openLanding,
     closeLanding,
+    openSites,
+    closeSites,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -254,6 +258,8 @@ export default function App() {
       handleStreamEvent: state.handleStreamEvent,
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
+      openSites: state.openSites,
+      closeSites: state.closeSites,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -272,7 +278,10 @@ export default function App() {
   const hasModelTools = Boolean(selectedModelSummary?.supportsTools);
   const hasModelVision = Boolean(selectedModelSummary?.supportsVision);
   const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
-  const activeCredentialProvider = PROVIDER_METADATA[activeCredentialProviderId];
+  const activeCredentialProvider = resolveProviderMetadata(
+    activeCredentialProviderId,
+    settings?.customProviders ?? []
+  );
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
   const sidebarItems = useMemo(
@@ -622,6 +631,8 @@ export default function App() {
   const content =
     activeView === 'landing' ? (
       <XAILandingPage onBackToApp={() => closeLanding()} />
+    ) : activeView === 'sites' ? (
+      <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
     ) : activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
@@ -633,25 +644,11 @@ export default function App() {
           diagnostics,
           rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
         })}
-        keyDraft={keyDraft}
-        isSaving={isSavingKey}
-        isValidating={isValidatingKey}
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
-        activeCredentialProviderId={activeCredentialProviderId}
         shortcutPlatform={shortcutPlatform}
         onBack={() => runViewTransition(() => closeSettings())}
         onNavigate={setSettingsSection}
-        onSelectProvider={setActiveCredentialProvider}
-        onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => {
-          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_SAVED, { providerId: activeCredentialProviderId });
-          void saveProviderKey();
-        }}
-        onValidateKey={() => {
-          captureEvent(POSTHOG_EVENTS.PROVIDER_KEY_VALIDATED, { providerId: activeCredentialProviderId });
-          void validateProviderKey();
-        }}
         onThemeModeChange={(mode) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'themeMode', value: mode });
           void updatePreferences({ appearance: { themeMode: mode } });
@@ -706,17 +703,11 @@ export default function App() {
     ) : showOnboarding && !hasCredential ? (
       <OnboardingFlow
         hasCredential={hasCredential}
-        providerId={activeCredentialProviderId}
-        providerLabel={activeCredentialProvider.label}
-        providerLink={activeCredentialProvider.keyLink}
-        providerLinkLabel={activeCredentialProvider.keyLinkLabel}
-        isSavingKey={isSavingKey}
-        isValidatingKey={isValidatingKey}
-        keyDraft={keyDraft}
-        onProviderChange={setActiveCredentialProvider}
-        onKeyDraftChange={setKeyDraft}
-        onSaveKey={() => void saveProviderKey()}
-        onValidateKey={() => void validateProviderKey()}
+        onOpenProviderSettings={() => {
+          setShowOnboarding(false);
+          setOnboardingDone(true);
+          runViewTransition(() => openSettings('providers'));
+        }}
         onContinue={() => {
           captureEvent(POSTHOG_EVENTS.ONBOARDING_COMPLETED);
           setShowOnboarding(false);
@@ -746,6 +737,7 @@ export default function App() {
           onDelete={(id) => void deleteConversation(id)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onOpenLanding={() => openLanding()}
+          onOpenSites={() => runViewTransition(() => openSites())}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
@@ -869,6 +861,16 @@ export default function App() {
               onComposerFocusChange={setComposerFocused}
               onRefreshModels={() => void refreshModels()}
               isRefreshingModels={isRefreshingModels}
+              customProviders={settings?.customProviders}
+              credentials={settings?.providers}
+              defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
+              onManageProviders={() => runViewTransition(() => openSettings('providers'))}
+              reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
+              toolPermissionMode={settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE}
+              onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
+              onToolPermissionModeChange={(toolPermissionMode) =>
+                void updatePreferences({ chat: { toolPermissionMode } })
+              }
               onOpenGallery={() => setGalleryOpen(true)}
             />
           </RendererErrorBoundary>

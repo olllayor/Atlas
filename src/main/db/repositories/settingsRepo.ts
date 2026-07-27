@@ -8,13 +8,17 @@ import {
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
 } from '../../../shared/contracts';
+import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
+import {
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_TOOL_PERMISSION_MODE,
+  isReasoningEffort,
+  isToolPermissionMode
+} from '../../../shared/chatParameters';
 import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
-import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
 import type { SqliteDatabase } from '../client';
-
-const PROVIDERS: ProviderId[] = [...PROVIDER_ORDER];
 
 type ProviderCredentialRow = {
   provider_id: ProviderId;
@@ -80,6 +84,27 @@ export class SettingsRepo {
 
   setShowFreeOnlyByDefault(value: boolean) {
     this.setJsonSetting('showFreeOnlyByDefault', value);
+  }
+
+  getReasoningEffort(): ReasoningEffort {
+    const value = this.getJsonSetting<ReasoningEffort>('chat.reasoningEffort', DEFAULT_REASONING_EFFORT);
+    return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT;
+  }
+
+  setReasoningEffort(value: ReasoningEffort) {
+    this.setJsonSetting('chat.reasoningEffort', value);
+  }
+
+  getToolPermissionMode(): ToolPermissionMode {
+    const value = this.getJsonSetting<ToolPermissionMode>(
+      'chat.toolPermissionMode',
+      DEFAULT_TOOL_PERMISSION_MODE
+    );
+    return isToolPermissionMode(value) ? value : DEFAULT_TOOL_PERMISSION_MODE;
+  }
+
+  setToolPermissionMode(value: ToolPermissionMode) {
+    this.setJsonSetting('chat.toolPermissionMode', value);
   }
 
   getThemeMode(): ThemeMode {
@@ -251,7 +276,15 @@ export class SettingsRepo {
     };
   }
 
-  getProviderCredentials() {
-    return PROVIDERS.map((providerId) => this.getCredential(providerId));
+  /**
+   * There are no built-in providers, so the credential list is exactly the set
+   * of providers the user configured.
+   */
+  getProviderCredentials(providerIds: ProviderId[] = []) {
+    return providerIds.map((providerId) => this.getCredential(providerId));
+  }
+
+  deleteCredential(providerId: ProviderId) {
+    this.db.prepare('DELETE FROM provider_credentials WHERE provider_id = @providerId').run({ providerId });
   }
 }

@@ -111,6 +111,19 @@ function ensureGeneratedIcons() {
   const sourceIconPath = join(repoRoot, 'icon.png');
   const generatedIconPaths = [join(repoRoot, 'build', 'icon.png'), join(repoRoot, 'build', 'icon.icns')];
 
+  // The generated icons under build/ are committed; the high-resolution source
+  // is not always present in a checkout. Only regenerate when the source is
+  // actually here and newer than what was committed.
+  if (!existsSync(sourceIconPath)) {
+    const missing = generatedIconPaths.filter((iconPath) => !existsSync(iconPath));
+    if (missing.length > 0) {
+      throw new Error(
+        `Cannot build the macOS dev launcher: ${sourceIconPath} is missing and these generated icons are absent: ${missing.join(', ')}. Restore icon.png or run "pnpm icons:mac".`
+      );
+    }
+    return;
+  }
+
   const sourceStat = statSync(sourceIconPath);
   const shouldRegenerate = generatedIconPaths.some((iconPath) => {
     if (!existsSync(iconPath)) {

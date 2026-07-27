@@ -42,6 +42,7 @@ function createRuntime(options: {
   history?: ModelMessage[];
   apiKey?: string | null;
   addMessage?: (input: Record<string, unknown>) => string;
+  runtimeHints?: Record<string, unknown>;
 }) {
   const history = options.history ?? [];
   const addMessageCalls: Array<Record<string, unknown>> = [];
@@ -59,6 +60,7 @@ function createRuntime(options: {
 
   const modelsRepo = {
     list: () => [],
+    getRuntimeHints: () => options.runtimeHints ?? {},
   } as const;
 
   const keychain = {
@@ -578,4 +580,242 @@ test('ChatSessionRuntime does not retry prompt-too-long compaction after partial
   );
 
   assert.equal(attempts, 1);
+});
+
+test('ChatSessionRuntime hands the provider the catalog limits for the selected model', async () => {
+  let capturedHints: unknown;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedHints = request.modelHints;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({
+    provider,
+    runtimeHints: { maxOutputTokens: 64_000, supportsTemperature: false, contextWindow: 200_000 },
+  });
+
+  await runtime.executeTurn({
+    requestId: 'request-hints',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.deepEqual(capturedHints, {
+    maxOutputTokens: 64_000,
+    supportsTemperature: false,
+    contextWindow: 200_000,
+  });
+});
+
+test('ChatSessionRuntime keeps retrying transient network failures before any output', async () => {
+  let attempts = 0;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      attempts += 1;
+      if (attempts < 3) {
+        // Previously classified as unknown_error and never retried.
+        throw new Error('fetch failed');
+      }
+
+      return {
+        content: 'recovered',
+        responseMessages: [{ role: 'assistant', content: 'recovered' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  const result = await runtime.executeTurn({
+    requestId: 'request-network-retry',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(attempts, 3);
+  assert.equal(result.status, 'completed');
+});
+
+test('ChatSessionRuntime stops retrying once the caller aborts', async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      attempts += 1;
+      controller.abort();
+      throw new Error('fetch failed');
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await assert.rejects(
+    runtime.executeTurn({
+      requestId: 'request-abort-during-retry',
+      request: createRequest(),
+      signal: controller.signal,
+      emitEvent: () => undefined,
+    }),
+    Error,
+  );
+
+  assert.equal(attempts, 1);
+});
+
+test('ChatSessionRuntime withholds side-effecting tools in read-only mode', async () => {
+  let capturedTools: Record<string, unknown> | undefined;
+  let capturedSystem: string | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedTools = request.tools as Record<string, unknown> | undefined;
+      capturedSystem = request.system;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-read-only',
+    request: createRequest({ enableTools: true, toolPermissionMode: 'read-only' }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal('bash' in (capturedTools ?? {}), false);
+  assert.equal('web_fetch' in (capturedTools ?? {}), false);
+  assert.equal('read_file' in (capturedTools ?? {}), true);
+  // The prompt must agree with the tool set, or the model plans around a tool
+  // it will never be offered.
+  assert.match(capturedSystem ?? '', /unavailable/i);
+});
+
+test('ChatSessionRuntime clears approval gating in full-access mode', async () => {
+  let capturedTools: Record<string, { needsApproval?: unknown }> | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedTools = request.tools as Record<string, { needsApproval?: unknown }> | undefined;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-full-access',
+    request: createRequest({ enableTools: true, toolPermissionMode: 'full-access' }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(capturedTools?.bash?.needsApproval, false);
+});
+
+test('ChatSessionRuntime defaults to asking for approval when no mode is sent', async () => {
+  let capturedTools: Record<string, { needsApproval?: unknown }> | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedTools = request.tools as Record<string, { needsApproval?: unknown }> | undefined;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-default-mode',
+    request: createRequest({ enableTools: true }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(capturedTools?.bash?.needsApproval, true);
+});
+
+test('ChatSessionRuntime forwards the requested reasoning effort to the provider', async () => {
+  let capturedEffort: unknown;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedEffort = request.reasoningEffort;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-effort',
+    request: createRequest({ reasoningEffort: 'max' }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(capturedEffort, 'max');
 });

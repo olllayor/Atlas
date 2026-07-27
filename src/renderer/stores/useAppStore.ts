@@ -27,7 +27,12 @@ import {
   normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../shared/attachments';
-import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { parseMentions } from '../../shared/mentions';
+import {
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_TOOL_PERMISSION_MODE,
+} from '../../shared/chatParameters';
+import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import {
   DEFAULT_CONVERSATION_PAGE_SIZE,
   compactConversationPage,
@@ -51,7 +56,7 @@ type RefreshModelsOptions = {
   silent?: boolean;
 };
 
-type AppView = 'chat' | 'settings' | 'landing';
+type AppView = 'chat' | 'settings' | 'landing' | 'sites';
 
 type AppState = {
   bootstrapping: boolean;
@@ -95,6 +100,8 @@ type AppState = {
   closeSettings: () => void;
   openLanding: () => void;
   closeLanding: () => void;
+  openSites: () => void;
+  closeSites: () => void;
   setSettingsSection: (section: SettingsSection) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
@@ -236,7 +243,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelPickerOpen: false,
   composerFocused: false,
   composerFocusNonce: 0,
-  activeCredentialProviderId: 'openrouter',
+  activeCredentialProviderId: '',
   keyDraft: '',
   isSavingKey: false,
   isValidatingKey: false,
@@ -278,7 +285,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? window.atlasChat.chat.getRuntimeState({ conversationId: selectedConversationId })
           : Promise.resolve(null),
         window.atlasChat.models.list({
-          freeOnly: settings.showFreeOnlyByDefault,
+          // Always load the full catalog: the model picker applies the
+          // free-only preference itself, and a pre-filtered list would both
+          // disable its toggle and hide an already-selected paid model.
+          freeOnly: false,
           includeArchived: false,
           allowStale: true
         }),
@@ -289,13 +299,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const defaultModelId = chooseDefaultModel(models, settings.defaultProviderId);
       const activeCredentialProviderId =
-        settings.defaultProviderId ?? findConfiguredCredential(settings)?.providerId ?? 'openrouter';
+        settings.defaultProviderId ?? findConfiguredCredential(settings)?.providerId ?? '';
 
       set({
         bootstrapping: false,
         initialized: true,
         settings,
-        models: settings.showFreeOnlyByDefault ? models.filter((model) => model.isFree) : models,
+        models,
         conversations,
         conversationStats,
         diagnostics,
@@ -353,7 +363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set((current) => ({
         isRefreshingModels: false,
-        models: settings.showFreeOnlyByDefault ? models.filter((model) => model.isFree) : models,
+        models,
         settings,
         selectedModelIdByConversation:
           selectedModelId && current.selectedConversationId
@@ -520,6 +530,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
+  openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, modelPickerOpen: false }),
+  closeSites: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
@@ -537,7 +549,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     const providerId = state.activeCredentialProviderId;
     const secret = state.keyDraft.trim();
-    const metadata = PROVIDER_METADATA[providerId];
+    const metadata = resolveProviderMetadata(providerId, state.settings?.customProviders ?? []);
     if (!secret) {
       notify({ tone: 'error', title: `Enter a ${metadata.label} API key before saving.` });
       return;
@@ -559,7 +571,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     const providerId = state.activeCredentialProviderId;
     const secretOverride = state.keyDraft.trim() || undefined;
-    const metadata = PROVIDER_METADATA[providerId];
+    const metadata = resolveProviderMetadata(providerId, state.settings?.customProviders ?? []);
     set({ isValidatingKey: true });
 
     try {
@@ -580,20 +592,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const models = await window.atlasChat.models.list({
-      freeOnly: settings.showFreeOnlyByDefault,
-      includeArchived: false,
-      allowStale: true
-    });
-
+    // The catalog no longer depends on this preference — the model picker
+    // applies it — so there is nothing to refetch, only a default to seed for a
+    // conversation that has not picked a model yet.
     set((state) => ({
       settings,
-      models,
       selectedModelIdByConversation:
         state.selectedConversationId && !state.selectedModelIdByConversation[state.selectedConversationId]
           ? {
               ...state.selectedModelIdByConversation,
-              [state.selectedConversationId]: chooseDefaultModel(models, settings.defaultProviderId) ?? ''
+              [state.selectedConversationId]: chooseDefaultModel(state.models, settings.defaultProviderId) ?? ''
             }
           : state.selectedModelIdByConversation
     }));
@@ -722,7 +730,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const credential = findCredential(state.settings, providerId);
     if (!credential?.hasSecret) {
-      notify({ tone: 'error', title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.` });
+      notify({ tone: 'error', title: `Save a ${resolveProviderMetadata(providerId, state.settings?.customProviders ?? []).label} API key before sending with this model.` });
       set({ activeCredentialProviderId: providerId });
       return;
     }
@@ -747,7 +755,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         modelId,
         messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
         enableTools: Boolean(selectedModel.supportsTools),
-        temperature: 0.65
+        mentions: parseMentions(trimmed),
+        temperature: 0.65,
+        // Models without a thinking mode ignore this; the adapters gate on the
+        // catalog's supportsReasoning before sending anything.
+        reasoningEffort: state.settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+        toolPermissionMode: state.settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE
       });
     } catch (error) {
       notify({ tone: 'error', title: getErrorMessage(error) });

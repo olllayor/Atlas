@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS model_cache (
   supports_tools INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
   last_synced_at TEXT NOT NULL,
-  last_seen_free_at TEXT
+  last_seen_free_at TEXT,
+  max_output_tokens INTEGER,
+  supports_temperature INTEGER NOT NULL DEFAULT 1,
+  supports_reasoning INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -236,6 +239,97 @@ CREATE TABLE IF NOT EXISTS saved_visuals (
 
 CREATE INDEX IF NOT EXISTS idx_saved_visuals_updated_at
 ON saved_visuals (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS sites (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  draft_version_id TEXT,
+  current_version_id TEXT,
+  source_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sites_updated_at
+ON sites (deleted_at, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS site_versions (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  version_no INTEGER NOT NULL,
+  label TEXT,
+  state TEXT NOT NULL,
+  is_draft INTEGER NOT NULL DEFAULT 0,
+  files_root TEXT NOT NULL,
+  file_count INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0,
+  build_log TEXT,
+  validation_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE (site_id, version_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_versions_site
+ON site_versions (site_id, version_no DESC);
+
+CREATE TABLE IF NOT EXISTS site_files (
+  version_id TEXT NOT NULL REFERENCES site_versions(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  mime TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (version_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS site_events (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  version_id TEXT,
+  event_type TEXT NOT NULL,
+  detail_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_events_site
+ON site_events (site_id, created_at DESC);
+
+-- User-configured model endpoints. The API key itself lives in the OS
+-- keychain, keyed by the provider id; only its presence is tracked here.
+CREATE TABLE IF NOT EXISTS custom_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  api_format TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS custom_provider_models (
+  provider_id TEXT NOT NULL REFERENCES custom_providers(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  is_free INTEGER NOT NULL DEFAULT 0,
+  context_window INTEGER,
+  max_output_tokens INTEGER,
+  supports_tools INTEGER NOT NULL DEFAULT 1,
+  supports_vision INTEGER NOT NULL DEFAULT 0,
+  supports_document_input INTEGER NOT NULL DEFAULT 0,
+  supports_reasoning INTEGER NOT NULL DEFAULT 0,
+  supports_temperature INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (provider_id, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_provider_models_provider
+ON custom_provider_models (provider_id, sort_order);
 `;
 
 export function applySchema(database: SqliteDatabase) {
@@ -299,6 +393,29 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!modelColumns.includes('supports_document_input')) {
     database.exec('ALTER TABLE model_cache ADD COLUMN supports_document_input INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migration: per-model request limits so adapters stop hardcoding one ceiling
+  // for every model on a provider.
+  if (!modelColumns.includes('max_output_tokens')) {
+    database.exec('ALTER TABLE model_cache ADD COLUMN max_output_tokens INTEGER');
+  }
+
+  if (!modelColumns.includes('supports_temperature')) {
+    database.exec('ALTER TABLE model_cache ADD COLUMN supports_temperature INTEGER NOT NULL DEFAULT 1');
+  }
+
+  if (!modelColumns.includes('supports_reasoning')) {
+    database.exec('ALTER TABLE model_cache ADD COLUMN supports_reasoning INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const customModelColumns = database
+    .prepare<[], { name: string }>('PRAGMA table_info(custom_provider_models)')
+    .all()
+    .map((column) => column.name);
+
+  if (customModelColumns.length > 0 && !customModelColumns.includes('is_free')) {
+    database.exec('ALTER TABLE custom_provider_models ADD COLUMN is_free INTEGER NOT NULL DEFAULT 0');
   }
 
   // Migration: Add border_radius to app_settings

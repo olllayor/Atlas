@@ -1,4 +1,4 @@
-import { Pencil2Icon } from '@radix-ui/react-icons';
+import { GlobeIcon, Pencil2Icon } from '@radix-ui/react-icons';
 import { Check, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 
@@ -28,6 +28,7 @@ type SidebarProps = {
   onDelete: (conversationId: string) => void;
   onOpenSettings: (section?: SettingsSection) => void;
   onOpenLanding: () => void;
+  onOpenSites: () => void;
   onRefreshModels: () => void;
   onCheckForUpdates: () => void;
   onToggleCollapsed: () => void;
@@ -69,6 +70,7 @@ export function Sidebar({
   onDelete,
   onOpenSettings,
   onOpenLanding,
+  onOpenSites,
   onRefreshModels,
   onCheckForUpdates,
   onToggleCollapsed,
@@ -173,6 +175,17 @@ export function Sidebar({
                 {newChatShortcutLabel}
               </span>
             ) : null}
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSites}
+            className="group mt-2 flex w-full items-center gap-2 border border-transparent bg-transparent px-3 py-2 ui-text-size-minus-2 font-normal text-[var(--text-tertiary)] transition hover:border-[var(--border-default)] hover:bg-[var(--bg-hover)] hover:text-white"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-subtle)] text-[var(--text-muted)] transition group-hover:border-[var(--border-strong)] group-hover:bg-[var(--bg-hover)] group-hover:text-[var(--text-secondary)]">
+              <GlobeIcon className="h-3.5 w-3.5" />
+            </span>
+            <span>Sites</span>
           </button>
         </div>
       ) : null}

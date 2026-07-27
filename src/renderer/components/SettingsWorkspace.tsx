@@ -4,6 +4,7 @@ import {
   DesktopIcon,
   GearIcon,
   LockClosedIcon,
+  MixerHorizontalIcon,
   MoonIcon,
   ReloadIcon,
   SunIcon,
@@ -44,8 +45,9 @@ import {
   UI_FONT_SIZE_MIN,
 } from '../../shared/contracts';
 import { getDefaultKeybindingRules } from '../../shared/keybindings';
-import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
+import { ModelSettingsPage } from './providers/ModelSettingsPage';
 import { SlotLabel } from './ui/slot-label';
 import type { ShortcutPlatform } from '../lib/keybindings';
 import {
@@ -59,19 +61,11 @@ type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
   usageSummary: UsageSummary;
-  activeCredentialProviderId: ProviderId;
-  keyDraft: string;
-  isSaving: boolean;
-  isValidating: boolean;
   isRefreshingModels: boolean;
   activeSection: SettingsSection;
   shortcutPlatform: ShortcutPlatform;
   onBack: () => void;
   onNavigate: (section: SettingsSection) => void;
-  onSelectProvider: (providerId: ProviderId) => void;
-  onKeyDraftChange: (value: string) => void;
-  onSaveKey: () => void;
-  onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onDesignThemeChange: (theme: DesignTheme) => void;
   onBorderRadiusChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
@@ -100,6 +94,7 @@ type FutureNavItem = {
 
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
+  { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: GearIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
@@ -120,19 +115,11 @@ export function SettingsWorkspace({
   settings,
   updateState,
   usageSummary,
-  activeCredentialProviderId,
-  keyDraft,
-  isSaving,
-  isValidating,
   isRefreshingModels,
   activeSection,
   shortcutPlatform,
   onBack,
   onNavigate,
-  onSelectProvider,
-  onKeyDraftChange,
-  onSaveKey,
-  onValidateKey,
   onThemeModeChange,
   onDesignThemeChange,
   onBorderRadiusChange,
@@ -228,17 +215,18 @@ export function SettingsWorkspace({
                 <GeneralPage
                   settings={settings}
                   updateState={updateState}
-                  activeCredentialProviderId={activeCredentialProviderId}
-                  keyDraft={keyDraft}
-                  isSaving={isSaving}
-                  isValidating={isValidating}
                   isRefreshingModels={isRefreshingModels}
-                  onSelectProvider={onSelectProvider}
-                  onKeyDraftChange={onKeyDraftChange}
-                  onSaveKey={onSaveKey}
-                  onValidateKey={onValidateKey}
+                  onOpenProviders={() => onNavigate('providers')}
                   onToggleFreeModels={onToggleFreeModels}
                   onUpdateAction={onUpdateAction}
+                  onRefreshModels={onRefreshModels}
+                />
+              ) : null}
+
+              {activeSection === 'providers' ? (
+                <ModelSettingsPage
+                  settings={settings}
+                  isRefreshingModels={isRefreshingModels}
                   onRefreshModels={onRefreshModels}
                 />
               ) : null}
@@ -281,6 +269,10 @@ export function SettingsWorkspace({
 }
 
 function sectionTitle(section: SettingsSection) {
+  if (section === 'providers') {
+    return 'Model settings';
+  }
+
   if (section === 'appearance') {
     return 'Appearance';
   }
@@ -303,98 +295,34 @@ function sectionTitle(section: SettingsSection) {
 function GeneralPage({
   settings,
   updateState,
-  activeCredentialProviderId,
-  keyDraft,
-  isSaving,
-  isValidating,
   isRefreshingModels,
-  onSelectProvider,
-  onKeyDraftChange,
-  onSaveKey,
-  onValidateKey,
+  onOpenProviders,
   onToggleFreeModels,
   onUpdateAction,
   onRefreshModels,
 }: {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
-  activeCredentialProviderId: ProviderId;
-  keyDraft: string;
-  isSaving: boolean;
-  isValidating: boolean;
   isRefreshingModels: boolean;
-  onSelectProvider: (providerId: ProviderId) => void;
-  onKeyDraftChange: (value: string) => void;
-  onSaveKey: () => void;
-  onValidateKey: () => void;
+  onOpenProviders: () => void;
   onToggleFreeModels: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
-  const provider = settings?.providers.find((entry) => entry.providerId === activeCredentialProviderId) ?? null;
-  const metadata = PROVIDER_METADATA[activeCredentialProviderId];
-  const savedStateLabel = provider?.hasSecret ? 'Saved' : 'Missing';
   const lastSyncedLabel = formatTimestamp(settings?.modelCatalogLastSyncedAt);
   const updateLabel = getUpdateLabel(updateState);
 
   return (
     <>
-      <SettingsGroup title="Provider access">
-        <SettingsStackedRow
-          title={metadata.keyLabel}
-          description="Stored in your macOS keychain. Paste a new key to replace the current one."
+      <SettingsGroup title="Providers">
+        <SettingsRow
+          title="Model providers"
+          description="API keys and model lists live in Model settings, one entry per endpoint."
         >
-          <ProviderPicker current={activeCredentialProviderId} onChange={onSelectProvider} />
-
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <StatusPill tone={provider?.hasSecret ? 'success' : 'muted'}>{savedStateLabel}</StatusPill>
-            <StatusPill
-              tone={
-                provider?.status === 'valid'
-                  ? 'success'
-                  : provider?.status === 'invalid'
-                    ? 'warning'
-                    : 'muted'
-              }
-            >
-              {provider?.status ?? 'unknown'}
-            </StatusPill>
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              type="password"
-              value={keyDraft}
-              onChange={(event) => onKeyDraftChange(event.target.value)}
-              placeholder={
-                provider?.hasSecret
-                  ? 'A key is already saved. Paste to replace it.'
-                  : metadata.keyPlaceholder
-              }
-              className="h-10 min-w-0 flex-1 border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
-            />
-            <div className="flex gap-2">
-              <ActionButton onClick={onSaveKey} disabled={isSaving} variant="primary">
-                <SlotLabel text={isSaving ? 'Saving…' : 'Save'} />
-              </ActionButton>
-              <ActionButton onClick={onValidateKey} disabled={isValidating}>
-                <SlotLabel text={isValidating ? 'Validating…' : 'Validate'} />
-              </ActionButton>
-            </div>
-          </div>
-
-          <div className="mt-3 text-[12px] text-text-tertiary">
-            Get one at{' '}
-            <a
-              href={metadata.keyLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline hover:text-text-primary"
-            >
-              {metadata.keyLinkLabel}
-            </a>
-          </div>
-        </SettingsStackedRow>
+          <ActionButton onClick={onOpenProviders}>
+            <SlotLabel text="Open model settings" />
+          </ActionButton>
+        </SettingsRow>
 
         <SettingsRow
           title="Free models by default"
@@ -1019,39 +947,6 @@ function BorderRadiusPicker({
   );
 }
 
-function ProviderPicker({
-  current,
-  onChange,
-}: {
-  current: ProviderId;
-  onChange: (providerId: ProviderId) => void;
-}) {
-  const items: ProviderId[] = ['openrouter', 'glm'];
-
-  return (
-    <div className="mb-4 inline-flex border border-border-default bg-bg-subtle p-1">
-      {items.map((providerId) => {
-        const isActive = providerId === current;
-
-        return (
-          <button
-            key={providerId}
-            type="button"
-            onClick={() => onChange(providerId)}
-            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
-              isActive
-                ? 'bg-bg-elevated text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary'
-            }`}
-          >
-            {PROVIDER_METADATA[providerId].label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function ActionButton({
   children,
   disabled,
@@ -1270,8 +1165,9 @@ export function buildUsageSummary({
     }
   }
 
-  const openRouter = buildProviderUsageSummary('openrouter', settings);
-  const glm = buildProviderUsageSummary('glm', settings);
+  const providerSummaries = (settings?.customProviders ?? []).map((provider) =>
+    buildProviderUsageSummary(provider.id, settings)
+  );
 
   return {
     local: {
@@ -1288,13 +1184,14 @@ export function buildUsageSummary({
       rendererHeapBytes,
       mainProcessRssBytes: diagnostics?.mainProcess.rssBytes ?? null,
     },
-    providers: [openRouter, glm],
+    providers: providerSummaries,
   };
 }
 
 function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSummary | null): UsageProviderSummary {
   const provider = settings?.providers.find((entry) => entry.providerId === providerId) ?? null;
-  const label = `${PROVIDER_METADATA[providerId].label} usage`;
+  const providerLabel = resolveProviderMetadata(providerId, settings?.customProviders ?? []).label;
+  const label = `${providerLabel} usage`;
 
   if (!provider?.hasSecret) {
     return {
@@ -1302,7 +1199,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
       label,
       state: 'not_connected',
       primary: 'Not connected',
-      secondary: `Add a ${PROVIDER_METADATA[providerId].label} key before provider telemetry can appear here.`,
+      secondary: `Add a ${providerLabel} key before provider telemetry can appear here.`,
     };
   }
 
@@ -1311,7 +1208,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
     label,
     state: 'unavailable',
     primary: 'Pending provider telemetry',
-    secondary: `The layout is ready for ${PROVIDER_METADATA[providerId].label} telemetry once provider metrics are wired in.`,
+    secondary: `The layout is ready for ${providerLabel} telemetry once provider metrics are wired in.`,
   };
 }
 

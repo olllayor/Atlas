@@ -8,7 +8,14 @@ import {
   MAX_ATTACHMENT_SIZE_BYTES,
   getAttachmentCapabilityError,
 } from '../../shared/attachments';
-import type { ConversationDetail, ModelSummary } from '../../shared/contracts';
+import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParameters';
+import type {
+  ConversationDetail,
+  CustomProvider,
+  ModelSummary,
+  ProviderCredentialSummary,
+} from '../../shared/contracts';
+import { ReasoningEffortControl, ToolPermissionModeControl } from './composer/ComposerParameters';
 import { getTextContentFromParts } from '../../shared/messageParts';
 import { ModelSelector } from './ModelSelector';
 import {
@@ -44,6 +51,7 @@ import {
   PromptInputTools,
   usePromptInputAttachments,
 } from './ai-elements/prompt-input';
+import { MentionAutocompleteList, useMentionAutocomplete } from './MentionAutocomplete';
 import type { DraftStateLike } from './types';
 
 type ComposerProps = {
@@ -64,6 +72,14 @@ type ComposerProps = {
   onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
   isRefreshingModels?: boolean;
+  customProviders?: CustomProvider[];
+  credentials?: ProviderCredentialSummary[];
+  defaultFreeOnly?: boolean;
+  onManageProviders?: () => void;
+  reasoningEffort: ReasoningEffort;
+  toolPermissionMode: ToolPermissionMode;
+  onReasoningEffortChange: (value: ReasoningEffort) => void;
+  onToolPermissionModeChange: (value: ToolPermissionMode) => void;
   onOpenGallery: () => void;
 };
 
@@ -150,6 +166,14 @@ function ComposerFooter({
   disabled,
   hasText,
   isRefreshingModels,
+  customProviders,
+  credentials,
+  defaultFreeOnly,
+  onManageProviders,
+  reasoningEffort,
+  toolPermissionMode,
+  onReasoningEffortChange,
+  onToolPermissionModeChange,
   isStreaming,
   modelPickerOpen,
   models,
@@ -160,6 +184,7 @@ function ComposerFooter({
   onSelectModel,
   selectedModel,
   selectedModelId,
+  modelSupportsTools,
   contextStats,
   onOpenGallery,
 }: {
@@ -167,6 +192,14 @@ function ComposerFooter({
   disabled: boolean;
   hasText: boolean;
   isRefreshingModels?: boolean;
+  customProviders?: CustomProvider[];
+  credentials?: ProviderCredentialSummary[];
+  defaultFreeOnly?: boolean;
+  onManageProviders?: () => void;
+  reasoningEffort: ReasoningEffort;
+  toolPermissionMode: ToolPermissionMode;
+  onReasoningEffortChange: (value: ReasoningEffort) => void;
+  onToolPermissionModeChange: (value: ToolPermissionMode) => void;
   isStreaming: boolean;
   modelPickerOpen: boolean;
   models: ModelSummary[];
@@ -177,6 +210,7 @@ function ComposerFooter({
   onSelectModel: (modelId: string) => void;
   selectedModel: ModelSummary | null;
   selectedModelId: string | null;
+  modelSupportsTools: boolean;
   contextStats: {
     maxTokens: number;
     modelId?: string;
@@ -205,10 +239,10 @@ function ComposerFooter({
     <>
       {footerMessage ? <div className="px-4 pb-2 text-[11px] leading-5 text-[var(--text-tertiary)]">{footerMessage}</div> : null}
 
-      <PromptInputFooter className="flex items-center justify-between px-3.5 pb-3 pt-0.5">
-        <PromptInputTools className="flex items-center gap-1">
+      <PromptInputFooter className="flex items-center gap-2 px-3 pb-2.5 pt-0.5">
+        <PromptInputTools className="flex min-w-0 items-center gap-0.5">
           <PromptInputButton
-            className="size-8 border border-[var(--border-default)] bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-white"
+            className="size-8 rounded-full bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-ghost)] hover:text-white"
             disabled={disabled || isStreaming}
             onClick={() => attachments.openFileDialog()}
             tooltip="Attach from disk"
@@ -217,26 +251,23 @@ function ComposerFooter({
           </PromptInputButton>
 
           <PromptInputButton
-            className="size-8 border border-[var(--border-default)] bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-white"
+            className="size-8 rounded-full bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-ghost)] hover:text-white"
             onClick={onOpenGallery}
             tooltip="Visual Gallery"
           >
             <Palette className="h-4 w-4" />
           </PromptInputButton>
 
-          <ModelSelector
-            models={models}
-            selectedModelId={selectedModelId}
-            disabled={isStreaming}
-            open={modelPickerOpen}
-            onOpenChange={onModelPickerOpenChange}
-            onSelect={onSelectModel}
-            onRefresh={onRefreshModels}
-            isRefreshing={isRefreshingModels}
+          <ToolPermissionModeControl
+            value={toolPermissionMode}
+            disabled={isStreaming || !modelSupportsTools}
+            onChange={onToolPermissionModeChange}
           />
         </PromptInputTools>
 
-        <div className="flex items-center gap-2">
+        {/* The right cluster is the per-turn parameter strip: how much context
+            is left, which model, how hard it thinks, then send. */}
+        <div className="ml-auto flex min-w-0 items-center gap-0.5">
           {contextStats ? (
             <Context
               maxTokens={contextStats.maxTokens}
@@ -254,8 +285,30 @@ function ComposerFooter({
             </Context>
           ) : null}
 
+          <ModelSelector
+            models={models}
+            selectedModelId={selectedModelId}
+            disabled={isStreaming}
+            open={modelPickerOpen}
+            onOpenChange={onModelPickerOpenChange}
+            onSelect={onSelectModel}
+            onRefresh={onRefreshModels}
+            isRefreshing={isRefreshingModels}
+            customProviders={customProviders}
+            credentials={credentials}
+            defaultFreeOnly={defaultFreeOnly}
+            onManageProviders={onManageProviders}
+          />
+
+          <ReasoningEffortControl
+            value={reasoningEffort}
+            disabled={isStreaming}
+            supported={Boolean(selectedModel?.supportsReasoning)}
+            onChange={onReasoningEffortChange}
+          />
+
           <PromptInputSubmit
-            className="inline-flex h-8 w-9 items-center justify-center bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-30"
+            className="ml-1 inline-flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-30"
             disabled={isStreaming ? false : !hasSubmittableContent || disabled || Boolean(unsupportedReason)}
             onStop={onAbort}
             size="icon-sm"
@@ -286,10 +339,19 @@ export function Composer({
   onComposerFocusChange,
   onRefreshModels,
   isRefreshingModels,
+  customProviders,
+  credentials,
+  defaultFreeOnly,
+  onManageProviders,
+  reasoningEffort,
+  toolPermissionMode,
+  onReasoningEffortChange,
+  onToolPermissionModeChange,
   onOpenGallery,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mentions = useMentionAutocomplete({ value, onChange, textareaRef, disabled });
   const selectedModel = useMemo(
     () => models.find((model) => model.id === selectedModelId) ?? null,
     [models, selectedModelId],
@@ -376,7 +438,7 @@ export function Composer({
       <div className="mx-auto max-w-content-max">
         <PromptInput
           accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
-          className="overflow-hidden border border-[var(--border-default)] bg-bg-base transition-colors focus-within:border-[var(--border-strong)]"
+          className="overflow-hidden rounded-2xl border border-[var(--border-default)] bg-bg-base transition-colors focus-within:border-[var(--border-strong)]"
           globalDrop
           maxFileSize={MAX_ATTACHMENT_SIZE_BYTES}
           maxFiles={MAX_ATTACHMENT_COUNT}
@@ -386,17 +448,43 @@ export function Composer({
         >
           <ComposerAttachmentsHeader />
 
-          <PromptInputBody className="px-4 pt-3.5 pb-1.5">
+          <PromptInputBody className="relative px-4 pt-3.5 pb-1.5">
+            {mentions.isOpen ? (
+              <MentionAutocompleteList
+                suggestions={mentions.suggestions}
+                activeIndex={mentions.activeIndex}
+                onHover={mentions.setActiveIndex}
+                onSelect={mentions.select}
+              />
+            ) : null}
             <PromptInputTextarea
               ref={textareaRef}
               value={value}
-              onChange={(e) => onChange(e.target.value)}
-              onBlur={() => onComposerFocusChange(false)}
+              onChange={(e) => {
+                onChange(e.target.value);
+                mentions.syncCaret();
+              }}
+              onKeyDown={(e) => {
+                // Consumed keys must stop here: PromptInputTextarea submits on
+                // Enter unless the external handler prevented default.
+                if (mentions.handleKeyDown(e)) {
+                  e.preventDefault();
+                }
+              }}
+              onSelect={mentions.syncCaret}
+              onClick={mentions.syncCaret}
+              onBlur={() => {
+                onComposerFocusChange(false);
+                mentions.dismiss();
+              }}
               onFocus={() => onComposerFocusChange(true)}
               disabled={disabled}
               rows={1}
               placeholder="Message…"
-              className="w-full min-h-10.5 resize-none border-0 bg-transparent px-0 py-0 text-[14.5px] leading-6 text-text-primary outline-none placeholder:text-[var(--text-faint)] disabled:cursor-not-allowed disabled:opacity-60"
+              // The shadcn textarea ships a focus ring and its own rounding. Inside
+              // the composer shell that paints a second box around the text area,
+              // in whichever accent the active theme maps --ring to.
+              className="w-full min-h-10.5 resize-none rounded-none border-0 bg-transparent px-0 py-0 text-[14.5px] leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-[var(--text-faint)] focus-visible:border-0 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
               style={{ maxHeight: '180px' }}
               name="message"
             />
@@ -407,6 +495,15 @@ export function Composer({
             disabled={disabled}
             hasText={Boolean(value.trim())}
             isRefreshingModels={isRefreshingModels}
+            customProviders={customProviders}
+            credentials={credentials}
+            defaultFreeOnly={defaultFreeOnly}
+            onManageProviders={onManageProviders}
+            reasoningEffort={reasoningEffort}
+            toolPermissionMode={toolPermissionMode}
+            onReasoningEffortChange={onReasoningEffortChange}
+            onToolPermissionModeChange={onToolPermissionModeChange}
+            modelSupportsTools={Boolean(selectedModel?.supportsTools)}
             isStreaming={isStreaming}
             modelPickerOpen={modelPickerOpen}
             models={models}

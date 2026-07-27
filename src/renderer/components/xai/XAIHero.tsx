@@ -10,8 +10,8 @@ interface HeroProps {
 export function XAIHero({
   headline = 'ATLAS',
   subtitle = 'OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.',
-  primaryCTA = 'TRY GROK',
-  secondaryCTA = 'VIEW API',
+  primaryCTA = 'OPEN THE APP',
+  secondaryCTA = 'READ THE DOCS',
   onPrimaryClick,
   onSecondaryClick,
 }: HeroProps) {

@@ -12,13 +12,12 @@ import type {
   ModelSummary,
   ProviderCredentialSummary,
   ProviderId,
-  RuntimeEventEnvelope,
   RuntimeStateSnapshot,
   SettingsSection,
   SettingsSummary,
   SettingsUpdateRequest,
-  ToolApprovalResponseRequest,
-  StreamEvent
+  StreamEvent,
+  ToolApprovalResponseRequest
 } from '../../shared/contracts';
 import {
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
@@ -28,9 +27,7 @@ import {
   normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../shared/attachments';
-import { applyStreamEventToParts, buildUserMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../shared/messageParts';
 import { PROVIDER_METADATA } from '../../shared/providerMetadata';
-import { applyRuntimeEventToMessageParts } from '../../shared/runtimeActivity';
 import {
   DEFAULT_CONVERSATION_PAGE_SIZE,
   compactConversationPage,
@@ -39,20 +36,16 @@ import {
   reconcileConversationCache
 } from './conversationCache';
 import { notify } from '../lib/notify';
+import {
+  applyMetaEvent,
+  applyRecoveredRuntimeEventsToStore,
+  applyRuntimeSnapshotToStore,
+  applyStreamingEvent,
+  type DraftState,
+  type RuntimeEventFanOut,
+} from './streamEventReducers';
 
-type DraftState = {
-  requestId: string;
-  providerId: ProviderId;
-  modelId: string;
-  parts: ChatMessagePart[];
-  status: 'streaming' | 'error' | 'aborted';
-  errorMessage?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  reasoningTokens?: number;
-  latencyMs?: number;
-  startedAt: string;
-};
+export type { DraftState };
 
 type RefreshModelsOptions = {
   silent?: boolean;
@@ -119,17 +112,20 @@ type AppState = {
   selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
   selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: { text: string; files: ChatInputFilePart[] }) => Promise<void>;
+  resendLastUserMessage: () => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
   respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => Promise<void>;
 };
 
+// =============================================================================
+// Pure helpers
+// =============================================================================
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
-
   return 'Unexpected error';
 }
 
@@ -137,15 +133,10 @@ function findCredential(settings: SettingsSummary | null, providerId: ProviderId
   return settings?.providers.find((provider) => provider.providerId === providerId) ?? null;
 }
 
-function findConfiguredCredential(settings: SettingsSummary | null): ProviderCredentialSummary | null {
-  return settings?.providers.find((provider) => provider.hasSecret) ?? null;
-}
-
 function getModelById(models: ModelSummary[], modelId: string | null) {
   if (!modelId) {
     return null;
   }
-
   return models.find((model) => model.id === modelId) ?? null;
 }
 
@@ -172,7 +163,7 @@ function resolveSelectedModelId(
   return models[0]?.id ?? null;
 }
 
-function chooseDefaultModel(models: ModelSummary[], preferredProviderId?: ProviderId | null) {
+export function chooseDefaultModel(models: ModelSummary[], preferredProviderId?: ProviderId | null) {
   const availableModels = models.filter((model) => !model.archived);
   const preferredModels = preferredProviderId
     ? availableModels.filter((model) => model.providerId === preferredProviderId)
@@ -191,13 +182,9 @@ function collectRendererHeapBytes() {
   if (typeof performance === 'undefined') {
     return null;
   }
-
   const memory = (performance as Performance & {
-    memory?: {
-      usedJSHeapSize?: number;
-    };
+    memory?: { usedJSHeapSize?: number };
   }).memory;
-
   return memory?.usedJSHeapSize ?? null;
 }
 
@@ -236,169 +223,9 @@ function resolveConversationIdForRequest(
   return null;
 }
 
-function buildDraftFromRuntimeSnapshot(snapshot: RuntimeStateSnapshot, currentDraft?: DraftState) {
-  const streamingAssistant = [...snapshot.messages]
-    .reverse()
-    .find((message) => message.role === 'assistant' && message.status === 'streaming');
-
-  if (!streamingAssistant || snapshot.providerSession?.status !== 'active') {
-    return undefined;
-  }
-
-  return {
-    requestId: snapshot.providerSession.requestId,
-    providerId: snapshot.providerSession.providerId,
-    modelId: snapshot.providerSession.modelId,
-    parts: streamingAssistant.parts,
-    status: 'streaming' as const,
-    startedAt: currentDraft?.startedAt ?? streamingAssistant.createdAt,
-    inputTokens: streamingAssistant.inputTokens ?? currentDraft?.inputTokens,
-    outputTokens: streamingAssistant.outputTokens ?? currentDraft?.outputTokens,
-    reasoningTokens: streamingAssistant.reasoningTokens ?? currentDraft?.reasoningTokens,
-    latencyMs: streamingAssistant.latencyMs ?? currentDraft?.latencyMs,
-  };
-}
-
-function applyRuntimeSnapshotToStore(
-  state: AppState,
-  conversationId: string,
-  snapshot: RuntimeStateSnapshot,
-) {
-  const existingDetail = state.conversationDetails[conversationId];
-  const detail = {
-    conversation: snapshot.conversation ?? existingDetail?.conversation ?? {
-      id: conversationId,
-      title: 'Session',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      defaultProviderId: null,
-      defaultModelId: null,
-    },
-    messages: snapshot.messages,
-    hasOlder: existingDetail?.hasOlder ?? false,
-    nextCursor: existingDetail?.nextCursor ?? null,
-    limit: existingDetail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
-  };
-  const nextDraft = buildDraftFromRuntimeSnapshot(snapshot, state.draftsByConversation[conversationId]);
-  const nextDrafts = { ...state.draftsByConversation };
-
-  if (nextDraft) {
-    nextDrafts[conversationId] = nextDraft;
-  } else {
-    delete nextDrafts[conversationId];
-  }
-
-  return {
-    conversationDetails: {
-      ...state.conversationDetails,
-      [conversationId]: detail,
-    },
-    draftsByConversation: nextDrafts,
-    runtimeSequenceByConversation: {
-      ...state.runtimeSequenceByConversation,
-      [conversationId]: snapshot.lastSequence,
-    },
-  };
-}
-
-function applyRecoveredRuntimeEventsToStore(
-  state: AppState,
-  conversationId: string,
-  events: RuntimeEventEnvelope[],
-) {
-  const currentSequence = state.runtimeSequenceByConversation[conversationId] ?? 0;
-  const nextEvents = events.filter((event) => event.sequence > currentSequence);
-  if (nextEvents.length === 0) {
-    return state;
-  }
-
-  let nextDrafts = state.draftsByConversation;
-  let nextConversationDetails = state.conversationDetails;
-  let nextRequestToConversation = state.requestToConversation;
-  let nextRuntimeSequenceByConversation = state.runtimeSequenceByConversation;
-
-  let draft = state.draftsByConversation[conversationId];
-  const detail = state.conversationDetails[conversationId];
-  let nextMessages = detail?.messages ?? null;
-
-  for (const event of nextEvents) {
-    if (nextRequestToConversation[event.requestId] !== conversationId) {
-      if (nextRequestToConversation === state.requestToConversation) {
-        nextRequestToConversation = { ...state.requestToConversation };
-      }
-      nextRequestToConversation[event.requestId] = conversationId;
-    }
-
-    if (draft?.requestId === event.requestId) {
-      const nextParts = applyRuntimeEventToMessageParts(draft.parts, event);
-      if (nextParts !== draft.parts) {
-        if (nextDrafts === state.draftsByConversation) {
-          nextDrafts = { ...state.draftsByConversation };
-        }
-        draft = {
-          ...draft,
-          parts: nextParts,
-        };
-        nextDrafts[conversationId] = draft;
-      }
-    }
-
-    if (detail && nextMessages) {
-      const messageIndex = nextMessages.findIndex((message) => message.id === event.messageId);
-      if (messageIndex !== -1) {
-        const message = nextMessages[messageIndex];
-        const nextParts = applyRuntimeEventToMessageParts(message.parts, event);
-
-        if (nextParts !== message.parts) {
-          if (nextConversationDetails === state.conversationDetails) {
-            nextConversationDetails = { ...state.conversationDetails };
-          }
-          if (nextMessages === detail.messages) {
-            nextMessages = [...detail.messages];
-          }
-
-          nextMessages[messageIndex] = {
-            ...message,
-            parts: nextParts,
-            content: getTextContentFromParts(nextParts),
-            reasoning: getReasoningContentFromParts(nextParts),
-          };
-
-          nextConversationDetails[conversationId] = {
-            ...detail,
-            messages: nextMessages,
-          };
-        }
-      }
-    }
-  }
-
-  const latestSequence = nextEvents[nextEvents.length - 1]?.sequence ?? currentSequence;
-  if (latestSequence !== currentSequence) {
-    if (nextRuntimeSequenceByConversation === state.runtimeSequenceByConversation) {
-      nextRuntimeSequenceByConversation = { ...state.runtimeSequenceByConversation };
-    }
-    nextRuntimeSequenceByConversation[conversationId] = latestSequence;
-  }
-
-  if (
-    nextDrafts === state.draftsByConversation &&
-    nextConversationDetails === state.conversationDetails &&
-    nextRequestToConversation === state.requestToConversation &&
-    nextRuntimeSequenceByConversation === state.runtimeSequenceByConversation
-  ) {
-    return state;
-  }
-
-  return {
-    ...state,
-    draftsByConversation: nextDrafts,
-    conversationDetails: nextConversationDetails,
-    requestToConversation: nextRequestToConversation,
-    runtimeSequenceByConversation: nextRuntimeSequenceByConversation,
-  };
-}
-
+// =============================================================================
+// Store
+// =============================================================================
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
   initialized: false,
@@ -431,10 +258,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateState: { status: 'idle' },
 
   bootstrap: async () => {
-    set({
-      bootstrapping: true,
-      bootstrapError: null
-    });
+    set({ bootstrapping: true, bootstrapError: null });
 
     try {
       const settings = await window.atlasChat.settings.getSummary();
@@ -471,50 +295,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         bootstrapping: false,
         initialized: true,
         settings,
-        models,
+        models: settings.showFreeOnlyByDefault ? models.filter((model) => model.isFree) : models,
         conversations,
         conversationStats,
         diagnostics,
         activeCredentialProviderId,
         selectedConversationId,
-        conversationDetails:
-          selectedConversationId && runtimeState
-            ? {
-                [selectedConversationId]: {
-                  conversation: runtimeState.conversation ?? detail!.conversation,
-                  messages: runtimeState.messages,
-                  hasOlder: detail?.hasOlder ?? false,
-                  nextCursor: detail?.nextCursor ?? null,
-                  limit: detail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
-                },
-              }
-            : detail && selectedConversationId ? { [selectedConversationId]: detail } : {},
+        conversationDetails: buildBootstrapConversationDetails(selectedConversationId, detail, runtimeState),
         runtimeSequenceByConversation:
           selectedConversationId && runtimeState ? { [selectedConversationId]: runtimeState.lastSequence } : {},
         draftsByConversation:
           selectedConversationId && runtimeState
-            ? { [selectedConversationId]: buildDraftFromRuntimeSnapshot(runtimeState) }
+            ? (applyRuntimeSnapshotToStore(
+                {
+                  draftsByConversation: {},
+                  conversationDetails: {},
+                  requestToConversation: {},
+                  runtimeSequenceByConversation: {}
+                },
+                selectedConversationId,
+                runtimeState
+              ).draftsByConversation ?? {})
             : {},
         updateState,
         selectedModelIdByConversation:
           defaultModelId && selectedConversationId
             ? {
                 [selectedConversationId]:
-                  detail?.conversation.defaultModelId ??
-                  chooseDefaultModel(models, detail?.conversation.defaultProviderId ?? settings.defaultProviderId) ??
+                  detail?.conversation?.defaultModelId ??
+                  chooseDefaultModel(models, detail?.conversation?.defaultProviderId ?? settings.defaultProviderId) ??
                   defaultModelId
               }
             : {}
       });
 
-      if (models.length === 0 || settings.providers.some((provider) => provider.hasSecret)) {
+      if (models.length === 0) {
         void get().refreshModels({ silent: true });
       }
     } catch (error) {
-      set({
-        bootstrapping: false,
-        bootstrapError: getErrorMessage(error)
-      });
+      set({ bootstrapping: false, bootstrapError: getErrorMessage(error) });
     }
   },
 
@@ -546,19 +365,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
 
       if (!silent) {
-        notify({
-          tone: 'success',
-          title: 'Model catalog refreshed.'
-        });
+        notify({ tone: 'success', title: 'Model catalog refreshed.' });
       }
     } catch (error) {
       set({ isRefreshingModels: false });
 
       if (!silent) {
-        notify({
-          tone: 'error',
-          title: getErrorMessage(error)
-        });
+        notify({ tone: 'error', title: getErrorMessage(error) });
       }
     }
   },
@@ -639,11 +452,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -656,10 +465,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set((current) => ({
-      isLoadingOlderByConversation: {
-        ...current.isLoadingOlderByConversation,
-        [conversationId]: true
-      }
+      isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: true }
     }));
 
     try {
@@ -672,10 +478,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const currentDetail = current.conversationDetails[conversationId];
         if (!currentDetail) {
           return {
-            isLoadingOlderByConversation: {
-              ...current.isLoadingOlderByConversation,
-              [conversationId]: false
-            }
+            isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
           };
         }
 
@@ -694,45 +497,26 @@ export const useAppStore = create<AppState>((set, get) => ({
               limit: page.limit
             }
           },
-          isLoadingOlderByConversation: {
-            ...current.isLoadingOlderByConversation,
-            [conversationId]: false
-          }
+          isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
         };
       });
     } catch (error) {
       set((current) => ({
-        isLoadingOlderByConversation: {
-          ...current.isLoadingOlderByConversation,
-          [conversationId]: false
-        }
+        isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
       }));
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
   createConversation: async () => {
     const created = await window.atlasChat.conversations.create();
     await get().refreshConversationList();
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(created.id);
   },
 
   openSettings: (section = 'general') =>
-    set({
-      activeView: 'settings',
-      settingsSection: section,
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    }),
+    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, modelPickerOpen: false }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
@@ -755,10 +539,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const secret = state.keyDraft.trim();
     const metadata = PROVIDER_METADATA[providerId];
     if (!secret) {
-      notify({
-        tone: 'error',
-        title: `Enter a ${metadata.label} API key before saving.`
-      });
+      notify({ tone: 'error', title: `Enter a ${metadata.label} API key before saving.` });
       return;
     }
 
@@ -766,26 +547,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const settings = await window.atlasChat.settings.saveProviderKey(providerId, secret);
-      set({
-        isSavingKey: false,
-        settings,
-        keyDraft: '',
-        activeCredentialProviderId: providerId
-      });
-
-      notify({
-        tone: 'success',
-        title: `${metadata.label} key saved to the OS keychain.`
-      });
+      set({ isSavingKey: false, settings, keyDraft: '', activeCredentialProviderId: providerId });
+      notify({ tone: 'success', title: `${metadata.label} key saved to the OS keychain.` });
     } catch (error) {
-      set({
-        isSavingKey: false
-      });
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      set({ isSavingKey: false });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -798,26 +564,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const settings = await window.atlasChat.settings.validateProviderKey(providerId, secretOverride);
-      set({
-        isValidatingKey: false,
-        settings,
-        keyDraft: '',
-      });
-
-      notify({
-        tone: 'success',
-        title: `${metadata.label} key validated successfully.`
-      });
+      set({ isValidatingKey: false, settings, keyDraft: '' });
+      notify({ tone: 'success', title: `${metadata.label} key validated successfully.` });
       await get().refreshModels({ silent: true });
     } catch (error) {
-      set({
-        isValidatingKey: false
-      });
-
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error)
-      });
+      set({ isValidatingKey: false });
+      notify({ tone: 'error', title: getErrorMessage(error) });
     }
   },
 
@@ -852,28 +604,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   checkForUpdates: async ({ manual } = {}) => {
     try {
       const snapshot = await window.atlasChat.updates.check();
-
       set({ updateState: snapshot });
 
       if (manual && snapshot.status === 'error') {
-        notify({
-          tone: 'error',
-          title: snapshot.message
-        });
+        notify({ tone: 'error', title: snapshot.message });
       }
-
       if (manual && snapshot.status === 'not-available') {
-        notify({
-          tone: 'info',
-          title: 'Atlas is up to date.'
-        });
+        notify({ tone: 'info', title: 'Atlas is up to date.' });
       }
     } catch (error) {
       if (manual) {
-        notify({
-          tone: 'error',
-          title: getErrorMessage(error)
-        });
+        notify({ tone: 'error', title: getErrorMessage(error) });
       }
     }
   },
@@ -884,10 +625,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSelectedModel: (conversationId, modelId) => {
     set((state) => ({
-      selectedModelIdByConversation: {
-        ...state.selectedModelIdByConversation,
-        [conversationId]: modelId
-      }
+      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId }
     }));
   },
 
@@ -896,23 +634,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const currentIndex = state.conversations.findIndex(
       (conversation) => conversation.id === state.selectedConversationId
     );
-
     if (currentIndex === -1) {
       return;
     }
-
     const nextConversation =
       direction === 'previous' ? state.conversations[currentIndex - 1] : state.conversations[currentIndex + 1];
-
     if (!nextConversation) {
       return;
     }
-
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(nextConversation.id);
   },
 
@@ -921,12 +651,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!conversation) {
       return;
     }
-
-    set({
-      activeView: 'chat',
-      commandPaletteOpen: false,
-      modelPickerOpen: false
-    });
+    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(conversation.id);
   },
 
@@ -959,72 +684,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       resolveSelectedModelId(
         conversationId,
         state.selectedModelIdByConversation,
-        {
-          ...state.conversationDetails,
-          [conversationId]: detail
-        },
+        { ...state.conversationDetails, [conversationId]: detail },
         state.models
-    ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
+      ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
 
     if (!modelId) {
-      notify({
-        tone: 'error',
-        title: 'Refresh the model catalog and select a model before sending.'
-      });
+      notify({ tone: 'error', title: 'Refresh the model catalog and select a model before sending.' });
       return;
     }
 
     const selectedModel = getModelById(state.models, modelId);
     const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
-
     if (!selectedModel || !providerId) {
-      notify({
-        tone: 'error',
-        title: 'Select a valid model before sending.'
-      });
+      notify({ tone: 'error', title: 'Select a valid model before sending.' });
       return;
     }
 
     const unsupportedAttachment = normalizedFiles.find(
       (file) => !isSupportedAttachmentMediaType(file.mediaType, file.filename),
     );
-
     if (unsupportedAttachment) {
-      notify({
-        tone: 'error',
-        title: `${unsupportedAttachment.filename ?? 'This file'} is not a supported attachment type.`,
-      });
+      notify({ tone: 'error', title: `${unsupportedAttachment.filename ?? 'This file'} is not a supported attachment type.` });
       return;
     }
 
     const totalAttachmentBytes = sumAttachmentSize(normalizedFiles);
     if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-      notify({
-        tone: 'error',
-        title: 'Attachments are too large to send together.',
-      });
+      notify({ tone: 'error', title: 'Attachments are too large to send together.' });
       return;
     }
 
     const attachmentCapabilityError = getAttachmentCapabilityError(selectedModel, normalizedFiles);
     if (attachmentCapabilityError) {
-      notify({
-        tone: 'error',
-        title: attachmentCapabilityError,
-      });
+      notify({ tone: 'error', title: attachmentCapabilityError });
       return;
     }
 
     const credential = findCredential(state.settings, providerId);
     if (!credential?.hasSecret) {
-      notify({
-        tone: 'error',
-        title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.`
-      });
-
-      set({
-        activeCredentialProviderId: providerId
-      });
+      notify({ tone: 'error', title: `Save a ${PROVIDER_METADATA[providerId].label} API key before sending with this model.` });
+      set({ activeCredentialProviderId: providerId });
       return;
     }
 
@@ -1046,63 +745,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationId,
         providerId,
         modelId,
-        messages: [
-          {
-            role: 'user' as const,
-            content: previewContent,
-            parts: inputParts,
-          },
-        ],
+        messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
         enableTools: Boolean(selectedModel.supportsTools),
         temperature: 0.65
       });
     } catch (error) {
-      notify({
-        tone: 'error',
-        title: getErrorMessage(error),
-      });
+      notify({ tone: 'error', title: getErrorMessage(error) });
       throw error;
     }
 
     const now = new Date().toISOString();
-    const optimisticParts = buildUserMessageParts({
-      content: trimmed,
-      parts: inputParts,
-      idPrefix: request.requestId,
-    });
+    const optimisticId = `optimistic-${request.requestId}`;
+    const optimisticMessage = {
+      id: optimisticId,
+      conversationId,
+      role: 'user' as const,
+      content: previewContent,
+      reasoning: null,
+      parts: [{ type: 'text' as const, text: trimmed, state: 'done' as const, id: `${optimisticId}-text-0` }],
+      status: 'complete' as const,
+      providerId,
+      modelId,
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      latencyMs: null,
+      errorCode: null,
+      createdAt: now
+    };
 
     set((current) => ({
       conversationDetails: {
         ...current.conversationDetails,
         [conversationId]: {
           ...detail,
-          messages: [
-            ...detail.messages,
-            {
-              id: `optimistic-${request.requestId}`,
-              conversationId,
-              role: 'user' as const,
-              content: previewContent,
-              reasoning: null,
-              parts: optimisticParts,
-              status: 'complete' as const,
-              providerId,
-              modelId,
-              inputTokens: null,
-              outputTokens: null,
-              reasoningTokens: null,
-              latencyMs: null,
-              errorCode: null,
-              createdAt: now
-            }
-          ]
+          messages: [...detail.messages, optimisticMessage]
         }
       },
       conversationStats: current.conversationStats
-        ? {
-            ...current.conversationStats,
-            storedMessageCount: current.conversationStats.storedMessageCount + 1
-          }
+        ? { ...current.conversationStats, storedMessageCount: current.conversationStats.storedMessageCount + 1 }
         : current.conversationStats,
       draftsByConversation: {
         ...current.draftsByConversation,
@@ -1111,14 +792,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           providerId,
           modelId,
           parts: [],
-          status: 'streaming' as const,
+          status: 'streaming',
           startedAt: now
         }
       },
-      requestToConversation: {
-        ...current.requestToConversation,
-        [request.requestId]: conversationId
-      },
+      requestToConversation: { ...current.requestToConversation, [request.requestId]: conversationId },
       conversations: current.conversations
         .map((conversation) =>
           conversation.id === conversationId
@@ -1137,12 +815,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  resendLastUserMessage: async () => {
+    const state = get();
+    const conversationId = state.selectedConversationId;
+    if (!conversationId) {
+      return;
+    }
+    const detail = state.conversationDetails[conversationId];
+    if (!detail) {
+      return;
+    }
+    const lastUser = [...detail.messages].reverse().find((message) => message.role === 'user');
+    if (!lastUser) {
+      return;
+    }
+    const text = lastUser.parts
+      .filter((part): part is Extract<typeof lastUser.parts[number], { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n\n')
+      .trim() || lastUser.content.trim();
+    if (!text) {
+      return;
+    }
+    await get().sendMessage({ text, files: [] });
+  },
+
   abortConversation: async (conversationId) => {
     const draft = get().draftsByConversation[conversationId];
     if (!draft || draft.status !== 'streaming') {
       return;
     }
-
     await window.atlasChat.chat.abort(draft.requestId);
   },
 
@@ -1152,15 +854,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!conversationId) {
         return state;
       }
-
       return {
-        requestToConversation: {
-          ...state.requestToConversation,
-          [request.requestId]: conversationId
-        }
+        requestToConversation: { ...state.requestToConversation, [request.requestId]: conversationId }
       };
     });
-
     await window.atlasChat.chat.respondToolApproval(request);
   },
 
@@ -1171,6 +868,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (draft?.status === 'streaming') {
       await window.atlasChat.chat.abort(draft.requestId);
     }
+
+    // Snapshot the previous state so we can roll back if the IPC delete fails.
+    const previousDetail = state.conversationDetails[conversationId];
+    const previousDraft = state.draftsByConversation[conversationId];
+    const previousSelectedModel = state.selectedModelIdByConversation[conversationId];
+    const previousSequence = state.runtimeSequenceByConversation[conversationId];
+    const previousLoadingOlder = state.isLoadingOlderByConversation[conversationId];
+    const previousConversations = state.conversations;
+    const previousSelectedId = state.selectedConversationId;
+    const previousRequestMap = state.requestToConversation;
 
     set((current) => {
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
@@ -1200,7 +907,33 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
 
-    await window.atlasChat.conversations.delete(conversationId);
+    try {
+      await window.atlasChat.conversations.delete(conversationId);
+    } catch (error) {
+      // Roll back the optimistic UI update so the conversation reappears.
+      set((current) => ({
+        conversationDetails: previousDetail
+          ? { ...current.conversationDetails, [conversationId]: previousDetail }
+          : current.conversationDetails,
+        draftsByConversation: previousDraft
+          ? { ...current.draftsByConversation, [conversationId]: previousDraft }
+          : current.draftsByConversation,
+        selectedModelIdByConversation: previousSelectedModel
+          ? { ...current.selectedModelIdByConversation, [conversationId]: previousSelectedModel }
+          : current.selectedModelIdByConversation,
+        runtimeSequenceByConversation: previousSequence
+          ? { ...current.runtimeSequenceByConversation, [conversationId]: previousSequence }
+          : current.runtimeSequenceByConversation,
+        isLoadingOlderByConversation: previousLoadingOlder
+          ? { ...current.isLoadingOlderByConversation, [conversationId]: previousLoadingOlder }
+          : current.isLoadingOlderByConversation,
+        conversations: previousConversations,
+        requestToConversation: previousRequestMap,
+        selectedConversationId: previousSelectedId
+      }));
+      notify({ tone: 'error', title: getErrorMessage(error) });
+      return;
+    }
 
     const [conversations, conversationStats] = await Promise.all([
       window.atlasChat.conversations.list(),
@@ -1215,7 +948,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const nextSelectedConversationId = get().selectedConversationId;
-
     set({ conversations, conversationStats });
 
     if (nextSelectedConversationId && conversations.some((conversation) => conversation.id === nextSelectedConversationId)) {
@@ -1242,10 +974,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (!state.requestToConversation[event.requestId]) {
       set((current) => ({
-        requestToConversation: {
-          ...current.requestToConversation,
-          [event.requestId]: conversationId
-        }
+        requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId }
       }));
     }
 
@@ -1254,153 +983,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (event.sequence <= currentSequence) {
         return;
       }
-
       const recovery = await window.atlasChat.chat.recoverEvents({
         conversationId,
         afterSequence: currentSequence,
       });
-
       if (recovery.events.length === 0) {
         const snapshot = await window.atlasChat.chat.getRuntimeState({ conversationId });
         set((current) => ({
           ...applyRuntimeSnapshotToStore(current, conversationId, snapshot),
-          requestToConversation: {
-            ...current.requestToConversation,
-            [event.requestId]: conversationId,
-          },
+          requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId },
         }));
         return;
       }
-
       set((current) => applyRecoveredRuntimeEventsToStore(current, conversationId, recovery.events));
       return;
     }
 
-    if (
-      event.type === 'chunk' ||
-      event.type === 'reasoning' ||
-      event.type === 'tool-input-start' ||
-      event.type === 'tool-input-delta' ||
-      event.type === 'tool-input-available' ||
-      event.type === 'tool-approval-requested' ||
-      event.type === 'tool-approval-responded' ||
-      event.type === 'tool-output-available' ||
-      event.type === 'tool-output-error' ||
-      event.type === 'tool-output-denied' ||
-      event.type === 'visual-start' ||
-      event.type === 'visual-complete'
-    ) {
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        const detail = state.conversationDetails[conversationId];
-
-        const nextDrafts = { ...state.draftsByConversation };
-        const nextDetails = { ...state.conversationDetails };
-        let changed = false;
-
-        if (draft) {
-          nextDrafts[conversationId] = {
-            ...draft,
-            parts: applyStreamEventToParts(draft.parts, event)
-          };
-          changed = true;
-        }
-
-        if (detail) {
-          const streamingAssistantIndex = [...detail.messages]
-            .map((message, index) => ({ message, index }))
-            .reverse()
-            .find(({ message }) => message.role === 'assistant' && message.status === 'streaming')?.index;
-
-          if (streamingAssistantIndex != null) {
-            const nextMessages = detail.messages.map((message, index) => {
-              if (index !== streamingAssistantIndex) {
-                return message;
-              }
-
-              return {
-                ...message,
-                parts: applyStreamEventToParts(message.parts, event)
-              };
-            });
-
-            nextDetails[conversationId] = {
-              ...detail,
-              messages: nextMessages
-            };
-            changed = true;
-          }
-        }
-
-        if (!changed) {
-          return state;
-        }
-
-        return {
-          draftsByConversation: nextDrafts,
-          conversationDetails: nextDetails
-        };
-      });
+    // Apply a per-stream event (text/reasoning/tool/visual). The pure
+    // reducer handles the fan-out to draft + detail so this branch stays
+    // short and obvious.
+    const streamPatch = applyStreamingEvent(state, conversationId, event);
+    if (streamPatch) {
+      set((current) => ({ ...current, ...streamPatch }));
       return;
     }
 
     if (event.type === 'meta') {
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        const detail = state.conversationDetails[conversationId];
-        const nextDrafts = { ...state.draftsByConversation };
-        const nextDetails = { ...state.conversationDetails };
-        let changed = false;
-
-        if (draft) {
-          nextDrafts[conversationId] = {
-            ...draft,
-            inputTokens: event.inputTokens,
-            outputTokens: event.outputTokens,
-            reasoningTokens: event.reasoningTokens,
-            latencyMs: event.latencyMs
-          };
-          changed = true;
-        }
-
-        if (detail) {
-          const streamingAssistantIndex = [...detail.messages]
-            .map((message, index) => ({ message, index }))
-            .reverse()
-            .find(({ message }) => message.role === 'assistant' && message.status === 'streaming')?.index;
-
-          if (streamingAssistantIndex != null) {
-            const nextMessages = detail.messages.map((message, index) => {
-              if (index !== streamingAssistantIndex) {
-                return message;
-              }
-
-              return {
-                ...message,
-                inputTokens: event.inputTokens ?? message.inputTokens,
-                outputTokens: event.outputTokens ?? message.outputTokens,
-                reasoningTokens: event.reasoningTokens ?? message.reasoningTokens,
-                latencyMs: event.latencyMs ?? message.latencyMs
-              };
-            });
-
-            nextDetails[conversationId] = {
-              ...detail,
-              messages: nextMessages
-            };
-            changed = true;
-          }
-        }
-
-        if (!changed) {
-          return state;
-        }
-
-        return {
-          draftsByConversation: nextDrafts,
-          conversationDetails: nextDetails
-        };
-      });
+      const metaPatch = applyMetaEvent(state, conversationId, event);
+      if (metaPatch) {
+        set((current) => ({ ...current, ...metaPatch }));
+      }
       return;
     }
 
@@ -1411,13 +1023,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         window.atlasChat.conversations.getStats(),
         window.atlasChat.diagnostics.getSnapshot()
       ]);
-      const shouldShowNotice =
-        event.code === 'auth_error' || event.code === 'missing_credential';
+      const shouldShowNotice = event.code === 'auth_error' || event.code === 'missing_credential';
 
-      set((state) => {
-        const draft = state.draftsByConversation[conversationId];
-        const { [event.requestId]: _omitted, ...restRequests } = state.requestToConversation;
-        const nextDrafts = { ...state.draftsByConversation };
+      set((s) => {
+        const draft = s.draftsByConversation[conversationId];
+        const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
+        const nextDrafts = { ...s.draftsByConversation };
 
         if (draft) {
           nextDrafts[conversationId] = {
@@ -1432,8 +1043,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           requestToConversation: restRequests,
           conversationDetails: {
-            ...state.conversationDetails,
-            [conversationId]: mergeConversationPage(state.conversationDetails[conversationId], page)
+            ...s.conversationDetails,
+            [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
           },
           conversations,
           conversationStats,
@@ -1443,14 +1054,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       if (shouldShowNotice) {
-        notify({
-          tone: 'error',
-          title: event.message
-        });
+        notify({ tone: 'error', title: event.message });
       }
       return;
     }
 
+    // Terminal event (finish / completion): drop the draft and refresh from
+    // the main process so the persisted message is the source of truth.
     const [page, conversations, conversationStats, diagnostics] = await Promise.all([
       window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
       window.atlasChat.conversations.list(),
@@ -1458,16 +1068,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.atlasChat.diagnostics.getSnapshot()
     ]);
 
-    set((state) => {
-      const { [conversationId]: draft, ...restDrafts } = state.draftsByConversation;
-      const { [event.requestId]: _omitted, ...restRequests } = state.requestToConversation;
+    set((s) => {
+      const { [conversationId]: draft, ...restDrafts } = s.draftsByConversation;
+      const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
 
       return {
         requestToConversation: restRequests,
         draftsByConversation: restDrafts,
         conversationDetails: {
-          ...state.conversationDetails,
-          [conversationId]: mergeConversationPage(state.conversationDetails[conversationId], page)
+          ...s.conversationDetails,
+          [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
         },
         conversations,
         conversationStats,
@@ -1475,16 +1085,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
   },
-
 }));
 
+// =============================================================================
+// Helpers
+// =============================================================================
+function findConfiguredCredential(settings: SettingsSummary | null): ProviderCredentialSummary | null {
+  return settings?.providers.find((provider) => provider.hasSecret) ?? null;
+}
+
+function buildBootstrapConversationDetails(
+  selectedConversationId: string | null,
+  detail: ConversationPage | null | undefined,
+  runtimeState: RuntimeStateSnapshot | null
+) {
+  if (!selectedConversationId) return {};
+  const mergedConversation = runtimeState?.conversation ?? detail?.conversation ?? null;
+  if (runtimeState && mergedConversation) {
+    return {
+      [selectedConversationId]: {
+        conversation: mergedConversation,
+        messages: runtimeState.messages ?? [],
+        hasOlder: detail?.hasOlder ?? false,
+        nextCursor: detail?.nextCursor ?? null,
+        limit: detail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
+      },
+    };
+  }
+  if (detail) {
+    return { [selectedConversationId]: detail };
+  }
+  return {};
+}
+
+// =============================================================================
+// Selectors
+// =============================================================================
 export function selectLoadedConversationMetrics(state: AppState) {
   return getLoadedConversationCounts(state.conversationDetails);
 }
 
 export function selectDiagnosticsSummary(state: AppState) {
   const loadedMetrics = getLoadedConversationCounts(state.conversationDetails);
-
   return {
     rendererHeapBytes: collectRendererHeapBytes(),
     loadedConversationCount: loadedMetrics.loadedConversationCount,
@@ -1502,3 +1144,6 @@ export function selectDiagnosticsSummary(state: AppState) {
 export function selectCompactedConversationForCache(detail: ConversationPage) {
   return compactConversationPage(detail);
 }
+
+// Re-export helper for tests that need to drive the pure reducers directly.
+export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent };

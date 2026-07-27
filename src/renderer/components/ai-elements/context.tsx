@@ -226,7 +226,7 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
     align="end"
     sideOffset={12}
       className={cn(
-        "w-[292px] border border-[var(--border-strong)] bg-bg-elevated/95 backdrop-blur-xl p-0 text-text-primary shadow-2xl",
+        "w-[292px] border border-[var(--border-strong)] bg-bg-overlay p-0 text-text-primary shadow-2xl",
         className
       )}
     {...props}

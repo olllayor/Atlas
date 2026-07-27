@@ -22,9 +22,9 @@ import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
 import { KeychainStore } from './secrets/keychain';
 import { UpdateService } from './updates/UpdateService';
-import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, shutdownPostHog } from './analytics/PostHogClient';
+import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
 import { IPC_CHANNELS } from '../shared/ipc';
-import { POSTHOG_EVENTS, isTelemetryEnabled } from '../shared/posthog';
+import { POSTHOG_EVENTS } from '../shared/posthog';
 
 const APP_NAME = 'Atlas';
 const DATABASE_FILENAME = 'atlas-chat.db';
@@ -139,7 +139,11 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(IPC_CHANNELS.posthogGetTelemetryEnabled, () => {
-    return isTelemetryEnabled();
+    return getTelemetryEnabled();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.posthogSetTelemetryEnabled, (_event: Electron.IpcMainInvokeEvent, enabled: boolean) => {
+    return setTelemetryEnabled(enabled);
   });
 
   const window = createWindow();

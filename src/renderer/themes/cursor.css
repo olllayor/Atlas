@@ -9,6 +9,7 @@
   --bg-panel: #f7f7f4; /* Surface 100 - lightest surface */
   --bg-surface: #f2f1ed; /* Surface 200 - primary surface */
   --bg-elevated: #e6e5e0; /* Surface 400 - card backgrounds */
+  --bg-overlay: #f7f7f4; /* Opaque surface for popovers, dialogs, menus - lighter than base for visibility */
   --bg-code: #ebeae5; /* Surface 300 - code blocks */
 
   --bg-subtle: #ebeae5; /* Surface 300 - button backgrounds */

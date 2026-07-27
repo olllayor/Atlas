@@ -1,4 +1,4 @@
-import { KeyRound, X } from 'lucide-react';
+import { KeyRound } from "lucide-react";
 import { useState } from 'react';
 
 import type { ProviderId } from '../../shared/contracts';
@@ -58,7 +58,7 @@ export function OnboardingFlow({
   if (step === 'done') {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-base p-8 text-center">
+        <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-overlay p-8 text-center shadow-elevated">
           <div className="mx-auto flex h-14 w-14 items-center justify-center border border-[var(--border-strong)] bg-[var(--bg-hover)]">
             <svg className="h-7 w-7 text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -82,7 +82,7 @@ export function OnboardingFlow({
 
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-base p-8">
+      <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-overlay p-8 shadow-elevated">
         <div className="text-center">
           <p className="text-xs font-normal uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
           <h1 className="mt-2 text-2xl font-normal text-text-primary">Atlas</h1>
@@ -112,35 +112,53 @@ export function OnboardingFlow({
             </div>
           </div>
 
-          <div className="mt-5 inline-flex border border-[var(--border-default)] bg-bg-subtle p-1">
+          <div
+            role="radiogroup"
+            aria-label="Choose API provider"
+            className="mt-5 inline-flex w-full border border-[var(--border-default)] bg-bg-subtle p-1"
+          >
             {(['openrouter', 'glm'] as const).map((id) => {
               const isActive = id === providerId;
+              const metadata = PROVIDER_METADATA[id];
 
               return (
                 <button
                   key={id}
                   type="button"
+                  role="radio"
+                  aria-checked={isActive}
                   onClick={() => onProviderChange(id)}
-                  className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
+                  className={`inline-flex h-9 flex-1 items-center justify-center gap-2 px-3 text-[13px] font-normal transition ${
                     isActive
-                      ? 'bg-bg-elevated text-text-primary'
+                      ? 'bg-bg-overlay text-text-primary shadow-sm'
                       : 'text-text-tertiary hover:text-text-primary'
                   }`}
                 >
-                  {PROVIDER_METADATA[id].label}
+                  <span aria-hidden="true" className="text-[10px] font-normal uppercase tracking-wider opacity-60">{metadata.label.slice(0, 2)}</span>
+                  <span>{metadata.label}</span>
                 </button>
               );
             })}
           </div>
 
           <div className="mt-5">
+            <label htmlFor="api-key" className="sr-only">
+              {PROVIDER_METADATA[providerId].label} API key
+            </label>
             <input
+              id="api-key"
               type="password"
               value={keyDraft}
               onChange={(e) => onKeyDraftChange(e.target.value)}
               placeholder={PROVIDER_METADATA[providerId].keyPlaceholder}
+              autoComplete="off"
+              spellCheck={false}
+              aria-label={`${PROVIDER_METADATA[providerId].label} API key`}
               className="input px-4 py-3"
             />
+            <p className="mt-1.5 text-[11px] text-text-faint">
+              Stored locally in your OS keychain. Never sent to Atlas.
+            </p>
           </div>
 
           <button
@@ -155,7 +173,7 @@ export function OnboardingFlow({
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                {isSavingKey ? 'Saving...' : 'Validating...'}
+                {isSavingKey ? 'Saving…' : 'Validating…'}
               </>
             ) : (
               <>

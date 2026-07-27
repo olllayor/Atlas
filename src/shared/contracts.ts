@@ -161,7 +161,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage';
+export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -801,5 +801,6 @@ export type RendererApi = {
     getAnonymousId: () => Promise<string>;
     captureEvent: (event: string, properties?: Record<string, unknown>) => void;
     isTelemetryEnabled: () => Promise<boolean>;
+    setTelemetryEnabled: (enabled: boolean) => Promise<boolean>;
   };
 };

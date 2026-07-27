@@ -8,24 +8,21 @@ interface DocsSectionProps {
   onSecondaryClick?: () => void;
 }
 
-const defaultCode = `import { createClient } from '@atlas/chat';
+const defaultCode = `# Run Atlas locally
+$ pnpm install
+$ pnpm build
+$ pnpm start
 
-const client = createClient({
-  provider: 'openrouter',
-  model: 'meta-llama/llama-3.1-8b-instruct',
-});
-
-const response = await client.chat({
-  messages: [{ role: 'user', content: 'Hello' }],
-  stream: true,
-});`;
+# Add your OpenRouter or GLM API key in Settings.
+# Atlas stores it in your OS keychain — nothing
+# leaves your machine.`;
 
 export function XAIDocsSection({
   title = 'BUILT FOR BUILDERS',
   description = 'A clean, minimal API surface that gets out of your way. Integrate Atlas into your workflow or use it as a standalone desktop application.',
   codeBlock = defaultCode,
-  primaryCTA = 'LEARN MORE',
-  secondaryCTA = 'VIEW API',
+  primaryCTA = 'OPEN THE APP',
+  secondaryCTA = 'READ THE DOCS',
   onPrimaryClick,
   onSecondaryClick,
 }: DocsSectionProps) {

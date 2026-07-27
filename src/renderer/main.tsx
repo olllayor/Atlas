@@ -4,8 +4,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { initPostHog, syncTelemetryStatus } from './lib/posthog';
 import './styles.css';
+import 'slot-text/style.css';
 import './themes/xai.css';
 import './themes/default.css';
+import './themes/landing.css';
 import './themes/cursor.css';
 
 initPostHog();

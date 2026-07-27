@@ -28,11 +28,10 @@ import {
   shouldShowShortcutHintForCommand,
 } from './lib/keybindings';
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
-import { captureEvent, identifyUser } from './lib/posthog';
+import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { runViewTransition } from './lib/viewTransitions';
 import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
-import { notify } from './lib/notify';
 
 function LoadingScreen() {
   return (
@@ -42,7 +41,7 @@ function LoadingScreen() {
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
-        <span className="text-sm">Loading...</span>
+        <span className="text-sm">Loading…</span>
       </div>
     </div>
   );
@@ -126,6 +125,13 @@ export default function App() {
   const [showSidebarToggleShortcutHint, setShowSidebarToggleShortcutHint] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [telemetryEnabled, setTelemetryEnabledState] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
   const shortcutPlatform = useMemo(
     () => resolveShortcutPlatform(typeof navigator === 'undefined' ? 'MacIntel' : navigator.platform),
     []
@@ -182,6 +188,7 @@ export default function App() {
     selectAdjacentConversation,
     selectConversationByIndex,
     sendMessage,
+    resendLastUserMessage,
     abortConversation,
     respondToolApproval,
     deleteConversation,
@@ -240,6 +247,7 @@ export default function App() {
       selectAdjacentConversation: state.selectAdjacentConversation,
       selectConversationByIndex: state.selectConversationByIndex,
       sendMessage: state.sendMessage,
+      resendLastUserMessage: state.resendLastUserMessage,
       abortConversation: state.abortConversation,
       respondToolApproval: state.respondToolApproval,
       deleteConversation: state.deleteConversation,
@@ -257,17 +265,33 @@ export default function App() {
   const isLoadingConversation =
     selectedConversationId != null && isLoadingConversationId === selectedConversationId;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
+  const selectedModelSummary = useMemo(
+    () => (selectedModelId ? models.find((m) => m.id === selectedModelId) ?? null : null),
+    [models, selectedModelId]
+  );
+  const hasModelTools = Boolean(selectedModelSummary?.supportsTools);
+  const hasModelVision = Boolean(selectedModelSummary?.supportsVision);
   const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
   const activeCredentialProvider = PROVIDER_METADATA[activeCredentialProviderId];
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
-  const sidebarItems = buildSidebarConversationItems({
-    conversations,
-    draftsByConversation,
-    now: Date.now(),
-  });
+  const sidebarItems = useMemo(
+    () =>
+      buildSidebarConversationItems({
+        conversations,
+        draftsByConversation,
+        now: nowMs,
+      }),
+    [conversations, draftsByConversation, nowMs]
+  );
   const resolvedKeybindings = useMemo(
-    () => resolveKeybindingRules(settings?.keyboard.keybindings ?? getDefaultKeybindingRules()),
+    () => {
+      // An empty array is almost always a stub/test value; fall back to the
+      // shipped defaults so the global shortcuts (Cmd+K, etc.) actually work.
+      const userRules = settings?.keyboard.keybindings;
+      const rules = userRules && userRules.length > 0 ? userRules : getDefaultKeybindingRules();
+      return resolveKeybindingRules(rules);
+    },
     [settings?.keyboard.keybindings]
   );
   const keybindingContext = useMemo(
@@ -353,27 +377,36 @@ export default function App() {
   });
 
   const runCommand = useEffectEvent((command: KeybindingCommand) => {
+    // Read live store values at call time so the keyboard handler never sees stale state.
+    // (useEffectEvent only guarantees a stable reference, not live reads of these props.)
+    const live = useAppStore.getState();
+    const livePaletteOpen = live.commandPaletteOpen;
+    const liveModelPickerOpen = live.modelPickerOpen;
+    const liveActiveView = live.activeView;
+    const liveSelectedConversationId = live.selectedConversationId;
+    const liveActiveDraft = liveSelectedConversationId ? live.draftsByConversation[liveSelectedConversationId] ?? null : null;
+
     if (command === 'app.commandPalette.toggle') {
-      setModelPickerOpen(false);
+      live.setModelPickerOpen(false);
       captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
-      setCommandPaletteOpen(!commandPaletteOpen);
+      live.setCommandPaletteOpen(!livePaletteOpen);
       return;
     }
 
     if (command === 'chat.new') {
-      setCommandPaletteOpen(false);
-      setModelPickerOpen(false);
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(false);
       captureEvent(POSTHOG_EVENTS.CONVERSATION_CREATED);
-      void createConversation();
+      void live.createConversation();
       return;
     }
 
     if (command === 'sidebar.toggle') {
-      if (activeView !== 'chat') {
+      if (liveActiveView !== 'chat') {
         return;
       }
 
-      setCommandPaletteOpen(false);
+      live.setCommandPaletteOpen(false);
       runViewTransition(() => {
         setSidebarCollapsed((current) => !current);
       });
@@ -381,49 +414,49 @@ export default function App() {
     }
 
     if (command === 'settings.open') {
-      setCommandPaletteOpen(false);
+      live.setCommandPaletteOpen(false);
       captureEvent(POSTHOG_EVENTS.SETTINGS_OPENED);
       runViewTransition(() => {
-        openSettings('general');
+        live.openSettings('general');
       });
       return;
     }
 
     if (command === 'composer.focus') {
-      requestComposerFocus();
+      live.requestComposerFocus();
       return;
     }
 
     if (command === 'models.openSwitcher') {
-      if (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming') {
+      if (liveActiveView !== 'chat' || !liveSelectedConversationId || liveActiveDraft?.status === 'streaming') {
         return;
       }
 
-      setCommandPaletteOpen(false);
-      setModelPickerOpen(!modelPickerOpen);
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(!liveModelPickerOpen);
       return;
     }
 
     if (command === 'conversation.previous') {
-      setCommandPaletteOpen(false);
-      setModelPickerOpen(false);
-      void selectAdjacentConversation('previous');
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(false);
+      void live.selectAdjacentConversation('previous');
       return;
     }
 
     if (command === 'conversation.next') {
-      setCommandPaletteOpen(false);
-      setModelPickerOpen(false);
-      void selectAdjacentConversation('next');
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(false);
+      void live.selectAdjacentConversation('next');
       return;
     }
 
     if (command.startsWith('conversation.jump.')) {
       const index = Number(command.split('.').at(-1));
       if (Number.isFinite(index) && index >= 1) {
-        setCommandPaletteOpen(false);
-        setModelPickerOpen(false);
-        void selectConversationByIndex(index - 1);
+        live.setCommandPaletteOpen(false);
+        live.setModelPickerOpen(false);
+        void live.selectConversationByIndex(index - 1);
       }
     }
   });
@@ -431,6 +464,7 @@ export default function App() {
   useEffect(() => {
     void bootstrap();
     void identifyUser();
+    void syncTelemetryStatus().then(setTelemetryEnabledState);
   }, [bootstrap]);
 
   useEffect(() => prewarmMessageRendering(), []);
@@ -621,44 +655,30 @@ export default function App() {
         onThemeModeChange={(mode) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'themeMode', value: mode });
           void updatePreferences({ appearance: { themeMode: mode } });
-          const modeLabel = mode === 'system' ? 'System' : mode === 'dark' ? 'Dark' : 'Light';
-          notify({ tone: 'info', title: `Theme mode: ${modeLabel}` });
         }}
         onDesignThemeChange={(theme) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'designTheme', value: theme });
           void updatePreferences({ appearance: { designTheme: theme } });
-          const themeLabel = theme === 'default' ? 'Default' : theme === 'xai' ? 'xAI' : 'Cursor';
-          notify({ tone: 'info', title: `Design theme: ${themeLabel}` });
         }}
         onBorderRadiusChange={(mode) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'borderRadius', value: mode });
           void updatePreferences({ appearance: { borderRadius: mode } });
-          notify({
-            tone: 'info',
-            title: mode === 'none' ? 'Sharp edges enabled' : 'Border radius: Theme default',
-          });
         }}
         onUiFontSizeChange={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontSize', value });
           void updatePreferences({ appearance: { uiFontSize: value } });
-          notify({ tone: 'info', title: `UI font size: ${value}px` });
         }}
         onCodeFontSizeChange={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontSize', value });
           void updatePreferences({ appearance: { codeFontSize: value } });
-          notify({ tone: 'info', title: `Code font size: ${value}px` });
         }}
         onUiFontFamilyChange={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'uiFontFamily', value });
           void updatePreferences({ appearance: { uiFontFamily: value } });
-          const fontLabel = value === 'system' ? 'System' : value === 'mono' ? 'Monospace' : 'System';
-          notify({ tone: 'info', title: `UI font: ${fontLabel}` });
         }}
         onCodeFontFamilyChange={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontFamily', value });
           void updatePreferences({ appearance: { codeFontFamily: value } });
-          const fontLabel = value === 'system' ? 'System' : value === 'mono' ? 'Monospace' : 'System';
-          notify({ tone: 'info', title: `Code font: ${fontLabel}` });
         }}
         onUpdateKeybindings={(rules) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'keybindings' });
@@ -677,6 +697,11 @@ export default function App() {
           void checkForUpdates({ manual: true });
         }}
         onRefreshModels={() => void refreshModels()}
+        telemetryEnabled={telemetryEnabled}
+        onTelemetryChange={(value) => {
+          setTelemetryEnabledState(value);
+          void setRendererTelemetryEnabled(value);
+        }}
       />
     ) : showOnboarding && !hasCredential ? (
       <OnboardingFlow
@@ -699,13 +724,7 @@ export default function App() {
         }}
       />
     ) : (
-      <div
-        className={`flex h-screen overflow-hidden ${
-          sidebarCollapsed
-            ? 'bg-bg-base'
-            : 'bg-bg-base'
-        }`}
-      >
+      <div className="flex h-screen overflow-hidden bg-bg-base">
         <Sidebar
           items={sidebarItems}
           selectedConversationId={selectedConversationId}
@@ -736,11 +755,61 @@ export default function App() {
           className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-base`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
-          {/* Draggable title bar area for main content - matches sidebar height */}
+          {/*
+            Draggable title bar — matches the sidebar title bar height. Holds
+            the active conversation title (when present), the streaming
+            indicator while a request is in flight, and the app update CTA.
+          */}
           <div
-            className={`relative h-[52px] shrink-0 ${sidebarCollapsed ? '' : 'border-b border-white/6'}`}
+            className={`relative flex h-titlebar-height shrink-0 items-center px-5 ${sidebarCollapsed ? '' : 'border-b border-border-default'}`}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
+            <div
+              className="flex min-w-0 flex-1 items-center gap-2.5"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            >
+              {activeConversation?.conversation ? (
+                <>
+                  <h2
+                    className="truncate text-[13px] font-normal text-text-secondary"
+                    title={activeConversation.conversation.title}
+                  >
+                    {activeConversation.conversation.title}
+                  </h2>
+                  {selectedModelSummary ? (
+                    <>
+                      <span aria-hidden="true" className="text-[var(--text-faint)]">·</span>
+                      <span
+                        className="truncate text-[12px] text-text-muted"
+                        title={selectedModelSummary.label}
+                      >
+                        {selectedModelSummary.label}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              ) : selectedModelSummary ? (
+                <span
+                  className="truncate text-[12px] text-text-muted"
+                  title={selectedModelSummary.label}
+                >
+                  {selectedModelSummary.label}
+                </span>
+              ) : null}
+              {activeDraft?.status === 'streaming' ? (
+                <span
+                  className="inline-flex items-center gap-1.5 text-[11px] text-text-muted"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-text-muted opacity-60" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-text-secondary" />
+                  </span>
+                  Streaming
+                </span>
+              ) : null}
+            </div>
             <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
           </div>
 
@@ -755,6 +824,9 @@ export default function App() {
               onSuggestionClick={(prompt) => setComposerValue(prompt)}
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
               onRespondToolApproval={(request) => respondToolApproval(request)}
+              onRetryLastMessage={() => void resendLastUserMessage()}
+              hasTools={hasModelTools}
+              hasVision={hasModelVision}
             />
 
             <Composer

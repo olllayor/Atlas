@@ -10,6 +10,7 @@
   --bg-panel: var(--bg-base);
   --bg-surface: var(--bg-base);
   --bg-elevated: rgba(255, 255, 255, 0.05);
+  --bg-overlay: #262932; /* Opaque surface for popovers, dialogs, menus */
   --bg-code: rgba(255, 255, 255, 0.03);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);

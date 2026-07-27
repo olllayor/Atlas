@@ -8,6 +8,7 @@ import { chartJs, d3Js } from '../../visual/bundles';
 import { detectDiagramSpec, InteractiveDiagram } from './interactive-diagram';
 import { detectRiveContent, RiveVisual } from './rive-visual';
 import { useClipboard } from '../../hooks/useClipboard';
+import { notify } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 
 type VisualBlockProps = {
@@ -213,7 +214,9 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
       setIsSaved(true);
       setTimeout(() => setIsSaved(false), 2000);
     } catch (e) {
+      const message = e instanceof Error ? e.message : 'Unknown error';
       console.error('Failed to save visual:', e);
+      notify({ tone: 'error', title: 'Could not save visual', description: message });
     } finally {
       setIsSaving(false);
     }

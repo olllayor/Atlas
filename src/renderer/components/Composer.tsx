@@ -110,7 +110,7 @@ const ComposerAttachmentItem = memo(
           </Attachment>
         </AttachmentHoverCardTrigger>
         <AttachmentHoverCardContent
-          className="max-w-[240px] border border-[var(--border-default)] bg-bg-elevated px-2.5 py-1.5 text-[12px] font-normal text-white"
+          className="max-w-[240px] border border-[var(--border-default)] bg-bg-overlay px-2.5 py-1.5 text-[12px] font-normal text-white shadow-elevated"
           side="top"
           sideOffset={6}
         >
@@ -217,7 +217,7 @@ function ComposerFooter({
           </PromptInputButton>
 
           <PromptInputButton
-            className="size-8 rounded-full border border-white/8 bg-white/[0.03] text-white/58 hover:bg-white/[0.07] hover:text-white"
+            className="size-8 border border-[var(--border-default)] bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-white"
             onClick={onOpenGallery}
             tooltip="Visual Gallery"
           >
@@ -255,11 +255,12 @@ function ComposerFooter({
           ) : null}
 
           <PromptInputSubmit
-            className="inline-flex size-8 items-center justify-center bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-30"
+            className="inline-flex h-8 w-9 items-center justify-center bg-primary text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-30"
             disabled={isStreaming ? false : !hasSubmittableContent || disabled || Boolean(unsupportedReason)}
             onStop={onAbort}
             size="icon-sm"
             status={isStreaming ? 'streaming' : 'ready'}
+            title={isStreaming ? 'Stop generating' : 'Send message'}
           />
         </div>
       </PromptInputFooter>
@@ -394,7 +395,7 @@ export function Composer({
               onFocus={() => onComposerFocusChange(true)}
               disabled={disabled}
               rows={1}
-              placeholder="Message..."
+              placeholder="Message…"
               className="w-full min-h-10.5 resize-none border-0 bg-transparent px-0 py-0 text-[14.5px] leading-6 text-text-primary outline-none placeholder:text-[var(--text-faint)] disabled:cursor-not-allowed disabled:opacity-60"
               style={{ maxHeight: '180px' }}
               name="message"

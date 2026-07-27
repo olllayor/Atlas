@@ -75,7 +75,8 @@ const api: RendererApi = {
     captureEvent: (event, properties) => {
       ipcRenderer.invoke(IPC_CHANNELS.posthogCaptureEvent, event, properties);
     },
-    isTelemetryEnabled: () => ipcRenderer.invoke(IPC_CHANNELS.posthogGetTelemetryEnabled)
+    isTelemetryEnabled: () => ipcRenderer.invoke(IPC_CHANNELS.posthogGetTelemetryEnabled),
+    setTelemetryEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.posthogSetTelemetryEnabled, enabled)
   }
 };
 

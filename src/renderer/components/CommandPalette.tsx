@@ -45,7 +45,7 @@ export function CommandPalette({ items, onOpenChange, onSelect, open }: CommandP
     >
       <CommandInput
         className="border-b border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white placeholder:text-[var(--text-faint)]"
-        placeholder="Type a command..."
+        placeholder="Type a command…"
       />
       <CommandList className="max-h-[420px] px-2 py-2">
         <CommandEmpty className="py-10 text-center text-sm text-[var(--text-muted)]">No matching commands.</CommandEmpty>

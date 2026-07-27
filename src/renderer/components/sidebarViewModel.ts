@@ -20,8 +20,9 @@ function compactWhitespace(value: string) {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-function clipLabel(value: string, maxLength = 90) {
-  const normalized = compactWhitespace(value);
+function clipLabel(value: string | null | undefined, maxLength = 90) {
+  const safe = value ?? '';
+  const normalized = compactWhitespace(safe);
   if (normalized.length <= maxLength) {
     return normalized;
   }

@@ -7,6 +7,11 @@ export type AppCommandDefinition = {
   section: 'General' | 'Navigation';
   allowWhileEditable?: boolean;
   showInCommandPalette?: boolean;
+  /**
+   * Extra search terms for the command palette. Users type what they *want*
+   * ("dark mode", "hide sidebar"), not the command's official title.
+   */
+  keywords?: string[];
 };
 
 export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
@@ -16,6 +21,7 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Open or close the global command palette.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: ['palette', 'search', 'actions', 'run command', 'quick open'],
   },
   {
     command: 'sidebar.toggle',
@@ -23,6 +29,7 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Hide or show the conversation sidebar.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: ['hide sidebar', 'show sidebar', 'collapse', 'expand', 'panel', 'rail'],
   },
   {
     command: 'chat.new',
@@ -30,6 +37,21 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Create a new conversation and switch to it.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: ['new conversation', 'start chat', 'create', 'compose', 'blank'],
+  },
+  {
+    command: 'workspace.mode.toggle',
+    title: 'Switch between Work and Code',
+    description: 'Toggle this conversation between Work mode and Code mode.',
+    section: 'General',
+    keywords: ['work mode', 'code mode', 'coding', 'editing', 'switch mode', 'agent mode'],
+  },
+  {
+    command: 'workspace.project.attach',
+    title: 'Choose project folder',
+    description: 'Attach a folder to this conversation as its working directory.',
+    section: 'General',
+    keywords: ['project', 'folder', 'repository', 'repo', 'open folder', 'workspace', 'directory'],
   },
   {
     command: 'settings.open',
@@ -37,6 +59,18 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Open Atlas settings.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: [
+      'preferences',
+      'theme',
+      'dark mode',
+      'light mode',
+      'appearance',
+      'api key',
+      'providers',
+      'keyboard shortcuts',
+      'font',
+      'config',
+    ],
   },
   {
     command: 'composer.focus',
@@ -44,6 +78,7 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Move focus to the chat composer.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: ['input', 'prompt', 'type', 'message box', 'write'],
   },
   {
     command: 'models.openSwitcher',
@@ -51,18 +86,21 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Open the model picker for the active conversation.',
     section: 'General',
     allowWhileEditable: true,
+    keywords: ['model', 'change model', 'gpt', 'claude', 'llm', 'provider'],
   },
   {
     command: 'conversation.previous',
     title: 'Previous conversation',
     description: 'Select the previous conversation in the sidebar.',
     section: 'Navigation',
+    keywords: ['back', 'up', 'prior chat'],
   },
   {
     command: 'conversation.next',
     title: 'Next conversation',
     description: 'Select the next conversation in the sidebar.',
     section: 'Navigation',
+    keywords: ['forward', 'down', 'following chat'],
   },
   ...Array.from({ length: 9 }, (_value, index) => ({
     command: `conversation.jump.${index + 1}` as KeybindingCommand,

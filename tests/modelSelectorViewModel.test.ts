@@ -134,3 +134,29 @@ test('an empty catalog yields no groups', () => {
   assert.equal(view.totalCount, 0);
   assert.equal(view.hasFreeModels, false);
 });
+
+test('a new chat opens on the model the user last picked', async () => {
+  const { chooseDefaultModel } = await import('../src/renderer/stores/useAppStore.js');
+
+  const models = [
+    { id: 'gateway/cheap-free', providerId: 'custom:a', isFree: true, archived: false },
+    { id: 'gateway/the-one-i-use', providerId: 'custom:b', isFree: false, archived: false },
+  ] as never;
+
+  // The remembered pick wins over the free-model preference: it is the only
+  // signal that reflects a real choice.
+  assert.equal(chooseDefaultModel(models, null, 'gateway/the-one-i-use'), 'gateway/the-one-i-use');
+
+  // Without a memory the previous preference order is unchanged.
+  assert.equal(chooseDefaultModel(models, null, null), 'gateway/cheap-free');
+
+  // A remembered model that is gone (provider removed, or archived) is ignored
+  // rather than selecting something unusable.
+  assert.equal(chooseDefaultModel(models, null, 'gateway/deleted'), 'gateway/cheap-free');
+
+  const archived = [
+    { id: 'gateway/cheap-free', providerId: 'custom:a', isFree: true, archived: false },
+    { id: 'gateway/stale', providerId: 'custom:b', isFree: false, archived: true },
+  ] as never;
+  assert.equal(chooseDefaultModel(archived, null, 'gateway/stale'), 'gateway/cheap-free');
+});

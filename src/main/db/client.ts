@@ -7,6 +7,7 @@ import type { AttachmentStore } from '../attachments/AttachmentStore';
 import { ConversationsRepo } from './repositories/conversationsRepo';
 import { CustomProvidersRepo } from './repositories/customProvidersRepo';
 import { ModelsRepo } from './repositories/modelsRepo';
+import { ProjectsRepo } from './repositories/projectsRepo';
 import { RuntimeStateRepo } from './repositories/runtimeStateRepo';
 import { SettingsRepo } from './repositories/settingsRepo';
 import { SitesRepo } from './repositories/sitesRepo';
@@ -22,6 +23,7 @@ export type AppDatabase = {
   runtimeState: RuntimeStateRepo;
   toolExecutions: ToolExecutionsRepo;
   models: ModelsRepo;
+  projects: ProjectsRepo;
   customProviders: CustomProvidersRepo;
   settings: SettingsRepo;
   visuals: VisualsRepo;
@@ -43,6 +45,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     runtimeState,
     toolExecutions,
     models: new ModelsRepo(raw),
+    projects: new ProjectsRepo(raw),
     customProviders: new CustomProvidersRepo(raw),
     settings: new SettingsRepo(raw),
     visuals: new VisualsRepo(raw),

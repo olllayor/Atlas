@@ -9,6 +9,8 @@ import type {
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
+  ContextUsageSnapshot,
+  GetContextUsageRequest,
   OpenVisualWindowRequest,
   RecoverEventsResponse,
   RuntimeStateSnapshot,
@@ -29,16 +31,25 @@ import {
   MAX_ATTACHMENT_COUNT,
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
   getAttachmentCapabilityError,
+  getAttachmentKind,
   getContentPreviewText,
+  normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../../shared/attachments';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
+import {
+  deriveTitleFromUserMessage,
+  isPlaceholderSessionTitle,
+  sanitizeGeneratedTitle,
+} from '../../../shared/sessionTitles';
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { RuntimeStateRepo } from '../../db/repositories/runtimeStateRepo';
 import type { KeychainStore } from '../../secrets/keychain';
-import { normalizeError } from './ErrorNormalizer';
+import { logger, startTimer } from '../../observability/logger';
+import type { RejectedCapability } from './ErrorNormalizer';
+import { detectRejectedCapability, normalizeError } from './ErrorNormalizer';
 import { ToolApprovalController } from './ToolApprovalController';
 import type { ProviderRegistry } from './providerRegistry';
 import type { ExecuteTurnResult } from './ChatSessionRuntime';
@@ -121,6 +132,12 @@ function formatToolNameForDeniedCopy(toolName?: string) {
     .join(' ');
 }
 
+/**
+ * Ceiling for the naming call. Well above a reasoning model's warm-up, well
+ * below the provider stream's own 180s watchdogs.
+ */
+const TITLE_GENERATION_TIMEOUT_MS = 90_000;
+
 export class ChatEngine {
   private readonly activeRequests = new Map<string, ActiveRequest>();
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
@@ -128,10 +145,10 @@ export class ChatEngine {
   constructor(
     private readonly conversationsRepo: ConversationsRepo,
     private readonly modelsRepo: ModelsRepo,
-    keychain: KeychainStore,
-    providers: ProviderRegistry,
+    private readonly keychain: KeychainStore,
+    private readonly providers: ProviderRegistry,
     private readonly attachmentStore: AttachmentStore,
-    private readonly runtime: Pick<ChatSessionRuntime, 'executeTurn'> = new ChatSessionRuntime(
+    private readonly runtime: Pick<ChatSessionRuntime, 'executeTurn' | 'measureContextUsage'> = new ChatSessionRuntime(
       conversationsRepo,
       modelsRepo,
       keychain,
@@ -154,6 +171,17 @@ export class ChatEngine {
     > = NOOP_RUNTIME_STATE_REPO,
     private readonly toolStateStore?: ToolStateStore,
     private readonly approvalController = new ToolApprovalController(),
+    /**
+     * Called when a provider refuses a turn *because of* something the request
+     * carried — an attachment kind, or the tool definitions. The catalog cannot
+     * describe most endpoints, so the failed send is the only source that ever
+     * learns the answer — see
+     * `CustomProviderService.recordCapabilityRejection`.
+     */
+    private readonly onCapabilityRejected?: (input: {
+      modelId: string;
+      capability: RejectedCapability;
+    }) => void | Promise<void>,
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -188,6 +216,23 @@ export class ChatEngine {
     const requestId = randomUUID();
     const assistantMessageId = randomUUID();
     const turnId = randomUUID();
+
+    // What the turn is carrying, recorded before anything can go wrong with it.
+    // Attachment bytes are the first thing worth knowing when a send takes
+    // minutes: a 3.7 MB image becomes ~4.9 MB of base64 on the wire, which is
+    // enough to stall a gateway past the first-response watchdog.
+    logger.info('turn.started', {
+      requestId,
+      conversationId: request.conversationId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+      enableTools: request.enableTools ?? false,
+      textChars: previewContent.length,
+      attachmentCount: fileParts.length,
+      attachmentBytes: sumAttachmentSize(fileParts),
+      attachmentTypes: fileParts.map((part) => part.mediaType),
+    });
+
     const controller = new AbortController();
     const onWindowClosed = () => {
       controller.abort();
@@ -216,6 +261,12 @@ export class ChatEngine {
       providerId: request.providerId,
       modelId: request.modelId,
     });
+
+    // Name the session from the prompt right now, before a single token is
+    // streamed. Waiting for the model meant every in-flight thread sat in
+    // the sidebar as `Session · <date>` — the title arrived, if at all,
+    // long after the user had stopped looking for it.
+    this.applyLocalTitle(window, request.conversationId, previewContent);
 
     this.runtimeStateRepo.createTurn({
       id: turnId,
@@ -313,6 +364,14 @@ export class ChatEngine {
   abort(requestId: string) {
     const active = this.activeRequests.get(requestId);
     active?.controller.abort();
+  }
+
+  /**
+   * Prompt size for the next request. Measured in the runtime that builds the
+   * prompt, so the ring cannot drift from what is actually sent.
+   */
+  getContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
+    return this.runtime.measureContextUsage(request);
   }
 
   getRuntimeState({ conversationId }: { conversationId: string }): RuntimeStateSnapshot {
@@ -476,6 +535,8 @@ export class ChatEngine {
       return;
     }
 
+    const elapsed = startTimer();
+
     try {
       const result = await this.runtime.executeTurn({
         requestId,
@@ -529,10 +590,34 @@ export class ChatEngine {
         });
       }
 
+      logger.info('turn.completed', {
+        requestId,
+        modelId: request.modelId,
+        ms: elapsed(),
+        inputTokens: result.inputTokens ?? null,
+        outputTokens: result.outputTokens ?? null,
+        reasoningTokens: result.reasoningTokens ?? null,
+        parts: result.parts?.length ?? 0,
+      });
+
       this.sendCompletionEvents(active.window, requestId, result);
       this.cleanupRequest(requestId, active);
+
+      // Fire-and-forget: naming must never delay or fail the turn itself.
+      void this.maybeGenerateTitle(active).catch(() => undefined);
     } catch (error) {
       const normalized = normalizeError(error);
+      // `error` carries the raw provider text; the sanitiser in the logger
+      // keeps it from dumping a payload into the file.
+      logger.error('turn.failed', {
+        requestId,
+        modelId: request.modelId,
+        ms: elapsed(),
+        code: normalized.code,
+        retryable: normalized.retryable,
+        error,
+      });
+      this.rememberCapabilityRejection(active.request, error);
       active.tracker?.markRequestError(normalized.code, normalized.message);
       this.flushBufferedEvents(requestId);
       this.recordRuntimeEnvelope(active, {
@@ -568,6 +653,57 @@ export class ChatEngine {
       });
       this.cleanupRequest(requestId, active);
     }
+  }
+
+  /**
+   * Write down a capability the provider just refused.
+   *
+   * Guarded twice on purpose. The error text has to name the capability, *and*
+   * the turn has to have actually exercised it — a model complaining about
+   * images in a text-only turn is talking about something else (a tool result,
+   * its own output), and recording that would take images away from a model
+   * that supports them. Tools are guarded the same way, on whether this turn
+   * was sent with any.
+   */
+  private rememberCapabilityRejection(request: ChatStartRequest, error: unknown) {
+    if (!this.onCapabilityRejected) {
+      return;
+    }
+
+    const capability = detectRejectedCapability(error);
+    if (!capability) {
+      return;
+    }
+
+    if (!this.turnExercised(request, capability)) {
+      return;
+    }
+
+    logger.warn('capability.rejected', {
+      requestId: request.conversationId,
+      modelId: request.modelId,
+      capability,
+    });
+
+    void Promise.resolve(this.onCapabilityRejected({ modelId: request.modelId, capability })).catch(
+      () => undefined,
+    );
+  }
+
+  /** Did this turn actually use the thing the provider says it cannot do? */
+  private turnExercised(request: ChatStartRequest, capability: RejectedCapability) {
+    if (capability === 'tools') {
+      return request.enableTools === true;
+    }
+
+    const fileParts = (request.messages.at(-1)?.parts ?? []).filter(
+      (part): part is Extract<ChatInputPart, { type: 'file' }> => part.type === 'file',
+    );
+
+    return fileParts.some((part) => {
+      const kind = getAttachmentKind(normalizeAttachmentMediaType(part.mediaType, part.filename));
+      return capability === 'image' ? kind === 'image' : kind === 'document';
+    });
   }
 
   private sendCompletionEvents(window: BrowserWindow, requestId: string, result: ExecuteTurnResult) {
@@ -651,7 +787,24 @@ export class ChatEngine {
   private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {
     active.tracker?.handleEvent(event);
 
-    if (event.type === 'meta' || event.type === 'done' || event.type === 'error' || event.type === 'runtime-sync') {
+    if (
+      event.type === 'meta' ||
+      event.type === 'done' ||
+      event.type === 'error' ||
+      event.type === 'runtime-sync' ||
+      event.type === 'conversation-title'
+    ) {
+      return;
+    }
+
+    // Notices go straight to the window and are not recorded as activity: they
+    // describe the attempt, not the conversation, and a transcript replayed
+    // tomorrow should not still be announcing a retry that succeeded. Buffered
+    // deltas are flushed first so the notice cannot arrive before the text it
+    // follows.
+    if (event.type === 'notice') {
+      this.flushBufferedEvents(event.requestId);
+      this.sendEvent(active.window, event);
       return;
     }
 
@@ -664,7 +817,10 @@ export class ChatEngine {
     this.recordStreamEvent(active, event);
   }
 
-  private recordStreamEvent(active: ActiveRequest, event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' }>) {
+  private recordStreamEvent(
+    active: ActiveRequest,
+    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' | 'notice' | 'conversation-title' }>
+  ) {
     for (const envelope of this.normalizeStreamEvent(active, event)) {
       this.recordRuntimeEnvelope(active, envelope);
     }
@@ -760,7 +916,7 @@ export class ChatEngine {
 
   private normalizeStreamEvent(
     active: ActiveRequest,
-    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' }>
+    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' | 'notice' | 'conversation-title' }>
   ) {
     const base = {
       conversationId: active.request.conversationId,
@@ -992,6 +1148,131 @@ export class ChatEngine {
       requestId: active.requestId ?? active.assistantMessageId,
       eventId: envelope.eventId,
       sequence: envelope.sequence,
+    });
+  }
+
+  /**
+   * True while a title is ours to change: either the untouched
+   * `Session · <date>` placeholder, or an earlier automatic name. A title
+   * the user typed is final and never overwritten.
+   */
+  private canAutoTitle(conversationId: string): boolean {
+    const state = this.conversationsRepo.getTitleState(conversationId);
+    if (!state) {
+      return false;
+    }
+
+    return state.auto || isPlaceholderSessionTitle(state.title);
+  }
+
+  /**
+   * Immediate, offline naming from the user's own words. Runs inside
+   * `start()` so the sidebar row is named the moment the message is sent.
+   */
+  private applyLocalTitle(window: BrowserWindow, conversationId: string, userText: string) {
+    try {
+      if (!this.canAutoTitle(conversationId)) {
+        return;
+      }
+
+      const title = deriveTitleFromUserMessage(userText);
+      if (!title) {
+        return;
+      }
+
+      const renamed = this.conversationsRepo.rename(conversationId, title, { auto: true });
+      this.sendToWindow(window, {
+        type: 'conversation-title',
+        conversationId,
+        title: renamed.title,
+      });
+    } catch (error) {
+      // Naming must never be able to break sending a message.
+      console.warn('[titles] local naming failed; keeping the placeholder.', error);
+    }
+  }
+
+  /**
+   * Improve on the local name once the model has answered, using the full
+   * exchange. Runs after the turn's `done` event and never blocks it.
+   */
+  private async maybeGenerateTitle(active: ActiveRequest) {
+    const conversationId = active.request.conversationId;
+
+    if (!this.canAutoTitle(conversationId)) {
+      return;
+    }
+
+    const lastUserMessage = [...active.request.messages].reverse().find((message) => message.role === 'user');
+    const userText = lastUserMessage?.content?.trim().slice(0, 600);
+    if (!userText) {
+      return;
+    }
+    const assistantText = getTextContentFromParts(active.parts).trim().slice(0, 600);
+
+    // The local name is already on screen; the model only replaces it if it
+    // produces something usable. A provider hiccup leaves the session named.
+    let title: string | null = null;
+
+    const adapter = this.providers.get(active.request.providerId);
+    const apiKey = adapter ? await this.keychain.getSecret(active.request.providerId) : null;
+
+    if (adapter && apiKey) {
+      try {
+        const result = await adapter.streamChat({
+          apiKey,
+          modelId: active.request.modelId,
+          // Same catalog facts the turn itself uses. Without them the
+          // request carries a default temperature, which reasoning models
+          // reject with a hard 400 (see `resolveTemperature`).
+          modelHints: this.modelsRepo.getRuntimeHints(active.request.modelId),
+          // A title needs no deliberation, and on a reasoning model the
+          // thinking tokens come out of the same budget as the answer —
+          // leaving the reply empty if the model is allowed to ruminate.
+          reasoningEffort: 'minimal',
+          system:
+            'Generate a short title for a chat session based on its opening exchange. ' +
+            'Reply with the title only: 3-6 words, no quotes, no trailing punctuation, ' +
+            'same language as the conversation.',
+          messages: [
+            {
+              role: 'user',
+              content: `User message:\n${userText}\n\nAssistant reply:\n${assistantText || '(none)'}`,
+            },
+          ],
+          maxOutputTokens: 1_000,
+          // No private deadline here: the provider stream has its own
+          // first-response and idle watchdogs, and a tighter timer just
+          // killed slow-but-healthy models before they answered.
+          signal: AbortSignal.timeout(TITLE_GENERATION_TIMEOUT_MS),
+          onChunk: () => {},
+        });
+
+        title = sanitizeGeneratedTitle(result.content) ?? title;
+      } catch (error) {
+        // Never fatal — but never silent either. Swallowing this is what
+        // made the feature look like it simply did not run.
+        console.warn(
+          `[titles] model naming failed for ${active.request.modelId}; keeping the local title.`,
+          error
+        );
+      }
+    }
+
+    if (!title) {
+      return;
+    }
+
+    // Re-check: the user may have renamed while the model was working.
+    if (!this.canAutoTitle(conversationId)) {
+      return;
+    }
+
+    const renamed = this.conversationsRepo.rename(conversationId, title, { auto: true });
+    this.sendToWindow(active.window, {
+      type: 'conversation-title',
+      conversationId,
+      title: renamed.title,
     });
   }
 

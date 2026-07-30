@@ -158,6 +158,73 @@ function collectErrorText(error: unknown, depth = 0): string {
 }
 
 /**
+ * A capability the provider just told us this model does not have.
+ *
+ * Modalities and tool-calling share a shape: the catalog cannot describe most
+ * endpoints, the request is attempted anyway, and the refusal is the only
+ * source that ever settles the question.
+ */
+export type RejectedCapability = 'image' | 'document' | 'tools';
+
+/**
+ * Providers say "this model cannot read that" in prose, not in a status code.
+ *
+ * A model's modality support is unknown until something proves otherwise, and a
+ * refusal is that proof — the one signal available for an endpoint whose
+ * `/models` list is bare ids. The patterns are deliberately narrow: a false
+ * positive writes `false` into the catalog and stops the user attaching images
+ * to a model that can read them, which is worse than one failed send.
+ */
+const IMAGE_REJECTION_PATTERNS = [
+  /does\s?n[o']?t\s+support\s+(image|vision|multimodal)/,
+  /(image|vision)\s+(input|content)?\s*(is\s+)?not\s+supported/,
+  /no\s+support\s+for\s+image/,
+  /unsupported.{0,24}image_url/,
+  /image_url.{0,24}(not\s+supported|unsupported|invalid_type)/,
+  /model\s+does\s+not\s+have\s+vision/,
+];
+
+const DOCUMENT_REJECTION_PATTERNS = [
+  /does\s?n[o']?t\s+support\s+(file|document|pdf)/,
+  /(file|document|pdf)\s+(input|attachment)?\s*(is\s+)?not\s+supported/,
+  /no\s+support\s+for\s+(file|document|pdf)/,
+  /unsupported.{0,24}(file|document|pdf)/,
+];
+
+/**
+ * Tool-calling refusals. `tool_choice` is included because a model without tool
+ * support commonly rejects the parameter before it rejects the tools.
+ */
+const TOOL_REJECTION_PATTERNS = [
+  /does\s?n[o']?t\s+support\s+(tool|function)/,
+  /(tool|function)[ _]?(call|calling|use)?s?\s+(is|are)?\s*not\s+supported/,
+  /no\s+support\s+for\s+(tool|function)/,
+  /unsupported\s+(parameter|field|value).{0,24}('|\\")?(tools|tool_choice|functions)/,
+  /(tools|tool_choice|functions)\b.{0,24}(not\s+supported|unsupported|not\s+allowed)/,
+];
+
+export function detectRejectedCapability(error: unknown): RejectedCapability | null {
+  const text = collectErrorText(error).toLowerCase();
+  if (!text) {
+    return null;
+  }
+
+  if (IMAGE_REJECTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'image';
+  }
+
+  if (DOCUMENT_REJECTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'document';
+  }
+
+  if (TOOL_REJECTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'tools';
+  }
+
+  return null;
+}
+
+/**
  * Transport-level failures are the most common way a long stream dies and they
  * are always worth another attempt — the previous build classified them as
  * `unknown_error` and gave up immediately.

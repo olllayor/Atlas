@@ -4,6 +4,7 @@ import type { ProviderId } from '../../../shared/contracts';
 import type {
   CreateCustomProviderRequest,
   CustomProvider,
+  CustomProviderModel,
   DiscoverCustomProviderModelsRequest,
   DiscoveredModel,
   SetCustomProviderModelsRequest,
@@ -17,6 +18,7 @@ import {
   normalizeProviderName
 } from '../../../shared/customProviders';
 import type { ProviderPreset } from '../catalog/modelsDev';
+import type { RejectedCapability } from './ErrorNormalizer';
 import { ModelsDevCatalog } from '../catalog/modelsDev';
 import type { CustomProvidersRepo, CustomProviderRecord } from '../../db/repositories/customProvidersRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
@@ -28,6 +30,17 @@ import {
   validateCustomProviderCredential
 } from '../providers/customProvider';
 import type { ProviderRegistry } from './providerRegistry';
+
+/**
+ * Which stored flag a refusal writes to. Keyed by what the provider complained
+ * about rather than by the field name, so the call site never has to know the
+ * schema.
+ */
+const CAPABILITY_FIELDS = {
+  image: 'supportsVision',
+  document: 'supportsDocumentInput',
+  tools: 'supportsTools',
+} as const satisfies Record<RejectedCapability, keyof CustomProviderModel>;
 
 export type CustomProviderServiceDeps = {
   repo: CustomProvidersRepo;
@@ -182,6 +195,133 @@ export class CustomProviderService {
     await this.deps.keychain.deleteSecret(existing.id).catch(() => undefined);
 
     await this.afterChange();
+  }
+
+  /**
+   * Re-syncs saved custom models against models.dev.
+   *
+   * Two kinds of drift matter. Reasoning levels were simply not recorded before
+   * the catalog carried them. Limits are worse: an OpenAI-compatible `/models`
+   * list reports nothing but ids, so a context window that was typed by hand —
+   * or copied from a catalog entry that has since been corrected — outlives the
+   * fact it described, and every context reading downstream is scaled by it. A
+   * saved `16384` against a model that actually takes a million tokens makes an
+   * empty conversation read as a third of the window consumed.
+   *
+   * The catalog is authoritative for limits whenever it knows the model; a
+   * model it does not know keeps exactly what was saved, which is the only
+   * thing anyone can say about an endpoint models.dev has never seen.
+   *
+   * Best-effort by design: a models.dev outage just means the stale values stay
+   * until the next launch, so failures are swallowed.
+   */
+  async backfillModelFacts() {
+    const records = this.deps.repo.list();
+    let changed = false;
+
+    for (const record of records) {
+      const providerHint = inferModelsDevProviderId(record.baseUrl);
+      const updates = new Map<string, Partial<CustomProviderModel>>();
+
+      for (const model of record.models) {
+        const facts = await this.modelsDev.lookup(model.id, providerHint).catch(() => null);
+        if (!facts) {
+          continue;
+        }
+
+        const update: Partial<CustomProviderModel> = {};
+
+        if (facts.contextWindow != null && facts.contextWindow !== model.contextWindow) {
+          update.contextWindow = facts.contextWindow;
+        }
+
+        if (facts.maxOutputTokens != null && facts.maxOutputTokens !== model.maxOutputTokens) {
+          update.maxOutputTokens = facts.maxOutputTokens;
+        }
+
+        // Modalities are filled, never overwritten. A stored value here is
+        // either the catalog's own answer from a previous run or a rejection
+        // this app watched happen, and the second one outranks the database.
+        if (model.supportsVision == null && facts.supportsVision != null) {
+          update.supportsVision = facts.supportsVision;
+        }
+
+        if (model.supportsDocumentInput == null && facts.supportsDocumentInput != null) {
+          update.supportsDocumentInput = facts.supportsDocumentInput;
+        }
+
+        if (model.supportsTools == null && facts.supportsTools != null) {
+          update.supportsTools = facts.supportsTools;
+        }
+
+        // Reasoning levels are only filled in, never overwritten: the menu is a
+        // user-facing choice, and a model already carrying levels has nothing to
+        // gain from being rewritten on every launch. Correcting the optimistic
+        // `supportsReasoning` default is part of the same fill.
+        if (
+          model.supportsReasoning &&
+          model.reasoningEfforts == null &&
+          (facts.reasoningEfforts != null || !facts.supportsReasoning)
+        ) {
+          update.supportsReasoning = facts.supportsReasoning;
+          update.reasoningEfforts = facts.reasoningEfforts;
+        }
+
+        if (Object.keys(update).length > 0) {
+          updates.set(model.id, update);
+        }
+      }
+
+      if (updates.size === 0) {
+        continue;
+      }
+
+      this.deps.repo.setModels(
+        record.id,
+        record.models.map((model) => {
+          const update = updates.get(model.id);
+          return update ? { ...model, ...update } : model;
+        })
+      );
+      changed = true;
+    }
+
+    if (changed) {
+      await this.afterChange();
+    }
+
+    return changed;
+  }
+
+  /**
+   * Record that a provider refused a capability for one model.
+   *
+   * Written to `custom_provider_models`, not just the cache: the cache is
+   * rebuilt from the provider's configured list on every refresh, so a fact
+   * recorded only there would survive until the next catalog sync and no
+   * longer. `afterChange` rebuilds the catalog and tells the windows, which is
+   * what makes the attach affordance disappear without a restart.
+   *
+   * Returns true when something changed, so a repeat rejection is not a write.
+   */
+  async recordCapabilityRejection(modelId: string, capability: RejectedCapability) {
+    const field = CAPABILITY_FIELDS[capability];
+
+    for (const record of this.deps.repo.list()) {
+      const model = record.models.find((entry) => entry.id === modelId);
+      if (!model || model[field] === false) {
+        continue;
+      }
+
+      this.deps.repo.setModels(
+        record.id,
+        record.models.map((entry) => (entry.id === modelId ? { ...entry, [field]: false } : entry)),
+      );
+      await this.afterChange();
+      return true;
+    }
+
+    return false;
   }
 
   async discoverModels(request: DiscoverCustomProviderModelsRequest): Promise<DiscoveredModel[]> {

@@ -94,7 +94,8 @@ export async function migrateLegacyBuiltInProviders(
       supportsVision: model.supportsVision,
       supportsDocumentInput: model.supportsDocumentInput,
       supportsReasoning: model.supportsReasoning ?? false,
-      supportsTemperature: model.supportsTemperature ?? true
+      supportsTemperature: model.supportsTemperature ?? true,
+      reasoningEfforts: model.reasoningEfforts ?? null
     }));
 
     deps.customProvidersRepo.create({

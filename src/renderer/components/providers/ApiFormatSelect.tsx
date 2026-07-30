@@ -10,22 +10,19 @@ import { CUSTOM_PROVIDER_API_FORMATS } from '../../../shared/customProviders';
 export function ApiFormatSelect({
   id,
   value,
-  onChange,
-  disabled
+  onChange
 }: {
   id?: string;
   value: CustomProviderApiFormat;
   onChange: (value: CustomProviderApiFormat) => void;
-  disabled?: boolean;
 }) {
   return (
     <div className="relative">
       <select
         id={id}
         value={value}
-        disabled={disabled}
         onChange={(event) => onChange(event.target.value as CustomProviderApiFormat)}
-        className="h-11 w-full appearance-none border border-border-default bg-bg-subtle px-3 pr-9 text-[13px] text-text-primary outline-none focus:border-border-strong disabled:cursor-not-allowed disabled:opacity-60"
+        className="h-9 w-full appearance-none rounded-md border border-border-default bg-bg-subtle px-3 pr-9 text-sm text-text-primary outline-none transition focus:border-border-strong"
       >
         {CUSTOM_PROVIDER_API_FORMATS.map((format) => (
           <option key={format.value} value={format.value}>

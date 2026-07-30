@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 
 import {
@@ -32,17 +33,28 @@ export function useMentionAutocomplete({
   const [caret, setCaret] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  const listboxId = useId();
   // Set when we programmatically rewrite the value, so the caret lands after
   // the inserted token instead of at the end of the textarea.
   const pendingCaretRef = useRef<number | null>(null);
 
-  const query = useMemo(() => {
-    if (disabled || dismissed || caret == null) return null;
+  // Matched independently of `dismissed` so a *new* `@` can re-arm the popup:
+  // folding the dismissal into the match made one Escape (or blur) kill
+  // completion for the rest of the session.
+  const match = useMemo(() => {
+    if (disabled || caret == null) return null;
     return matchMentionQuery(value, caret);
-  }, [caret, disabled, dismissed, value]);
+  }, [caret, disabled, value]);
 
+  const query = dismissed ? null : match;
   const suggestions = useMemo(() => (query ? filterMentions(query.query) : []), [query]);
   const isOpen = Boolean(query) && suggestions.length > 0;
+
+  const triggerStart = match?.start ?? null;
+  useEffect(() => {
+    // A different trigger index means the user typed a fresh `@`.
+    setDismissed(false);
+  }, [triggerStart]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -110,43 +122,85 @@ export function useMentionAutocomplete({
     [activeIndex, dismissed, isOpen, select, suggestions]
   );
 
+  const activeOptionId = isOpen ? `${listboxId}-option-${activeIndex}` : undefined;
+
   return {
     isOpen,
     suggestions,
     activeIndex,
+    activeOptionId,
+    listboxId,
     setActiveIndex,
     select,
     handleKeyDown,
     syncCaret,
-    dismiss: () => setDismissed(true),
+    dismiss: useCallback(() => setDismissed(true), []),
+    /** Focusing the composer always re-arms completion. */
+    rearm: useCallback(() => setDismissed(false), []),
   };
 }
+
+type MentionAutocompleteListProps = {
+  suggestions: MentionDefinition[];
+  activeIndex: number;
+  listboxId: string;
+  /** Element the popup floats above — normally the textarea's wrapper. */
+  anchorRef: RefObject<HTMLElement | null>;
+  onHover: (index: number) => void;
+  onSelect: (definition: MentionDefinition) => void;
+};
 
 export function MentionAutocompleteList({
   suggestions,
   activeIndex,
+  listboxId,
+  anchorRef,
   onHover,
   onSelect,
-}: {
-  suggestions: MentionDefinition[];
-  activeIndex: number;
-  onHover: (index: number) => void;
-  onSelect: (definition: MentionDefinition) => void;
-}) {
-  if (suggestions.length === 0) return null;
+}: MentionAutocompleteListProps) {
+  // Portalled and viewport-positioned: the app shell is `overflow-hidden`, so
+  // an absolutely-positioned popup inside the composer gets clipped.
+  const [anchorRect, setAnchorRect] = useState<{ left: number; bottom: number; width: number } | null>(null);
 
-  return (
+  useLayoutEffect(() => {
+    const update = () => {
+      const element = anchorRef.current;
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      setAnchorRect({
+        bottom: Math.max(8, window.innerHeight - rect.top + 8),
+        left: rect.left,
+        width: rect.width,
+      });
+    };
+
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [anchorRef, suggestions.length]);
+
+  if (suggestions.length === 0 || !anchorRect || typeof document === 'undefined') return null;
+
+  return createPortal(
     <div
       role="listbox"
+      id={listboxId}
       aria-label="Mentions"
-      className="absolute bottom-full left-0 z-30 mb-2 w-[320px] max-w-full overflow-hidden border border-[var(--border-default)] bg-bg-overlay shadow-elevated"
+      className="fixed z-50 max-h-[min(240px,40vh)] w-max min-w-[220px] overflow-y-auto overscroll-contain rounded-lg border border-border-default bg-bg-overlay shadow-elevated"
+      style={{
+        bottom: anchorRect.bottom,
+        left: anchorRect.left,
+        maxWidth: Math.max(anchorRect.width, 220),
+      }}
     >
       {suggestions.map((definition, index) => (
         <button
           key={definition.id}
+          id={`${listboxId}-option-${index}`}
           type="button"
           role="option"
           aria-selected={index === activeIndex}
+          tabIndex={-1}
           // Keep focus in the textarea so the caret does not jump on click.
           onMouseDown={(event) => {
             event.preventDefault();
@@ -154,13 +208,14 @@ export function MentionAutocompleteList({
           }}
           onMouseEnter={() => onHover(index)}
           className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition ${
-            index === activeIndex ? 'bg-[var(--bg-hover)]' : 'bg-transparent'
+            index === activeIndex ? 'bg-bg-hover' : 'bg-transparent'
           }`}
         >
-          <span className="font-mono text-[12.5px] text-text-primary">{getMentionToken(definition)}</span>
-          <span className="text-[11.5px] leading-4 text-text-tertiary">{definition.description}</span>
+          <span className="font-mono text-xs text-text-primary">{getMentionToken(definition)}</span>
+          <span className="text-2xs leading-4 text-text-tertiary">{definition.description}</span>
         </button>
       ))}
-    </div>
+    </div>,
+    document.body
   );
 }

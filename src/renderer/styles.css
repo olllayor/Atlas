@@ -1,4 +1,11 @@
 @import 'tailwindcss';
+/*
+ * Supplies the `animate-in` / `fade-in-*` / `zoom-in-*` / `slide-in-from-*`
+ * utilities the Radix primitives are written against. Tailwind v4 dropped
+ * `tailwindcss-animate`'s built-ins, so without this every enter/exit
+ * animation in the app compiles to nothing.
+ */
+@import 'tw-animate-css';
 
 /* ============================================
    THEME CONTRACT
@@ -7,8 +14,13 @@
    Default values below = the 'default' theme.
    ============================================ */
 
-:root,
-[data-theme='default'] {
+/*
+ * `App.tsx` only ever writes `data-theme` = 'light' | 'dark' on <html>
+ * (the design theme lives on `data-design-theme`), so the old
+ * `[data-theme='default']` companion selector here never matched anything
+ * and has been dropped. `:root` alone carries the contract defaults.
+ */
+:root {
   color-scheme: dark;
 
   /* Backgrounds */
@@ -17,6 +29,8 @@
   --bg-surface: #101319;
   --bg-elevated: #151922;
   --bg-overlay: #1a1e29;
+  /* Opaque composer slab; themes without an opinion inherit the overlay. */
+  --bg-composer: var(--bg-overlay);
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -36,8 +50,15 @@
   --text-primary: #ffffff;
   --text-secondary: #cbd5e1;
   --text-tertiary: #94a3b8;
-  --text-muted: #64748b;
-  --text-faint: #475569;
+  /*
+   * Contrast on --bg-base (#07080b), WCAG AA needs 4.5:1 for body text.
+   * The scale was shifted up one step: --text-muted was #64748b (4.20:1,
+   * a fail — and it backs `text-muted-foreground`, i.e. every placeholder,
+   * dialog description and menu shortcut) and --text-faint was #475569
+   * (2.64:1, illegible).
+   */
+  --text-muted: #7d8b9e; /* 5.78:1 */
+  --text-faint: #6b7a90; /* 4.59:1 — decorative/disabled, but now readable */
   --text-inverse: #000000;
 
   /* Semantic */
@@ -56,6 +77,31 @@
   --error-border: rgba(244, 63, 94, 0.2);
   --error-text: #fecdd3;
 
+  /* Accent — defined by every theme but previously missing from the
+     contract and from @theme, so no component could reach it. */
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-text: #ffffff;
+  --accent-surface: rgba(59, 130, 246, 0.14);
+  --ring: rgba(59, 130, 246, 0.7);
+
+  /* Diff palette (GitHub's, per docs/codex-parity/design-audit.md §5). */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #34d399;
+  --diff-del-fg: #fb7185;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(255, 255, 255, 0.4);
+
+  /* Per-tool accent hues for the transcript timeline. */
+  --tool-read: #60a5fa;
+  --tool-search: #2dd4bf;
+  --tool-edit: #a78bfa;
+  --tool-command: #fbbf24;
+  --tool-web: #f472b6;
+  --tool-generic: #94a3b8;
+
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);
   --toast-border: rgba(82, 110, 167, 0.42);
@@ -65,6 +111,14 @@
   --toast-close-hover: rgba(232, 238, 250, 0.92);
 
   /* UI elements */
+  /*
+   * `--overlay` is the modal *scrim* (not a surface — the surface token is
+   * `--bg-overlay`). The pair is one typo away from an invisible dialog;
+   * `--scrim` is the intended name but is deliberately NOT introduced as a
+   * second token here, because too many consumers already read `--overlay`
+   * and two spellings would be worse than one bad one. Rename in a single
+   * sweep when the tsx side is ready.
+   */
   --overlay: rgba(0, 0, 0, 0.4);
   --scrollbar: rgba(255, 255, 255, 0.1);
   --scrollbar-hover: rgba(255, 255, 255, 0.18);
@@ -72,17 +126,57 @@
   /* Typography */
   --ui-font-size: 15px;
   --code-font-size: 13px;
-  --font-ui-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  /*
+   * `--font-ui-system` is the fallback App.tsx composes against when the
+   * user has no UI-font override. It was referenced there but never
+   * defined, so an empty override collapsed --font-ui-family to nothing
+   * and the app fell back to the browser default face.
+   */
+  --font-ui-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-ui-family: var(--font-ui-system);
   --font-mono-system: 'SF Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace;
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
 
+  /*
+   * Type scale. Everything in the chat surface should size off these so
+   * the user's UI font-size setting actually moves the UI — previously
+   * 231 hardcoded `text-[Npx]` values made that setting ~94% inert.
+   */
+  --text-3xs: calc(var(--ui-font-size) - 5px);
+  --text-2xs: calc(var(--ui-font-size) - 4px);
+  --text-xs: calc(var(--ui-font-size) - 3px);
+  --text-sm: calc(var(--ui-font-size) - 2px);
+  --text-base: calc(var(--ui-font-size) - 1px);
+  --text-md: var(--ui-font-size);
+  --text-lg: calc(var(--ui-font-size) + 3px);
+  --text-xl: calc(var(--ui-font-size) + 5px);
+  --text-2xl: calc(var(--ui-font-size) + 9px);
+  --text-3xl: calc(var(--ui-font-size) + 13px);
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-strong: 600;
+
+  --leading-body: 1.5;
+  --leading-tight: 1.3;
+  --tracking-label: 0.12em;
+
   /* Layout */
   --content-max: clamp(680px, 102vw, 860px);
   --sidebar-width: 17.75rem; /* 284px at default font size */
-  --sidebar-width-collapsed: 4.5rem; /* 72px at default font size */
-  --sidebar-expanded: 284px; /* deprecated - use --sidebar-width */
-  --sidebar-collapsed: 68px; /* deprecated - use --sidebar-width-collapsed */
+  /* 56px: the rail is 4-5 36px buttons in `px-2`, nothing else — 72px left
+     a 20px empty column on either side of them. */
+  --sidebar-width-collapsed: 3.5rem; /* 56px at default font size */
+
+  /*
+   * Composer geometry. The slab used a hardcoded `rounded-[28px]`, which
+   * bypassed the token system and ignored the user's border-radius=none
+   * setting; its 180px max-height was hardcoded twice and did not scale
+   * with the UI font size.
+   */
+  --radius-composer: 1.75rem; /* 28px */
+  --composer-max-height: calc(var(--ui-font-size) * 12); /* 180px at 15px */
 
   /* Shared titlebar height used by both the sidebar header and the main panel. */
   --titlebar-height: 3.25rem; /* 52px at default font size */
@@ -95,6 +189,11 @@
   --radius-2xl: 1.25rem;
   --radius-subtle: 4px;
   --radius-full: 9999px;
+  /*
+   * Codex rounds with a squircle rather than a circular arc. Themes that
+   * want plain arcs leave this at `round`.
+   */
+  --corner-shape: round;
 
   /* Shadows */
   --shadow-elevated: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
@@ -106,14 +205,28 @@
   --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Border radius override - applies when user disables rounded corners */
-[data-border-radius='none'] {
+/*
+ * Border radius override — applies when the user disables rounded corners.
+ *
+ * This was written as a bare `[data-border-radius='none']` (specificity
+ * 0,1,0), which every theme file matches *and beats on source order*
+ * because themes/*.css is imported after this file: the setting was
+ * completely inert. Both selectors below out-specify the theme blocks
+ * (`[data-design-theme='x']` = 0,1,0 and the light/dark variants = 0,2,0):
+ *   html[data-border-radius='none']                   → 0,1,1
+ *   html[data-border-radius='none'][data-design-theme]→ 0,2,1
+ * The second is the belt-and-braces form for any future theme block that
+ * declares radii from a two-attribute selector.
+ */
+html[data-border-radius='none'],
+html[data-border-radius='none'][data-design-theme] {
   --radius-sm: 0px;
   --radius-md: 0px;
   --radius-lg: 0px;
   --radius-xl: 0px;
   --radius-2xl: 0px;
   --radius-subtle: 0px;
+  --radius-composer: 0px;
   /* Keep --radius-full for avatars and truly circular elements */
 }
 
@@ -142,7 +255,7 @@
   --color-destructive-foreground: var(--text-primary);
   --color-border: var(--border-medium);
   --color-input: var(--border-medium);
-  --color-ring: var(--border-strong);
+  --color-ring: var(--ring);
 
   /* Custom theme colors */
   --color-bg-base: var(--bg-base);
@@ -150,6 +263,7 @@
   --color-bg-surface: var(--bg-surface);
   --color-bg-elevated: var(--bg-elevated);
   --color-bg-overlay: var(--bg-overlay);
+  --color-bg-composer: var(--bg-composer);
   --color-bg-code: var(--bg-code);
   --color-bg-subtle: var(--bg-subtle);
   --color-bg-ghost: var(--bg-ghost);
@@ -192,6 +306,29 @@
   --color-toast-close: var(--toast-close);
   --color-toast-close-hover: var(--toast-close-hover);
 
+  /* Brand accent — reachable from components for the first time. */
+  --color-brand: var(--accent);
+  --color-brand-hover: var(--accent-hover);
+  --color-brand-text: var(--accent-text);
+  --color-brand-surface: var(--accent-surface);
+
+  /* Diff palette. */
+  --color-diff-add-bg: var(--diff-add-bg);
+  --color-diff-del-bg: var(--diff-del-bg);
+  --color-diff-add-fg: var(--diff-add-fg);
+  --color-diff-del-fg: var(--diff-del-fg);
+  --color-diff-add-gutter-bg: var(--diff-add-gutter-bg);
+  --color-diff-del-gutter-bg: var(--diff-del-gutter-bg);
+  --color-diff-gutter-fg: var(--diff-gutter-fg);
+
+  /* Per-tool accents. */
+  --color-tool-read: var(--tool-read);
+  --color-tool-search: var(--tool-search);
+  --color-tool-edit: var(--tool-edit);
+  --color-tool-command: var(--tool-command);
+  --color-tool-web: var(--tool-web);
+  --color-tool-generic: var(--tool-generic);
+
   --color-overlay: var(--overlay);
   --color-scrollbar: var(--scrollbar);
   --color-scrollbar-hover: var(--scrollbar-hover);
@@ -199,12 +336,28 @@
   --font-sans: var(--font-ui-family);
   --font-mono: var(--font-code-mono);
 
+  /* Type scale — drives `text-2xs` … `text-2xl`, all font-size-aware. */
+  --text-3xs: var(--text-3xs);
+  --text-2xs: var(--text-2xs);
+  --text-xs: var(--text-xs);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-md: var(--text-md);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --text-2xl: var(--text-2xl);
+  --text-3xl: var(--text-3xl);
+
+  --font-weight-normal: var(--font-weight-normal);
+  --font-weight-medium: var(--font-weight-medium);
+  --font-weight-strong: var(--font-weight-strong);
+
   --spacing-content-max: var(--content-max);
   --spacing-sidebar-width: var(--sidebar-width);
   --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
-  --spacing-sidebar-expanded: var(--sidebar-expanded); /* deprecated */
-  --spacing-sidebar-collapsed: var(--sidebar-collapsed); /* deprecated */
   --spacing-titlebar-height: var(--titlebar-height);
+  /* `max-h-composer-max-height` for the composer textarea. */
+  --spacing-composer-max-height: var(--composer-max-height);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
@@ -212,6 +365,8 @@
   --radius-xl: var(--radius-xl);
   --radius-2xl: var(--radius-2xl);
   --radius-full: var(--radius-full);
+  /* `rounded-composer` — the composer slab's own radius. */
+  --radius-composer: var(--radius-composer);
 
   --shadow-elevated: var(--shadow-elevated);
 
@@ -234,6 +389,7 @@ body,
 body {
   font-family: var(--font-ui-family);
   font-optical-sizing: auto;
+  font-weight: var(--font-weight-normal);
   background: var(--bg-base);
   color: var(--text-primary);
   text-rendering: optimizeLegibility;
@@ -241,8 +397,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-code, pre, .font-mono, [class*="GeistMono"] {
+/*
+ * Squircle corners. Codex declares `corner-shape: superellipse(1.5)` on
+ * every rounded surface; it is the system's most distinctive purely
+ * visual detail. Supported from Chromium 139 (this app ships Electron 41
+ * ⇒ Chromium 140+); older engines ignore the declaration and fall back
+ * to circular arcs, which is a clean degradation.
+ *
+ * Themes that want plain arcs leave `--corner-shape: round`.
+ */
+:where(*) {
+  corner-shape: var(--corner-shape);
+}
+
+code,
+pre,
+.font-mono {
   -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Text selection. Without this every dark theme fell back to the OS
+ * default blue, which is the single loudest colour on screen in an
+ * otherwise quiet palette. Only the background is set, so selected text
+ * keeps whatever colour it already had (syntax tokens included).
+ */
+::selection {
+  background: color-mix(in oklab, var(--accent) 30%, transparent);
+  text-shadow: none;
 }
 
 * {
@@ -262,86 +444,160 @@ select {
 
 /*
  * Focus rings — only show on keyboard navigation.
- * Mouse clicks should not leave a permanent ring.
- * The default ring uses --border-strong which is
- * visible on every theme.
+ *
+ * This used a *border* token (--border-strong, e.g. rgba(255,255,255,.28))
+ * as the ring, which is barely visible on any theme. It now uses the
+ * dedicated --ring token, which every theme defines with real contrast.
  */
 *:focus {
   outline: none;
 }
 
+/*
+ * NB: no `border-radius` here. This rule used to set it, which changed the
+ * *element's* own radius — unlayered, so it beat every `rounded-*`
+ * utility and snapped circular buttons into 4px boxes the moment they took
+ * keyboard focus. Outlines already follow the element's own radius.
+ */
 *:focus-visible {
-  outline: 2px solid var(--border-strong);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
-  border-radius: var(--radius-subtle);
+}
+
+/* Text fields always match :focus-visible, which would draw a ring inside
+   the composer slab on every keystroke. The slab itself is the focus
+   affordance there (reference shows no ring), so exempt its field. */
+.composer-slab textarea:focus-visible,
+[cmdk-input]:focus-visible {
+  outline: none;
 }
 
 /* ============================================
    Motion — targeted, snappy
    ============================================ */
 
-button, input, [role="option"], [role="button"] {
+/*
+ * A house default for interactive elements.
+ *
+ * Two fixes over the previous version:
+ *  1. `:where()` drops the specificity to zero, so a Tailwind
+ *     `duration-*` / `transition-*` utility can override it. Before, this
+ *     unlayered rule beat every utility and pinned the whole app to
+ *     --duration-fast.
+ *  2. An explicit, conservative `transition-property`. It previously set a
+ *     duration with no property, which under Tailwind's `transition-*`
+ *     utilities meant expensive/unintended properties could animate.
+ */
+:where(button, input, [role='option'], [role='button']) {
+  transition-property: color, background-color, border-color, opacity, transform;
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--easing-default);
 }
 
-.panel, .drawer, aside {
-  transition-duration: var(--duration-normal);
-  transition-timing-function: var(--easing-default);
-}
-
 /* ============================================
-   Markdown rendering
+   Shimmer — the running indicator
+
+   Codex sweeps a light band left→right across in-flight text: one sweep
+   every 2s, a raised-cosine (Hann) falloff over a band ~5 characters
+   wide, pulling the text toward the background at up to 90%.
+   See docs/codex-parity/design-audit.md §10.
+
+   A CSS gradient sweep is the honest web analogue of the TUI's
+   per-character blend. The 2s period and the direction are preserved;
+   `background-size: 200%` plus a 0→-100% travel gives the same
+   continuous, non-pulsing motion.
+
+   Reduced motion collapses to a static dim mark rather than removing the
+   indicator, so "working" is still legible without animation.
    ============================================ */
 
-.markdown-body > *:first-child {
-  margin-top: 0;
+@keyframes atlas-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
 }
 
-.markdown-body > *:last-child {
-  margin-bottom: 0;
+/*
+ * `color: transparent` here would be self-defeating: `currentColor` inside
+ * this element's own `background-image` resolves against this element's
+ * `color`, so zeroing the colour zeroes the gradient too and the text
+ * paints as nothing at all. `-webkit-text-fill-color` hides the glyph fill
+ * without touching `color`, so `currentColor` still resolves to the
+ * inherited (or status-tinted) text colour.
+ */
+.motion-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 35%,
+    color-mix(in oklab, currentColor 25%, var(--bg-base)) 50%,
+    currentColor 65%,
+    currentColor 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: atlas-shimmer 2s linear infinite;
 }
 
-.markdown-body p,
-.markdown-body ul,
-.markdown-body ol,
-.markdown-body pre,
-.markdown-body blockquote {
-  margin: 0.75rem 0;
+/*
+ * A gradient sweep needs width to read as motion, so a one-character
+ * glyph gets an opacity pulse instead — same 2s period, so the bullet
+ * stays phase-matched with any shimmering text beside it.
+ */
+@keyframes atlas-glyph-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
-.markdown-body ul,
-.markdown-body ol {
-  padding-left: 1.25rem;
+.motion-glyph-pulse {
+  animation: atlas-glyph-pulse 2s ease-in-out infinite;
 }
 
-.markdown-body pre {
-  overflow-x: auto;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--bg-code);
-  padding: 1rem;
-  font-family: var(--font-mono);
-  font-size: var(--code-font-size);
-  line-height: 1.55;
-}
+@media (prefers-reduced-motion: reduce) {
+  .motion-shimmer {
+    background-image: none;
+    background-clip: initial;
+    -webkit-background-clip: initial;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text-faint);
+    animation: none;
+  }
 
-.markdown-body code {
-  border-radius: var(--radius-sm);
-  background: var(--bg-code);
-  padding: 0.1rem 0.35rem;
-  font-family: var(--font-mono);
-  font-size: calc(var(--code-font-size) - 1px);
-}
-
-.markdown-body pre code {
-  background: transparent;
-  padding: 0;
-  font-size: inherit;
+  /* Static, not hidden — "working" must stay legible without motion. */
+  .motion-glyph-pulse {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 /* ============================================
-   Scrollbars
+   Scrollbars — ONE system
+
+   Rules of the system:
+   1. Width is a constant 6px everywhere and is NEVER animated. The old
+      `.scrollbar-auto-hide` animated width 0 → 6px on hover, which shrank
+      the content box by 6px: every line re-wrapped, sidebar titles
+      re-truncated, and Tab-focus jittered the list. That was the "bad
+      scrollbar flow".
+   2. The reveal is a colour change on the thumb only — transparent at
+      rest, `--scrollbar` on container hover/focus. Zero layout cost.
+   3. `::-webkit-*` is the only system used. Chromium honours the standard
+      `scrollbar-width` property *in preference to* the -webkit
+      pseudo-elements (≥121), so declaring both — as this file used to —
+      yields a wide, native, default-coloured bar on hover. There is no
+      `scrollbar-width` declaration anywhere in this codebase, on purpose.
+   4. Every auto-hiding scroller reserves its gutter (`scrollbar-gutter:
+      stable`) so content does not shift when it becomes scrollable.
    ============================================ */
 
 *::-webkit-scrollbar {
@@ -349,53 +605,60 @@ button, input, [role="option"], [role="button"] {
   height: 6px;
 }
 
-*::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
   border-radius: var(--radius-full);
   background: var(--scrollbar);
+  transition: background var(--duration-normal) var(--easing-default);
 }
 
 *::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
 }
 
+/*
+ * Scroll-container behaviour, shared by both classes:
+ *  - `scrollbar-gutter: stable` keeps the 6px rail reserved at all times.
+ *  - `overscroll-behavior: contain` stops the whole window rubber-banding
+ *    when the transcript or the sidebar hits an end.
+ *  - `overflow-anchor: none` disables the browser's own scroll anchoring,
+ *    which otherwise runs concurrently with the virtualizer and the
+ *    stick-to-bottom RAF loop and fights both.
+ *
+ * `.scroll-container`  — always-visible thumb (use on short, obviously
+ *                        scrollable panes: settings, model lists, sites).
+ * `.scrollbar-auto-hide` — thumb fades in on hover/focus (use on the
+ *                        transcript, the sidebar, anything content-first).
+ */
+.scroll-container,
 .scrollbar-auto-hide {
-  scrollbar-width: none;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 
-.scrollbar-auto-hide::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-.scrollbar-auto-hide:hover,
-.scrollbar-auto-hide:focus-within {
-  scrollbar-width: thin;
-}
-
-.scrollbar-auto-hide:hover::-webkit-scrollbar,
-.scrollbar-auto-hide:focus-within::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.scrollbar-auto-hide:hover::-webkit-scrollbar-track,
-.scrollbar-auto-hide:focus-within::-webkit-scrollbar-track {
+.scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent;
 }
 
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb,
 .scrollbar-auto-hide:focus-within::-webkit-scrollbar-thumb {
-  border-radius: var(--radius-full);
   background: var(--scrollbar);
 }
 
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover,
 .scrollbar-auto-hide:focus-within::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *::-webkit-scrollbar-thumb {
+    transition: none;
+  }
 }
 
 /* ============================================
@@ -424,6 +687,21 @@ button, input, [role="option"], [role="button"] {
   opacity: 1;
 }
 
+/* Clip, don't scale: sidebar snapshots pinned top-left so collapse/expand reads as a reveal, not a smear. */
+::view-transition-image-pair(app-sidebar) {
+  isolation: auto;
+}
+::view-transition-old(app-sidebar),
+::view-transition-new(app-sidebar) {
+  animation: none;
+  mix-blend-mode: normal;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(app-sidebar),
   ::view-transition-group(app-main-panel),
@@ -439,49 +717,115 @@ button, input, [role="option"], [role="button"] {
    Utility classes
    ============================================ */
 
-.btn-primary {
-  border-radius: var(--radius-md);
-  background: var(--bg-button);
-  color: var(--text-inverse);
-  font-family: var(--font-mono-system);
-  font-size: 0.875rem;
-  font-weight: 400;
-  letter-spacing: 1.4px;
-  text-transform: uppercase;
-  padding: 12px 24px;
-  transition: background var(--duration-fast) ease;
-}
+/*
+ * Component classes live in `@layer components`, which Tailwind orders
+ * *below* `utilities`. Unlayered rules beat every layer regardless of
+ * specificity, so as plain rules these classes silently overrode the
+ * `px-*` / `bg-*` / `border-*` utilities their callers passed alongside
+ * them (e.g. App.tsx's error-toned `.btn-secondary` never got its error
+ * border). Layered, the caller's utilities win, as intended.
+ *
+ * The type helpers below (.app-code-*, .ui-text-size-*) stay unlayered on
+ * purpose — they exist to win.
+ */
+@layer components {
+  /*
+   * .btn-primary / .btn-secondary
+   *
+   * These were uppercase mono with 1.4px letter-spacing and hardcoded
+   * 12px/24px padding — a look that appears nowhere else in the app, and
+   * it was the user's first impression, since onboarding is the main
+   * consumer. Now: normal-case UI font, token-driven type and radius.
+   *
+   * Padding is deliberately not declared; every caller passes its own.
+   */
+  .btn-primary {
+    border-radius: var(--radius-md);
+    background: var(--bg-button);
+    color: var(--text-inverse);
+    font-family: var(--font-ui-family);
+    font-size: var(--text-sm);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--leading-tight);
+    transition: background var(--duration-fast) var(--easing-default);
+  }
 
-.btn-primary:hover {
-  background: var(--bg-button-hover);
-}
+  .btn-primary:hover {
+    background: var(--bg-button-hover);
+  }
 
-.btn-primary:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
+  .btn-primary:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
 
-.btn-secondary {
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-primary);
-  font-family: var(--font-mono-system);
-  font-size: 0.875rem;
-  font-weight: 400;
-  letter-spacing: 1.4px;
-  text-transform: uppercase;
-  padding: 12px 24px;
-  transition: background var(--duration-fast) ease;
-}
+  .btn-secondary {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ui-family);
+    font-size: var(--text-sm);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--leading-tight);
+    transition: background var(--duration-fast) var(--easing-default),
+      border-color var(--duration-fast) var(--easing-default);
+  }
 
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
+  .btn-secondary:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-medium);
+  }
 
-.btn-secondary:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+  .btn-secondary:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .card {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-subtle);
+  }
+
+  .input {
+    width: 100%;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: transparent;
+    padding: 0.625rem 0.875rem;
+    font-size: var(--text-sm);
+    line-height: var(--leading-body);
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color var(--duration-fast) var(--easing-default),
+      box-shadow var(--duration-fast) var(--easing-default);
+  }
+
+  .input:focus {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 40%, transparent);
+  }
+
+  /* --text-muted, not --text-faint: placeholders are real text and must
+     clear 4.5:1. See the contrast note on the text scale above. */
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .section-title {
+    font-size: var(--text-sm);
+    font-weight: var(--font-weight-medium);
+    line-height: var(--leading-tight);
+    color: var(--text-primary);
+  }
+
+  .section-desc {
+    margin-top: 0.25rem;
+    font-size: var(--text-xs);
+    line-height: var(--leading-body);
+    color: var(--text-muted);
+  }
 }
 
 .font-code-sans {
@@ -530,43 +874,17 @@ button, input, [role="option"], [role="button"] {
   font-size: calc(var(--ui-font-size) - 5px);
 }
 
-.card {
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
-  background: var(--bg-subtle);
-}
+/* ============================================
+    Native Window Controls
+    ============================================ */
 
-.input {
-  width: 100%;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  padding: 12px 16px;
-  font-size: 0.875rem;
-  color: var(--text-primary);
-  outline: none;
-  transition: border-color var(--duration-fast) ease;
-}
-
-.input:focus {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px var(--border-strong);
-}
-
-.input::placeholder {
-  color: var(--text-faint);
-}
-
-.section-title {
-  font-size: 0.875rem;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.section-desc {
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
+/*
+ * Reserve the native window-controls overlay (Windows/Linux titleBarOverlay).
+ * On macOS the env() vars resolve to the full window width, so the padding
+ * computes to 0 and the rule is inert.
+ */
+.titlebar-overlay-safe {
+  padding-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
 }
 
 /* ============================================
@@ -579,4 +897,32 @@ input,
 textarea,
 select {
   -webkit-app-region: no-drag;
+}
+
+/* ============================================
+    Appearance preferences (Settings → Appearance)
+    ============================================ */
+
+/* Reduce motion: the resolved value (setting × system preference) is stamped
+   on the root by App.tsx, so one attribute covers both "On" and "System". */
+:root[data-reduce-motion='true'] *,
+:root[data-reduce-motion='true'] *::before,
+:root[data-reduce-motion='true'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Pointer cursors on interactive elements, off by default like the rest of
+   the desktop app. */
+:root[data-pointer-cursors='true'] :is(button, a, [role='button'], [role='menuitem'], [role='option'], [role='tab'], label[for], summary, input[type='checkbox'], input[type='radio'], input[type='range'], select):not(:disabled, [aria-disabled='true']) {
+  cursor: pointer;
+}
+
+/* Translucent sidebar: the window vibrancy behind the page shows through
+   wherever --bg-panel is translucent. Without vibrancy (non-macOS or before
+   restart) the fallback tint keeps the sidebar legible. */
+:root[data-translucent-sidebar='true'] {
+  --bg-panel: color-mix(in srgb, var(--bg-base) 55%, transparent);
 }

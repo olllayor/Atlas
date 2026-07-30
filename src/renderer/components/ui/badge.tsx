@@ -5,7 +5,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden border border-transparent px-2 py-0.5 text-xs whitespace-nowrap transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3",
+  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs whitespace-nowrap transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     variants: {
       variant: {
@@ -13,7 +13,7 @@ const badgeVariants = cva(
         secondary:
           "bg-[var(--bg-subtle)] text-[var(--text-secondary)] [a&]:hover:bg-[var(--bg-hover)]",
         destructive:
-          "bg-[var(--bg-active)] text-[var(--text-primary)] focus-visible:ring-[var(--border-strong)] dark:focus-visible:ring-[var(--border-medium)] [a&]:hover:bg-[var(--bg-hover)]",
+          "border-error-border bg-error-bg text-error-text focus-visible:ring-error [a&]:hover:bg-error-bg [a&]:hover:text-error",
         outline:
           "border-[var(--border-strong)] text-[var(--text-primary)] [a&]:hover:bg-[var(--bg-hover)]",
         ghost: "[a&]:hover:bg-[var(--bg-hover)] [a&]:hover:text-[var(--text-primary)]",

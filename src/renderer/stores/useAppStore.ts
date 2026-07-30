@@ -17,8 +17,11 @@ import type {
   SettingsSummary,
   SettingsUpdateRequest,
   StreamEvent,
-  ToolApprovalResponseRequest
+  ToolApprovalResponseRequest,
+  WorkspaceMode,
+  WorkspaceProject
 } from '../../shared/contracts';
+import { isWorkspaceModeReady } from '../../shared/workspaceModes';
 import {
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
   getAttachmentCapabilityError,
@@ -40,9 +43,10 @@ import {
   mergeConversationPage,
   reconcileConversationCache
 } from './conversationCache';
-import { notify } from '../lib/notify';
+import { notify, notifyError } from '../lib/notify';
 import {
   applyMetaEvent,
+  applyNoticeEvent,
   applyRecoveredRuntimeEventsToStore,
   applyRuntimeSnapshotToStore,
   applyStreamingEvent,
@@ -57,6 +61,23 @@ type RefreshModelsOptions = {
 };
 
 type AppView = 'chat' | 'settings' | 'landing' | 'sites';
+
+/**
+ * A composer attachment staged but not yet sent. Structurally identical to
+ * `ComposerAttachment` in the composer; declared here so the store does not
+ * have to import from the component tree.
+ */
+export type ComposerAttachmentDraft = {
+  id: string;
+  type: 'file';
+  mediaType: string;
+  url: string;
+  filename?: string;
+  sizeBytes?: number;
+};
+
+/** Stable identity so consumers do not re-render on every empty read. */
+export const EMPTY_COMPOSER_ATTACHMENTS: ComposerAttachmentDraft[] = [];
 
 type AppState = {
   bootstrapping: boolean;
@@ -84,18 +105,37 @@ type AppState = {
   isLoadingConversationId: string | null;
   selectedConversationId: string | null;
   selectedModelIdByConversation: Record<string, string>;
+  /** Unsent composer text, per conversation. A single global string leaked
+   *  half-typed messages into whichever thread you switched to. */
+  composerDraftsByConversation: Record<string, string>;
+  /** Staged (not yet sent) composer attachments, per conversation. */
+  composerAttachmentsByConversation: Record<string, ComposerAttachmentDraft[]>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
+  /** Every folder the user has attached, most recently used first. */
+  projects: WorkspaceProject[];
   updateState: AppUpdateSnapshot;
   bootstrap: () => Promise<void>;
   refreshModels: (options?: RefreshModelsOptions) => Promise<void>;
+  /** Re-reads the cached catalog after a main-process change, no network. */
+  reloadModels: () => Promise<void>;
   refreshConversationList: () => Promise<void>;
   refreshConversationStats: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
   loadOlderMessages: (conversationId: string) => Promise<void>;
   createConversation: () => Promise<void>;
+  /** New conversation already bound to a project and set to Code mode. */
+  createConversationInProject: (projectId: string) => Promise<void>;
+  refreshProjects: () => Promise<void>;
+  /** Opens the native folder picker unless a root is supplied. Null when cancelled. */
+  attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
+  detachProject: (projectId: string) => Promise<void>;
+  setConversationWorkspace: (
+    conversationId: string,
+    patch: { mode?: WorkspaceMode; projectId?: string | null }
+  ) => Promise<void>;
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
   openLanding: () => void;
@@ -116,13 +156,35 @@ type AppState = {
   checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
   performUpdatePrimaryAction: () => Promise<void>;
   setSelectedModel: (conversationId: string, modelId: string) => void;
+  setComposerDraft: (conversationId: string, value: string) => void;
+  setComposerAttachments: (
+    conversationId: string,
+    updater: (previous: ComposerAttachmentDraft[]) => ComposerAttachmentDraft[]
+  ) => void;
+  /**
+   * Clear a thread's composer text and retire the attachments that were
+   * actually sent. `sentAttachmentIds` is the snapshot taken when the send
+   * began — anything staged afterwards survives.
+   */
+  clearComposerDraft: (conversationId: string, sentAttachmentIds?: readonly string[]) => void;
   selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
   selectConversationByIndex: (index: number) => Promise<void>;
-  sendMessage: (message: { text: string; files: ChatInputFilePart[] }) => Promise<void>;
+  sendMessage: (message: {
+    text: string;
+    files: ChatInputFilePart[];
+    /**
+     * The thread the send was composed in, captured before the composer's
+     * awaited blob→dataURL conversion. Without it we would re-read
+     * `selectedConversationId` here and post into whatever thread the user
+     * switched to mid-conversion. Falls back to the selection when absent.
+     */
+    conversationId?: string;
+  }) => Promise<void>;
   resendLastUserMessage: () => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
   respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
+  renameConversation: (conversationId: string, title: string) => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => Promise<void>;
 };
 
@@ -157,8 +219,12 @@ function resolveSelectedModelId(
     return null;
   }
 
+  // The explicit pick is checked against the catalog like the persisted one:
+  // disabling or deleting a provider takes its models out of the catalog while
+  // every conversation that had chosen one still names it, and an id nothing can
+  // serve is not a selection — it is a send that fails in the main process.
   const explicit = selectedModelIdByConversation[selectedConversationId];
-  if (explicit) {
+  if (explicit && models.some((model) => model.id === explicit)) {
     return explicit;
   }
 
@@ -167,11 +233,71 @@ function resolveSelectedModelId(
     return persisted;
   }
 
-  return models[0]?.id ?? null;
+  // Null, not `models[0]`: this only answers "does the conversation already have
+  // a model?". Every caller falls through to `chooseDefaultModel`, which knows
+  // about the remembered model and skips archived entries — returning the first
+  // catalog row here preempted that and was why a new chat ignored the last pick.
+  return null;
 }
 
-export function chooseDefaultModel(models: ModelSummary[], preferredProviderId?: ProviderId | null) {
+/**
+ * Re-points conversations whose selected model the catalog no longer offers.
+ *
+ * Disabling a provider (or deleting one) is the common case: its models leave
+ * the catalog immediately, but every conversation that had picked one still
+ * names it. Left alone, the picker renders with no model and the send fails
+ * against a provider whose adapter the main process has already torn down.
+ *
+ * Returns the original map when nothing moved, so a reload that changed nothing
+ * does not invalidate every subscriber to this slice.
+ */
+export function repointUnavailableModels(
+  selections: Record<string, string>,
+  models: ModelSummary[],
+  fallbackModelId: string | null
+): Record<string, string> {
+  const available = new Set(models.filter((model) => !model.archived).map((model) => model.id));
+  const next: Record<string, string> = {};
+  let changed = false;
+
+  for (const [conversationId, modelId] of Object.entries(selections)) {
+    if (available.has(modelId)) {
+      next[conversationId] = modelId;
+      continue;
+    }
+
+    changed = true;
+    // With an empty catalog there is nothing to fall back to; the entry is
+    // dropped rather than pinned to a model that is also gone.
+    if (fallbackModelId) {
+      next[conversationId] = fallbackModelId;
+    }
+  }
+
+  return changed ? next : selections;
+}
+
+/**
+ * The model a conversation opens on when it has not recorded one of its own.
+ *
+ * The last model the user picked wins, because it is the only signal that
+ * reflects an actual choice — everything after it is inference. Falling straight
+ * to "first free model in the catalog" meant every new chat silently reset to
+ * some arbitrary free model, no matter what the user had been working in.
+ * `lastModelId` arrives pre-validated against the live catalog, so a model whose
+ * provider has since been removed simply does not appear here.
+ */
+export function chooseDefaultModel(
+  models: ModelSummary[],
+  preferredProviderId?: ProviderId | null,
+  lastModelId?: string | null
+) {
   const availableModels = models.filter((model) => !model.archived);
+
+  if (lastModelId && availableModels.some((model) => model.id === lastModelId)) {
+    return lastModelId;
+  }
+
   const preferredModels = preferredProviderId
     ? availableModels.filter((model) => model.providerId === preferredProviderId)
     : availableModels;
@@ -259,9 +385,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingConversationId: null,
   selectedConversationId: null,
   selectedModelIdByConversation: {},
+  composerDraftsByConversation: {},
+  composerAttachmentsByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
   runtimeSequenceByConversation: {},
+  projects: [],
   updateState: { status: 'idle' },
 
   bootstrap: async () => {
@@ -277,7 +406,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const selectedConversationId = conversations[0]?.id ?? null;
-      const [detail, runtimeState, models, updateState, conversationStats, diagnostics] = await Promise.all([
+      const [detail, runtimeState, models, updateState, conversationStats, diagnostics, projects] = await Promise.all([
         selectedConversationId
           ? window.atlasChat.conversations.getPage(selectedConversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
           : Promise.resolve(null),
@@ -294,10 +423,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         }),
         window.atlasChat.updates.getState(),
         window.atlasChat.conversations.getStats(),
-        window.atlasChat.diagnostics.getSnapshot()
+        window.atlasChat.diagnostics.getSnapshot(),
+        window.atlasChat.projects.list()
       ]);
 
-      const defaultModelId = chooseDefaultModel(models, settings.defaultProviderId);
+      const defaultModelId = chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
       const activeCredentialProviderId =
         settings.defaultProviderId ?? findConfiguredCredential(settings)?.providerId ?? '';
 
@@ -309,6 +439,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversations,
         conversationStats,
         diagnostics,
+        projects,
         activeCredentialProviderId,
         selectedConversationId,
         conversationDetails: buildBootstrapConversationDetails(selectedConversationId, detail, runtimeState),
@@ -333,7 +464,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 [selectedConversationId]:
                   detail?.conversation?.defaultModelId ??
-                  chooseDefaultModel(models, detail?.conversation?.defaultProviderId ?? settings.defaultProviderId) ??
+                  chooseDefaultModel(
+                    models,
+                    detail?.conversation?.defaultProviderId ?? settings.defaultProviderId,
+                    settings.chat.lastModelId
+                  ) ??
                   defaultModelId
               }
             : {}
@@ -344,6 +479,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (error) {
       set({ bootstrapping: false, bootstrapError: getErrorMessage(error) });
+    }
+  },
+
+  reloadModels: async () => {
+    try {
+      const models = await window.atlasChat.models.list({
+        freeOnly: false,
+        includeArchived: false,
+        allowStale: true
+      });
+
+      set((current) => {
+        const fallbackModelId = chooseDefaultModel(
+          models,
+          current.settings?.defaultProviderId,
+          current.settings?.chat.lastModelId
+        );
+
+        return {
+          models,
+          // This reload is how a window learns a provider was disabled or
+          // removed, so it is also where selections pointing into the vanished
+          // provider have to be re-pointed.
+          selectedModelIdByConversation: repointUnavailableModels(
+            current.selectedModelIdByConversation,
+            models,
+            fallbackModelId
+          )
+        };
+      });
+    } catch {
+      // The pre-change snapshot stays; the next refresh gets another chance.
     }
   },
 
@@ -359,29 +526,37 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.selectedModelIdByConversation,
         state.conversationDetails,
         models
-      ) ?? chooseDefaultModel(models, settings.defaultProviderId);
+      ) ?? chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
 
-      set((current) => ({
-        isRefreshingModels: false,
-        models,
-        settings,
-        selectedModelIdByConversation:
-          selectedModelId && current.selectedConversationId
-            ? {
-                ...current.selectedModelIdByConversation,
-                [current.selectedConversationId]: selectedModelId
-              }
-            : current.selectedModelIdByConversation,
-      }));
+      set((current) => {
+        // Every conversation is checked, not just the visible one: a refresh
+        // that drops a provider leaves stale picks behind on the others too,
+        // and they surface as a broken send the moment one is opened.
+        const repointed = repointUnavailableModels(
+          current.selectedModelIdByConversation,
+          models,
+          selectedModelId
+        );
+
+        return {
+          isRefreshingModels: false,
+          models,
+          settings,
+          selectedModelIdByConversation:
+            selectedModelId && current.selectedConversationId
+              ? { ...repointed, [current.selectedConversationId]: selectedModelId }
+              : repointed,
+        };
+      });
 
       if (!silent) {
-        notify({ tone: 'success', title: 'Model catalog refreshed.' });
+        notify({ tone: 'success', title: 'Model catalog refreshed' });
       }
     } catch (error) {
       set({ isRefreshingModels: false });
 
       if (!silent) {
-        notify({ tone: 'error', title: getErrorMessage(error) });
+        notifyError('Could not refresh the model catalog', error);
       }
     }
   },
@@ -426,7 +601,11 @@ export const useAppStore = create<AppState>((set, get) => ({
               ...current.selectedModelIdByConversation,
               [conversationId]:
                 cachedDetail?.conversation.defaultModelId ??
-                chooseDefaultModel(current.models, cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
+                chooseDefaultModel(
+                  current.models,
+                  cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+                  current.settings?.chat.lastModelId
+                ) ??
                 ''
             }
           : current.selectedModelIdByConversation
@@ -452,7 +631,11 @@ export const useAppStore = create<AppState>((set, get) => ({
                 [conversationId]:
                   runtimeState.conversation?.defaultModelId ??
                   detail.conversation.defaultModelId ??
-                  chooseDefaultModel(current.models, runtimeState.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId) ??
+                  chooseDefaultModel(
+                    current.models,
+                    runtimeState.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+                    current.settings?.chat.lastModelId
+                  ) ??
                   ''
               }
             : current.selectedModelIdByConversation
@@ -462,7 +645,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not open the conversation', error);
     }
   },
 
@@ -514,15 +697,124 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((current) => ({
         isLoadingOlderByConversation: { ...current.isLoadingOlderByConversation, [conversationId]: false }
       }));
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not load older messages', error);
     }
   },
 
   createConversation: async () => {
-    const created = await window.atlasChat.conversations.create();
+    /*
+      "New chat" means new chat *here*. The project comes from the conversation
+      on screen, not from the main process's remembered id — that only moves on
+      an explicit workspace change, so opening a chat in another folder and
+      hitting the shortcut filed the new chat under the previous folder.
+
+      Reading an unfiled chat states `null`, which is equally deliberate: it
+      keeps the next chat unfiled instead of adopting the last project used.
+    */
+    const { conversations, selectedConversationId } = get();
+    const active = selectedConversationId
+      ? (conversations.find((conversation) => conversation.id === selectedConversationId) ?? null)
+      : null;
+
+    const created = await window.atlasChat.conversations.create(
+      active ? { projectId: active.projectId } : undefined
+    );
+
+    await get().refreshConversationList();
+    set((state) => ({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      modelPickerOpen: false,
+      // Main persists this as the new fallback; mirror it so the cached
+      // summary does not report a project the user has moved on from.
+      settings: state.settings
+        ? { ...state.settings, chat: { ...state.settings.chat, lastProjectId: created.projectId } }
+        : state.settings
+    }));
+    await get().loadConversation(created.id);
+  },
+
+  createConversationInProject: async (projectId) => {
+    // Bound at creation, not patched after: the row used to appear under
+    // Recents for a frame and then jump into the project.
+    const created = await window.atlasChat.conversations.create({ projectId });
+    await get().setConversationWorkspace(created.id, { mode: 'code', projectId });
     await get().refreshConversationList();
     set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(created.id);
+  },
+
+  refreshProjects: async () => {
+    set({ projects: await window.atlasChat.projects.list() });
+  },
+
+  attachProject: async ({ root, conversationId } = {}) => {
+    const project = await window.atlasChat.projects.create(root ? { root } : undefined);
+
+    if (!project) {
+      // The user cancelled the picker. Not an error, and nothing changes.
+      return null;
+    }
+
+    await get().refreshProjects();
+
+    const target = conversationId ?? get().selectedConversationId;
+    if (target) {
+      await get().setConversationWorkspace(target, { projectId: project.id });
+    }
+
+    return project;
+  },
+
+  detachProject: async (projectId) => {
+    await window.atlasChat.projects.delete(projectId);
+    await Promise.all([get().refreshProjects(), get().refreshConversationList()]);
+  },
+
+  setConversationWorkspace: async (conversationId, patch) => {
+    const previous = get().conversations;
+
+    // Optimistic: the mode switch drives visible chrome, and waiting a round
+    // trip to repaint it reads as lag.
+    const applyLocally = (conversation: ConversationSummary) =>
+      conversation.id === conversationId
+        ? {
+            ...conversation,
+            workspaceMode: patch.mode ?? conversation.workspaceMode,
+            projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
+          }
+        : conversation;
+
+    set({ conversations: previous.map(applyLocally) });
+
+    try {
+      const workspace = await window.atlasChat.conversations.setWorkspace({ conversationId, ...patch });
+
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, workspaceMode: workspace.mode, projectId: workspace.projectId }
+            : conversation
+        ),
+        settings: state.settings
+          ? {
+              ...state.settings,
+              chat: {
+                ...state.settings.chat,
+                workspaceMode: workspace.mode,
+                lastProjectId: workspace.projectId
+              }
+            }
+          : state.settings
+      }));
+
+      if (patch.projectId) {
+        await get().refreshProjects();
+      }
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError('Could not update the workspace', error);
+    }
   },
 
   openSettings: (section = 'general') =>
@@ -551,7 +843,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const secret = state.keyDraft.trim();
     const metadata = resolveProviderMetadata(providerId, state.settings?.customProviders ?? []);
     if (!secret) {
-      notify({ tone: 'error', title: `Enter a ${metadata.label} API key before saving.` });
+      notify({ tone: 'error', title: `Enter a ${metadata.label} API key before saving` });
       return;
     }
 
@@ -560,10 +852,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const settings = await window.atlasChat.settings.saveProviderKey(providerId, secret);
       set({ isSavingKey: false, settings, keyDraft: '', activeCredentialProviderId: providerId });
-      notify({ tone: 'success', title: `${metadata.label} key saved to the OS keychain.` });
+      notify({ tone: 'success', title: `${metadata.label} key saved`, description: 'Stored in the OS keychain' });
     } catch (error) {
       set({ isSavingKey: false });
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not save the API key', error);
     }
   },
 
@@ -577,11 +869,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const settings = await window.atlasChat.settings.validateProviderKey(providerId, secretOverride);
       set({ isValidatingKey: false, settings, keyDraft: '' });
-      notify({ tone: 'success', title: `${metadata.label} key validated successfully.` });
+      notify({ tone: 'success', title: `${metadata.label} key is valid` });
       await get().refreshModels({ silent: true });
     } catch (error) {
       set({ isValidatingKey: false });
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not validate the API key', error);
     }
   },
 
@@ -601,7 +893,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.selectedConversationId && !state.selectedModelIdByConversation[state.selectedConversationId]
           ? {
               ...state.selectedModelIdByConversation,
-              [state.selectedConversationId]: chooseDefaultModel(state.models, settings.defaultProviderId) ?? ''
+              [state.selectedConversationId]:
+                chooseDefaultModel(state.models, settings.defaultProviderId, settings.chat.lastModelId) ?? ''
             }
           : state.selectedModelIdByConversation
     }));
@@ -614,15 +907,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       const snapshot = await window.atlasChat.updates.check();
       set({ updateState: snapshot });
 
-      if (manual && snapshot.status === 'error') {
-        notify({ tone: 'error', title: snapshot.message });
+      // The single owner of update-check feedback — the sidebar menu used to
+      // report the same outcome a second time, in a different tone.
+      if (!manual) {
+        return;
       }
-      if (manual && snapshot.status === 'not-available') {
-        notify({ tone: 'info', title: 'Atlas is up to date.' });
+
+      if (snapshot.status === 'error') {
+        notify({ tone: 'error', title: 'Update check failed', description: snapshot.message });
+      } else if (snapshot.status === 'not-available') {
+        notify({
+          tone: 'info',
+          title: 'Atlas is up to date',
+          description: snapshot.currentVersion ? `Version ${snapshot.currentVersion}` : undefined,
+        });
+      } else if (snapshot.status === 'available') {
+        notify({
+          tone: 'info',
+          title: 'Update available',
+          description: snapshot.latestVersion ?? undefined,
+        });
       }
     } catch (error) {
       if (manual) {
-        notify({ tone: 'error', title: getErrorMessage(error) });
+        notifyError('Update check failed', error);
       }
     }
   },
@@ -633,8 +941,68 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setSelectedModel: (conversationId, modelId) => {
     set((state) => ({
-      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId }
+      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId },
+      settings: state.settings
+        ? { ...state.settings, chat: { ...state.settings.chat, lastModelId: modelId } }
+        : state.settings
     }));
+
+    // Persisted so the choice survives a restart, not just this session. A
+    // failure here only costs the remembered default, so it stays silent.
+    void window.atlasChat.settings.updatePreferences({ chat: { lastModelId: modelId } }).catch(() => undefined);
+  },
+
+  setComposerDraft: (conversationId, value) => {
+    set((state) => {
+      if ((state.composerDraftsByConversation[conversationId] ?? '') === value) {
+        return {};
+      }
+
+      return {
+        composerDraftsByConversation: { ...state.composerDraftsByConversation, [conversationId]: value }
+      };
+    });
+  },
+
+  setComposerAttachments: (conversationId, updater) => {
+    set((state) => {
+      const previous = state.composerAttachmentsByConversation[conversationId] ?? EMPTY_COMPOSER_ATTACHMENTS;
+      const next = updater(previous);
+      if (next === previous) {
+        return {};
+      }
+
+      return {
+        composerAttachmentsByConversation: { ...state.composerAttachmentsByConversation, [conversationId]: next }
+      };
+    });
+  },
+
+  clearComposerDraft: (conversationId, sentAttachmentIds) => {
+    set((state) => {
+      const { [conversationId]: _text, ...restText } = state.composerDraftsByConversation;
+      const { [conversationId]: staged, ...restFiles } = state.composerAttachmentsByConversation;
+      const sent = sentAttachmentIds ? new Set(sentAttachmentIds) : null;
+      // Only the files that went out with this send are retired: the send is
+      // async, so anything staged while it was in flight must stay put.
+      const wasSent = (file: ComposerAttachmentDraft) => (sent ? sent.has(file.id) : true);
+      const remaining = (staged ?? []).filter((file) => !wasSent(file));
+
+      // Sent files were copied to data URLs for the send; the object URLs
+      // they were staged with are now garbage.
+      for (const file of staged ?? []) {
+        if (wasSent(file) && file.url.startsWith('blob:')) {
+          URL.revokeObjectURL(file.url);
+        }
+      }
+
+      return {
+        composerAttachmentsByConversation: remaining.length
+          ? { ...restFiles, [conversationId]: remaining }
+          : restFiles,
+        composerDraftsByConversation: restText
+      };
+    });
   },
 
   selectAdjacentConversation: async (direction) => {
@@ -675,7 +1043,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const state = get();
-    const conversationId = state.selectedConversationId;
+    const conversationId = message.conversationId ?? state.selectedConversationId;
     if (!conversationId) {
       throw new Error('No conversation selected.');
     }
@@ -694,17 +1062,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.selectedModelIdByConversation,
         { ...state.conversationDetails, [conversationId]: detail },
         state.models
-      ) ?? chooseDefaultModel(state.models, detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId);
+      ) ??
+      chooseDefaultModel(
+        state.models,
+        detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId,
+        state.settings?.chat.lastModelId
+      );
 
     if (!modelId) {
-      notify({ tone: 'error', title: 'Refresh the model catalog and select a model before sending.' });
+      notify({ tone: 'error', title: 'Select a model before sending', description: 'Refresh the model catalog to load one' });
       return;
     }
 
     const selectedModel = getModelById(state.models, modelId);
     const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
     if (!selectedModel || !providerId) {
-      notify({ tone: 'error', title: 'Select a valid model before sending.' });
+      notify({ tone: 'error', title: 'Select a valid model before sending' });
       return;
     }
 
@@ -712,25 +1085,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       (file) => !isSupportedAttachmentMediaType(file.mediaType, file.filename),
     );
     if (unsupportedAttachment) {
-      notify({ tone: 'error', title: `${unsupportedAttachment.filename ?? 'This file'} is not a supported attachment type.` });
+      notify({ tone: 'error', title: 'Unsupported attachment', description: `${unsupportedAttachment.filename ?? 'This file'} is not a supported type` });
       return;
     }
 
     const totalAttachmentBytes = sumAttachmentSize(normalizedFiles);
     if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-      notify({ tone: 'error', title: 'Attachments are too large to send together.' });
+      notify({ tone: 'error', title: 'Attachments are too large to send together' });
       return;
     }
 
     const attachmentCapabilityError = getAttachmentCapabilityError(selectedModel, normalizedFiles);
     if (attachmentCapabilityError) {
-      notify({ tone: 'error', title: attachmentCapabilityError });
+      // A written sentence from `getAttachmentCapabilityError`, e.g. "Claude
+      // Haiku cannot read images" — it belongs in the detail line, under a
+      // title that says which step refused.
+      notify({ tone: 'error', title: 'Attachment not supported by this model', description: attachmentCapabilityError });
       return;
     }
 
     const credential = findCredential(state.settings, providerId);
     if (!credential?.hasSecret) {
-      notify({ tone: 'error', title: `Save a ${resolveProviderMetadata(providerId, state.settings?.customProviders ?? []).label} API key before sending with this model.` });
+      notify({ tone: 'error', title: 'API key required', description: `Save a ${resolveProviderMetadata(providerId, state.settings?.customProviders ?? []).label} key to use this model` });
       set({ activeCredentialProviderId: providerId });
       return;
     }
@@ -754,7 +1130,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         providerId,
         modelId,
         messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
-        enableTools: Boolean(selectedModel.supportsTools),
+        enableTools: selectedModel.supportsTools !== false,
         mentions: parseMentions(trimmed),
         temperature: 0.65,
         // Models without a thinking mode ignore this; the adapters gate on the
@@ -763,7 +1139,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         toolPermissionMode: state.settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE
       });
     } catch (error) {
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not send the message', error);
       throw error;
     }
 
@@ -850,7 +1226,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!text) {
       return;
     }
-    await get().sendMessage({ text, files: [] });
+    await get().sendMessage({ text, files: [], conversationId });
   },
 
   abortConversation: async (conversationId) => {
@@ -872,6 +1248,54 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
     await window.atlasChat.chat.respondToolApproval(request);
+  },
+
+  renameConversation: async (conversationId, title) => {
+    const normalized = title.replace(/\s+/g, ' ').trim().slice(0, 200);
+    const previousConversations = get().conversations;
+    const previousDetail = get().conversationDetails[conversationId];
+    const previousTitle = previousConversations.find(
+      (conversation) => conversation.id === conversationId
+    )?.title;
+
+    if (!normalized || normalized === previousTitle) {
+      return;
+    }
+
+    // Optimistic: the row is under the user's cursor, so it must change now.
+    set((current) => ({
+      conversations: current.conversations.map((conversation) =>
+        conversation.id === conversationId ? { ...conversation, title: normalized } : conversation
+      ),
+      conversationDetails: previousDetail
+        ? {
+            ...current.conversationDetails,
+            [conversationId]: {
+              ...previousDetail,
+              conversation: { ...previousDetail.conversation, title: normalized }
+            }
+          }
+        : current.conversationDetails
+    }));
+
+    try {
+      await window.atlasChat.conversations.rename(conversationId, normalized);
+    } catch (error) {
+      // Roll back only this row's title. Restoring the whole snapshot would
+      // also undo any reordering, additions or deletions that landed while
+      // the rename was in flight.
+      set((current) => ({
+        conversations: current.conversations.map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, title: previousTitle ?? conversation.title }
+            : conversation
+        ),
+        conversationDetails: previousDetail
+          ? { ...current.conversationDetails, [conversationId]: previousDetail }
+          : current.conversationDetails
+      }));
+      notifyError('Could not rename the conversation', error);
+    }
   },
 
   deleteConversation: async (conversationId) => {
@@ -896,6 +1320,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
       const { [conversationId]: _deletedDraft, ...restDrafts } = current.draftsByConversation;
       const { [conversationId]: _deletedModel, ...restSelectedModels } = current.selectedModelIdByConversation;
+      const { [conversationId]: _deletedComposerText, ...restComposerText } = current.composerDraftsByConversation;
+      const { [conversationId]: deletedComposerFiles, ...restComposerFiles } = current.composerAttachmentsByConversation;
+      // Staged files hold object URLs; dropping the map alone would leak them.
+      for (const file of deletedComposerFiles ?? []) {
+        if (file.url.startsWith('blob:')) {
+          URL.revokeObjectURL(file.url);
+        }
+      }
       const { [conversationId]: _deletedSequence, ...restSequences } = current.runtimeSequenceByConversation;
       const { [conversationId]: _loadingOlder, ...restLoadingOlder } = current.isLoadingOlderByConversation;
       const requestToConversation = Object.fromEntries(
@@ -912,6 +1344,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
+        composerDraftsByConversation: restComposerText,
+        composerAttachmentsByConversation: restComposerFiles,
         runtimeSequenceByConversation: restSequences,
         isLoadingOlderByConversation: restLoadingOlder,
         inactiveConversationIds: current.inactiveConversationIds.filter((id) => id !== conversationId),
@@ -944,7 +1378,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         requestToConversation: previousRequestMap,
         selectedConversationId: previousSelectedId
       }));
-      notify({ tone: 'error', title: getErrorMessage(error) });
+      notifyError('Could not delete the conversation', error);
       return;
     }
 
@@ -975,6 +1409,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   handleStreamEvent: async (event) => {
+    // Title generation finishes after the turn's `done`, outside any request
+    // lifecycle — patch the sidebar row in place and stop.
+    if (event.type === 'conversation-title') {
+      set((current) => ({
+        conversations: current.conversations.map((conversation) =>
+          conversation.id === event.conversationId
+            ? { ...conversation, title: event.title }
+            : conversation
+        ),
+      }));
+      return;
+    }
+
     const state = get();
     const conversationId =
       event.type === 'runtime-sync'
@@ -1018,6 +1465,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const streamPatch = applyStreamingEvent(state, conversationId, event);
     if (streamPatch) {
       set((current) => ({ ...current, ...streamPatch }));
+      return;
+    }
+
+    if (event.type === 'notice') {
+      const noticePatch = applyNoticeEvent(state, conversationId, event);
+      if (noticePatch) {
+        set((current) => ({ ...current, ...noticePatch }));
+      }
       return;
     }
 
@@ -1067,7 +1522,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       if (shouldShowNotice) {
-        notify({ tone: 'error', title: event.message });
+        // Whatever the provider or the runtime said, verbatim — so it goes in
+        // the description, where it has three lines instead of one.
+        notify({ tone: 'error', title: 'Generation failed', description: event.message });
       }
       return;
     }
@@ -1159,4 +1616,4 @@ export function selectCompactedConversationForCache(detail: ConversationPage) {
 }
 
 // Re-export helper for tests that need to drive the pure reducers directly.
-export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent };
+export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent, applyNoticeEvent };

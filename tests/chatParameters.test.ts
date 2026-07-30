@@ -12,8 +12,10 @@ import { createBuiltInTools, describeToolPermissionsForPrompt } from '../src/mai
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
+  clampReasoningEffort,
   isReasoningEffort,
-  isToolPermissionMode
+  isToolPermissionMode,
+  resolveReasoningEffortMenu
 } from '../src/shared/chatParameters.js';
 
 const modelsRepo = { list: () => [] } as never;
@@ -157,4 +159,69 @@ test('parameter guards reject values that did not come from the UI', () => {
   assert.equal(isReasoningEffort('ludicrous'), false);
   assert.equal(isToolPermissionMode(DEFAULT_TOOL_PERMISSION_MODE), true);
   assert.equal(isToolPermissionMode('root'), false);
+});
+
+test('the effort menu offers only what the model accepts', () => {
+  // A non-reasoning model gets no menu at all.
+  assert.deepEqual(resolveReasoningEffortMenu(false, ['low', 'high']), []);
+
+  // The catalog was silent: fall back to the historical five-step ladder.
+  assert.deepEqual(resolveReasoningEffortMenu(true, null), ['off', 'low', 'medium', 'high', 'max']);
+  assert.deepEqual(resolveReasoningEffortMenu(true, undefined), ['off', 'low', 'medium', 'high', 'max']);
+
+  // Always-on reasoning with no control has nothing to offer.
+  assert.deepEqual(resolveReasoningEffortMenu(true, []), []);
+
+  // A model's own levels come back in ladder order regardless of stored order.
+  assert.deepEqual(resolveReasoningEffortMenu(true, ['max', 'off', 'high']), ['off', 'high', 'max']);
+});
+
+test('a stored effort snaps onto the nearest level the model takes', () => {
+  // In the menu already: untouched.
+  assert.equal(clampReasoningEffort('high', ['off', 'high', 'max']), 'high');
+
+  // deepseek-v4-flash shape: medium is not offered, high is the nearest rung.
+  assert.equal(clampReasoningEffort('medium', ['off', 'high', 'max']), 'high');
+
+  // A model that cannot stop reasoning turns "off" into its lowest level.
+  assert.equal(clampReasoningEffort('off', ['low', 'medium', 'high']), 'low');
+
+  // A graded request never silently degrades to "no thinking at all".
+  assert.equal(clampReasoningEffort('medium', ['off', 'on']), 'on');
+
+  // Nothing to choose from.
+  assert.equal(clampReasoningEffort('medium', []), undefined);
+});
+
+test('the catalog levels flow through to what is actually sent', () => {
+  // The clamped level is sent verbatim, even outside the OpenAI vocabulary.
+  assert.deepEqual(buildOpenAICompatibleReasoningOptions('max', true, ['off', 'high', 'max']), {
+    reasoningEffort: 'max'
+  });
+  assert.deepEqual(buildOpenAICompatibleReasoningOptions('medium', true, ['off', 'high', 'max']), {
+    reasoningEffort: 'high'
+  });
+
+  // A toggle-only model spells "enabled" as medium for graded endpoints.
+  assert.deepEqual(buildOpenAICompatibleReasoningOptions('high', true, ['off', 'on']), {
+    reasoningEffort: 'medium'
+  });
+
+  // Always-on reasoning with no control: send nothing at all.
+  assert.equal(buildOpenAICompatibleReasoningOptions('high', true, []), null);
+  assert.equal(
+    buildCustomProviderReasoningOptions({
+      apiFormat: 'chat-completions',
+      effort: 'high',
+      supportsReasoning: true,
+      allowedEfforts: [],
+      maxOutputTokens: 32_000
+    }),
+    null
+  );
+
+  // OpenRouter turns a binary switch into its enabled flag.
+  assert.deepEqual(buildOpenRouterReasoningOptions('high', true, ['off', 'on']), {
+    reasoning: { enabled: true }
+  });
 });

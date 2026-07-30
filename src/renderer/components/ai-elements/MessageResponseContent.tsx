@@ -5,7 +5,7 @@ import { code } from '@streamdown/code';
 import { math } from '@streamdown/math';
 import { mermaid } from '@streamdown/mermaid';
 import type { ComponentProps } from 'react';
-import { Streamdown, type CustomRenderer } from 'streamdown';
+import { Streamdown, defaultRemarkPlugins, type CustomRenderer } from 'streamdown';
 
 import { streamdownCodeLanguages } from './codeLanguages';
 
@@ -16,6 +16,39 @@ const streamdownRenderers: CustomRenderer[] = [
     language: streamdownCodeLanguages,
     component: CodeBlock
   }
+];
+
+type MdastNode = { type?: string; lang?: string | null; children?: MdastNode[] };
+
+/**
+ * Tag untagged fences as `text`.
+ *
+ * Streamdown only consults the custom-renderer table when the fence carries
+ * a language (`renderers.find(...)` is guarded on a truthy language), so a
+ * bare ``` block would fall through to Streamdown's own `<pre>` — different
+ * chrome, no copy button, no rounded corners. Naming the language `text`
+ * routes it to our `CodeBlock` like every other fence, which is the whole
+ * point of having one code block in the transcript.
+ */
+function remarkTagUntaggedCode() {
+  return (tree: MdastNode) => {
+    const walk = (node: MdastNode) => {
+      if (node.type === 'code' && !node.lang) {
+        node.lang = 'text';
+      }
+      if (node.children) {
+        for (const child of node.children) walk(child);
+      }
+    };
+    walk(tree);
+  };
+}
+
+// `remarkPlugins` replaces Streamdown's defaults rather than extending
+// them, so the defaults have to be re-listed explicitly.
+const streamdownRemarkPlugins = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkTagUntaggedCode,
 ];
 
 const streamdownPlugins = { cjk, code, math, mermaid, renderers: streamdownRenderers };
@@ -30,6 +63,7 @@ export default function MessageResponseContent({ className, ...props }: MessageR
       )}
       controls={streamdownControls}
       plugins={streamdownPlugins}
+      remarkPlugins={streamdownRemarkPlugins}
       {...props}
     />
   );

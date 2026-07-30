@@ -12,4 +12,6 @@ export type DraftStateLike = {
   reasoningTokens?: number;
   latencyMs?: number;
   startedAt: string;
+  /** Transient status for the attempt in flight; cleared by the next token. */
+  notice?: { code: string; message: string; level: 'info' | 'warning' } | null;
 };

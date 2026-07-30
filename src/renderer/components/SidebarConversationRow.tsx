@@ -1,101 +1,72 @@
-import { BrushSpinner } from "@/components/ui/brush-spinner"
+import { BrushSpinner } from '@/components/ui/brush-spinner';
+
+import { cn } from '../lib/utils';
 
 type SidebarConversationRowProps = {
-  isActive: boolean;
-  isCollapsed: boolean;
   isRunning: boolean;
   primaryLabel: string;
-  secondaryLabel: string | null;
   timestampLabel: string | null;
   jumpLabel?: string | null;
   showJumpHint?: boolean;
-  status: 'idle' | 'streaming' | 'error' | 'aborted';
-  hideTimestamp?: boolean;
 };
 
-function getCollapsedGlyph(label: string) {
-  const match = label.trim().match(/[A-Za-z0-9]/);
-  return (match?.[0] ?? '•').toUpperCase();
-}
-
+/**
+ * Single-line conversation row content, per the Codex reference: truncated
+ * title + a right-aligned relative time in a fixed slot.
+ *
+ * The slot never changes width and its two occupants (time, jump-hint chip)
+ * cross-fade in place, so hovering or holding a modifier moves nothing.
+ * It is omitted entirely when the row has neither — chats nested under a
+ * project drop the time, and 56px of reserved gutter on a row that will never
+ * fill it is 56px stolen from the title.
+ * The parent owns hover/active backgrounds, row height and the context menu.
+ */
 export function SidebarConversationRow({
-  isActive,
-  isCollapsed,
   isRunning,
   primaryLabel,
-  secondaryLabel,
   timestampLabel,
   jumpLabel,
   showJumpHint = false,
-  status,
-  hideTimestamp = false,
 }: SidebarConversationRowProps) {
-  if (isCollapsed) {
-    const glyph = getCollapsedGlyph(primaryLabel);
-
-    return (
-      <div className="relative flex items-center justify-center">
-        <span
-          aria-hidden="true"
-          className={`flex h-8 w-8 items-center justify-center border ui-text-size-minus-4 font-normal tracking-[0.01em] transition ${
-            isActive
-              ? 'border-[var(--border-strong)] bg-[var(--bg-active)] text-[var(--text-secondary)]'
-              : 'border-[var(--border-default)] bg-transparent text-[var(--text-muted)] group-hover:border-[var(--border-strong)] group-hover:bg-[var(--bg-hover)] group-hover:text-[var(--text-secondary)]'
-          }`}
-          title={primaryLabel}
-        >
-          {glyph}
-        </span>
-
-        {isRunning ? (
-          <BrushSpinner size={10} strokeWidth={1.5} color="rgba(255,255,255,0.5)" glowColor="rgba(255,255,255,0.15)" speed={1.5} className="absolute right-0 top-0" />
-        ) : null}
-      </div>
-    );
-  }
+  const hasTrailingSlot = timestampLabel != null || jumpLabel != null;
 
   return (
     <>
       {isRunning ? (
-        <BrushSpinner size={12} strokeWidth={1.5} color="rgba(255,255,255,0.5)" glowColor="rgba(255,255,255,0.15)" speed={1.5} />
+        <BrushSpinner size={12} strokeWidth={1.5} speed={1.5} className="mr-2 shrink-0" />
       ) : null}
 
-      <div className="min-w-0 flex-1">
-        <div className="truncate ui-text-size-minus-2 font-normal leading-[18px] text-[var(--text-secondary)]" title={primaryLabel}>
-          {primaryLabel}
-        </div>
-        {secondaryLabel ? (
-          <div
-            className={`truncate pt-0.5 ui-text-size-minus-4 leading-4 ${
-              status === 'streaming'
-                ? 'animate-pulse text-[var(--text-tertiary)]'
-                : status === 'error'
-                  ? 'text-[var(--text-tertiary)]'
-                  : 'text-[var(--text-faint)]'
-            }`}
-            title={secondaryLabel}
-          >
-            {secondaryLabel}
-          </div>
-        ) : null}
-      </div>
+      {/* The raw title, un-clipped, so the native tooltip is worth reading. */}
+      <span className="min-w-0 flex-1 truncate text-left text-md" title={primaryLabel}>
+        {primaryLabel}
+      </span>
 
-      <div className="relative ml-2 h-4 w-5 shrink-0 self-start">
-        {timestampLabel ? (
-          <span
-            className={`absolute inset-0 text-right ui-text-size-minus-5 font-normal leading-4 tabular-nums text-[var(--text-faint)] transition-opacity group-hover:opacity-0 ${
-              hideTimestamp || showJumpHint ? 'opacity-0' : ''
-            }`}
-          >
-            {timestampLabel}
-          </span>
-        ) : null}
-        {showJumpHint && jumpLabel ? (
-          <span className="absolute right-0 top-0 inline-flex h-5 items-center border border-[var(--border-default)] bg-[var(--bg-hover)] px-1.5 font-mono ui-text-size-minus-5 leading-none text-[var(--text-tertiary)]">
-            {jumpLabel}
-          </span>
-        ) : null}
-      </div>
+      {hasTrailingSlot ? (
+        <span className="relative ml-2 flex h-5 w-14 shrink-0 items-center justify-end overflow-hidden">
+          {timestampLabel ? (
+            <span
+              className={cn(
+                'absolute inset-0 flex items-center justify-end whitespace-nowrap text-sm font-normal tabular-nums text-text-faint transition-opacity duration-150',
+                showJumpHint && jumpLabel ? 'opacity-0' : 'opacity-100'
+              )}
+            >
+              {timestampLabel}
+            </span>
+          ) : null}
+
+          {jumpLabel ? (
+            <span
+              aria-hidden={!showJumpHint}
+              className={cn(
+                'pointer-events-none absolute right-0 inline-flex h-5 items-center rounded-sm bg-bg-hover px-1.5 font-mono text-3xs leading-none text-text-tertiary transition-opacity duration-150',
+                showJumpHint ? 'opacity-100' : 'opacity-0'
+              )}
+            >
+              {jumpLabel}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </>
   );
 }

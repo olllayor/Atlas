@@ -30,8 +30,15 @@
   --text-primary: #ffffff;
   --text-secondary: #cbd5e1;
   --text-tertiary: #94a3b8;
-  --text-muted: #64748b;
-  --text-faint: #475569;
+  /*
+   * Contrast on --bg-base (#07080b). --text-muted backs
+   * `text-muted-foreground` (placeholders, dialog descriptions, menu
+   * shortcuts), so it must clear WCAG AA 4.5:1; it was #64748b = 4.20:1.
+   * --text-faint was #475569 = 2.64:1, illegible wherever it carried real
+   * text. The whole scale moved up one step.
+   */
+  --text-muted: #7d8b9e; /* 5.78:1 */
+  --text-faint: #6b7a90; /* 4.59:1 */
   --text-inverse: #000000;
 
   /* Semantic */
@@ -54,6 +61,10 @@
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
   --accent-text: #ffffff;
+  /* Part of the theme contract: every theme owes a tinted accent surface
+     and a focus ring matched to its own accent. */
+  --accent-surface: rgba(59, 130, 246, 0.14);
+  --ring: rgba(59, 130, 246, 0.7);
 
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);

@@ -39,7 +39,8 @@ test('parseDiscoveredModels reads real capabilities from the Anthropic catalog',
         max_tokens: 64_000,
         capabilities: {
           image_input: { supported: true },
-          pdf_input: { supported: true }
+          pdf_input: { supported: true },
+          thinking: { supported: true }
         }
       }
     ]
@@ -53,8 +54,16 @@ test('parseDiscoveredModels reads real capabilities from the Anthropic catalog',
     maxOutputTokens: 64_000,
     supportsVision: true,
     supportsDocumentInput: true,
+    supportsReasoning: true,
     detailed: true
   });
+
+  // Capability metadata that omits thinking is a statement that it is absent —
+  // unlike a bare OpenAI id list, where nothing at all can be inferred.
+  const [noThinking] = parseDiscoveredModels('anthropic-messages', {
+    data: [{ id: 'claude-haiku-3', capabilities: { image_input: { supported: false } } }]
+  });
+  assert.equal(noThinking?.supportsReasoning, false);
 });
 
 test('parseDiscoveredModels treats zeroed Anthropic limits as unknown', () => {

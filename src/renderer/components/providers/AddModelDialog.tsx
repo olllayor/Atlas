@@ -1,8 +1,19 @@
-import { Cross2Icon } from '@radix-ui/react-icons';
 import { useEffect, useState } from 'react';
+import type { FormEvent } from 'react';
 
 import type { CustomProviderModel, CustomProviderModelInput } from '../../../shared/customProviders';
 import { DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW } from '../../../shared/customProviders';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '../ui/dialog';
+import type { CapabilityValue } from './CapabilityControl';
+import { CapabilityControl } from './CapabilityControl';
+import { fieldInputClass, fieldLabelClass, InlineError } from './formPrimitives';
 
 type AddModelDialogProps = {
   open: boolean;
@@ -11,6 +22,18 @@ type AddModelDialogProps = {
   existingModelIds: string[];
   onCancel: () => void;
   onSave: (model: CustomProviderModelInput) => void;
+};
+
+/**
+ * Reasoning and temperature stay optimistic and unasked-for: both are cheap to
+ * get wrong (a rejected parameter, not a rejected turn) and neither has a
+ * learning path, so a switch for them would be a question with no good answer.
+ * Images, documents and tools are the ones that fail a whole send, and all
+ * three are now editable below.
+ */
+const UNASKED_CAPABILITIES = {
+  supportsReasoning: true,
+  supportsTemperature: true
 };
 
 export function AddModelDialog({
@@ -22,6 +45,9 @@ export function AddModelDialog({
 }: AddModelDialogProps) {
   const [modelId, setModelId] = useState('');
   const [contextWindow, setContextWindow] = useState(String(DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW));
+  const [supportsVision, setSupportsVision] = useState<CapabilityValue>(null);
+  const [supportsDocumentInput, setSupportsDocumentInput] = useState<CapabilityValue>(null);
+  const [supportsTools, setSupportsTools] = useState<CapabilityValue>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Reset whenever the dialog opens so a cancelled edit does not leak forward.
@@ -31,33 +57,19 @@ export function AddModelDialog({
     }
 
     setModelId(initialModel?.id ?? '');
-    setContextWindow(
-      String(initialModel?.contextWindow ?? DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW)
-    );
+    setContextWindow(String(initialModel?.contextWindow ?? DEFAULT_CUSTOM_MODEL_CONTEXT_WINDOW));
+    // `?? null` rather than a default of `true`: an existing model's stored
+    // answer — including a `false` learned from a provider refusal — is the
+    // thing being edited, and it must survive being looked at.
+    setSupportsVision(initialModel?.supportsVision ?? null);
+    setSupportsDocumentInput(initialModel?.supportsDocumentInput ?? null);
+    setSupportsTools(initialModel?.supportsTools ?? null);
     setError(null);
   }, [initialModel, open]);
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onCancel, open]);
-
-  if (!open) {
-    return null;
-  }
-
-  const handleSave = () => {
     const trimmed = modelId.trim();
     if (!trimmed) {
       setError('Enter the model ID exactly as the provider expects it.');
@@ -78,83 +90,102 @@ export function AddModelDialog({
 
     onSave({
       ...initialModel,
+      ...UNASKED_CAPABILITIES,
       id: trimmed,
       label: initialModel?.label && initialModel.id === trimmed ? initialModel.label : trimmed,
-      contextWindow: contextWindow.trim() ? Math.floor(parsedContext) : null
+      contextWindow: contextWindow.trim() ? Math.floor(parsedContext) : null,
+      maxOutputTokens: initialModel?.maxOutputTokens ?? null,
+      supportsVision,
+      supportsDocumentInput,
+      supportsTools
     });
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6"
-      role="presentation"
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={initialModel ? 'Edit model' : 'Add model'}
-        className="w-full max-w-[520px] border border-border-default bg-bg-overlay p-6 shadow-elevated"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-[17px] font-normal text-text-primary">
-            {initialModel ? 'Edit model' : 'Add model'}
-          </h2>
-          <button
-            type="button"
-            onClick={onCancel}
-            aria-label="Close"
-            className="inline-flex h-7 w-7 items-center justify-center text-text-tertiary transition hover:text-text-primary"
-          >
-            <Cross2Icon className="h-4 w-4" />
-          </button>
-        </div>
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
+      <DialogContent className="sm:max-w-[540px]">
+        <DialogHeader>
+          <DialogTitle>{initialModel ? 'Edit model' : 'Add model'}</DialogTitle>
+          <DialogDescription>
+            Enter the model ID exactly as the provider expects it.
+          </DialogDescription>
+        </DialogHeader>
 
-        <label className="mt-6 block text-[13px] text-text-tertiary" htmlFor="custom-model-id">
-          Model ID
-        </label>
-        <input
-          id="custom-model-id"
-          value={modelId}
-          onChange={(event) => setModelId(event.target.value)}
-          placeholder="Model ID"
-          autoFocus
-          spellCheck={false}
-          autoComplete="off"
-          className="mt-2 h-11 w-full border border-border-default bg-bg-subtle px-3 font-mono text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
-        />
+        <form onSubmit={handleSubmit} className="grid gap-4">
+          <div>
+            <label className={fieldLabelClass} htmlFor="custom-model-id">
+              Model ID
+            </label>
+            <input
+              id="custom-model-id"
+              value={modelId}
+              onChange={(event) => setModelId(event.target.value)}
+              placeholder="deepseek-chat"
+              autoFocus
+              spellCheck={false}
+              autoComplete="off"
+              className={`${fieldInputClass} mt-2 font-mono`}
+            />
+          </div>
 
-        <label className="mt-5 block text-[13px] text-text-tertiary" htmlFor="custom-model-context">
-          Context window
-        </label>
-        <input
-          id="custom-model-context"
-          value={contextWindow}
-          inputMode="numeric"
-          onChange={(event) => setContextWindow(event.target.value)}
-          className="mt-2 h-11 w-full border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
-        />
+          <div>
+            <label className={fieldLabelClass} htmlFor="custom-model-context">
+              Context window
+            </label>
+            <input
+              id="custom-model-context"
+              value={contextWindow}
+              inputMode="numeric"
+              onChange={(event) => setContextWindow(event.target.value)}
+              placeholder="128000"
+              className={`${fieldInputClass} mt-2 tabular-nums`}
+            />
+          </div>
 
-        {error ? <p className="mt-3 text-[12px] text-text-tertiary">{error}</p> : null}
+          <fieldset className="grid gap-3.5">
+            <legend className={`${fieldLabelClass} mb-1`}>Capabilities</legend>
+            <CapabilityControl
+              id="custom-model-vision"
+              label="Images"
+              hint="On Auto, images are attempted and the answer is remembered the first time the provider refuses one."
+              value={supportsVision}
+              onChange={setSupportsVision}
+            />
+            <CapabilityControl
+              id="custom-model-documents"
+              label="Documents"
+              hint="PDFs and Office files. Text files are sent as prompt text and never need this."
+              value={supportsDocumentInput}
+              onChange={setSupportsDocumentInput}
+            />
+            <CapabilityControl
+              id="custom-model-tools"
+              label="Tools"
+              hint="Web search, shell and file tools. Set to No for a model that answers tool-carrying requests with an error."
+              value={supportsTools}
+              onChange={setSupportsTools}
+            />
+          </fieldset>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex h-9 items-center border border-border-default bg-bg-subtle px-4 text-[12.5px] text-text-primary transition hover:bg-bg-hover"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            className="inline-flex h-9 items-center bg-bg-button px-4 text-[12.5px] text-text-inverse transition hover:bg-bg-button-hover"
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+          {error ? <InlineError>{error}</InlineError> : null}
+
+          <DialogFooter className="mt-1">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border-default bg-bg-subtle px-4 text-xs text-text-primary transition hover:bg-bg-hover"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="inline-flex h-9 items-center justify-center rounded-md bg-bg-button px-4 text-xs text-text-inverse transition hover:bg-bg-button-hover"
+            >
+              {initialModel ? 'Save changes' : 'Add model'}
+            </button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

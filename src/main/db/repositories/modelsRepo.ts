@@ -5,6 +5,12 @@ import type {
   ProviderId
 } from '../../../shared/contracts';
 import type { SqliteDatabase } from '../client';
+import {
+  fromTriState,
+  parseReasoningEfforts,
+  serializeReasoningEfforts,
+  toTriState
+} from './customProvidersRepo';
 
 type ModelRow = {
   model_id: string;
@@ -12,15 +18,17 @@ type ModelRow = {
   label: string;
   context_window: number | null;
   is_free: number;
-  supports_vision: number;
-  supports_document_input: number;
-  supports_tools: number;
+  /** NULL when no source has described the modality. */
+  supports_vision: number | null;
+  supports_document_input: number | null;
+  supports_tools: number | null;
   archived: number;
   last_synced_at: string;
   last_seen_free_at: string | null;
   max_output_tokens: number | null;
   supports_temperature: number;
   supports_reasoning: number;
+  reasoning_efforts: string | null;
 };
 
 const MODEL_COLUMNS = `
@@ -37,7 +45,8 @@ const MODEL_COLUMNS = `
   last_seen_free_at,
   max_output_tokens,
   supports_temperature,
-  supports_reasoning
+  supports_reasoning,
+  reasoning_efforts
 `;
 
 function toSummary(row: ModelRow): ModelSummary {
@@ -47,15 +56,16 @@ function toSummary(row: ModelRow): ModelSummary {
     label: row.label,
     contextWindow: row.context_window,
     isFree: Boolean(row.is_free),
-    supportsVision: Boolean(row.supports_vision),
-    supportsDocumentInput: Boolean(row.supports_document_input),
-    supportsTools: Boolean(row.supports_tools),
+    supportsVision: toTriState(row.supports_vision),
+    supportsDocumentInput: toTriState(row.supports_document_input),
+    supportsTools: toTriState(row.supports_tools),
     archived: Boolean(row.archived),
     lastSyncedAt: row.last_synced_at,
     lastSeenFreeAt: row.last_seen_free_at,
     maxOutputTokens: row.max_output_tokens,
     supportsTemperature: Boolean(row.supports_temperature),
-    supportsReasoning: Boolean(row.supports_reasoning)
+    supportsReasoning: Boolean(row.supports_reasoning),
+    reasoningEfforts: parseReasoningEfforts(row.reasoning_efforts)
   };
 }
 
@@ -95,6 +105,7 @@ export class ModelsRepo {
       maxOutputTokens: model.maxOutputTokens ?? null,
       supportsTemperature: model.supportsTemperature ?? true,
       supportsReasoning: model.supportsReasoning ?? false,
+      reasoningEfforts: model.reasoningEfforts ?? null,
       supportsTools: model.supportsTools
     };
   }
@@ -178,7 +189,8 @@ export class ModelsRepo {
           last_seen_free_at,
           max_output_tokens,
           supports_temperature,
-          supports_reasoning
+          supports_reasoning,
+          reasoning_efforts
         )
         VALUES (
           @modelId,
@@ -194,7 +206,8 @@ export class ModelsRepo {
           @lastSeenFreeAt,
           @maxOutputTokens,
           @supportsTemperature,
-          @supportsReasoning
+          @supportsReasoning,
+          @reasoningEfforts
         )
         ON CONFLICT(model_id) DO UPDATE SET
           provider_id = excluded.provider_id,
@@ -209,7 +222,8 @@ export class ModelsRepo {
           last_seen_free_at = excluded.last_seen_free_at,
           max_output_tokens = excluded.max_output_tokens,
           supports_temperature = excluded.supports_temperature,
-          supports_reasoning = excluded.supports_reasoning
+          supports_reasoning = excluded.supports_reasoning,
+          reasoning_efforts = excluded.reasoning_efforts
       `
     );
 
@@ -239,15 +253,16 @@ export class ModelsRepo {
           label: model.label,
           contextWindow: model.contextWindow,
           isFree: model.isFree ? 1 : 0,
-          supportsVision: model.supportsVision ? 1 : 0,
-          supportsDocumentInput: model.supportsDocumentInput ? 1 : 0,
-          supportsTools: model.supportsTools ? 1 : 0,
+          supportsVision: fromTriState(model.supportsVision),
+          supportsDocumentInput: fromTriState(model.supportsDocumentInput),
+          supportsTools: fromTriState(model.supportsTools),
           archived: model.archived ? 1 : 0,
           lastSyncedAt: now,
           lastSeenFreeAt: model.isFree ? now : previousLastSeenFreeAt,
           maxOutputTokens: model.maxOutputTokens ?? null,
           supportsTemperature: (model.supportsTemperature ?? true) ? 1 : 0,
-          supportsReasoning: (model.supportsReasoning ?? false) ? 1 : 0
+          supportsReasoning: (model.supportsReasoning ?? false) ? 1 : 0,
+          reasoningEfforts: serializeReasoningEfforts(model.reasoningEfforts)
         });
       }
     });

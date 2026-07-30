@@ -68,6 +68,9 @@ test('ChatEngine start persists the user turn before async runtime execution beg
         return 'user-message-1';
       },
       updateMessage: () => undefined,
+      // No title state means "no such conversation", so these tests opt out
+      // of automatic naming entirely.
+      getTitleState: () => null,
     } as never,
     {
       getById: () => ({ supportsTools: false }),
@@ -108,6 +111,9 @@ test('ChatEngine emits sequenced runtime sync events before meta and done on suc
       setDefaults: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
+      // No title state means "no such conversation", so these tests opt out
+      // of automatic naming entirely.
+      getTitleState: () => null,
     } as never,
     {
       getById: () => ({ supportsTools: false }),
@@ -160,6 +166,9 @@ test('ChatEngine normalizes runtime errors and preserves runtime sync behavior',
       setDefaults: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
+      // No title state means "no such conversation", so these tests opt out
+      // of automatic naming entirely.
+      getTitleState: () => null,
     } as never,
     {
       getById: () => ({ supportsTools: false }),

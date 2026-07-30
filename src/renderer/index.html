@@ -2,15 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      `blob:` in connect-src is load-bearing, not housekeeping: a staged
+      attachment is held as a blob URL and has to be read back with fetch() to
+      become the data URL the main process stores. blob: is not covered by
+      'self', so without it every send carrying a file failed in the main
+      process with "Attachments must be sent as data URLs" — the conversion had
+      been silently blocked one layer up.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://*.posthog.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://models.dev https://*.posthog.com; connect-src 'self' http://localhost:* ws://localhost:* https://*.posthog.com https://us-assets.i.posthog.com https://us.i.posthog.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' atlas-site:;"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://*.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: atlas-attachment: https://models.dev https://*.posthog.com; connect-src 'self' blob: data: atlas-attachment: http://localhost:* ws://localhost:* https://*.posthog.com https://us-assets.i.posthog.com https://us.i.posthog.com; font-src 'self'; frame-src 'self' atlas-site:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Atlas</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet" />
+    <!--
+      The Geist Mono webfont link and its two Google Fonts preconnects used
+      to live here. Nothing in the app ever referenced Geist: every theme's
+      --font-mono-system falls through to Menlo/SF Mono. The two
+      fonts.googleapis.com / fonts.gstatic.com CSP allowances went with it,
+      since no remaining stylesheet or font request targets either host.
+    -->
   </head>
   <body>
     <div id="root"></div>

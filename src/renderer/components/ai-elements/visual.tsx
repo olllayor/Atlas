@@ -8,6 +8,8 @@ import { chartJs, d3Js } from '../../visual/bundles';
 import { detectDiagramSpec, InteractiveDiagram } from './interactive-diagram';
 import { detectRiveContent, RiveVisual } from './rive-visual';
 import { useClipboard } from '../../hooks/useClipboard';
+import { SlotLabel } from '../ui/slot-label';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { notify } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 
@@ -50,7 +52,14 @@ class VisualUiErrorBoundary extends Component<{ children: ReactNode }, { error: 
   }
 }
 
-function readThemeTokens(): VisualThemeTokens {
+/**
+ * The theme contract handed to sandboxed visual documents.
+ *
+ * Exported so the gallery's preview can build its `srcdoc` the same way the
+ * transcript does — a saved visual rendered without these tokens comes back
+ * unthemed (black text on transparent) and looks broken.
+ */
+export function readThemeTokens(): VisualThemeTokens {
   if (typeof window === 'undefined') {
     return {
       colorScheme: 'dark',
@@ -89,9 +98,18 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
   const [height, setHeight] = useState(220);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { copied, copy } = useClipboard();
-  const containerRef = useRef<HTMLDivElement>(null);
   const heightRef = useRef(120);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === 'undefined' ? 800 : window.innerHeight
+  );
+
+  useEffect(() => {
+    const onResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const trimmedContent = content.trim();
   const isStreaming = state === 'streaming';
@@ -175,6 +193,10 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
   useEffect(() => {
     return () => {
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      // The "Saved" flash timer used to be started with no handle kept, so
+      // unmounting mid-flash left it to fire `setIsSaved` on a dead
+      // component.
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     };
   }, []);
 
@@ -212,50 +234,86 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
         visualType,
       });
       setIsSaved(true);
-      setTimeout(() => setIsSaved(false), 2000);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setIsSaved(false), 2000);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Unknown error';
       console.error('Failed to save visual:', e);
-      notify({ tone: 'error', title: 'Could not save visual', description: message });
+      notify({ tone: 'error', title: 'Could not save the visual', description: message });
     } finally {
       setIsSaving(false);
     }
   }, [trimmedContent, isSaving, isDiagram, isRive, title]);
 
+  // The iframe is clipped at 80vh with `overflow: hidden`, which silently
+  // eats the bottom of any taller visual. Knowing when that happens lets us
+  // fade the cut edge and promote the escape hatch instead of pretending the
+  // visual simply ends there.
+  const maxVisualHeight = Math.round(viewportHeight * 0.8);
+  const isClipped = !isStreaming && !errorMessage && !isEmptyComplete && !isDiagram && !isRive
+    ? Math.max(height, 120) > maxVisualHeight
+    : false;
+
   return (
     <VisualUiErrorBoundary key={visualId}>
-      <div ref={containerRef} className={cn('group relative -mx-6 my-4 w-[calc(100%+3rem)] sm:-mx-7 sm:w-[calc(100%+3.5rem)] lg:-mx-7 lg:w-[calc(100%+3.5rem)] xl:-mx-8 xl:w-[calc(100%+4rem)]', className)}>
+      <div className={cn('group relative -mx-6 my-4 w-[calc(100%+3rem)] sm:-mx-7 sm:w-[calc(100%+3.5rem)] lg:-mx-7 lg:w-[calc(100%+3.5rem)] xl:-mx-8 xl:w-[calc(100%+4rem)]', className)}>
         {!isStreaming && !errorMessage && !isEmptyComplete && (
-          <div className="absolute right-3 top-3 z-10 flex items-center gap-0.5 rounded-lg border border-border/30 bg-bg-surface/90 px-1.5 py-1 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <button
-              type="button"
-              onClick={() => void saveVisual()}
-              disabled={isStreaming}
-              className={cn(
-                'inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:text-text-primary',
-                isSaved && 'text-accent'
-              )}
-              title="Save to gallery"
-            >
-              <Bookmark className={cn('h-3.5 w-3.5', isSaved && 'fill-accent')} />
-              {isSaved ? 'Saved' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void copySource()}
-              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:text-text-primary"
-              title="Copy source"
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => void openInWindow()}
-              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:text-text-primary"
-              title="Expand"
-            >
-              <Expand className="h-3.5 w-3.5" />
-            </button>
+          <div
+            className={cn(
+              'absolute right-3 top-3 z-10 flex items-center gap-0.5 rounded-lg border border-border/30 bg-bg-surface/90 px-1.5 py-1 backdrop-blur-sm transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none',
+              // A clipped visual must always advertise the way to see the
+              // rest of it — a zero-opacity escape hatch is not an escape
+              // hatch.
+              isClipped ? 'opacity-100' : 'opacity-0'
+            )}
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void saveVisual()}
+                  disabled={isStreaming}
+                  className={cn(
+                    'inline-flex h-7 items-center gap-1 rounded-md px-2 text-2xs font-medium text-text-muted transition hover:text-text-primary',
+                    isSaved && 'text-accent'
+                  )}
+                >
+                  <Bookmark className={cn('h-3.5 w-3.5', isSaved && 'fill-accent')} />
+                  {/* Fixed width: "Save" → "Saved" used to reflow the whole toolbar. */}
+                  <span className="inline-block min-w-[34px] text-left">
+                    <SlotLabel text={isSaved ? 'Saved' : 'Save'} />
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Save to gallery</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void copySource()}
+                  aria-label="Copy source"
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-2xs font-medium text-text-muted transition hover:text-text-primary"
+                >
+                  {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{copied ? 'Copied' : 'Copy source'}</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void openInWindow()}
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-2xs font-medium text-text-muted transition hover:text-text-primary"
+                  aria-label="Open full size"
+                >
+                  <Expand className="h-3.5 w-3.5" />
+                  {isClipped && <span>Open full size</span>}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Open full size</TooltipContent>
+            </Tooltip>
           </div>
         )}
 
@@ -288,10 +346,14 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
             </div>
           </div>
         ) : isDiagram ? (
+          // `hideChrome` — this block already floats its own save/copy/expand
+          // toolbar, and the diagram's header used to sit underneath it with
+          // a second copy button.
           <InteractiveDiagram
             content={trimmedContent}
             title={title}
-            className="border-0 bg-transparent"
+            hideChrome
+            className="my-0 border-0 bg-transparent"
           />
         ) : isRive ? (
           <RiveVisual
@@ -300,20 +362,30 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
             className="border-0 bg-transparent"
           />
         ) : (
-          <iframe
-            srcDoc={srcdoc}
-            sandbox="allow-scripts"
-            style={{
-              width: '100%',
-              height: Math.max(height, 120),
-              maxHeight: '80vh',
-              border: 'none',
-              display: 'block',
-              background: 'transparent',
-              overflow: 'hidden',
-            }}
-            title={title?.trim() || 'visualization'}
-          />
+          <div className="relative">
+            <iframe
+              srcDoc={srcdoc}
+              sandbox="allow-scripts"
+              style={{
+                width: '100%',
+                height: Math.max(height, 120),
+                maxHeight: `${maxVisualHeight}px`,
+                border: 'none',
+                display: 'block',
+                background: 'transparent',
+                overflow: 'hidden',
+              }}
+              title={title?.trim() || 'visualization'}
+            />
+            {isClipped && (
+              // A soft cut edge, so a truncated visual reads as truncated
+              // rather than as one that happens to end abruptly.
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-b from-transparent to-bg-base"
+              />
+            )}
+          </div>
         )}
       </div>
     </VisualUiErrorBoundary>

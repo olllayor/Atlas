@@ -41,6 +41,13 @@ export type DraftState = {
   reasoningTokens?: number;
   latencyMs?: number;
   startedAt: string;
+  /**
+   * Transient status for the attempt in flight — a retry, a compaction —
+   * cleared by the next token. Not part of the transcript: it describes how the
+   * answer is being produced, not what the answer is, and a thread reopened
+   * tomorrow must not still be announcing a retry that then succeeded.
+   */
+  notice?: { code: string; message: string; level: 'info' | 'warning' } | null;
 };
 
 export type RuntimeEventFanOut = {
@@ -276,6 +283,9 @@ export function applyStreamingEvent(
   if (draft) {
     nextDrafts[conversationId] = {
       ...draft,
+      // Progress retires the notice: whatever it was warning about is over the
+      // moment tokens arrive.
+      notice: null,
       parts: applyStreamEventToParts(draft.parts, event)
     };
     changed = true;
@@ -310,6 +320,32 @@ export function applyStreamingEvent(
   return {
     draftsByConversation: nextDrafts,
     conversationDetails: nextDetails
+  };
+}
+
+/**
+ * Park a notice on the draft so the transcript can say what is happening
+ * between attempts. A notice for a conversation with no live draft is dropped:
+ * there is nothing in flight for it to describe.
+ */
+export function applyNoticeEvent(
+  state: RuntimeEventFanOut,
+  conversationId: string,
+  event: Extract<StreamEvent, { type: 'notice' }>,
+): RuntimeEventFanOutPatch | null {
+  const draft = state.draftsByConversation[conversationId];
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    draftsByConversation: {
+      ...state.draftsByConversation,
+      [conversationId]: {
+        ...draft,
+        notice: { code: event.code, message: event.message, level: event.level },
+      },
+    },
   };
 }
 

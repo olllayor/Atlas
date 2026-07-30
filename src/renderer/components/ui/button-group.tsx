@@ -10,9 +10,9 @@ const buttonGroupVariants = cva(
     variants: {
       orientation: {
         horizontal:
-          "[&>*:not(:first-child)]:border-l-0 [&>*:not(:last-child)]:border-r-0",
+          "[&>*]:rounded-none [&>*:first-child]:rounded-l-md [&>*:last-child]:rounded-r-md [&>*:not(:first-child)]:border-l-0 [&>*:not(:last-child)]:border-r-0",
         vertical:
-          "flex-col [&>*:not(:first-child)]:border-t-0 [&>*:not(:last-child)]:border-b-0",
+          "flex-col [&>*]:rounded-none [&>*:first-child]:rounded-t-md [&>*:last-child]:rounded-b-md [&>*:not(:first-child)]:border-t-0 [&>*:not(:last-child)]:border-b-0",
       },
     },
     defaultVariants: {

@@ -41,7 +41,8 @@ export class ToolExecutionTracker {
   ) {}
 
   handleEvent(event: StreamEvent) {
-    if (event.requestId !== this.context.requestId) {
+    // `conversation-title` is the one event without a request lifecycle.
+    if (!('requestId' in event) || event.requestId !== this.context.requestId) {
       return;
     }
 
@@ -81,8 +82,12 @@ export class ToolExecutionTracker {
           requestId: this.context.requestId,
           toolName: event.toolName,
           state: event.preliminary ? 'partial' : 'completed',
-          partialOutputPreview: event.preliminary ? normalizeToolOutputPreview(event.output) : undefined,
-          finalOutputPreview: event.preliminary ? undefined : normalizeToolOutputPreview(event.output),
+          partialOutputPreview: event.preliminary
+            ? normalizeToolOutputPreview(event.output, { toolName: event.toolName })
+            : undefined,
+          finalOutputPreview: event.preliminary
+            ? undefined
+            : normalizeToolOutputPreview(event.output, { toolName: event.toolName }),
           outputJson: event.output,
           finishedAt: event.preliminary ? undefined : now,
         });

@@ -25,12 +25,17 @@ function getErrorMessage(error: unknown) {
 /** `null` selects the "add provider" form rather than an existing provider. */
 export type ProviderSelection = ProviderId | null;
 
+/** Result of a connection probe, surfaced inline instead of only as a toast. */
+export type ConnectionTestResult = { ok: boolean; message: string };
+
 type ProvidersState = {
   providers: CustomProvider[];
   selectedProviderId: ProviderSelection;
   isLoading: boolean;
   isSaving: boolean;
   isDiscovering: boolean;
+  /** Kept separate from `isDiscovering` so the two buttons never share a spinner. */
+  isTesting: boolean;
   discovered: DiscoveredModel[] | null;
   presets: ProviderPreset[];
   error: string | null;
@@ -56,8 +61,9 @@ type ProvidersState = {
     baseUrl?: string;
     apiFormat?: CustomProviderApiFormat;
     apiKey?: string;
-  }) => Promise<boolean>;
+  }) => Promise<ConnectionTestResult>;
   clearDiscovered: () => void;
+  clearError: () => void;
 };
 
 export const useProvidersStore = create<ProvidersState>((set, get) => ({
@@ -66,6 +72,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
   isLoading: false,
   isSaving: false,
   isDiscovering: false,
+  isTesting: false,
   discovered: null,
   presets: [],
   error: null,
@@ -107,12 +114,10 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       const created = await window.atlasChat.providers.create(request);
       const providers = await window.atlasChat.providers.list();
       set({ providers, isSaving: false, selectedProviderId: created.id, discovered: null });
-      notify({ tone: 'success', title: `${created.name} added.` });
+      notify({ tone: 'success', title: `${created.name} added` });
       return created;
     } catch (error) {
-      const message = getErrorMessage(error);
-      set({ isSaving: false, error: message });
-      notify({ tone: 'error', title: message });
+      set({ isSaving: false, error: getErrorMessage(error) });
       return null;
     }
   },
@@ -124,9 +129,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       const providers = await window.atlasChat.providers.list();
       set({ providers, isSaving: false });
     } catch (error) {
-      const message = getErrorMessage(error);
-      set({ isSaving: false, error: message });
-      notify({ tone: 'error', title: message });
+      set({ isSaving: false, error: getErrorMessage(error) });
     }
   },
 
@@ -137,11 +140,9 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       await window.atlasChat.providers.delete(providerId);
       const providers = await window.atlasChat.providers.list();
       set({ providers, isSaving: false, selectedProviderId: null, discovered: null });
-      notify({ tone: 'success', title: `${name} removed.` });
+      notify({ tone: 'success', title: `${name} removed` });
     } catch (error) {
-      const message = getErrorMessage(error);
-      set({ isSaving: false, error: message });
-      notify({ tone: 'error', title: message });
+      set({ isSaving: false, error: getErrorMessage(error) });
     }
   },
 
@@ -152,9 +153,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       const providers = await window.atlasChat.providers.list();
       set({ providers, isSaving: false });
     } catch (error) {
-      const message = getErrorMessage(error);
-      set({ isSaving: false, error: message });
-      notify({ tone: 'error', title: message });
+      set({ isSaving: false, error: getErrorMessage(error) });
     }
   },
 
@@ -165,7 +164,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
     }
 
     if (provider.models.some((entry) => entry.id === model.id.trim())) {
-      notify({ tone: 'error', title: 'That model is already in the list.' });
+      notify({ tone: 'error', title: 'That model is already in the list' });
       return;
     }
 
@@ -200,35 +199,35 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
     set({ isDiscovering: true, error: null });
     try {
       const discovered = await window.atlasChat.providers.discoverModels(request);
-      set({ isDiscovering: false, discovered });
-
-      if (discovered.length === 0) {
-        notify({ tone: 'error', title: 'The endpoint returned no models. Add them by hand.' });
-      }
+      set({
+        isDiscovering: false,
+        discovered,
+        // Surfaced inline by the caller rather than as a toast.
+        error: discovered.length === 0 ? 'The endpoint returned no models. Add them by hand.' : null
+      });
 
       return discovered;
     } catch (error) {
-      const message = getErrorMessage(error);
-      set({ isDiscovering: false, error: message });
-      notify({ tone: 'error', title: message });
+      set({ isDiscovering: false, error: getErrorMessage(error) });
       return [];
     }
   },
 
   testConnection: async (request) => {
-    set({ isDiscovering: true, error: null });
+    set({ isTesting: true, error: null });
     try {
       await window.atlasChat.providers.testConnection(request);
-      set({ isDiscovering: false });
-      notify({ tone: 'success', title: 'Endpoint reachable and key accepted.' });
-      return true;
+      set({ isTesting: false });
+      return { ok: true, message: 'Connected' };
     } catch (error) {
       const message = getErrorMessage(error);
-      set({ isDiscovering: false, error: message });
-      notify({ tone: 'error', title: message });
-      return false;
+      // The caller renders this inline; a toast on top of that is noise.
+      set({ isTesting: false });
+      return { ok: false, message };
     }
   },
 
-  clearDiscovered: () => set({ discovered: null })
+  clearDiscovered: () => set({ discovered: null }),
+
+  clearError: () => set({ error: null })
 }));

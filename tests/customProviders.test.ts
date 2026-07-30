@@ -55,7 +55,8 @@ test('normalizeModelInputs defaults capabilities and drops duplicates', () => {
     ['gpt-oss', 'vision-model']
   );
   // Tools default on: most endpoints support them and the UI can toggle it off.
-  assert.equal(models[0]?.supportsTools, true);
+  // Unknown, not claimed: a tool refusal is now recorded the first time it happens.
+  assert.equal(models[0]?.supportsTools, null);
   assert.equal(models[0]?.supportsTemperature, true);
   assert.equal(models[0]?.label, 'gpt-oss');
   assert.equal(models[0]?.contextWindow, null);

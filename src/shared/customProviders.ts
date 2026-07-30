@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './chatParameters';
+import { isReasoningEffort } from './chatParameters';
 import type { ProviderId } from './contracts';
 
 /**
@@ -51,11 +53,18 @@ export type CustomProviderModel = {
   isFree: boolean;
   contextWindow: number | null;
   maxOutputTokens: number | null;
-  supportsTools: boolean;
-  supportsVision: boolean;
-  supportsDocumentInput: boolean;
+  /** Three-valued, like the modalities below; `null` means nobody has said. */
+  supportsTools: boolean | null;
+  /** Three-valued input modality support; `null` means nobody has said. */
+  supportsVision: boolean | null;
+  supportsDocumentInput: boolean | null;
   supportsReasoning: boolean;
   supportsTemperature: boolean;
+  /**
+   * Effort levels the model accepts, from models.dev. `null` means unknown,
+   * in which case the UI offers its default ladder.
+   */
+  reasoningEfforts: ReasoningEffort[] | null;
 };
 
 export type CustomProvider = {
@@ -77,11 +86,12 @@ export type CustomProviderModelInput = {
   isFree?: boolean;
   contextWindow?: number | null;
   maxOutputTokens?: number | null;
-  supportsTools?: boolean;
-  supportsVision?: boolean;
-  supportsDocumentInput?: boolean;
+  supportsTools?: boolean | null;
+  supportsVision?: boolean | null;
+  supportsDocumentInput?: boolean | null;
   supportsReasoning?: boolean;
   supportsTemperature?: boolean;
+  reasoningEfforts?: ReasoningEffort[] | null;
 };
 
 export type CreateCustomProviderRequest = {
@@ -120,11 +130,12 @@ export type DiscoveredModel = {
   label: string;
   contextWindow: number | null;
   maxOutputTokens: number | null;
-  supportsVision: boolean;
-  supportsDocumentInput: boolean;
-  supportsTools?: boolean;
+  supportsVision: boolean | null;
+  supportsDocumentInput: boolean | null;
+  supportsTools?: boolean | null;
   supportsReasoning?: boolean;
   supportsTemperature?: boolean;
+  reasoningEfforts?: ReasoningEffort[] | null;
   isFree?: boolean;
   /**
    * True when the capabilities came from the endpoint or the models.dev
@@ -239,12 +250,26 @@ export function normalizeModelInput(input: CustomProviderModelInput): CustomProv
     isFree: input.isFree ?? /[:@]free$/i.test(id),
     contextWindow,
     maxOutputTokens,
-    supportsTools: input.supportsTools ?? true,
-    supportsVision: input.supportsVision ?? false,
-    supportsDocumentInput: input.supportsDocumentInput ?? false,
-    supportsReasoning: input.supportsReasoning ?? false,
-    supportsTemperature: input.supportsTemperature ?? true
+    // Nothing in an OpenAI-compatible model list describes capabilities either,
+    // so assume everything and let the provider reject what the model can't do.
+    supportsTools: input.supportsTools ?? null,
+    // Modalities are the exception: they are recorded as unknown rather than
+    // assumed, because a rejection here is recoverable — the send fails once,
+    // the answer is written down, and the affordance disappears afterwards.
+    supportsVision: input.supportsVision ?? null,
+    supportsDocumentInput: input.supportsDocumentInput ?? null,
+    supportsReasoning: input.supportsReasoning ?? true,
+    supportsTemperature: input.supportsTemperature ?? true,
+    reasoningEfforts: normalizeReasoningEfforts(input.reasoningEfforts)
   };
+}
+
+function normalizeReasoningEfforts(value: ReasoningEffort[] | null | undefined): ReasoningEffort[] | null {
+  if (value == null) {
+    return null;
+  }
+
+  return value.filter(isReasoningEffort);
 }
 
 export function normalizeModelInputs(inputs: CustomProviderModelInput[]): CustomProviderModel[] {

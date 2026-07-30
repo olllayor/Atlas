@@ -2,20 +2,28 @@ import {
   CODE_FONT_SIZE_DEFAULT,
   CODE_FONT_SIZE_MAX,
   CODE_FONT_SIZE_MIN,
+  CONTRAST_DEFAULT,
+  CONTRAST_MAX,
+  CONTRAST_MIN,
   DEFAULT_BORDER_RADIUS,
   DEFAULT_SETTINGS_APPEARANCE,
   UI_FONT_SIZE_DEFAULT,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
+  isReduceMotionMode,
+  normalizeThemeColor,
 } from '../../../shared/contracts';
 import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
+import type { WorkspaceMode } from '../../../shared/workspaceModes';
+import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
   isReasoningEffort,
   isToolPermissionMode
 } from '../../../shared/chatParameters';
-import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ThemeMode } from '../../../shared/contracts';
+import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ReduceMotionMode, ThemeColorOverride, ThemeMode } from '../../../shared/contracts';
+import { isDesignTheme } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import type { SqliteDatabase } from '../client';
@@ -86,6 +94,21 @@ export class SettingsRepo {
     this.setJsonSetting('showFreeOnlyByDefault', value);
   }
 
+  /**
+   * The model the user last picked, so a new conversation opens on it instead of
+   * on whatever the catalog happens to sort first. Stored as an id only — it is
+   * validated against the live catalog on read, since a model can disappear when
+   * its provider is removed or disabled.
+   */
+  getLastModelId(): string | null {
+    const value = this.getJsonSetting<string | null>('chat.lastModelId', null);
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  setLastModelId(value: string) {
+    this.setJsonSetting('chat.lastModelId', value);
+  }
+
   getReasoningEffort(): ReasoningEffort {
     const value = this.getJsonSetting<ReasoningEffort>('chat.reasoningEffort', DEFAULT_REASONING_EFFORT);
     return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT;
@@ -107,6 +130,29 @@ export class SettingsRepo {
     this.setJsonSetting('chat.toolPermissionMode', value);
   }
 
+  /** Mode new conversations start in; each conversation then owns its own. */
+  getWorkspaceMode(): WorkspaceMode {
+    const value = this.getJsonSetting<WorkspaceMode>('chat.workspaceMode', DEFAULT_WORKSPACE_MODE);
+    return isWorkspaceMode(value) ? value : DEFAULT_WORKSPACE_MODE;
+  }
+
+  setWorkspaceMode(value: WorkspaceMode) {
+    this.setJsonSetting('chat.workspaceMode', value);
+  }
+
+  /**
+   * Project new conversations attach to. Stored as an id, so a project the user
+   * deleted resolves to nothing rather than to a stale path.
+   */
+  getLastProjectId(): string | null {
+    const value = this.getJsonSetting<string | null>('chat.lastProjectId', null);
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  setLastProjectId(value: string | null) {
+    this.setJsonSetting('chat.lastProjectId', value);
+  }
+
   getThemeMode(): ThemeMode {
     const value = this.getJsonSetting<ThemeMode>('themeMode', DEFAULT_SETTINGS_APPEARANCE.themeMode);
     return value === 'light' || value === 'dark' || value === 'system' ? value : DEFAULT_SETTINGS_APPEARANCE.themeMode;
@@ -118,7 +164,7 @@ export class SettingsRepo {
 
   getDesignTheme(): DesignTheme {
     const value = this.getJsonSetting<DesignTheme>('designTheme', DEFAULT_SETTINGS_APPEARANCE.designTheme);
-    return value === 'xai' || value === 'default' || value === 'cursor' ? value : DEFAULT_SETTINGS_APPEARANCE.designTheme;
+    return isDesignTheme(value) ? value : DEFAULT_SETTINGS_APPEARANCE.designTheme;
   }
 
   setDesignTheme(value: DesignTheme) {
@@ -179,6 +225,52 @@ export class SettingsRepo {
 
   setBorderRadius(value: BorderRadiusMode) {
     this.setJsonSetting('appearance.borderRadius', value);
+  }
+
+  getThemeColor(key: 'accentColor' | 'backgroundColor' | 'foregroundColor'): ThemeColorOverride {
+    return normalizeThemeColor(this.getJsonSetting<unknown>(`appearance.${key}`, null));
+  }
+
+  setThemeColor(key: 'accentColor' | 'backgroundColor' | 'foregroundColor', value: ThemeColorOverride) {
+    this.setJsonSetting(`appearance.${key}`, normalizeThemeColor(value));
+  }
+
+  getContrast() {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.contrast', CONTRAST_DEFAULT),
+      CONTRAST_MIN,
+      CONTRAST_MAX,
+      CONTRAST_DEFAULT
+    );
+  }
+
+  setContrast(value: number) {
+    this.setJsonSetting('appearance.contrast', this.clampNumber(value, CONTRAST_MIN, CONTRAST_MAX, CONTRAST_DEFAULT));
+  }
+
+  getTranslucentSidebar() {
+    return Boolean(this.getJsonSetting('appearance.translucentSidebar', DEFAULT_SETTINGS_APPEARANCE.translucentSidebar));
+  }
+
+  setTranslucentSidebar(value: boolean) {
+    this.setJsonSetting('appearance.translucentSidebar', value);
+  }
+
+  getReduceMotion(): ReduceMotionMode {
+    const value = this.getJsonSetting<unknown>('appearance.reduceMotion', DEFAULT_SETTINGS_APPEARANCE.reduceMotion);
+    return isReduceMotionMode(value) ? value : DEFAULT_SETTINGS_APPEARANCE.reduceMotion;
+  }
+
+  setReduceMotion(value: ReduceMotionMode) {
+    this.setJsonSetting('appearance.reduceMotion', isReduceMotionMode(value) ? value : DEFAULT_SETTINGS_APPEARANCE.reduceMotion);
+  }
+
+  getPointerCursors() {
+    return Boolean(this.getJsonSetting('appearance.pointerCursors', DEFAULT_SETTINGS_APPEARANCE.pointerCursors));
+  }
+
+  setPointerCursors(value: boolean) {
+    this.setJsonSetting('appearance.pointerCursors', value);
   }
 
   getKeybindings(): KeybindingRule[] {

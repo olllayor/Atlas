@@ -1,6 +1,8 @@
 import { Models } from '@opencode-ai/models';
 import type { Model, Provider, ProviderMap } from '@opencode-ai/models';
 
+import type { ReasoningEffort } from '../../../shared/chatParameters';
+import { DEFAULT_REASONING_EFFORT_MENU, isReasoningEffort, sortReasoningEfforts } from '../../../shared/chatParameters';
 import type { CustomProviderApiFormat, DiscoveredModel } from '../../../shared/customProviders';
 
 /**
@@ -36,6 +38,7 @@ export type ModelFacts = {
   supportsDocumentInput: boolean;
   supportsReasoning: boolean;
   supportsTemperature: boolean;
+  reasoningEfforts: ReasoningEffort[] | null;
 };
 
 /**
@@ -77,8 +80,75 @@ export function toModelFacts(model: Model): ModelFacts {
     supportsReasoning: model.reasoning === true,
     // Reasoning models commonly reject `temperature`; models.dev records this
     // explicitly, and an absent flag means the database has not said either way.
-    supportsTemperature: model.temperature !== false
+    supportsTemperature: model.temperature !== false,
+    reasoningEfforts: deriveReasoningEfforts(model)
   };
+}
+
+/**
+ * Every provider exposes a different reasoning control surface, and models.dev
+ * records which one: a binary toggle, a set of named effort levels, a token
+ * budget, or nothing at all. This flattens that into the effort values the UI
+ * can actually offer.
+ *
+ * Returns `null` when the database is silent. An empty `reasoning_options`
+ * array is also silence, not "no control": the same model appears with real
+ * levels under one provider and `[]` under another, so `[]` only means the
+ * entry has not been catalogued yet.
+ */
+export function deriveReasoningEfforts(model: Model): ReasoningEffort[] | null {
+  if (model.reasoning !== true) {
+    return null;
+  }
+
+  const options = model.reasoning_options;
+  if (options == null || options.length === 0) {
+    return null;
+  }
+
+  const efforts = new Set<ReasoningEffort>();
+  let hasToggle = false;
+  let hasGraded = false;
+
+  for (const option of options) {
+    if (option.type === 'toggle') {
+      hasToggle = true;
+      continue;
+    }
+
+    if (option.type === 'effort') {
+      for (const value of option.values) {
+        // `null` and `none` both mean the provider accepts an explicit opt-out.
+        if (value === null || value === 'none') {
+          efforts.add('off');
+        } else if (value !== 'default' && isReasoningEffort(value)) {
+          efforts.add(value);
+          hasGraded = true;
+        }
+      }
+      continue;
+    }
+
+    // A token budget has no named levels; the app's ladder maps onto it.
+    for (const value of DEFAULT_REASONING_EFFORT_MENU) {
+      efforts.add(value);
+    }
+    hasGraded = true;
+  }
+
+  if (hasToggle) {
+    efforts.add('off');
+    if (!hasGraded) {
+      efforts.add('on');
+    }
+  }
+
+  // Options that name no usable level (e.g. only `default`) say nothing.
+  if (efforts.size === 0) {
+    return null;
+  }
+
+  return sortReasoningEfforts(efforts);
 }
 
 function positiveOrNull(value: number | undefined) {
@@ -165,6 +235,10 @@ export class ModelsDevCatalog {
    * Facts for one model. Prefers the provider's own entry, then any provider
    * offering a model with the same normalised id — the same weights served by a
    * gateway have the same context window and capabilities.
+   *
+   * Entries for the same weights vary in quality across providers: many record
+   * the model without its reasoning levels. A hit that lacks them keeps looking
+   * for one that has them before settling.
    */
   async lookup(modelId: string, providerHint?: string | null): Promise<ModelFacts | null> {
     const providers = await this.load().catch(() => null);
@@ -176,18 +250,33 @@ export class ModelsDevCatalog {
 
     const preferred = providerHint ? providers[providerHint] : undefined;
     const direct = preferred ? findModel(preferred, modelId, key) : null;
-    if (direct) {
+    if (direct && !needsBetterEntry(direct)) {
       return toModelFacts(direct);
     }
 
+    let fallback: Model | null = direct;
     for (const provider of Object.values(providers)) {
       const match = findModel(provider, modelId, key);
-      if (match) {
+      if (!match) {
+        continue;
+      }
+
+      const levels = deriveReasoningEfforts(match);
+      if (levels != null) {
+        // The provider's own entry stays authoritative for limits and pricing;
+        // only the missing levels are borrowed from the richer entry.
+        return direct ? { ...toModelFacts(direct), reasoningEfforts: levels } : toModelFacts(match);
+      }
+
+      // Without a hinted entry, a non-reasoning match is already complete.
+      if (!direct && match.reasoning !== true) {
         return toModelFacts(match);
       }
+
+      fallback ??= match;
     }
 
-    return null;
+    return fallback ? toModelFacts(fallback) : null;
   }
 
   /** Enriches discovered models in place, leaving unknown ones untouched. */
@@ -218,11 +307,15 @@ export class ModelsDevCatalog {
           label: model.label === model.id ? facts.label : model.label,
           contextWindow: model.contextWindow ?? facts.contextWindow,
           maxOutputTokens: model.maxOutputTokens ?? facts.maxOutputTokens,
-          supportsVision: model.supportsVision || facts.supportsVision,
-          supportsDocumentInput: model.supportsDocumentInput || facts.supportsDocumentInput,
+          // `??`, not `||`: an endpoint that stated a modality outright — the
+          // Anthropic list does — is more authoritative than a catalog entry
+          // for the same weights served elsewhere. Only unknown defers.
+          supportsVision: model.supportsVision ?? facts.supportsVision,
+          supportsDocumentInput: model.supportsDocumentInput ?? facts.supportsDocumentInput,
           supportsTools: facts.supportsTools,
           supportsReasoning: facts.supportsReasoning,
           supportsTemperature: facts.supportsTemperature,
+          reasoningEfforts: model.reasoningEfforts ?? facts.reasoningEfforts,
           // A `:free` suffix on the gateway id is authoritative over pricing
           // recorded for the underlying model.
           isFree: model.isFree || facts.isFree,
@@ -231,6 +324,11 @@ export class ModelsDevCatalog {
       })
     );
   }
+}
+
+/** A reasoning model whose entry omits its levels is worth a second look. */
+function needsBetterEntry(model: Model): boolean {
+  return model.reasoning === true && deriveReasoningEfforts(model) == null;
 }
 
 function findModel(provider: Provider, modelId: string, normalizedKey: string): Model | null {

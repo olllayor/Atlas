@@ -29,8 +29,14 @@
   --text-primary: #26251e; /* Cursor Dark - warm near-black */
   --text-secondary: rgba(38, 37, 30, 0.85); /* 85% warm brown */
   --text-tertiary: rgba(38, 37, 30, 0.65); /* 65% warm brown */
-  --text-muted: rgba(38, 37, 30, 0.5); /* 50% warm brown */
-  --text-faint: rgba(38, 37, 30, 0.35); /* 35% warm brown */
+  /*
+   * Contrast on --bg-base (#f2f1ed). --text-muted was 0.5 = 3.06:1, a
+   * WCAG AA failure on the token that backs every placeholder and
+   * description; 0.65 = 4.66:1. --text-faint was 0.35 = 2.06:1, well
+   * under the 3:1 floor; 0.52 = 3.19:1.
+   */
+  --text-muted: rgba(38, 37, 30, 0.65); /* 4.66:1 */
+  --text-faint: rgba(38, 37, 30, 0.52); /* 3.19:1 */
   --text-inverse: #f2f1ed; /* Cream text on dark */
 
   /* Semantic - Warm-shifted semantic colors */
@@ -53,6 +59,37 @@
   --accent: #f54e00; /* Cursor Orange - brand accent */
   --accent-hover: #cf2d56; /* Warm crimson for hover states */
   --accent-text: #ffffff;
+  /* Orange-based ring and tinted surface. Without these the contract's
+     blue defaults leaked in and every focused control in this warm theme
+     drew a cold blue ring. */
+  --accent-surface: rgba(245, 78, 0, 0.12);
+  --ring: rgba(245, 78, 0, 0.75);
+
+  /* --- Diffs: light palette ------------------------------------------
+     The contract's diff tokens are dark-tuned (#213a2b / #4a221d slabs
+     with white gutter text), so on this light theme diffs rendered as
+     near-black bars with invisible gutters. Same approach as codex.css's
+     light block: pastel backgrounds carry the signal, body text inherits
+     its normal colour. */
+  --diff-add-bg: #dcf5e3;
+  --diff-del-bg: #fce8e6;
+  --diff-add-fg: inherit;
+  --diff-del-fg: inherit;
+  --diff-add-gutter-bg: #b3e6c2;
+  --diff-del-gutter-bg: #f7c9c4;
+  --diff-gutter-fg: rgba(38, 37, 30, 0.72);
+  --diff-add-fg-count: #1f8a65;
+  --diff-del-fg-count: #cf2d56;
+
+  /* --- Per-tool accents: light, warm-shifted -------------------------
+     The dark defaults (#60a5fa, #2dd4bf, …) are pastel-bright and vanish
+     against cream. These are the same hues pulled down in lightness. */
+  --tool-read: #2563a8;
+  --tool-search: #12796f;
+  --tool-edit: #6d4bc4;
+  --tool-command: #a8651b;
+  --tool-web: #b2427e;
+  --tool-generic: rgba(38, 37, 30, 0.6);
 
   /* Toasts - Warm cream with warm borders */
   --toast-bg: rgba(242, 241, 237, 0.95);
@@ -123,8 +160,8 @@
   --text-primary: #f2f1ed;
   --text-secondary: rgba(242, 241, 237, 0.85);
   --text-tertiary: rgba(242, 241, 237, 0.6);
-  --text-muted: rgba(242, 241, 237, 0.5);
-  --text-faint: rgba(242, 241, 237, 0.3);
+  --text-muted: rgba(242, 241, 237, 0.5); /* 4.50:1 on --bg-base */
+  --text-faint: rgba(242, 241, 237, 0.45); /* was 0.3 = 2.6:1; now 3.94:1 */
   --text-inverse: #26251e;
 
   /* Keep semantic colors vibrant in dark */
@@ -133,15 +170,43 @@
   --error: #fb7185;
   --accent: #f54e00;
   --accent-hover: #ff6b1a;
+  --accent-surface: rgba(245, 78, 0, 0.18);
+  --ring: rgba(255, 107, 26, 0.8);
+
+  /* Diffs and tool hues: back to the dark-tuned palette. The light block
+     above sets these, and this variant inherits from it, so they must be
+     restated here rather than left to the contract defaults. */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #34d399;
+  --diff-del-fg: #fb7185;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(242, 241, 237, 0.45);
+  --diff-add-fg-count: #34d399;
+  --diff-del-fg-count: #fb7185;
+
+  --tool-read: #60a5fa;
+  --tool-search: #2dd4bf;
+  --tool-edit: #a78bfa;
+  --tool-command: #fbbf24;
+  --tool-web: #f472b6;
+  --tool-generic: rgba(242, 241, 237, 0.6);
 
   /* UI adjustments for dark */
   --overlay: rgba(0, 0, 0, 0.6);
   --scrollbar: rgba(242, 241, 237, 0.1);
   --scrollbar-hover: rgba(242, 241, 237, 0.2);
 
+  /* All six toast tokens, not three: --toast-icon/-close/-close-hover
+     were inherited from the light block above, i.e. near-black warm
+     brown painted onto a near-black toast. */
   --toast-bg: rgba(43, 42, 35, 0.95);
   --toast-border: rgba(242, 241, 237, 0.1);
   --toast-text: #f2f1ed;
+  --toast-icon: rgba(242, 241, 237, 0.7);
+  --toast-close: rgba(242, 241, 237, 0.45);
+  --toast-close-hover: rgba(242, 241, 237, 0.85);
 
   color-scheme: dark;
 }

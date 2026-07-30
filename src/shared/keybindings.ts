@@ -7,6 +7,8 @@ export const KEYBINDING_COMMANDS = [
   'settings.open',
   'composer.focus',
   'models.openSwitcher',
+  'workspace.mode.toggle',
+  'workspace.project.attach',
   'conversation.previous',
   'conversation.next',
   'conversation.jump.1',
@@ -149,6 +151,20 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
     command: 'models.openSwitcher',
     shortcut: {
       key: 'm',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: true,
+      altKey: false,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
+    // Codex cycles collaboration modes from the keyboard; Atlas has two, so a
+    // single toggle covers the cycle.
+    command: 'workspace.mode.toggle',
+    shortcut: {
+      key: 'e',
       metaKey: false,
       ctrlKey: false,
       shiftKey: true,

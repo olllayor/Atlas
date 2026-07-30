@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import type { ChatFilePart, ChatInputFilePart } from '../../shared/contracts';
@@ -55,6 +54,21 @@ function getExtension(filename: string | undefined, mediaType: string) {
   return MEDIA_TYPE_TO_EXTENSION[mediaType] ?? '';
 }
 
+export const ATTACHMENT_SCHEME = 'atlas-attachment';
+/** Fixed host, so `pathname` is exactly the storage key. */
+const ATTACHMENT_HOST = 'file';
+
+/**
+ * A renderer-loadable URL for a stored attachment.
+ *
+ * Storage keys are `<conversationId>/<name>`, and each segment is encoded so a
+ * key can never climb out of the directory through the URL.
+ */
+export function buildAttachmentUrl(storageKey: string) {
+  const path = storageKey.split('/').map(encodeURIComponent).join('/');
+  return `${ATTACHMENT_SCHEME}://${ATTACHMENT_HOST}/${path}`;
+}
+
 export class AttachmentStore {
   constructor(private readonly rootDir: string) {
     mkdirSync(rootDir, { recursive: true });
@@ -93,7 +107,7 @@ export class AttachmentStore {
       mediaType,
       sizeBytes: attachment.sizeBytes ?? decoded.bytes.byteLength,
       storageKey,
-      url: pathToFileURL(absolutePath).toString(),
+      url: buildAttachmentUrl(storageKey),
     };
   }
 

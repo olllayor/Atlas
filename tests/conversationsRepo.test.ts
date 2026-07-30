@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import type { SqliteDatabase } from '../src/main/db/client.js';
-import { AttachmentStore } from '../src/main/attachments/AttachmentStore.js';
+import { AttachmentStore, buildAttachmentUrl } from '../src/main/attachments/AttachmentStore.js';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo.js';
 import { ToolExecutionsRepo } from '../src/main/db/repositories/toolExecutionsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
@@ -178,20 +178,47 @@ test('ConversationsRepo rebuilds attachment-backed user history from stored file
     createdAt: createTimestamp(0),
   });
 
+  const pdfAttachment = attachmentStore.persistAttachment(conversation.id, {
+    type: 'file',
+    filename: 'report.pdf',
+    mediaType: 'application/pdf',
+    sizeBytes: 5,
+    url: 'data:application/pdf;base64,aGVsbG8=',
+  });
+
+  conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'user',
+    content: 'Attachment',
+    parts: [pdfAttachment],
+    status: 'complete',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+    createdAt: createTimestamp(1),
+  });
+
   const history = conversations.getModelHistory(conversation.id);
-  assert.equal(history.length, 1);
+  assert.equal(history.length, 2);
   assert.equal(history[0]?.role, 'user');
   assert.ok(Array.isArray(history[0]?.content));
 
-  const [filePart] = history[0]!.content as Array<{
+  // A text file is inlined as prompt text: it needs no document capability, and
+  // several endpoints reject a `text/*` file part outright.
+  const [textPart] = history[0]!.content as Array<{ type: 'text'; text: string }>;
+  assert.equal(textPart?.type, 'text');
+  assert.match(textPart.text, /note\.txt/);
+  assert.match(textPart.text, /hello/);
+
+  // Anything that has to stay binary still travels as a file part.
+  const [filePart] = history[1]!.content as Array<{
     type: 'file';
     filename?: string;
     mediaType: string;
     data: Uint8Array;
   }>;
   assert.equal(filePart?.type, 'file');
-  assert.equal(filePart?.filename, 'note.txt');
-  assert.equal(filePart?.mediaType, 'text/plain');
+  assert.equal(filePart?.filename, 'report.pdf');
+  assert.equal(filePart?.mediaType, 'application/pdf');
   assert.equal(new TextDecoder().decode(filePart?.data), 'hello');
 });
 
@@ -266,5 +293,83 @@ test('ConversationsRepo hydrates assistant tool parts from tool_executions and i
     assert.equal(toolPart.state, 'output-partial');
     assert.equal(toolPart.requestId, 'request-1');
     assert.equal(toolPart.output, 'Found 3 matching results…');
+  }
+});
+
+test('rename records whether a title was machine-generated', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-conversations-titles-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction:
+      <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) =>
+      (...args: TArgs) => {
+        raw.exec('BEGIN');
+        try {
+          const result = callback(...args);
+          raw.exec('COMMIT');
+          return result;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      },
+  } as unknown as SqliteDatabase;
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  applySchema(database);
+  const repo = new ConversationsRepo(database, new AttachmentStore(tempDir), new ToolExecutionsRepo(database));
+
+  const conversation = repo.create();
+  const initial = repo.getTitleState(conversation.id);
+  assert.ok(initial?.title.startsWith('Session · '), 'new conversations start on the placeholder');
+  assert.equal(initial?.auto, false);
+
+  repo.rename(conversation.id, 'Auto generated name', { auto: true });
+  assert.deepEqual(repo.getTitleState(conversation.id), { title: 'Auto generated name', auto: true });
+
+  // A user rename (no options) makes the title final.
+  repo.rename(conversation.id, 'Human chosen name');
+  assert.deepEqual(repo.getTitleState(conversation.id), { title: 'Human chosen name', auto: false });
+
+  assert.equal(repo.getTitleState('missing-conversation'), null);
+});
+
+test('stored attachments reach the renderer over the attachment scheme, not file://', () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-attachment-url-'));
+
+  try {
+    const store = new AttachmentStore(join(tempDir, 'attachments'));
+    const part = store.persistAttachment('conv-1', {
+      type: 'file',
+      mediaType: 'image/png',
+      filename: 'lunch.png',
+      // 1×1 transparent PNG.
+      url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    });
+
+    // A file:// URL is what the renderer's CSP refuses, which is why stored
+    // images used to render as a bare filename.
+    assert.ok(!part.url.startsWith('file:'));
+    assert.equal(part.url, buildAttachmentUrl(part.storageKey!));
+
+    // The handler recovers the storage key from the URL byte-for-byte, so the
+    // bytes it serves are the bytes that were written.
+    const recovered = decodeURIComponent(new URL(part.url).pathname).replace(/^\/+/, '');
+    assert.equal(recovered, part.storageKey);
+    assert.ok(store.readAttachmentData(recovered));
+
+    // Keys are encoded per segment, so a traversal attempt cannot survive the
+    // round trip as a directory climb.
+    const escaped = buildAttachmentUrl('../../etc/passwd');
+    const escapedKey = decodeURIComponent(new URL(escaped).pathname).replace(/^\/+/, '');
+    assert.equal(store.readAttachmentData(escapedKey), null);
+  } finally {
+    rmSync(tempDir, { force: true, recursive: true });
   }
 });

@@ -1,12 +1,7 @@
-import { Brain, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
+import { ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
 
-import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
-import {
-  REASONING_EFFORTS,
-  TOOL_PERMISSION_MODES,
-  describeReasoningEffort,
-  describeToolPermissionMode
-} from '../../../shared/chatParameters';
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
+import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
 import { ParameterMenu } from './ParameterMenu';
 
 const MODE_ICONS: Record<ToolPermissionMode, typeof ShieldCheck> = {
@@ -35,41 +30,16 @@ export function ToolPermissionModeControl({
       // Full access is the only setting that runs shell commands unprompted, so
       // it is the only one that gets the warning accent.
       tone={mode.risk === 'high' ? 'warning' : 'default'}
-      icon={<Icon className="h-3.5 w-3.5 shrink-0" />}
+      icon={<Icon className="size-4 shrink-0" strokeWidth={1.75} />}
+      // Below ~26rem of composer width the pill drops to its shield glyph so the
+      // model chip and send button keep their room.
+      labelClassName="hidden @min-[26rem]:inline"
+      tooltip={
+        <span>
+          Tool permissions — <span className="text-text-secondary">{mode.label}</span>
+        </span>
+      }
       options={TOOL_PERMISSION_MODES.map((entry) => ({
-        value: entry.value,
-        label: entry.label,
-        hint: entry.hint
-      }))}
-      disabled={disabled}
-      onChange={onChange}
-    />
-  );
-}
-
-export function ReasoningEffortControl({
-  value,
-  disabled,
-  supported,
-  onChange
-}: {
-  value: ReasoningEffort;
-  disabled?: boolean;
-  /** False when the selected model has no thinking mode to spend budget on. */
-  supported: boolean;
-  onChange: (value: ReasoningEffort) => void;
-}) {
-  if (!supported) {
-    return null;
-  }
-
-  return (
-    <ParameterMenu
-      ariaLabel="Reasoning effort"
-      label={describeReasoningEffort(value).label}
-      value={value}
-      icon={<Brain className="h-3.5 w-3.5 shrink-0" />}
-      options={REASONING_EFFORTS.map((entry) => ({
         value: entry.value,
         label: entry.label,
         hint: entry.hint

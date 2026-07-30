@@ -154,7 +154,7 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
           <div className="truncate text-xs font-semibold tracking-[0.02em] text-text-secondary">
             {title?.trim() || 'Rive animation'}
           </div>
-          <div className="text-[11px] text-text-muted">
+          <div className="text-2xs text-text-muted">
             {isReady ? 'Playing' : 'Loading…'}
           </div>
         </div>
@@ -162,7 +162,7 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
           <button
             type="button"
             onClick={handlePause}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/60 bg-bg-elevated px-3 text-[11px] font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/60 bg-bg-elevated px-3 text-2xs font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
             title="Pause animation"
           >
             Pause
@@ -170,7 +170,7 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
           <button
             type="button"
             onClick={handlePlay}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/60 bg-bg-elevated px-3 text-[11px] font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/60 bg-bg-elevated px-3 text-2xs font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
             title="Play animation"
           >
             Play

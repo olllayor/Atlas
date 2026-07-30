@@ -6,7 +6,13 @@ import type {
   ModelSummary,
 } from './contracts';
 
-type AttachmentKind = 'image' | 'document' | 'unsupported';
+/**
+ * `text` is split out from `document` because it costs no model capability at
+ * all: a `.md`, `.csv` or `.json` is inlined into the prompt as text before the
+ * request is built, so any model can take one. Only formats that have to travel
+ * as binary — PDF and the Office family — need real document support.
+ */
+type AttachmentKind = 'image' | 'text' | 'document' | 'unsupported';
 
 const EXTENSION_TO_MEDIA_TYPE: Record<string, string> = {
   csv: 'text/csv',
@@ -79,13 +85,25 @@ export function normalizeAttachmentMediaType(mediaType: string | undefined, file
   return EXTENSION_TO_MEDIA_TYPE[getFileExtension(filename)] ?? '';
 }
 
+/** Formats whose bytes are legible as UTF-8 and can be inlined as prompt text. */
+const TEXT_MEDIA_TYPES = new Set<string>(['application/json', 'application/xml']);
+
+export function isInlinableTextMediaType(mediaType: string, filename?: string) {
+  const normalized = normalizeAttachmentMediaType(mediaType, filename);
+  return normalized.startsWith('text/') || TEXT_MEDIA_TYPES.has(normalized);
+}
+
 export function getAttachmentKind(mediaType: string) {
   const normalized = normalizeAttachmentMediaType(mediaType);
   if (normalized.startsWith('image/')) {
     return 'image' satisfies AttachmentKind;
   }
 
-  if (normalized.startsWith('text/') || DOCUMENT_MEDIA_TYPES.has(normalized)) {
+  if (isInlinableTextMediaType(normalized)) {
+    return 'text' satisfies AttachmentKind;
+  }
+
+  if (DOCUMENT_MEDIA_TYPES.has(normalized)) {
     return 'document' satisfies AttachmentKind;
   }
 
@@ -124,14 +142,22 @@ export function getAttachmentCapabilityError(
       continue;
     }
 
+    // Text is inlined into the prompt, so it asks nothing of the model.
+    if (kind === 'text') {
+      continue;
+    }
+
     needsDocuments = true;
   }
 
-  if (needsVision && !model.supportsVision) {
+  // Only a known `false` blocks. `null` means the catalog never described this
+  // model, and refusing to try would make Atlas the thing that cannot send the
+  // image rather than the model.
+  if (needsVision && model.supportsVision === false) {
     return 'The selected model does not support image attachments.';
   }
 
-  if (needsDocuments && !model.supportsDocumentInput) {
+  if (needsDocuments && model.supportsDocumentInput === false) {
     return 'The selected model does not support document attachments.';
   }
 

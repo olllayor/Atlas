@@ -15,7 +15,16 @@ const api: RendererApi = {
   },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
-    refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh)
+    refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh),
+    subscribe: (listener) => {
+      const handler = () => listener();
+
+      ipcRenderer.on(IPC_CHANNELS.modelsChanged, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.modelsChanged, handler);
+      };
+    }
   },
   providers: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.providersList),
@@ -29,17 +38,28 @@ const api: RendererApi = {
   },
   conversations: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsList),
-    create: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsCreate),
+    create: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsCreate, request),
     get: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGet, conversationId),
     getPage: (conversationId, request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetPage, conversationId, request),
     getStats: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetStats),
-    delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId)
+    delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId),
+    rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
+    getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
+    setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request)
+  },
+  projects: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
+    create: (request) => ipcRenderer.invoke(IPC_CHANNELS.projectsCreate, request),
+    rename: (projectId, title) => ipcRenderer.invoke(IPC_CHANNELS.projectsRename, projectId, title),
+    delete: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsDelete, projectId),
+    reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId)
   },
   chat: {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
     abort: (requestId) => ipcRenderer.invoke(IPC_CHANNELS.chatAbort, requestId),
     respondToolApproval: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRespondToolApproval, request),
     getRuntimeState: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetRuntimeState, request),
+    getContextUsage: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetContextUsage, request),
     recoverEvents: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRecoverEvents, request),
     openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {

@@ -184,3 +184,90 @@ test('ContextManager aggressive mode tightens recent raw window and tool summary
   assert.ok(aggressive.toolSummaries.every((summary) => summary.purpose.length <= 96));
   assert.ok(aggressive.toolSummaries.every((summary) => summary.keyResult.length <= 140));
 });
+
+test('a token budget compresses more than the turn-count ceiling alone would', () => {
+  const manager = new ContextManager();
+  // Well under the 10-turn ceiling, so turn counting alone compresses nothing —
+  // but each turn is enormous, which is exactly the case turn counting misses.
+  const history: ModelMessage[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    history.push(
+      { role: 'user', content: `Question ${index}? ${'context '.repeat(400)}` },
+      { role: 'assistant', content: `Answer ${index}. ${'detail '.repeat(400)}` }
+    );
+  }
+
+  const unbounded = manager.buildModelInput({
+    conversationId: 'conversation-budget',
+    history,
+    mode: 'standard',
+  });
+  assert.equal(unbounded.usage.droppedTurnCount, 0, 'turn counting alone keeps all five turns');
+
+  const bounded = manager.buildModelInput({
+    conversationId: 'conversation-budget',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 4_000, reservedTokens: 500 },
+  });
+
+  assert.ok(bounded.usage.droppedTurnCount > 0, 'the budget must compress oversized turns');
+  assert.ok(bounded.usage.historyTokens < unbounded.usage.historyTokens);
+  assert.ok(bounded.recentMessages.length < history.length);
+});
+
+test('a generous budget leaves the turn-count behaviour untouched', () => {
+  const manager = new ContextManager();
+  const history = createHistory(12);
+
+  const bounded = manager.buildModelInput({
+    conversationId: 'conversation-roomy',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 200_000, reservedTokens: 2_000 },
+  });
+
+  // Still exactly the turn-count split: the budget only ever tightens.
+  assert.deepEqual(bounded.recentMessages, history.slice(4));
+  assert.equal(bounded.usage.droppedTurnCount, 2);
+  assert.equal(bounded.usage.keptTurnCount, 10);
+  assert.equal(bounded.usage.fitsBudget, true);
+});
+
+test('the newest turn is never dropped, and an oversized one reports the overflow', () => {
+  const manager = new ContextManager();
+  const history: ModelMessage[] = [
+    { role: 'user', content: 'small opener?' },
+    { role: 'assistant', content: 'small answer.' },
+    // A single pasted log that cannot fit any budget.
+    { role: 'user', content: `Explain this: ${'x '.repeat(20_000)}` },
+  ];
+
+  const result = manager.buildModelInput({
+    conversationId: 'conversation-overflow',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 1_000, reservedTokens: 100 },
+  });
+
+  // Sending a request without the question it answers is useless, so the turn
+  // goes out and the caller is told it does not fit.
+  assert.equal(result.usage.fitsBudget, false);
+  assert.ok(result.recentMessages.length >= 1);
+  const last = result.recentMessages.at(-1);
+  assert.equal(last?.role, 'user');
+});
+
+test('usage accounting is reported for the uncompressed path too', () => {
+  const manager = new ContextManager();
+  const result = manager.buildModelInput({
+    conversationId: 'conversation-short',
+    history: createHistory(2),
+    mode: 'standard',
+  });
+
+  assert.equal(result.usage.droppedTurnCount, 0);
+  assert.equal(result.usage.keptTurnCount, 2);
+  assert.equal(result.usage.addendumTokens, 0);
+  assert.ok(result.usage.historyTokens > 0, 'a real conversation never costs zero tokens');
+});

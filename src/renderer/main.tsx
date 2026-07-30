@@ -9,6 +9,7 @@ import './themes/xai.css';
 import './themes/default.css';
 import './themes/landing.css';
 import './themes/cursor.css';
+import './themes/codex.css';
 
 initPostHog();
 void syncTelemetryStatus();

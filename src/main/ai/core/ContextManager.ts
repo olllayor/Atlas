@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import type { ModelMessage } from 'ai';
 
+import { estimateMessagesTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
+
 export type ContextBuildMode = 'standard' | 'aggressive';
 
 export type ToolSummary = {
@@ -10,10 +12,45 @@ export type ToolSummary = {
   keyResult: string;
 };
 
+/**
+ * What the prompt may spend on conversation history.
+ *
+ * Turn counts alone cannot keep a request inside a context window: ten turns
+ * of pasted logs overflow a 32K model, while fifty short turns fit a 200K one
+ * with room to spare. The budget is what makes compaction respond to size
+ * rather than to arithmetic on turn indices.
+ */
+export type ContextBudget = {
+  /** Context window minus whatever is reserved for the completion. */
+  totalTokens: number;
+  /** Already committed by the system prompt and tool schemas. */
+  reservedTokens: number;
+};
+
 export type BuildModelInputArgs = {
   conversationId: string;
   history: ModelMessage[];
   mode: ContextBuildMode;
+  /** Omitted when the caller cannot size the window; falls back to turn counts. */
+  budget?: ContextBudget;
+};
+
+/** What the chosen split costs, for display and for the overflow decision. */
+export type ContextUsageBreakdown = {
+  /** Raw recent turns actually sent. */
+  historyTokens: number;
+  /** The summary block appended to the system prompt, if any. */
+  addendumTokens: number;
+  /** Turns compressed into the summary instead of sent raw. */
+  droppedTurnCount: number;
+  /** Turns sent verbatim. */
+  keptTurnCount: number;
+  /**
+   * False when even the minimum payload (the newest turn) exceeds the budget —
+   * the request will be attempted anyway, since refusing to send is worse than
+   * letting the provider decide.
+   */
+  fitsBudget: boolean;
 };
 
 export type BuildModelInputResult = {
@@ -21,6 +58,7 @@ export type BuildModelInputResult = {
   rollingSummary: string | null;
   toolSummaries: ToolSummary[];
   systemContextAddendum: string | null;
+  usage: ContextUsageBreakdown;
 };
 
 type ContextManagerHooks = {
@@ -71,20 +109,27 @@ export class ContextManager {
   constructor(private readonly hooks: ContextManagerHooks = {}) {}
 
   buildModelInput(args: BuildModelInputArgs): BuildModelInputResult {
-    const { conversationId, history, mode } = args;
+    const { conversationId, history, mode, budget } = args;
     const split = splitHistoryIntoTurns(history);
-    const recentTurnLimit = RECENT_TURN_LIMIT[mode];
+    const olderTurnCount = chooseOlderTurnCount(split, mode, budget);
 
-    if (split.turns.length <= recentTurnLimit) {
+    if (olderTurnCount <= 0) {
+      const historyTokens = estimateMessagesTokens(history);
       return {
         recentMessages: history,
         rollingSummary: null,
         toolSummaries: [],
         systemContextAddendum: null,
+        usage: {
+          historyTokens,
+          addendumTokens: 0,
+          droppedTurnCount: 0,
+          keptTurnCount: split.turns.length,
+          fitsBudget: !budget || historyTokens + budget.reservedTokens <= budget.totalTokens,
+        },
       };
     }
 
-    const olderTurnCount = split.turns.length - recentTurnLimit;
     const olderTurns = split.turns.slice(0, olderTurnCount);
     const recentTurns = split.turns.slice(olderTurnCount);
     const olderMessages = [...split.prefaceMessages, ...olderTurns.flatMap((turn) => [turn.user, ...turn.followUps])];
@@ -106,13 +151,70 @@ export class ContextManager {
     const rollingSummary = cached.rollingSummary;
     const systemContextAddendum = buildSystemContextAddendum(rollingSummary, toolSummaries, mode);
 
+    const sentMessages = recentMessages.length > 0 ? recentMessages : history;
+    const historyTokens = estimateMessagesTokens(sentMessages);
+    const addendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
+
     return {
-      recentMessages: recentMessages.length > 0 ? recentMessages : history,
+      recentMessages: sentMessages,
       rollingSummary,
       toolSummaries,
       systemContextAddendum,
+      usage: {
+        historyTokens,
+        addendumTokens,
+        droppedTurnCount: olderTurns.length,
+        keptTurnCount: recentTurns.length,
+        fitsBudget:
+          !budget || historyTokens + addendumTokens + budget.reservedTokens <= budget.totalTokens,
+      },
     };
   }
+}
+
+/**
+ * How many of the oldest turns to compress rather than send raw.
+ *
+ * The turn-count ceiling is the floor of this decision, not the whole of it:
+ * it caps how much history is *ever* sent verbatim, then the token budget
+ * tightens further whenever those turns are individually large. The newest turn
+ * is never dropped — a request without the question it is answering is useless,
+ * so an oversized final turn goes to the provider and `fitsBudget` reports the
+ * overflow instead.
+ */
+function chooseOlderTurnCount(
+  split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+  mode: ContextBuildMode,
+  budget: ContextBudget | undefined
+): number {
+  const byTurnCount = Math.max(0, split.turns.length - RECENT_TURN_LIMIT[mode]);
+  if (!budget) {
+    return byTurnCount;
+  }
+
+  const available = budget.totalTokens - budget.reservedTokens;
+  const turnCosts = split.turns.map((turn) => estimateMessagesTokens([turn.user, ...turn.followUps]));
+  const prefaceCost = estimateMessagesTokens(split.prefaceMessages);
+
+  // Summarising costs the addendum, so it only pays off once it displaces more
+  // than it adds; reserve its ceiling whenever any turn is being compressed.
+  const addendumReserve = Math.ceil(CONTEXT_ADDENDUM_MAX_CHARS[mode] / 3);
+
+  const costFrom = (older: number) => {
+    let total = older === 0 ? prefaceCost : 0;
+    for (let index = older; index < turnCosts.length; index += 1) {
+      total += turnCosts[index] ?? 0;
+    }
+    return total + (older > 0 ? addendumReserve : 0);
+  };
+
+  let older = byTurnCount;
+  const maxOlder = Math.max(0, split.turns.length - 1);
+  while (older < maxOlder && costFrom(older) > available) {
+    older += 1;
+  }
+
+  return older;
 }
 
 function splitHistoryIntoTurns(history: ModelMessage[]) {

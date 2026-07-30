@@ -1,3 +1,4 @@
+import type { ToolSet } from 'ai';
 import { tool } from 'ai';
 import { z } from 'zod';
 
@@ -7,7 +8,14 @@ import {
   DEFAULT_TOOL_PERMISSION_MODE,
   SIDE_EFFECTING_TOOL_NAMES
 } from '../../../shared/chatParameters';
+import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
+import {
+  editFileToolExecute,
+  gitDiffToolExecute,
+  gitStatusToolExecute,
+  writeFileToolExecute
+} from './codeTools';
 import {
   bashToolExecute,
   globToolExecute,
@@ -16,6 +24,8 @@ import {
   webFetchToolExecute,
   webSearchToolExecute
 } from './toolRuntime';
+import type { ToolWorkspace } from './toolWorkspace';
+import { DEFAULT_TOOL_WORKSPACE, canWriteFiles } from './toolWorkspace';
 
 export const TOOL_USE_SYSTEM_PROMPT = [
   'You have access to local filesystem, search, web, and utility tools.',
@@ -44,20 +54,62 @@ export function describeToolPermissionsForPrompt(mode: ToolPermissionMode) {
 }
 
 /**
+ * Prompt fragment for the workspace mode.
+ *
+ * Codex's default-mode block explicitly cancels the other mode's instructions
+ * rather than just omitting them; the same trick matters here because history
+ * from a turn taken in the other mode stays in the transcript, and without this
+ * the model reads its own past behaviour as licence.
+ */
+export function describeWorkspaceModeForPrompt(mode: WorkspaceMode, workspace: ToolWorkspace) {
+  if (mode === 'code') {
+    if (!workspace.root) {
+      return [
+        'Code mode is active but no project folder is attached, so no file-editing or shell tools were provided.',
+        'Say so plainly and ask the user to choose a folder. Do not claim to have edited anything.'
+      ].join(' ');
+    }
+
+    return [
+      `Code mode is active on the project at ${workspace.root}.`,
+      'You can read any file on disk, but write_file and edit_file only accept paths inside that folder,',
+      'and .git and .atlas stay read-only. Shell commands run with that folder as the working directory.',
+      'Prefer edit_file for targeted changes and write_file for new or fully rewritten files; both return a diff.'
+    ].join(' ');
+  }
+
+  return [
+    'Work mode is active: research, writing, sites and visuals.',
+    'You can read and search files, but no tool in this turn can modify the local filesystem,',
+    'and shell commands are limited to read-only inspection.',
+    'Any instruction from an earlier Code-mode turn no longer applies.',
+    'If the user wants files changed, tell them to switch this conversation to Code mode.'
+  ].join(' ');
+}
+
+/**
  * `extraTools` lets optional subsystems (currently Sites) contribute tools
  * without every caller having to know they exist.
  *
- * `mode` decides which tools are offered at all and which pause for approval.
+ * Two independent gates, in this order:
+ *
+ * 1. `workspace.mode` decides which tools *exist* — the file-editing and git
+ *    tools are only built in Code mode with a project attached.
+ * 2. `mode` (the permission ladder) decides which of those pause for approval,
+ *    and drops the side-effecting ones entirely under `read-only`.
+ *
  * Withholding a tool is stronger than refusing it in a prompt: the model cannot
  * call something that was never in its tool set.
  */
 export function createBuiltInTools(
   modelsRepo: ModelsRepo,
   extraTools: Record<string, unknown> | null = null,
-  mode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE
+  mode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
+  workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE
 ) {
   const all = {
     ...(extraTools ?? {}),
+    ...buildCodeTools(workspace),
     read_file: tool({
       description:
         'Read a local file from an absolute path. Supports text files, notebooks, images, and PDFs. Use offset and limit for large text files.',
@@ -93,7 +145,7 @@ export function createBuiltInTools(
         multiline: z.boolean().optional().describe('Enable multiline regex search')
       }),
       strict: true,
-      execute: grepToolExecute
+      execute: (input: Parameters<typeof grepToolExecute>[0]) => grepToolExecute(input, workspace)
     }),
     glob_search: tool({
       description:
@@ -103,7 +155,7 @@ export function createBuiltInTools(
         path: z.string().trim().optional().describe('Directory to search. Defaults to the current working directory')
       }),
       strict: true,
-      execute: globToolExecute
+      execute: (input: Parameters<typeof globToolExecute>[0]) => globToolExecute(input, workspace)
     }),
     web_search: tool({
       description:
@@ -129,7 +181,9 @@ export function createBuiltInTools(
     }),
     bash: tool({
       description:
-        'Run a shell command in the local working directory. This integration currently enforces a read-only safety policy and should not be used for file edits.',
+        workspace.mode === 'code'
+          ? 'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, linters, and git.'
+          : 'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.',
       needsApproval: true,
       inputSchema: z.object({
         command: z.string().trim().min(1).describe('Shell command to execute'),
@@ -139,7 +193,7 @@ export function createBuiltInTools(
         dangerouslyDisableSandbox: z.boolean().optional().describe('Reserved for compatibility')
       }),
       strict: true,
-      execute: bashToolExecute
+      execute: (input: Parameters<typeof bashToolExecute>[0]) => bashToolExecute(input, workspace)
     }),
     get_current_time: tool({
       description: 'Get the current local date, time, and timezone.',
@@ -205,6 +259,61 @@ export function createBuiltInTools(
   };
 
   return applyToolPermissionMode(all, mode);
+}
+
+/**
+ * The Code-mode tool set. Empty in Work mode, and empty in Code mode until a
+ * project is attached — an editing tool with no writable root can only fail, so
+ * it is never offered.
+ */
+function buildCodeTools(workspace: ToolWorkspace): ToolSet {
+  if (!canWriteFiles(workspace)) {
+    return {};
+  }
+
+  const root = workspace.root;
+
+  return {
+    write_file: tool({
+      description: `Create a file or replace its entire contents. Paths are relative to the project root (${root}); absolute paths must be inside it. Returns a unified diff.`,
+      needsApproval: true,
+      inputSchema: z.object({
+        file_path: z.string().trim().min(1).describe('Path to write, relative to the project root'),
+        content: z.string().describe('Full file contents to write')
+      }),
+      strict: true,
+      execute: (input: { file_path: string; content: string }) => writeFileToolExecute(input, workspace)
+    }),
+    edit_file: tool({
+      description:
+        'Replace an exact string in an existing file. Prefer this over write_file for targeted changes. old_string must match the file exactly, including indentation, and must be unique unless replace_all is set. Returns a unified diff.',
+      needsApproval: true,
+      inputSchema: z.object({
+        file_path: z.string().trim().min(1).describe('Path to edit, relative to the project root'),
+        old_string: z.string().min(1).describe('Exact text to replace'),
+        new_string: z.string().describe('Replacement text'),
+        replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match')
+      }),
+      strict: true,
+      execute: (input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }) =>
+        editFileToolExecute(input, workspace)
+    }),
+    git_status: tool({
+      description: 'Show the project working tree status (porcelain) and current branch.',
+      inputSchema: z.object({}),
+      strict: true,
+      execute: () => gitStatusToolExecute({}, workspace)
+    }),
+    git_diff: tool({
+      description: 'Show the project diff. Use staged for the index, and path to narrow it to one file or folder.',
+      inputSchema: z.object({
+        staged: z.boolean().optional().describe('Diff the index instead of the working tree'),
+        path: z.string().trim().optional().describe('Limit the diff to this path')
+      }),
+      strict: true,
+      execute: (input: { staged?: boolean; path?: string }) => gitDiffToolExecute(input, workspace)
+    })
+  };
 }
 
 /**

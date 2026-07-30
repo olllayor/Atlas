@@ -5,6 +5,9 @@ import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 
+import type { ToolWorkspace } from './toolWorkspace';
+import { resolveWorkspaceCwd } from './toolWorkspace';
+
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_READ_LIMIT = 4000;
 const DEFAULT_GREP_LIMIT = 250;
@@ -274,7 +277,7 @@ export async function readToolExecute(input: {
   return readTextLikeFile(filePath, buffer.toString('utf8'), input.offset, input.limit);
 }
 
-function runCommand(
+export function runCommand(
   command: string,
   args: string[],
   options: {
@@ -330,13 +333,30 @@ function runCommand(
   });
 }
 
-function resolveSearchPath(value?: string) {
-  if (!value?.trim()) {
-    return process.cwd();
+/**
+ * Relative search paths resolve against the conversation's workspace, so
+ * "search src/" means the attached project rather than wherever the Electron
+ * binary was launched from.
+ *
+ * With no project attached there is no sensible default: searching the whole
+ * home directory would take minutes and return mostly noise, so an omitted
+ * path is an error the model can act on rather than a scan it has to wait out.
+ */
+function resolveSearchPath(value: string | undefined, workspace: ToolWorkspace | undefined) {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    if (!workspace?.root) {
+      throw new Error(
+        'No project folder is attached, so there is no default search directory. Pass an explicit path.'
+      );
+    }
+
+    return workspace.root;
   }
 
-  const normalized = expandPath(value.trim());
-  return isAbsolute(normalized) ? normalized : resolve(process.cwd(), normalized);
+  const normalized = expandPath(trimmed);
+  return isAbsolute(normalized) ? normalized : resolve(resolveWorkspaceCwd(workspace), normalized);
 }
 
 function maybeResolveResultPath(basePath: string, value: string) {
@@ -358,8 +378,8 @@ export async function grepToolExecute(input: {
   head_limit?: number;
   offset?: number;
   multiline?: boolean;
-}) {
-  const searchPath = resolveSearchPath(input.path);
+}, workspace?: ToolWorkspace) {
+  const searchPath = resolveSearchPath(input.path, workspace);
   const outputMode = input.output_mode ?? 'files_with_matches';
   const headLimit = Math.max(0, Math.floor(input.head_limit ?? DEFAULT_GREP_LIMIT));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
@@ -414,7 +434,7 @@ export async function grepToolExecute(input: {
 
   args.push(searchPath);
 
-  const result = await runCommand('rg', args, { cwd: process.cwd(), timeoutMs: 30_000 });
+  const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
     throw new Error(result.stderr.trim() || `ripgrep exited with code ${result.code ?? 'unknown'}.`);
@@ -486,11 +506,11 @@ export async function grepToolExecute(input: {
 export async function globToolExecute(input: {
   pattern: string;
   path?: string;
-}) {
+}, workspace?: ToolWorkspace) {
   const startedAt = Date.now();
-  const searchPath = resolveSearchPath(input.path);
+  const searchPath = resolveSearchPath(input.path, workspace);
   const args = ['--files', '--hidden', '--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '-g', input.pattern, searchPath];
-  const result = await runCommand('rg', args, { cwd: process.cwd(), timeoutMs: 30_000 });
+  const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
     throw new Error(result.stderr.trim() || `rg --files exited with code ${result.code ?? 'unknown'}.`);
@@ -773,8 +793,7 @@ function validateBashCommand(command: string) {
   }
 }
 
-async function ensureBashParentDirectoryExists() {
-  const cwd = process.cwd();
+async function ensureWorkingDirectoryReadable(cwd: string) {
   await access(dirname(resolve(cwd, '.')), fsConstants.R_OK);
 }
 
@@ -784,15 +803,22 @@ export async function bashToolExecute(input: {
   description?: string;
   run_in_background?: boolean;
   dangerouslyDisableSandbox?: boolean;
-}) {
-  validateBashCommand(input.command);
-  await ensureBashParentDirectoryExists();
+}, workspace?: ToolWorkspace) {
+  // Code mode exists so the agent can change a project, so the read-only
+  // command policy is lifted there — the writable boundary is the project root
+  // plus the approval ladder, not a regex list. Work mode keeps the policy.
+  if (workspace?.mode !== 'code') {
+    validateBashCommand(input.command);
+  }
+
+  const cwd = resolveWorkspaceCwd(workspace);
+  await ensureWorkingDirectoryReadable(cwd);
 
   const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh';
 
   if (input.run_in_background) {
     const child = spawn(shell, process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command], {
-      cwd: process.cwd(),
+      cwd,
       env: process.env,
       detached: true,
       stdio: 'ignore'
@@ -814,7 +840,7 @@ export async function bashToolExecute(input: {
     shell,
     process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command],
     {
-      cwd: process.cwd(),
+      cwd,
       timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
     }
   );
@@ -829,8 +855,8 @@ export async function bashToolExecute(input: {
   };
 }
 
-export async function listDirectoryPreview(pathValue?: string) {
-  const basePath = resolveSearchPath(pathValue);
+export async function listDirectoryPreview(pathValue?: string, workspace?: ToolWorkspace) {
+  const basePath = resolveSearchPath(pathValue, workspace);
   const entries = await readdir(basePath, { withFileTypes: true });
   return entries.slice(0, 50).map((entry) => ({
     name: entry.name,

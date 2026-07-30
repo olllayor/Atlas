@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
 
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
+import { buildAttachmentUrl } from '../../attachments/AttachmentStore';
 import type {
   ChatMessage,
   ChatMessagePart,
@@ -16,8 +17,11 @@ import type {
   MessageStatus,
   ProviderId,
   ToolExecutionRecord,
-  WorkLogEntry
+  WorkLogEntry,
+  WorkspaceMode
 } from '../../../shared/contracts';
+import { isInlinableTextMediaType } from '../../../shared/attachments';
+import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspaceModes';
 import { decodeConversationPageCursor, encodeConversationPageCursor } from '../../../shared/conversationPaging';
 import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
 import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
@@ -32,6 +36,8 @@ type ConversationRow = {
   updated_at: string;
   default_provider_id: ProviderId | null;
   default_model_id: string | null;
+  workspace_mode: string | null;
+  project_id: string | null;
 };
 
 type ConversationSummaryRow = {
@@ -45,6 +51,8 @@ type ConversationSummaryRow = {
   lastMessageAt: string | null;
   defaultProviderId: ProviderId | null;
   defaultModelId: string | null;
+  workspaceMode: string | null;
+  projectId: string | null;
 };
 
 type MessageRow = {
@@ -269,12 +277,43 @@ function mergeToolParts(message: ChatMessage, toolParts: ChatToolPart[]) {
   };
 }
 
+/**
+ * Point stored file parts at the attachment scheme.
+ *
+ * The `url` written at persist time is not authoritative — rows written before
+ * the scheme existed hold a `file://` path the renderer's CSP blocks, which is
+ * why stored images used to render as a bare filename. The storage key is the
+ * durable identity, so the URL is derived from it on the way out and old rows
+ * heal without a migration.
+ */
+function withRendererAttachmentUrls(parts: ChatMessagePart[]): ChatMessagePart[] {
+  let changed = false;
+
+  const next = parts.map((part) => {
+    if (part.type !== 'file' || !part.storageKey) {
+      return part;
+    }
+
+    const url = buildAttachmentUrl(part.storageKey);
+    if (url === part.url) {
+      return part;
+    }
+
+    changed = true;
+    return { ...part, url };
+  });
+
+  return changed ? next : parts;
+}
+
 function mapMessage(row: MessageRow): ChatMessage {
-  const parts = parseJson<ChatMessagePart[]>(row.parts_json) ?? buildFallbackMessageParts({
+  const parts = withRendererAttachmentUrls(
+    parseJson<ChatMessagePart[]>(row.parts_json) ?? buildFallbackMessageParts({
           content: row.content,
           reasoning: row.reasoning,
           role: row.role
-        });
+        })
+  );
 
   return {
     id: row.id,
@@ -293,6 +332,66 @@ function mapMessage(row: MessageRow): ChatMessage {
     errorCode: row.error_code,
     createdAt: row.created_at
   };
+}
+
+/**
+ * Ceiling on inlined attachment text.
+ *
+ * An attachment may be 15 MB (`MAX_ATTACHMENT_SIZE_BYTES`); pasting that into
+ * the prompt would blow past any context window and be billed for the
+ * privilege. The cut is marked in the text so the model is told the file
+ * continues rather than being handed a document that appears to end mid-line.
+ */
+const MAX_INLINED_TEXT_CHARS = 120_000;
+
+/** UTF-8 from either stored bytes or the `data:` URL an unsaved part carries. */
+function decodeTextAttachment(data: Uint8Array | string): string | null {
+  try {
+    if (typeof data !== 'string') {
+      return new TextDecoder().decode(data);
+    }
+
+    if (!data.startsWith('data:')) {
+      return null;
+    }
+
+    const comma = data.indexOf(',');
+    if (comma === -1) {
+      return null;
+    }
+
+    const meta = data.slice(0, comma);
+    const payload = data.slice(comma + 1);
+
+    return meta.includes(';base64')
+      ? Buffer.from(payload, 'base64').toString('utf8')
+      : decodeURIComponent(payload);
+  } catch {
+    return null;
+  }
+}
+
+function formatInlinedTextAttachment(
+  filename: string | undefined,
+  mediaType: string,
+  text: string,
+) {
+  const name = filename ?? 'attachment';
+  const truncated = text.length > MAX_INLINED_TEXT_CHARS;
+  const body = truncated ? text.slice(0, MAX_INLINED_TEXT_CHARS) : text;
+  // A fence keeps the file's own newlines and markdown from being read as part
+  // of the surrounding message.
+  const fence = '```';
+
+  return [
+    `Attached file: ${name} (${mediaType})`,
+    fence,
+    body,
+    fence,
+    truncated ? `[truncated after ${MAX_INLINED_TEXT_CHARS} characters]` : null,
+  ]
+    .filter((line): line is string => line != null)
+    .join('\n');
 }
 
 function buildModelMessageContent(
@@ -332,6 +431,23 @@ function buildModelMessageContent(
       continue;
     }
 
+    // A text file is prompt text, not a modality. Sending it as a file part
+    // asked for document support the model may not have, and several endpoints
+    // reject a `text/markdown` file part outright — while the same bytes as
+    // text are accepted by every model there is.
+    if (isInlinableTextMediaType(part.mediaType, part.filename)) {
+      const text = decodeTextAttachment(data);
+      if (text != null) {
+        content.push({
+          type: 'text',
+          text: formatInlinedTextAttachment(part.filename, part.mediaType, text),
+        });
+        continue;
+      }
+      // Undecodable bytes fall through and travel as a file, which at least
+      // preserves what was attached instead of dropping it silently.
+    }
+
     content.push({
       type: 'file',
       data,
@@ -359,8 +475,19 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     lastAssistantMessagePreview: row.lastAssistantMessagePreview,
     lastMessageAt: row.lastMessageAt,
     defaultProviderId: row.defaultProviderId,
-    defaultModelId: row.defaultModelId
+    defaultModelId: row.defaultModelId,
+    workspaceMode: normalizeWorkspaceMode(row.workspaceMode),
+    projectId: row.projectId
   };
+}
+
+/**
+ * A row written before the mode column existed — or by a future build with a
+ * mode this one does not know — reads back as `work`, the mode that grants the
+ * least.
+ */
+function normalizeWorkspaceMode(value: unknown): WorkspaceMode {
+  return isWorkspaceMode(value) ? value : DEFAULT_WORKSPACE_MODE;
 }
 
 const NOOP_ATTACHMENT_STORE: Pick<
@@ -441,7 +568,9 @@ export class ConversationsRepo {
               LIMIT 1
             ) AS lastMessageAt,
             c.default_provider_id AS defaultProviderId,
-            c.default_model_id AS defaultModelId
+            c.default_model_id AS defaultModelId,
+            c.workspace_mode AS workspaceMode,
+            c.project_id AS projectId
           FROM conversations c
           ORDER BY c.updated_at DESC
         `
@@ -451,7 +580,13 @@ export class ConversationsRepo {
     return rows.map(mapConversationSummary);
   }
 
-  create() {
+  /**
+   * `defaults` carry the user's working mode onto the new conversation the way
+   * Codex-style clients do: mode and project follow you, so starting a second
+   * thread on the same repo needs no setup. The caller supplies them because
+   * the preference lives in settings, not here.
+   */
+  create(defaults: { workspaceMode?: WorkspaceMode; projectId?: string | null } = {}) {
     const now = new Date();
     const createdAt = now.toISOString();
     const id = randomUUID();
@@ -466,7 +601,9 @@ export class ConversationsRepo {
             created_at,
             updated_at,
             default_provider_id,
-            default_model_id
+            default_model_id,
+            workspace_mode,
+            project_id
           )
           VALUES (
             @id,
@@ -474,7 +611,9 @@ export class ConversationsRepo {
             @createdAt,
             @updatedAt,
             NULL,
-            NULL
+            NULL,
+            @workspaceMode,
+            @projectId
           )
         `
       )
@@ -482,7 +621,9 @@ export class ConversationsRepo {
         id,
         title,
         createdAt,
-        updatedAt: createdAt
+        updatedAt: createdAt,
+        workspaceMode: normalizeWorkspaceMode(defaults.workspaceMode),
+        projectId: defaults.projectId ?? null
       });
 
     return this.list().find((conversation: ConversationSummary) => conversation.id === id)!;
@@ -501,6 +642,102 @@ export class ConversationsRepo {
     this.attachmentStore.deleteConversationAttachments(conversationId);
   }
 
+  /**
+   * Rename a conversation. Mirrors `sitesRepo.renameSite`, minus the
+   * `updated_at` bump: the sidebar is ordered by `updated_at DESC`, so
+   * bumping it would teleport the row you just renamed to the top of the
+   * list — a rename is not activity.
+   */
+  rename(conversationId: string, title: string, options: { auto?: boolean } = {}): ConversationSummary {
+    const normalized = title.replace(/\s+/g, ' ').trim().slice(0, 200);
+
+    if (!normalized) {
+      throw new Error('Conversation title cannot be empty.');
+    }
+
+    const result = this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET title = @title, title_auto = @titleAuto
+          WHERE id = @conversationId
+        `
+      )
+      .run({ conversationId, title: normalized, titleAuto: options.auto ? 1 : 0 });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    return this.list().find((conversation: ConversationSummary) => conversation.id === conversationId)!;
+  }
+
+  /** The mode and project a turn should run under. Never taken from the renderer. */
+  getWorkspace(conversationId: string): { mode: WorkspaceMode; projectId: string | null } {
+    const row = this.db
+      .prepare<{ conversationId: string }, { workspace_mode: string | null; project_id: string | null }>(
+        `
+          SELECT workspace_mode, project_id
+          FROM conversations
+          WHERE id = @conversationId
+        `
+      )
+      .get({ conversationId });
+
+    return {
+      mode: normalizeWorkspaceMode(row?.workspace_mode),
+      projectId: row?.project_id ?? null
+    };
+  }
+
+  /**
+   * Set either half of the workspace. Like `rename`, this does not bump
+   * `updated_at`: switching mode is not conversation activity and must not
+   * reorder the sidebar.
+   */
+  setWorkspace(
+    conversationId: string,
+    patch: { mode?: WorkspaceMode; projectId?: string | null }
+  ): { mode: WorkspaceMode; projectId: string | null } {
+    const current = this.getWorkspace(conversationId);
+    const mode = patch.mode ?? current.mode;
+    const projectId = patch.projectId === undefined ? current.projectId : patch.projectId;
+
+    const result = this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET workspace_mode = @mode, project_id = @projectId
+          WHERE id = @conversationId
+        `
+      )
+      .run({ conversationId, mode, projectId });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    return { mode, projectId };
+  }
+
+  /**
+   * Title plus its provenance. Automatic naming needs both: it may replace a
+   * placeholder or an earlier auto-name, but never a title the user typed.
+   */
+  getTitleState(conversationId: string): { title: string; auto: boolean } | null {
+    const row = this.db
+      .prepare<{ conversationId: string }, { title: string; titleAuto: number }>(
+        `
+          SELECT title AS title, title_auto AS titleAuto
+          FROM conversations
+          WHERE id = @conversationId
+        `
+      )
+      .get({ conversationId });
+
+    return row ? { title: row.title, auto: Boolean(row.titleAuto) } : null;
+  }
+
   get(conversationId: string): ConversationDetail {
     const conversation = this.db
       .prepare<{ conversationId: string }, ConversationRow>(
@@ -511,7 +748,9 @@ export class ConversationsRepo {
             created_at,
             updated_at,
             default_provider_id,
-            default_model_id
+            default_model_id,
+            workspace_mode,
+            project_id
           FROM conversations
           WHERE id = @conversationId
         `
@@ -559,7 +798,9 @@ export class ConversationsRepo {
         createdAt: conversation.created_at,
         updatedAt: conversation.updated_at,
         defaultProviderId: conversation.default_provider_id,
-        defaultModelId: conversation.default_model_id
+        defaultModelId: conversation.default_model_id,
+        workspaceMode: normalizeWorkspaceMode(conversation.workspace_mode),
+        projectId: conversation.project_id
       },
       messages: hydratedMessages
     };
@@ -575,7 +816,9 @@ export class ConversationsRepo {
             created_at,
             updated_at,
             default_provider_id,
-            default_model_id
+            default_model_id,
+            workspace_mode,
+            project_id
           FROM conversations
           WHERE id = @conversationId
         `
@@ -666,7 +909,9 @@ export class ConversationsRepo {
         createdAt: conversation.created_at,
         updatedAt: conversation.updated_at,
         defaultProviderId: conversation.default_provider_id,
-        defaultModelId: conversation.default_model_id
+        defaultModelId: conversation.default_model_id,
+        workspaceMode: normalizeWorkspaceMode(conversation.workspace_mode),
+        projectId: conversation.project_id
       },
       messages,
       hasOlder,
@@ -767,6 +1012,45 @@ export class ConversationsRepo {
         // best-effort and must not block startup.
       }
     }
+  }
+
+  /**
+   * Provider-reported token usage for the newest turn that reported any.
+   *
+   * This is the only ground truth the app has about how a given model counts
+   * tokens, so the context estimator calibrates against it rather than trusting
+   * a character heuristic indefinitely.
+   */
+  getLatestUsage(conversationId: string) {
+    const row = this.db
+      .prepare<
+        { conversationId: string },
+        { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null }
+      >(
+        `
+          SELECT
+            input_tokens AS inputTokens,
+            output_tokens AS outputTokens,
+            reasoning_tokens AS reasoningTokens
+          FROM messages
+          WHERE conversation_id = @conversationId
+            AND role = 'assistant'
+            AND input_tokens IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 1
+        `
+      )
+      .get({ conversationId });
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      reasoningTokens: row.reasoningTokens,
+    };
   }
 
   getModelHistory(conversationId: string) {

@@ -22,15 +22,18 @@ CREATE TABLE IF NOT EXISTS model_cache (
   label TEXT NOT NULL,
   context_window INTEGER,
   is_free INTEGER NOT NULL DEFAULT 0,
-  supports_vision INTEGER NOT NULL DEFAULT 0,
-  supports_document_input INTEGER NOT NULL DEFAULT 0,
-  supports_tools INTEGER NOT NULL DEFAULT 0,
+  -- Nullable on purpose: NULL is "no source has described this modality",
+  -- which is different from "the model cannot take it".
+  supports_vision INTEGER,
+  supports_document_input INTEGER,
+  supports_tools INTEGER,
   archived INTEGER NOT NULL DEFAULT 0,
   last_synced_at TEXT NOT NULL,
   last_seen_free_at TEXT,
   max_output_tokens INTEGER,
   supports_temperature INTEGER NOT NULL DEFAULT 1,
-  supports_reasoning INTEGER NOT NULL DEFAULT 0
+  supports_reasoning INTEGER NOT NULL DEFAULT 0,
+  reasoning_efforts TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -39,7 +42,10 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   default_provider_id TEXT,
-  default_model_id TEXT
+  default_model_id TEXT,
+  -- 1 while the title is machine-generated and may still be improved on;
+  -- a user rename clears it and the app never overwrites the title again.
+  title_auto INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -319,17 +325,34 @@ CREATE TABLE IF NOT EXISTS custom_provider_models (
   is_free INTEGER NOT NULL DEFAULT 0,
   context_window INTEGER,
   max_output_tokens INTEGER,
-  supports_tools INTEGER NOT NULL DEFAULT 1,
-  supports_vision INTEGER NOT NULL DEFAULT 0,
-  supports_document_input INTEGER NOT NULL DEFAULT 0,
-  supports_reasoning INTEGER NOT NULL DEFAULT 0,
+  supports_tools INTEGER,
+  -- NULL means unknown; see model_cache above.
+  supports_vision INTEGER,
+  supports_document_input INTEGER,
+  supports_reasoning INTEGER NOT NULL DEFAULT 1,
   supports_temperature INTEGER NOT NULL DEFAULT 1,
+  reasoning_efforts TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider_id, model_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_custom_provider_models_provider
 ON custom_provider_models (provider_id, sort_order);
+
+-- A folder the user attached. The root column is the writable boundary in Code
+-- mode and the shell working directory in both modes, so it is stored once and
+-- resolved in the main process — never sent up from the renderer.
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  root TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_last_used
+ON projects (last_used_at DESC, updated_at DESC);
 `;
 
 export function applySchema(database: SqliteDatabase) {
@@ -409,6 +432,12 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE model_cache ADD COLUMN supports_reasoning INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Migration: per-model reasoning-effort vocabulary from models.dev, stored as
+  // a JSON array. NULL means the catalog never said which levels the model takes.
+  if (!modelColumns.includes('reasoning_efforts')) {
+    database.exec('ALTER TABLE model_cache ADD COLUMN reasoning_efforts TEXT');
+  }
+
   const customModelColumns = database
     .prepare<[], { name: string }>('PRAGMA table_info(custom_provider_models)')
     .all()
@@ -416,6 +445,32 @@ export function applySchema(database: SqliteDatabase) {
 
   if (customModelColumns.length > 0 && !customModelColumns.includes('is_free')) {
     database.exec('ALTER TABLE custom_provider_models ADD COLUMN is_free INTEGER NOT NULL DEFAULT 0');
+  }
+
+  if (customModelColumns.length > 0 && !customModelColumns.includes('reasoning_efforts')) {
+    database.exec('ALTER TABLE custom_provider_models ADD COLUMN reasoning_efforts TEXT');
+  }
+
+  // Migration: track whether a conversation title was machine-generated, so
+  // an auto-name can be improved on later while a user rename is final.
+  const conversationColumns = database
+    .prepare<[], { name: string }>('PRAGMA table_info(conversations)')
+    .all()
+    .map((column) => column.name);
+
+  if (!conversationColumns.includes('title_auto')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migration: per-conversation workspace mode and project. Existing threads
+  // land in 'work' with no project, which is exactly what they had access to
+  // before the split — no conversation gains capability by upgrading.
+  if (!conversationColumns.includes('workspace_mode')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'work'");
+  }
+
+  if (!conversationColumns.includes('project_id')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL');
   }
 
   // Migration: Add border_radius to app_settings
@@ -426,7 +481,206 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!settingsKeys.includes('appearance.borderRadius')) {
     database
-      .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)')
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
       .run('appearance.borderRadius', 'theme-default');
+  }
+
+  // Migration: capabilities are no longer asked for when adding a model — a
+  // bare endpoint can't describe them, so every custom model is assumed fully
+  // capable and the provider rejects what it can't do. Rows saved before that
+  // change carry explicit false flags; flip them once.
+  if (!settingsKeys.includes('migrations.customModelFullCapabilities')) {
+    database.exec(
+      `UPDATE custom_provider_models SET
+        supports_tools = 1,
+        supports_vision = 1,
+        supports_document_input = 1,
+        supports_reasoning = 1,
+        supports_temperature = 1`
+    );
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run('migrations.customModelFullCapabilities', 'done');
+  }
+
+  // Migration: an early build stored models.dev's empty reasoning_options as
+  // "no levels" ('[]'), but empty only means the entry was not catalogued yet.
+  // Reset those rows to unknown so the startup backfill resolves them again.
+  if (!settingsKeys.includes('migrations.reasoningEffortsEmptyReset')) {
+    database.exec(`UPDATE custom_provider_models SET reasoning_efforts = NULL WHERE reasoning_efforts = '[]'`);
+    database.exec(`UPDATE model_cache SET reasoning_efforts = NULL WHERE reasoning_efforts = '[]'`);
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run('migrations.reasoningEffortsEmptyReset', 'done');
+  }
+
+  // Migration: image and document support become three-valued.
+  //
+  // Both columns were NOT NULL, so the two sources of truth had to lie in
+  // opposite directions — discovery wrote 0 ("cannot see") for every
+  // OpenAI-compatible model, and the migration above wrote 1 ("can see") for
+  // every hand-added one. Neither was knowledge. SQLite cannot drop a NOT NULL
+  // constraint in place, hence the rebuild; every existing value is discarded
+  // as an assumption, and the models.dev backfill re-fills what is actually
+  // known on the next launch.
+  if (!settingsKeys.includes('migrations.modalitySupportTriState')) {
+    database.exec(`
+      ALTER TABLE model_cache RENAME TO model_cache_pre_tristate;
+
+      CREATE TABLE model_cache (
+        model_id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        context_window INTEGER,
+        is_free INTEGER NOT NULL DEFAULT 0,
+        supports_vision INTEGER,
+        supports_document_input INTEGER,
+        supports_tools INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        last_synced_at TEXT NOT NULL,
+        last_seen_free_at TEXT,
+        max_output_tokens INTEGER,
+        supports_temperature INTEGER NOT NULL DEFAULT 1,
+        supports_reasoning INTEGER NOT NULL DEFAULT 0,
+        reasoning_efforts TEXT
+      );
+
+      INSERT INTO model_cache (
+        model_id, provider_id, label, context_window, is_free,
+        supports_vision, supports_document_input, supports_tools, archived,
+        last_synced_at, last_seen_free_at, max_output_tokens,
+        supports_temperature, supports_reasoning, reasoning_efforts
+      )
+      SELECT
+        model_id, provider_id, label, context_window, is_free,
+        NULL, NULL, supports_tools, archived,
+        last_synced_at, last_seen_free_at, max_output_tokens,
+        supports_temperature, supports_reasoning, reasoning_efforts
+      FROM model_cache_pre_tristate;
+
+      DROP TABLE model_cache_pre_tristate;
+
+      ALTER TABLE custom_provider_models RENAME TO custom_provider_models_pre_tristate;
+
+      CREATE TABLE custom_provider_models (
+        provider_id TEXT NOT NULL REFERENCES custom_providers(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        is_free INTEGER NOT NULL DEFAULT 0,
+        context_window INTEGER,
+        max_output_tokens INTEGER,
+        supports_tools INTEGER NOT NULL DEFAULT 1,
+        supports_vision INTEGER,
+        supports_document_input INTEGER,
+        supports_reasoning INTEGER NOT NULL DEFAULT 1,
+        supports_temperature INTEGER NOT NULL DEFAULT 1,
+        reasoning_efforts TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (provider_id, model_id)
+      );
+
+      INSERT INTO custom_provider_models (
+        provider_id, model_id, label, is_free, context_window, max_output_tokens,
+        supports_tools, supports_vision, supports_document_input,
+        supports_reasoning, supports_temperature, reasoning_efforts, sort_order
+      )
+      SELECT
+        provider_id, model_id, label, is_free, context_window, max_output_tokens,
+        supports_tools, NULL, NULL,
+        supports_reasoning, supports_temperature, reasoning_efforts, sort_order
+      FROM custom_provider_models_pre_tristate;
+
+      DROP TABLE custom_provider_models_pre_tristate;
+
+      CREATE INDEX IF NOT EXISTS idx_custom_provider_models_provider
+      ON custom_provider_models (provider_id, sort_order);
+    `);
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run('migrations.modalitySupportTriState', 'done');
+  }
+
+  // Migration: tool-calling support joins the modalities in being three-valued.
+  //
+  // Same argument, same shape as `modalitySupportTriState` above: `1` here was
+  // an assumption written by the add-model path, not a fact, and a model that
+  // cannot take tools has no way to say so except by refusing a turn — which is
+  // now recorded. Values are reset to unknown and re-filled from models.dev by
+  // the startup backfill.
+  if (!settingsKeys.includes('migrations.toolSupportTriState')) {
+    database.exec(`
+      ALTER TABLE model_cache RENAME TO model_cache_pre_tools_tristate;
+
+      CREATE TABLE model_cache (
+        model_id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        context_window INTEGER,
+        is_free INTEGER NOT NULL DEFAULT 0,
+        supports_vision INTEGER,
+        supports_document_input INTEGER,
+        supports_tools INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0,
+        last_synced_at TEXT NOT NULL,
+        last_seen_free_at TEXT,
+        max_output_tokens INTEGER,
+        supports_temperature INTEGER NOT NULL DEFAULT 1,
+        supports_reasoning INTEGER NOT NULL DEFAULT 0,
+        reasoning_efforts TEXT
+      );
+
+      INSERT INTO model_cache (
+        model_id, provider_id, label, context_window, is_free,
+        supports_vision, supports_document_input, supports_tools, archived,
+        last_synced_at, last_seen_free_at, max_output_tokens,
+        supports_temperature, supports_reasoning, reasoning_efforts
+      )
+      SELECT
+        model_id, provider_id, label, context_window, is_free,
+        supports_vision, supports_document_input, NULL, archived,
+        last_synced_at, last_seen_free_at, max_output_tokens,
+        supports_temperature, supports_reasoning, reasoning_efforts
+      FROM model_cache_pre_tools_tristate;
+
+      DROP TABLE model_cache_pre_tools_tristate;
+
+      ALTER TABLE custom_provider_models RENAME TO custom_provider_models_pre_tools_tristate;
+
+      CREATE TABLE custom_provider_models (
+        provider_id TEXT NOT NULL REFERENCES custom_providers(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        is_free INTEGER NOT NULL DEFAULT 0,
+        context_window INTEGER,
+        max_output_tokens INTEGER,
+        supports_tools INTEGER,
+        supports_vision INTEGER,
+        supports_document_input INTEGER,
+        supports_reasoning INTEGER NOT NULL DEFAULT 1,
+        supports_temperature INTEGER NOT NULL DEFAULT 1,
+        reasoning_efforts TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (provider_id, model_id)
+      );
+
+      INSERT INTO custom_provider_models (
+        provider_id, model_id, label, is_free, context_window, max_output_tokens,
+        supports_tools, supports_vision, supports_document_input,
+        supports_reasoning, supports_temperature, reasoning_efforts, sort_order
+      )
+      SELECT
+        provider_id, model_id, label, is_free, context_window, max_output_tokens,
+        NULL, supports_vision, supports_document_input,
+        supports_reasoning, supports_temperature, reasoning_efforts, sort_order
+      FROM custom_provider_models_pre_tools_tristate;
+
+      DROP TABLE custom_provider_models_pre_tools_tristate;
+
+      CREATE INDEX IF NOT EXISTS idx_custom_provider_models_provider
+      ON custom_provider_models (provider_id, sort_order);
+    `);
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run('migrations.toolSupportTriState', 'done');
   }
 }

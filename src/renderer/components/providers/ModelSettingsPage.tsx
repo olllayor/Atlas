@@ -1,108 +1,122 @@
-import { BoxIcon, PlusIcon, ReloadIcon } from '@radix-ui/react-icons';
-import { useEffect } from 'react';
+import { BoxIcon, PlusIcon } from '@radix-ui/react-icons';
+import { useCallback, useEffect, useState } from 'react';
 
-import type { SettingsSummary } from '../../../shared/contracts';
+import type { ProviderSelection } from '../../stores/useProvidersStore';
 import { useProvidersStore } from '../../stores/useProvidersStore';
+import { ConfirmDialog } from './ConfirmDialog';
 import { ProviderDetail } from './ProviderDetail';
 import { ProviderForm } from './ProviderForm';
 
-type ModelSettingsPageProps = {
-  settings: SettingsSummary | null;
-  isRefreshingModels: boolean;
-  onRefreshModels: () => void;
-};
-
-export function ModelSettingsPage({
-  settings,
-  isRefreshingModels,
-  onRefreshModels
-}: ModelSettingsPageProps) {
+export function ModelSettingsPage() {
   const providers = useProvidersStore((state) => state.providers);
   const selectedProviderId = useProvidersStore((state) => state.selectedProviderId);
   const isLoading = useProvidersStore((state) => state.isLoading);
   const load = useProvidersStore((state) => state.load);
   const select = useProvidersStore((state) => state.select);
 
+  const [formDirty, setFormDirty] = useState(false);
+  const [pendingSelection, setPendingSelection] = useState<{ next: ProviderSelection } | null>(null);
+
   useEffect(() => {
     void load();
   }, [load]);
 
   const selected = providers.find((provider) => provider.id === selectedProviderId) ?? null;
+  const isOnForm = selected == null;
+
+  // Never discard a typed-out provider form because a rail item was clicked.
+  const requestSelect = (next: ProviderSelection) => {
+    if (next === selectedProviderId) {
+      return;
+    }
+
+    if (isOnForm && formDirty) {
+      setPendingSelection({ next });
+      return;
+    }
+
+    select(next);
+  };
+
+  const handleDirtyChange = useCallback((dirty: boolean) => setFormDirty(dirty), []);
+
+  const hasProviders = providers.length > 0;
 
   return (
     <div>
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-[17px] font-normal text-text-primary">Model settings</h2>
-          <p className="mt-1.5 text-[13px] text-text-tertiary">
-            Manage custom model providers. Once configured, they can be selected during chat.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onRefreshModels}
-          disabled={isRefreshingModels}
-          aria-label="Refresh model catalog"
-          className="mt-1 text-text-tertiary transition hover:text-text-primary disabled:opacity-50"
-        >
-          <ReloadIcon className={`h-4 w-4 ${isRefreshingModels ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
+      <div className="flex min-h-[420px] rounded-lg border border-border-default">
+        <aside className="flex w-[220px] shrink-0 flex-col rounded-l-lg border-r border-border-default bg-bg-subtle p-2">
+          <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
+            Providers
+          </div>
 
-      <div className="mt-6 flex min-h-[420px] border border-border-default">
-        <aside className="w-[220px] shrink-0 border-r border-border-default bg-bg-subtle p-2">
-          <RailHeading>Providers</RailHeading>
-          {isLoading && providers.length === 0 ? (
-            <p className="px-2 py-1.5 text-[12px] text-text-muted">Loading…</p>
+          <div className="min-h-0 flex-1 overflow-y-auto scroll-container">
+            {isLoading && !hasProviders ? (
+              <p className="px-2 py-1.5 text-xs text-text-muted">Loading…</p>
+            ) : null}
+
+            {providers.map((provider) => (
+              <RailItem
+                key={provider.id}
+                label={provider.name}
+                icon={<BoxIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
+                active={provider.id === selectedProviderId}
+                // Green only when the provider is both enabled and usable.
+                tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
+                onClick={() => requestSelect(provider.id)}
+              />
+            ))}
+          </div>
+
+          {hasProviders ? (
+            <button
+              type="button"
+              onClick={() => requestSelect(null)}
+              className={`mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
+                selectedProviderId === null
+                  ? 'bg-bg-hover text-text-primary'
+                  : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+              }`}
+            >
+              <PlusIcon className="h-3.5 w-3.5 shrink-0" />
+              Add provider
+            </button>
           ) : null}
-          {!isLoading && providers.length === 0 ? (
-            <p className="px-2 py-1.5 text-[12px] leading-4 text-text-muted">
-              No providers yet. Add one to start chatting.
-            </p>
-          ) : null}
-
-          {providers.map((provider) => (
-            <RailItem
-              key={provider.id}
-              label={provider.name}
-              icon={<BoxIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
-              active={provider.id === selectedProviderId}
-              // Green only when the provider is both enabled and usable.
-              tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
-              onClick={() => select(provider.id)}
-            />
-          ))}
-
-          <button
-            type="button"
-            onClick={() => select(null)}
-            className={`mt-1 flex w-full items-center gap-2 border border-dashed border-border-default px-2 py-2 text-left text-[12.5px] transition ${
-              selectedProviderId === null
-                ? 'bg-bg-hover text-text-primary'
-                : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
-            }`}
-          >
-            <PlusIcon className="h-3.5 w-3.5 shrink-0" />
-            Add provider
-          </button>
         </aside>
 
         <div className="min-w-0 flex-1 p-6">
+          {!hasProviders && !isLoading && isOnForm ? (
+            <p className="mb-5 text-sm leading-relaxed text-text-tertiary">
+              No providers yet. Add one below to start chatting — a name, an endpoint and (usually) a key
+              is all it takes.
+            </p>
+          ) : null}
+
           {selected ? (
             <ProviderDetail provider={selected} />
           ) : (
-            <ProviderForm onCreated={() => undefined} />
+            <ProviderForm onCreated={() => setFormDirty(false)} onDirtyChange={handleDirtyChange} />
           )}
         </div>
       </div>
-    </div>
-  );
-}
 
-function RailHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="px-2 pb-1 pt-3 text-[11px] uppercase tracking-[0.12em] text-text-faint first:pt-1">
-      {children}
+      <ConfirmDialog
+        open={pendingSelection != null}
+        title="Discard this provider?"
+        description="The name, endpoint, key and staged models you entered have not been saved yet."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        tone="danger"
+        onCancel={() => setPendingSelection(null)}
+        onConfirm={() => {
+          if (pendingSelection) {
+            setFormDirty(false);
+            select(pendingSelection.next);
+          }
+
+          setPendingSelection(null);
+        }}
+      />
     </div>
   );
 }
@@ -120,12 +134,12 @@ function RailItem({
   tone?: 'ready' | 'idle';
   onClick: () => void;
 }) {
-
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2 px-2 py-2 text-left text-[12.5px] transition ${
+      title={label}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
         active ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
       }`}
     >
@@ -133,9 +147,7 @@ function RailItem({
       <span className="min-w-0 flex-1 truncate">{label}</span>
       <span
         aria-hidden="true"
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          tone === 'ready' ? 'bg-[var(--text-secondary)]' : 'bg-[var(--text-faint)]'
-        }`}
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone === 'ready' ? 'bg-success' : 'bg-text-faint'}`}
       />
     </button>
   );

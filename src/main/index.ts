@@ -12,13 +12,19 @@ import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
 import { AttachmentStore } from './attachments/AttachmentStore';
+import {
+  registerAttachmentProtocolHandler,
+  registerAttachmentScheme,
+} from './attachments/attachmentProtocol';
 import { createWindow } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
 import { createAppDatabase } from './db/client';
 import { registerDiagnosticsIpc } from './ipc/diagnostics';
+import { withUserFacingErrors } from './ipc/errors';
 import { registerChatIpc } from './ipc/chat';
 import { registerConversationsIpc } from './ipc/conversations';
 import { registerModelsIpc } from './ipc/models';
+import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
 import { registerSitesIpc } from './ipc/sites';
@@ -28,7 +34,9 @@ import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
 import { SiteService } from './sites/SiteService';
+import { logger } from './observability/logger';
 import { KeychainStore } from './secrets/keychain';
+import { resolveConversationWorkspace } from './workspace/conversationWorkspace';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
 import { IPC_CHANNELS } from '../shared/ipc';
@@ -42,8 +50,11 @@ const LEGACY_USER_DATA_DIRECTORIES = ['Atlas', 'CheapChat', 'cheapchat'];
 app.setName(APP_NAME);
 
 // Custom schemes must be declared before the app is ready. `atlas-site` gives
-// previewed sites their own secure origin instead of loading them over file://.
+// previewed sites their own secure origin instead of loading them over file://;
+// `atlas-attachment` does the same for stored files, which the CSP will not
+// load over file:// either.
 registerSitePreviewScheme();
+registerAttachmentScheme();
 
 async function pathExists(path: string) {
   try {
@@ -96,12 +107,29 @@ async function resolveSitesDirectory() {
 }
 
 app.whenReady().then(async () => {
+  // First thing after ready: everything below is worth having a record of, and
+  // a failure here is exactly the kind that leaves no other trace.
+  logger.configure({
+    directory: join(app.getPath('userData'), 'logs'),
+    echoToConsole: !app.isPackaged,
+  });
+  logger.info('app.started', {
+    appVersion: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    logFile: logger.getLogFilePath(),
+  });
+
   const icon = getDockIcon();
   if (icon && process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(icon);
   }
 
   const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
+  registerAttachmentProtocolHandler(attachmentStore);
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
   const toolStateStore = new ToolStateStore(database.toolExecutions);
   const interruptedMessageIds = toolStateStore.reconcileInterrupted();
@@ -134,6 +162,19 @@ app.whenReady().then(async () => {
     database.customProviders
   );
 
+  /**
+   * Tell every open window the model cache moved under it.
+   *
+   * The renderer holds the catalog in its store and only re-reads it on this
+   * signal, so any main-process write that is not announced is invisible until
+   * the app restarts.
+   */
+  const broadcastModelsChanged = () => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.modelsChanged);
+    }
+  };
+
   const customProviderService = new CustomProviderService({
     repo: database.customProviders,
     modelsRepo: database.models,
@@ -144,11 +185,29 @@ app.whenReady().then(async () => {
     // is rebuilt rather than left showing endpoints that no longer exist.
     onProvidersChanged: async () => {
       await modelRegistry.refresh().catch(() => undefined);
+      // The rebuild happens here, in the main process; the window that made the
+      // change gets back a provider record, not a catalog. Without this a
+      // freshly added provider's models sat in the cache unseen — the picker
+      // kept showing the list it loaded at startup until the app was relaunched.
+      broadcastModelsChanged();
     }
   });
 
   // Adapters for providers saved in a previous session.
   await customProviderService.syncRegistry();
+  // Saved custom models are re-checked against models.dev: effort levels for
+  // models predating them, and context/output limits, which go stale silently
+  // and skew every context reading until they are corrected. Network-backed, so
+  // it must not block startup; the renderer has usually loaded its model list by
+  // the time this lands, hence the change broadcast.
+  void customProviderService
+    .backfillModelFacts()
+    .then((changed) => {
+      if (changed) {
+        broadcastModelsChanged();
+      }
+    })
+    .catch(() => undefined);
   // Drop cached models left behind by providers that no longer exist, so the
   // catalog does not carry entries nothing can serve.
   database.models.deleteOrphanedModels();
@@ -178,9 +237,19 @@ app.whenReady().then(async () => {
         });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
+      (conversationId) => resolveConversationWorkspace(database, conversationId),
     ),
     database.runtimeState,
     toolStateStore,
+    undefined,
+    // A provider refusing an image — or the tool definitions — is the only
+    // place most endpoints ever say what they can do. Recording it turns one
+    // failed send into a permanent answer, and the broadcast inside
+    // `afterChange` takes the affordance away in the open window rather than at
+    // the next launch.
+    async ({ modelId, capability }) => {
+      await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
+    },
   );
 
   registerSettingsIpc({
@@ -190,30 +259,50 @@ app.whenReady().then(async () => {
   });
   registerModelsIpc(modelRegistry);
   registerProvidersIpc(customProviderService);
-  registerConversationsIpc(database.conversations);
+  registerConversationsIpc({
+    conversationsRepo: database.conversations,
+    projectsRepo: database.projects,
+    settingsRepo: database.settings,
+  });
+  registerProjectsIpc(database.projects);
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
-  ipcMain.handle(IPC_CHANNELS.posthogGetAnonymousId, () => {
-    return getAnonymousId();
-  });
+  // Wrapped like every other handler: these are registered here rather than in
+  // an `ipc/` module, which is exactly how a surface ends up being the one that
+  // still throws raw internals at the renderer.
+  ipcMain.handle(
+    IPC_CHANNELS.posthogGetAnonymousId,
+    withUserFacingErrors(IPC_CHANNELS.posthogGetAnonymousId, () => getAnonymousId()),
+  );
 
-  ipcMain.handle(IPC_CHANNELS.posthogCaptureEvent, (_event: Electron.IpcMainInvokeEvent, eventName: string, properties?: Record<string, unknown>) => {
-    capturePostHogEvent(eventName, properties);
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.posthogCaptureEvent,
+    withUserFacingErrors(
+      IPC_CHANNELS.posthogCaptureEvent,
+      (_event: Electron.IpcMainInvokeEvent, eventName: string, properties?: Record<string, unknown>) => {
+        capturePostHogEvent(eventName, properties);
+      },
+    ),
+  );
 
-  ipcMain.handle(IPC_CHANNELS.posthogGetTelemetryEnabled, () => {
-    return getTelemetryEnabled();
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.posthogGetTelemetryEnabled,
+    withUserFacingErrors(IPC_CHANNELS.posthogGetTelemetryEnabled, () => getTelemetryEnabled()),
+  );
 
-  ipcMain.handle(IPC_CHANNELS.posthogSetTelemetryEnabled, (_event: Electron.IpcMainInvokeEvent, enabled: boolean) => {
-    return setTelemetryEnabled(enabled);
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.posthogSetTelemetryEnabled,
+    withUserFacingErrors(
+      IPC_CHANNELS.posthogSetTelemetryEnabled,
+      (_event: Electron.IpcMainInvokeEvent, enabled: boolean) => setTelemetryEnabled(enabled),
+    ),
+  );
 
-  const window = createWindow();
+  const window = createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
   captureFirstLaunchIfNeeded();
   window.once('show', () => {
     updateService.start();
@@ -222,7 +311,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
     }
   });
 });

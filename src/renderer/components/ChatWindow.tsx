@@ -1,39 +1,51 @@
-import { defaultRangeExtractor, type Range, useVirtualizer } from '@tanstack/react-virtual';
 import {
-  AlertCircle,
-  ArrowDown,
-  Bug,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Copy,
-  FileText,
-  ImageIcon,
-  Lightbulb,
-  PaperclipIcon,
-  PenTool,
-  RefreshCw,
-  Search,
-  StopCircle,
-  Wrench,
-  XCircle,
-} from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+  defaultRangeExtractor,
+  measureElement as measureElementDefault,
+  type Range,
+  type Virtualizer,
+  useVirtualizer,
+} from '@tanstack/react-virtual';
+import { AlertCircle, ArrowDown, Check, Copy, Info, RefreshCw, Sparkles, StopCircle } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
-import type { ApprovalDecision, ChatMessage, ChatMessagePart, ConversationPage } from '../../shared/contracts';
+import type {
+  ApprovalDecision,
+  ChatMessage,
+  ChatMessagePart,
+  ChatToolPart,
+  ConversationPage,
+} from '../../shared/contracts';
 import { getMessageFileParts } from '../../shared/attachments';
 import { cn } from '../lib/utils';
 import type { DraftStateLike } from './types';
-import { Attachment, AttachmentInfo, AttachmentPreview, Attachments } from './ai-elements/attachments';
+import {
+  Attachment,
+  AttachmentInfo,
+  AttachmentPreview,
+  Attachments,
+  getAttachmentLabel,
+  getMediaCategory,
+} from './ai-elements/attachments';
 import { ConversationEmptyState } from './ai-elements/conversation';
+import { ImageLightbox } from './ai-elements/image-lightbox';
 import { MessageResponse } from './ai-elements/message';
-import { Reasoning, ReasoningContent, ReasoningTrigger } from './ai-elements/reasoning';
-import { ToolInput, ToolOutput } from './ai-elements/tool';
 import { VisualBlock } from './ai-elements/visual';
+import { ReasoningCell } from './transcript/ReasoningCell';
+import { buildToolCells, collectChangedFiles } from '../../shared/toolCellGrammar';
+import { ChangedFilesBar } from './transcript/ChangedFilesBar';
+import { ToolCellList } from './transcript/ToolCell';
 import { useClipboard } from '../hooks/useClipboard';
+import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
+import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
 
 type ChatWindowProps = {
   detail: ConversationPage | null;
@@ -47,325 +59,110 @@ type ChatWindowProps = {
   onRespondToolApproval: (request: { requestId: string; approvalId: string; decision: ApprovalDecision; reason?: string }) => Promise<void>;
   onRetryLastMessage?: () => void;
   hasTools?: boolean;
-  hasVision?: boolean;
+  /** Attached project, so the opening question names what you are working in. */
+  projectName?: string | null;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
 const HISTORY_TRAILING_OVERSCAN = 2;
-const HISTORY_GAP_PX = 22;
+/**
+ * Turn-to-turn whitespace. The reference app separates a user bubble from
+ * the next activity row by ~44px of clear space — turns breathe, and there
+ * are no dividers anywhere to do that job instead.
+ */
+const HISTORY_GAP_PX = 40;
 
-const suggestions = [
-  { icon: Lightbulb, text: 'Explain a concept', prompt: 'Explain quantum computing in simple terms' },
-  { icon: Code2, text: 'Write code', prompt: 'Write a Python function that sorts a list' },
-  { icon: Bug, text: 'Debug an error', prompt: 'Help me debug this error: ' },
-  { icon: FileText, text: 'Summarize text', prompt: 'Summarize the key points of ' },
-  { icon: PenTool, text: 'Help me write', prompt: 'Help me write an email that ' },
-  { icon: Search, text: 'Research something', prompt: 'Tell me about ' },
+/**
+ * Column geometry.
+ *
+ * The transcript and the composer are one column: the composer wraps
+ * `max-w-content-max` in a `px-5 lg:px-6` full-bleed row (`Composer.tsx`),
+ * so the transcript does exactly the same — padding *outside* the max
+ * width, not inside it. Putting the padding inside (as this file used to,
+ * `px-6 lg:px-7 xl:px-8`) narrowed the message column ~32px per side
+ * relative to the composer slab, and the mismatch grew at every
+ * breakpoint.
+ */
+const COLUMN_PADDING = 'px-5 lg:px-6';
+
+/**
+ * The single text measure.
+ *
+ * Assistant content and user bubbles share one right rail: both live in a
+ * `76ch` box pinned to the left of the column, and the user's bubble is
+ * right-aligned *inside* that box. Previously assistant text was capped at
+ * 76ch while user bubbles were 75% of the full column and flush to its
+ * right edge, so the two sides of the conversation had different margins.
+ */
+const MEASURE = 'w-full max-w-[min(100%,76ch)]';
+
+/** Jump-to-latest hysteresis: show past this, hide inside the other. */
+const JUMP_SHOW_PX = 120;
+const JUMP_HIDE_PX = 40;
+
+/**
+ * How far outside the viewport a row may sit before it degrades to plain
+ * text, as a multiple of the viewport height.
+ *
+ * The old rule degraded every row outside the *visible index range*, which
+ * meant the four overscan rows above the fold rendered as stripped-down
+ * text, got measured at that height, and then jumped to their real height
+ * the moment they scrolled in. Keeping rich content mounted across a
+ * generous window makes the swap a rare, far-offscreen event, and rows
+ * that do swap are excluded from measurement entirely (below) so their
+ * heights never enter the cache.
+ */
+const RICH_CONTENT_WINDOW = 1.5;
+
+/**
+ * Empty-state prompts.
+ *
+ * The tool-capable set is offered only when the selected model actually
+ * supports tool calling — suggesting "search this codebase" to a model
+ * that cannot call a tool sets the user up to fail. The generic set is
+ * the fallback.
+ */
+const toolSuggestions = [
+  { text: 'Search a codebase', prompt: 'Search my project for every place that ' },
+  { text: 'Read and explain a file', prompt: 'Read and walk me through the file at ' },
+  { text: 'Run a command', prompt: 'Run the test suite and summarise what fails' },
+  { text: 'Track down a bug', prompt: 'Find the cause of this error and propose a fix: ' },
+  { text: 'Research on the web', prompt: 'Search the web and summarise the current state of ' },
+  { text: 'Make an edit', prompt: 'Edit the following file so that ' },
 ];
 
-function getToolStatusLabel(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
-  switch (state) {
-    case 'approval-requested':
-      return 'Needs approval';
-    case 'approval-responded':
-      return 'Approved';
-    case 'output-available':
-      return 'Done';
-    case 'output-error':
-      return 'Error';
-    case 'output-denied':
-      return 'Denied';
-    case 'output-partial':
-      return 'Partial';
-    case 'input-streaming':
-      return 'Queued';
-    default:
-      return 'Running';
-  }
-}
+const genericSuggestions = [
+  { text: 'Explain a concept', prompt: 'Explain quantum computing in simple terms' },
+  { text: 'Write code', prompt: 'Write a Python function that sorts a list' },
+  { text: 'Debug an error', prompt: 'Help me debug this error: ' },
+  { text: 'Summarize text', prompt: 'Summarize the key points of ' },
+  { text: 'Help me write', prompt: 'Help me write an email that ' },
+  { text: 'Research something', prompt: 'Tell me about ' },
+];
 
-function getToolStatusClasses(state: Extract<ChatMessagePart, { type: 'tool' }>['state']) {
-  switch (state) {
-    case 'approval-requested':
-      return {
-        dot: 'bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.12)]',
-        badge: 'border-amber-400/25 bg-amber-400/10 text-amber-100',
-        summary: 'text-amber-100/80',
-      };
-    case 'output-available':
-    case 'approval-responded':
-      return {
-        dot: 'bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.12)]',
-        badge: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100',
-        summary: 'text-text-faint',
-      };
-    case 'output-error':
-      return {
-        dot: 'bg-rose-400 shadow-[0_0_0_3px_rgba(251,113,133,0.14)]',
-        badge: 'border-rose-400/20 bg-rose-400/10 text-rose-100',
-        summary: 'text-rose-100/80',
-      };
-    case 'output-denied':
-      return {
-        dot: 'bg-zinc-400 shadow-[0_0_0_3px_rgba(161,161,170,0.12)]',
-        badge: 'border-zinc-400/20 bg-zinc-400/10 text-zinc-200',
-        summary: 'text-zinc-300/80',
-      };
-    default:
-      return {
-        dot: 'bg-sky-400 shadow-[0_0_0_3px_rgba(56,189,248,0.12)]',
-        badge: 'border-sky-400/20 bg-sky-400/10 text-sky-100',
-        summary: 'text-text-faint',
-      };
-  }
-}
-
-function MessageMeta({ latencyMs, modelLabel }: { latencyMs?: number | null; modelLabel?: string | null }) {
-  if (!latencyMs && !modelLabel) {
-    return null;
-  }
-
-  const seconds = latencyMs ? (latencyMs / 1000).toFixed(1) : null;
-
+/**
+ * Neutral progress ring.
+ *
+ * `RefreshCw` — a *retry* glyph — used to spin here, which reads as "this
+ * failed and is being retried" rather than "this is loading".
+ */
+function Spinner({ className }: { className?: string }) {
   return (
-    <div className="mt-3 flex min-h-4 flex-wrap items-center gap-2">
-      {latencyMs ? (
-        <span className="app-code-chip inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 tabular-nums text-text-faint/85">
-          {seconds}s
-        </span>
-      ) : null}
-      {modelLabel ? (
-        <span
-          className="inline-flex max-w-[min(100%,360px)] items-center border border-border-subtle bg-bg-hover px-2.5 py-1 text-[10.5px] leading-none text-text-faint/80"
-          title={modelLabel}
-        >
-          {modelLabel}
-        </span>
-      ) : null}
-    </div>
+    <span
+      aria-hidden
+      className={cn(
+        'inline-block shrink-0 animate-spin rounded-full border border-border-strong border-t-transparent motion-reduce:animate-none',
+        className
+      )}
+    />
   );
 }
 
-function ReasoningRow({
-  text,
-  isStreaming = false,
-  latencyMs,
-}: {
-  text?: string | null;
-  isStreaming?: boolean;
-  latencyMs?: number | null;
-}) {
-  if (!text?.trim()) {
-    return null;
-  }
-
-  return (
-    <Reasoning
-      className="mb-2.5"
-      defaultOpen={false}
-      duration={latencyMs ? Math.max(1, Math.round(latencyMs / 1000)) : undefined}
-      isStreaming={isStreaming}
-    >
-      <ReasoningTrigger />
-      <ReasoningContent>{text}</ReasoningContent>
-    </Reasoning>
-  );
-}
-
-function ToolRow({
-  part,
-  onRespondToolApproval,
-}: {
-  part: Extract<ChatMessagePart, { type: 'tool' }>;
-  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
-}) {
-  const hasInput = part.rawInput != null || part.input != null;
-  const hasOutput = part.output != null || Boolean(part.errorText) || part.state === 'output-denied';
-  const hasApproval = Boolean(part.approval);
-  const hasDetails = hasInput || hasOutput;
-  const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
-  const [isOpen, setIsOpen] = useState(false);
-  const [submittingApproval, setSubmittingApproval] = useState<null | ApprovalDecision>(null);
-  const approvalRequestId = part.requestId;
-  const approvalId = part.approval?.id;
-  const canRespondApproval =
-    part.state === 'approval-requested' && Boolean(approvalRequestId) && Boolean(approvalId);
-  const fallbackDeniedMessage = /search/i.test(resolvedName)
-    ? 'Search was not run because permission was denied.'
-    : `${resolvedName} was not run because permission was denied.`;
-  const deniedMessage =
-    typeof part.output === 'string' && part.output.trim() ? part.output : fallbackDeniedMessage;
-  const statusLabel = getToolStatusLabel(part.state);
-  const statusClasses = getToolStatusClasses(part.state);
-  const fetchMode =
-    part.toolName === 'web_fetch' && typeof part.output === 'object' && part.output !== null
-      ? (part.output as { fetchMode?: string }).fetchMode
-      : undefined;
-  const headerSummary = useMemo(() => {
-    const approvalReason = part.approval?.reason?.trim();
-    if (part.state === 'approval-requested') {
-      return approvalReason || 'Waiting for approval';
-    }
-
-    if (part.state === 'output-error') {
-      return part.errorText?.trim() || 'Execution failed';
-    }
-
-    if (part.state === 'output-denied') {
-      return deniedMessage;
-    }
-
-    if (typeof part.output === 'string' && part.output.trim()) {
-      return part.output.trim().replace(/\s+/g, ' ');
-    }
-
-    if (typeof part.rawInput === 'string' && part.rawInput.trim()) {
-      return part.rawInput.trim().replace(/\s+/g, ' ');
-    }
-
-    return hasOutput ? 'Result available' : 'Running';
-  }, [deniedMessage, hasOutput, part.approval?.reason, part.errorText, part.output, part.rawInput, part.state]);
-
-  useEffect(() => {
-    const shouldForceOpen =
-      part.state === 'approval-requested' || part.state === 'output-error' || part.state === 'output-denied';
-    setIsOpen(shouldForceOpen);
-  }, [part.state]);
-
-  const sendApproval = useCallback(
-    async (decision: ApprovalDecision) => {
-      if (!canRespondApproval || !approvalRequestId || !approvalId || submittingApproval) {
-        return;
-      }
-
-      setSubmittingApproval(decision);
-      try {
-        await onRespondToolApproval({
-          requestId: approvalRequestId,
-          approvalId,
-          decision,
-        });
-      } finally {
-        setSubmittingApproval(null);
-      }
-    },
-    [approvalId, approvalRequestId, canRespondApproval, onRespondToolApproval, submittingApproval]
-  );
-
-  return (
-    <div className="relative mb-1.5 pl-5">
-      <span className="absolute left-[7px] top-0 bottom-[-10px] w-px bg-border-subtle/80" aria-hidden />
-      <span className={cn('absolute left-[4px] top-[11px] size-[7px] rounded-full', statusClasses.dot)} aria-hidden />
-
-      <div className="rounded-[10px] px-2.5 py-1.5 transition hover:bg-bg-hover/60">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[12.5px] font-medium tracking-[-0.01em] text-text-primary">
-                {resolvedName}
-              </span>
-              <span className={cn('min-w-0 truncate text-[11px] leading-5', statusClasses.summary)}>
-                {headerSummary}
-              </span>
-            </div>
-
-            {part.state === 'approval-requested' ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <span className="text-[10.5px] text-text-faint">
-                  {part.approval?.reason?.trim() || 'Permission required before execution.'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void sendApproval('accept')}
-                  disabled={!canRespondApproval || submittingApproval != null}
-                  className="inline-flex h-6 items-center border border-emerald-400/25 bg-emerald-400/10 px-2 text-[10.5px] text-emerald-100 transition hover:bg-emerald-400/15 disabled:opacity-60"
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void sendApproval('accept_for_session')}
-                  disabled={!canRespondApproval || submittingApproval != null}
-                  className="inline-flex h-6 items-center border border-border-default bg-bg-subtle px-2 text-[10.5px] text-text-secondary transition hover:bg-bg-hover disabled:opacity-60"
-                >
-                  Session
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void sendApproval('decline')}
-                  disabled={!canRespondApproval || submittingApproval != null}
-                  className="inline-flex h-6 items-center border border-rose-400/20 bg-rose-400/10 px-2 text-[10.5px] text-rose-100 transition hover:bg-rose-400/15 disabled:opacity-60"
-                >
-                  Deny
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void sendApproval('cancel')}
-                  disabled={!canRespondApproval || submittingApproval != null}
-                  className="inline-flex h-6 items-center border border-border-default bg-transparent px-2 text-[10.5px] text-text-faint transition hover:bg-bg-hover disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : null}
-
-            {part.state === 'approval-responded' && part.approval?.approved ? (
-              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-emerald-100/80">
-                <CheckCircle2 className="size-3" />
-                <span>Approval granted</span>
-              </div>
-            ) : null}
-
-            {(part.state === 'output-denied' || (part.state === 'approval-responded' && part.approval?.approved === false)) ? (
-              <div className="mt-1 inline-flex items-center gap-1.5 text-[10.5px] text-zinc-300/80">
-                <XCircle className="size-3" />
-                <span>{deniedMessage}</span>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1.5">
-            {fetchMode === 'jina-reader' ? (
-              <span
-                title="The page was blocked on direct fetch, so Atlas proxied the request through r.jina.ai. The URL is shared with the reader service."
-                className="inline-flex h-5 items-center border border-border-default bg-bg-subtle px-1.5 text-[9px] font-normal uppercase tracking-[0.12em] text-text-tertiary"
-              >
-                Via Jina
-              </span>
-            ) : null}
-            <span className={cn('inline-flex h-5 items-center border px-1.5 text-[9px] uppercase tracking-[0.12em]', statusClasses.badge)}>
-              {statusLabel}
-            </span>
-            {hasDetails ? (
-              <button
-                type="button"
-                onClick={() => setIsOpen((current) => !current)}
-                className="inline-flex size-5 items-center justify-center text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
-                title={isOpen ? 'Hide details' : 'Show details'}
-                aria-label={isOpen ? 'Hide reasoning details' : 'Show reasoning details'}
-                aria-expanded={isOpen}
-              >
-                {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        {isOpen && hasDetails ? (
-          <div className="mt-2 space-y-2 border-l border-border-subtle/70 pl-3">
-            {hasInput ? <ToolInput input={part.input ?? part.rawInput ?? ''} /> : null}
-            {hasOutput ? (
-              <ToolOutput
-                errorText={part.state === 'output-denied' ? deniedMessage : part.errorText}
-                output={part.output}
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
+/** Hover/focus action rows share one recipe so keyboard users see them too. */
+const ACTION_ROW =
+  'mt-1.5 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100';
+const ACTION_BUTTON =
+  'inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:opacity-100';
 
 function formatBytes(value: number | null | undefined) {
   if (!value || value <= 0) {
@@ -402,13 +199,25 @@ function AttachmentRow({
       className={align === 'end' ? 'mb-2 ml-auto max-w-[min(56%,560px)] justify-end' : 'mb-2 max-w-full'}
     >
       {attachments.map((attachment) => {
+        // An image in the transcript is shown, not named. The chip stays for
+        // everything else, where the filename *is* the only identity.
+        if (getMediaCategory(attachment) === 'image' && attachment.url) {
+          return (
+            <TranscriptImageAttachment
+              key={attachment.id}
+              url={attachment.url}
+              label={getAttachmentLabel(attachment)}
+            />
+          );
+        }
+
         const sizeLabel = formatBytes(attachment.sizeBytes ?? null);
 
         return (
           <Attachment data={attachment} key={attachment.id} className="max-w-full">
             <AttachmentPreview />
             <AttachmentInfo />
-            {sizeLabel ? <span className="shrink-0 text-[10px] text-text-faint/70">{sizeLabel}</span> : null}
+            {sizeLabel ? <span className="shrink-0 text-3xs text-text-faint/70">{sizeLabel}</span> : null}
           </Attachment>
         );
       })}
@@ -416,13 +225,73 @@ function AttachmentRow({
   );
 }
 
-function AssistantTextFallback({ content }: { content: string }) {
-  if (!content.trim()) {
-    return <div className="text-[13.5px] font-medium text-text-muted">Assistant response</div>;
+/**
+ * A sent image, at thumbnail size with the full picture one click away.
+ *
+ * Same 80px tile and same viewer as the composer's staged files, so an image
+ * looks and behaves identically before and after you send it.
+ */
+function TranscriptImageAttachment({ url, label }: { url: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <span className="text-2xs text-text-faint">{label}</span>;
   }
 
   return (
-    <div className="whitespace-pre-wrap break-words text-[15.5px] leading-[1.85] tracking-[-0.01em] text-text-primary">
+    <>
+      <button
+        type="button"
+        aria-label={`${label} — open`}
+        onClick={() => setOpen(true)}
+        className="size-20 shrink-0 cursor-zoom-in overflow-hidden rounded-lg border border-border-subtle bg-bg-base transition-opacity hover:opacity-90"
+      >
+        <img
+          alt={label}
+          src={url}
+          onError={() => setFailed(true)}
+          className="size-full object-cover"
+          height={80}
+          width={80}
+        />
+      </button>
+      <ImageLightbox open={open} onOpenChange={setOpen} src={url} filename={label} />
+    </>
+  );
+}
+
+/**
+ * Copy button with a real confirmation.
+ *
+ * The check used to render in `--text-faint`, i.e. *dimmer* than the copy
+ * glyph it replaced, so a successful copy looked like the button had gone
+ * disabled. Success is now success-coloured and says so in words for the
+ * ~1.5s the state lasts.
+ */
+function CopyAction({ text, label }: { text: string; label: string }) {
+  const { copied, copy } = useClipboard(1500);
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy(text)}
+      className={cn(ACTION_BUTTON, copied && 'text-success hover:text-success')}
+      aria-label={label}
+    >
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      <span className={cn('text-2xs', copied ? 'inline' : 'sr-only')}>{copied ? 'Copied' : label}</span>
+    </button>
+  );
+}
+
+function AssistantTextFallback({ content }: { content: string }) {
+  if (!content.trim()) {
+    return <div className="text-sm font-medium text-text-muted">Assistant response</div>;
+  }
+
+  return (
+    <div className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">
       {content}
     </div>
   );
@@ -431,30 +300,29 @@ function AssistantTextFallback({ content }: { content: string }) {
 function AssistantParts({
   content,
   isStreaming = false,
-  latencyMs,
   parts,
   deferRichContent = false,
   onRespondToolApproval,
 }: {
   content: string;
   isStreaming?: boolean;
-  latencyMs?: number | null;
   parts: ChatMessagePart[];
   deferRichContent?: boolean;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
+  // Memoised because it used to be recomputed for every visible row on
+  // every streamed token.
+  const segments = useMemo(() => groupAssistantParts(parts), [parts]);
+
   if (deferRichContent) {
     return <AssistantTextFallback content={content} />;
   }
 
   if (parts.length === 0) {
     return isStreaming ? (
-      <div className="inline-flex items-center gap-2 text-[13.5px] font-medium text-text-muted">
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-text-muted opacity-60" />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-text-secondary" />
-        </span>
-        Thinking…
+      // Reserve one line so the first token does not shove the transcript.
+      <div className="flex min-h-[1.5rem] items-center text-sm font-normal text-text-tertiary">
+        <span className="motion-shimmer">Thinking</span>
       </div>
     ) : (
       <AssistantTextFallback content={content} />
@@ -463,15 +331,26 @@ function AssistantParts({
 
   return (
     <>
-      {parts.map((part, index) => {
-        if (part.type === 'reasoning') {
+      {segments.map((segment, index) => {
+        if (segment.kind === 'tools') {
+          // Consecutive tool calls are handed to the transcript as one run
+          // so read-only calls can coalesce into a single `Explored` cell.
           return (
-            <ReasoningRow key={`reasoning-${index}`} text={part.text} latencyMs={latencyMs} isStreaming={isStreaming} />
+            <ToolCellGroup
+              key={`tools-${segment.parts[0].toolCallId}`}
+              parts={segment.parts}
+              onRespondToolApproval={onRespondToolApproval}
+            />
           );
         }
 
-        if (part.type === 'tool') {
-          return <ToolRow key={part.toolCallId} part={part} onRespondToolApproval={onRespondToolApproval} />;
+        const part = segment.part;
+
+        if (part.type === 'reasoning') {
+          // `partId` keys the reasoning cell's timing and expand state in
+          // the transcript UI store; without it the store falls back to
+          // hashing the text, which only settles after ~96 characters.
+          return <ReasoningCell key={part.id} partId={part.id} text={part.text} isStreaming={isStreaming} />;
         }
 
         if (part.type === 'file') {
@@ -484,15 +363,86 @@ function AssistantParts({
 
         return (
           <MessageResponse
-            key={`text-${index}`}
-            className="text-[15.5px] leading-[1.85] tracking-[-0.01em] text-text-primary"
-            isAnimating={isStreaming && index === parts.length - 1}
+            key={part.id}
+            className="text-md leading-relaxed text-text-primary"
+            isAnimating={isStreaming && index === segments.length - 1}
           >
             {part.text}
           </MessageResponse>
         );
       })}
     </>
+  );
+}
+
+type AssistantSegment =
+  | { kind: 'tools'; parts: ChatToolPart[] }
+  | { kind: 'part'; part: Exclude<ChatMessagePart, ChatToolPart> };
+
+/** Collect runs of adjacent tool parts so the transcript can group them. */
+function groupAssistantParts(parts: ChatMessagePart[]): AssistantSegment[] {
+  const segments: AssistantSegment[] = [];
+
+  for (const part of parts) {
+    if (part.type === 'tool') {
+      const last = segments[segments.length - 1];
+      if (last?.kind === 'tools') {
+        last.parts.push(part);
+      } else {
+        segments.push({ kind: 'tools', parts: [part] });
+      }
+      continue;
+    }
+    segments.push({ kind: 'part', part });
+  }
+
+  return segments;
+}
+
+/**
+ * Bridges the transcript's approval affordances to the IPC call, and owns
+ * the in-flight flag so a double-click cannot submit two decisions.
+ */
+function ToolCellGroup({
+  parts,
+  onRespondToolApproval,
+}: {
+  parts: ChatToolPart[];
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+}) {
+  const [submittingApprovalId, setSubmittingApprovalId] = useState<string | null>(null);
+
+  const respond = useCallback(
+    async (part: ChatToolPart, decision: ApprovalDecision) => {
+      const approvalId = part.approval?.id;
+      const requestId = part.requestId;
+      if (!approvalId || !requestId || submittingApprovalId) return;
+
+      setSubmittingApprovalId(approvalId);
+      try {
+        await onRespondToolApproval({ requestId, approvalId, decision });
+      } finally {
+        setSubmittingApprovalId(null);
+      }
+    },
+    [onRespondToolApproval, submittingApprovalId]
+  );
+
+  const approvals = useMemo(
+    () => ({
+      submittingApprovalId,
+      onApprove: (part: ChatToolPart, scope: 'once' | 'session') =>
+        void respond(part, scope === 'session' ? 'accept_for_session' : 'accept'),
+      onDeny: (part: ChatToolPart) => void respond(part, 'decline'),
+      onCancel: (part: ChatToolPart) => void respond(part, 'cancel'),
+    }),
+    [respond, submittingApprovalId]
+  );
+
+  return (
+    <div className="my-1.5">
+      <ToolCellList parts={parts} approvals={approvals} />
+    </div>
   );
 }
 
@@ -521,9 +471,15 @@ function MessageRow({
   onRegenerate?: () => void;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
-  const { copied, copy } = useClipboard();
   const isAssistant = message.role === 'assistant';
   const fileParts = getMessageFileParts(message.parts);
+  // The end-of-turn "Changed N files" bar — only for finished assistant
+  // turns that actually produced file edits.
+  const changedFiles = useMemo(() => {
+    if (message.role !== 'assistant' || message.status !== 'complete') return null;
+    const toolParts = message.parts.filter((part): part is ChatToolPart => part.type === 'tool');
+    return toolParts.length ? collectChangedFiles(toolParts) : null;
+  }, [message.role, message.status, message.parts]);
   const userText =
     message.parts
       .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
@@ -533,25 +489,22 @@ function MessageRow({
 
   if (!isAssistant) {
     return (
-      <div className="group flex w-full justify-end">
-        <div className="max-w-[min(56%,560px)]">
+      <div className="group flex w-full">
+        {/* Same box as the assistant column, contents right-aligned inside
+            it — one right rail for both sides of the conversation. */}
+        <div className={cn(MEASURE, 'flex min-w-0 flex-col items-end')}>
           <AttachmentRow attachments={fileParts} align="end" />
           {userText ? (
-            <div className="border border-[var(--border-default)] bg-[var(--bg-subtle)] px-4 py-2.5">
-              <p className="whitespace-pre-wrap text-[13.5px] leading-[1.65rem] text-text-primary">{userText}</p>
+            // Right-aligned bubble on a subtle elevated tint — no border,
+            // no avatar, no name, no timestamp (reference-visual-spec §5).
+            // Radius ~22px: a single-line message reads as a pill.
+            <div className="max-w-full rounded-[22px] bg-bg-surface px-5 py-3">
+              <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">{userText}</p>
             </div>
           ) : null}
           {userText ? (
-            <div className="mt-1.5 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-              <button
-                type="button"
-                onClick={() => void copy(userText)}
-                className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
-                title={copied ? 'Copied!' : 'Copy'}
-                aria-label={copied ? 'Copied to clipboard' : 'Copy message'}
-              >
-                {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
-              </button>
+            <div className={cn(ACTION_ROW, 'justify-end')}>
+              <CopyAction text={userText} label="Copy message" />
             </div>
           ) : null}
         </div>
@@ -561,38 +514,27 @@ function MessageRow({
 
   return (
     <div className="group flex w-full">
-      <div className="min-w-0 max-w-[min(100%,76ch)] flex-1">
+      <div className={cn(MEASURE, 'min-w-0')}>
         <AssistantParts
           content={message.content}
-          latencyMs={message.status === 'complete' ? message.latencyMs : null}
           parts={message.parts}
           deferRichContent={deferRichContent}
           onRespondToolApproval={onRespondToolApproval}
         />
 
-        <MessageMeta
-          latencyMs={message.status === 'complete' ? message.latencyMs : null}
-        />
+        {changedFiles ? <ChangedFilesBar summary={changedFiles} /> : null}
 
-        <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <button
-            type="button"
-            onClick={() => void copy(message.content)}
-            className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
-            title={copied ? 'Copied!' : 'Copy'}
-            aria-label={copied ? 'Copied to clipboard' : 'Copy assistant response'}
-          >
-            {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-faint)]" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
+        <div className={ACTION_ROW}>
+          <CopyAction text={message.content} label="Copy response" />
           {onRegenerate ? (
             <button
               type="button"
               onClick={onRegenerate}
-              className="p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
-              title="Regenerate response"
+              className={ACTION_BUTTON}
               aria-label="Regenerate response"
             >
               <RefreshCw className="h-3.5 w-3.5" />
+              <span className="sr-only">Regenerate response</span>
             </button>
           ) : null}
         </div>
@@ -603,15 +545,16 @@ function MessageRow({
 
 function StreamingRow({
   parts,
-  modelLabel,
   errorMessage,
+  notice,
   status,
   onRespondToolApproval,
   onRetry,
 }: {
   parts: ChatMessagePart[];
-  modelLabel?: string;
   errorMessage?: string;
+  /** Why this turn is taking longer than it looks like it should. */
+  notice?: DraftStateLike['notice'];
   status: 'streaming' | 'error' | 'aborted';
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onRetry?: () => void;
@@ -622,9 +565,9 @@ function StreamingRow({
 
   return (
     <div className="group flex w-full">
-      <div className="min-w-0 max-w-[min(100%,76ch)] flex-1">
+      <div className={cn(MEASURE, 'min-w-0')}>
         {isError ? (
-          <div className="border border-error-border bg-error-bg p-4">
+          <div className="rounded-lg border border-error-border bg-error-bg p-4">
             <div className="flex items-start gap-3">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" />
               <div className="min-w-0 flex-1">
@@ -635,7 +578,7 @@ function StreamingRow({
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="inline-flex h-7 shrink-0 items-center gap-1.5 border border-error-border bg-transparent px-2.5 text-[11.5px] font-normal text-error-text transition hover:border-error-text hover:bg-error-bg hover:text-white"
+                  className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-error-border bg-transparent px-2.5 text-2xs font-normal text-error-text transition hover:border-error-text hover:bg-error-bg hover:text-text-primary"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
                   <span>Retry</span>
@@ -646,14 +589,14 @@ function StreamingRow({
         ) : isAborted ? (
           <>
             {hasParts ? (
-              <AssistantParts
-                content=""
-                latencyMs={null}
-                parts={parts}
-                onRespondToolApproval={onRespondToolApproval}
-              />
+              <AssistantParts content="" parts={parts} onRespondToolApproval={onRespondToolApproval} />
             ) : null}
-            <div className={cn('border border-border-subtle bg-bg-subtle p-4', hasParts ? 'mt-3' : undefined)}>
+            <div
+              className={cn(
+                'rounded-lg border border-border-subtle bg-bg-subtle p-4',
+                hasParts ? 'mt-3' : undefined
+              )}
+            >
               <div className="flex items-start gap-3">
                 <StopCircle className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
                 <p className="text-sm text-text-muted">Generation stopped</p>
@@ -661,10 +604,29 @@ function StreamingRow({
             </div>
           </>
         ) : (
-          <AssistantParts content="" isStreaming latencyMs={null} parts={parts} onRespondToolApproval={onRespondToolApproval} />
+          <>
+            <AssistantParts content="" isStreaming parts={parts} onRespondToolApproval={onRespondToolApproval} />
+            {/*
+              A dim line under the shimmer, not a banner: the turn has not
+              failed, and a warning-shaped box would say it had. Before this
+              existed a turn that timed out and retried was indistinguishable
+              from a turn that was simply slow.
+            */}
+            {notice ? (
+              <div
+                aria-live="polite"
+                role="status"
+                className={cn(
+                  'mt-1.5 flex items-start gap-1.5 text-sm leading-relaxed',
+                  notice.level === 'warning' ? 'text-warning-text' : 'text-text-tertiary'
+                )}
+              >
+                <Info aria-hidden className="mt-[3px] h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0">{notice.message}</span>
+              </div>
+            ) : null}
+          </>
         )}
-
-        {modelLabel ? <MessageMeta latencyMs={null} modelLabel={modelLabel} /> : null}
       </div>
     </div>
   );
@@ -685,76 +647,127 @@ function buildHistoryRangeExtractor(isStreaming: boolean) {
   };
 }
 
+/**
+ * Rough row height, used only to seed the virtualizer before a row has
+ * been measured.
+ *
+ * Recalibrated for the Codex cell grammar. The previous constants were
+ * tuned against bordered tool cards (~52px each, always their own row);
+ * cells are now a single ~22px line by default, and consecutive
+ * read-only calls coalesce, so N reads occupy roughly one line rather
+ * than N cards.
+ *
+ * There are deliberately **no upper clamps** here any more. The old
+ * `Math.min(560, …)` / `Math.min(320, …)` caps meant a 4,000px answer and
+ * a 600px one were both estimated at 560px, so the scrollbar thumb was a
+ * lie and every scroll into unmeasured territory produced a correction.
+ * Systematic error left over from the heuristic is removed at runtime by
+ * `estimateScaleRef` (see `ChatWindow`), which calibrates these numbers
+ * against what the same messages actually measured.
+ */
+const ROW_HEIGHT = {
+  /** Row padding + hover-action line. */
+  assistantBase: 44,
+  userBase: 60,
+  /** One wrapped line of body text. */
+  textLine: 24,
+  /** One collapsed activity row. */
+  toolCell: 24,
+  /** Reasoning collapses to a single activity row. */
+  reasoning: 28,
+  /** The end-of-turn "Changed N files" bar (48px + margin). */
+  changedFilesBar: 64,
+  visual: 320,
+  file: 28,
+} as const;
+
 function estimateHistoryRowHeight(message: ChatMessage) {
   const fileCount = getMessageFileParts(message.parts).length;
+
   if (message.role === 'user') {
-    return Math.min(320, 84 + Math.ceil(message.content.length / 120) * 22 + fileCount * 28);
+    return Math.max(
+      44,
+      ROW_HEIGHT.userBase + Math.ceil(message.content.length / 120) * 22 + fileCount * ROW_HEIGHT.file
+    );
   }
 
-  const toolCount = message.parts.filter((part) => part.type === 'tool').length;
+  const toolParts = message.parts.filter((part): part is ChatToolPart => part.type === 'tool');
   const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
   const visualCount = message.parts.filter((part) => part.type === 'visual').length;
-  return Math.min(
-    560,
-    156 +
-      Math.ceil(message.content.length / 100) * 24 +
-      toolCount * 52 +
-      reasoningCount * 56 +
-      visualCount * 320 +
-      fileCount * 28,
+
+  // Ask the grammar how many cells these parts actually produce rather
+  // than assuming one row per call — coalescing means the two numbers
+  // diverge sharply on read-heavy turns. Details stay collapsed by
+  // default, so only the summary rows count.
+  const cells = toolParts.length ? buildToolCells(toolParts) : [];
+  const hasChangedFilesBar =
+    message.status === 'complete' && cells.some((cell) => cell.detail.type === 'diff');
+
+  return Math.max(
+    44,
+    ROW_HEIGHT.assistantBase +
+      Math.ceil(message.content.length / 100) * ROW_HEIGHT.textLine +
+      cells.length * ROW_HEIGHT.toolCell +
+      (hasChangedFilesBar ? ROW_HEIGHT.changedFilesBar : 0) +
+      reasoningCount * ROW_HEIGHT.reasoning +
+      visualCount * ROW_HEIGHT.visual +
+      fileCount * ROW_HEIGHT.file
   );
 }
+
+/*
+ * Keeping the reader still — when a row above the viewport re-measures,
+ * `scrollTop` shifts by the same delta so content under the reader does not
+ * move — is virtual-core's own default
+ * (`item.start < getScrollOffset() + scrollAdjustments`). We used to restate
+ * it as an override, but dropped the `scrollAdjustments` term, which loses
+ * every correction already queued in the same measurement pass. Both members
+ * are private on `Virtualizer`, so the correct expression is not writable
+ * from here; leaving the default in place is both correct and shorter.
+ */
 
 function SuggestionsState({
   onSuggestionClick,
   hasTools,
-  hasVision,
+  projectName,
 }: {
   onSuggestionClick: (prompt: string) => void;
   hasTools: boolean;
-  hasVision: boolean;
+  projectName?: string | null;
 }) {
-  const affordances: Array<{ icon: React.ComponentType<{ className?: string }>; label: string; hint: string }> = [
-    { icon: PaperclipIcon, label: 'Drop files', hint: 'PDF, image, or text — the model sees attachments' },
-    { icon: ImageIcon, label: 'Paste images', hint: hasVision ? 'Your current model supports vision' : 'Switch to a vision-capable model to read images' },
-  ];
-  if (hasTools) {
-    affordances.push({ icon: Wrench, label: 'Tools enabled', hint: 'Web search, file read, bash, grep, glob' });
-  }
+  const suggestions = hasTools ? toolSuggestions : genericSuggestions;
 
   return (
-    <ConversationEmptyState>
+    <ConversationEmptyState className="p-0">
       <div className="flex w-full max-w-xl flex-col items-center text-center">
-        <h2 className="text-[28px] font-light leading-[1.15] tracking-[-0.02em] text-text-primary">
-          What can I help with?
+        {/* Ghost logo: an outline mark in the faint text colour. */}
+        <Sparkles aria-hidden className="mb-5 h-10 w-10 text-text-faint" strokeWidth={1.25} />
+        <h2 className="text-3xl font-normal leading-[1.15] text-text-primary">
+          {projectName ? (
+            <>
+              {/* The project is underlined rather than bolded: it names the
+                  working directory, and the dotted rule reads as a label
+                  instead of as emphasis on one word of a question. */}
+              What should we build in{' '}
+              <span className="underline decoration-border-strong decoration-dotted underline-offset-4">
+                {projectName}
+              </span>
+              ?
+            </>
+          ) : (
+            'What can I help with?'
+          )}
         </h2>
-        <p className="mt-3 max-w-md text-[14px] leading-6 text-text-tertiary">
-          Start with a prompt below or type your own message.
-        </p>
 
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-          {affordances.map(({ icon: Icon, label, hint }) => (
-            <span
-              key={label}
-              title={hint}
-              className="inline-flex items-center gap-1.5 border border-[var(--border-subtle)] bg-bg-elevated px-2.5 py-1 text-[11px] font-normal text-[var(--text-muted)]"
-            >
-              <Icon className="h-3 w-3" aria-hidden="true" />
-              <span>{label}</span>
-            </span>
-          ))}
-        </div>
-
-        <div className="mt-6 grid w-full max-w-lg grid-cols-2 gap-3">
-          {suggestions.map(({ icon: Icon, text, prompt }) => (
+        <div className="mt-6 flex max-w-lg flex-wrap items-center justify-center gap-2">
+          {suggestions.map(({ text, prompt }) => (
             <button
               key={text}
               type="button"
               onClick={() => onSuggestionClick(prompt)}
-              className="group flex items-center gap-3 border border-border-medium bg-bg-elevated px-4 py-3 text-left text-sm text-text-tertiary transition hover:border-[var(--border-strong)] hover:bg-bg-active hover:text-text-primary"
+              className="rounded-full border border-border-default px-3.5 py-1.5 text-sm font-normal text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
             >
-              <Icon className="h-4 w-4 shrink-0 text-text-muted transition group-hover:text-text-secondary" />
-              <span className="truncate font-normal">{text}</span>
+              {text}
             </button>
           ))}
         </div>
@@ -775,260 +788,527 @@ export function ChatWindow({
   onRespondToolApproval,
   onRetryLastMessage,
   hasTools = false,
-  hasVision = false,
+  projectName = null,
 }: ChatWindowProps) {
-  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useStickToBottom({
+  const {
+    scrollRef,
+    contentRef,
+    scrollToBottom,
+    stopScroll,
+    isAtBottom,
+    state: stickState,
+  } = useStickToBottom({
     initial: 'instant',
-    resize: draft?.status === 'streaming' ? 'instant' : 'smooth',
+    /*
+      Always instant. With a spring here, expanding a reasoning or tool
+      cell near the bottom animated the transcript away from the row the
+      user had just clicked.
+    */
+    resize: 'instant',
   });
-  const pendingPrependRef = useRef<{
-    conversationId: string;
-    previousMessageCount: number;
-    previousScrollHeight: number;
-  } | null>(null);
+
+  // The library's `scrollRef` is a ref *callback*; mirroring it into state
+  // is what lets effects below re-bind when the container mounts.
+  const [scrollNode, setScrollNode] = useState<HTMLDivElement | null>(null);
+  const attachScrollRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollRef(node);
+      setScrollNode(node);
+    },
+    [scrollRef]
+  );
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pendingPrependRef = useRef<{ conversationId: string; previousMessageCount: number } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
+  /** Running calibration of `estimateHistoryRowHeight` against reality. */
+  const estimateScaleRef = useRef({ measured: 0, estimated: 0, count: 0 });
+
   const conversationId = detail?.conversation?.id ?? null;
-  const messages = detail?.messages ?? [];
+  const messages = useMemo(() => detail?.messages ?? [], [detail]);
   const hasOlder = detail?.hasOlder ?? false;
   const nextCursor = detail?.nextCursor ?? null;
+  const isStreaming = draft?.status === 'streaming';
   const showSetupPrompt = Boolean(detail && !hasCredential && messages.length === 0);
+  const showSuggestions = Boolean(detail && hasCredential && messages.length === 0 && !draft);
 
-  const rangeExtractor = useMemo(() => buildHistoryRangeExtractor(draft?.status === 'streaming'), [draft?.status]);
+  const { userHasScrolledRef, isScrolledUp } = useTranscriptScroll({
+    element: scrollNode,
+    onUserScrollUp: stopScroll,
+    showAt: JUMP_SHOW_PX,
+    hideAt: JUMP_HIDE_PX,
+  });
+
+  // ---------------------------------------------------------------------
+  // Virtualizer
+  // ---------------------------------------------------------------------
+
+  const rangeExtractor = useMemo(() => buildHistoryRangeExtractor(isStreaming), [isStreaming]);
+
+  /**
+   * The virtual list does not start at the scroller's origin — the column
+   * has vertical padding and, when there is older history, a status slot
+   * above it. `scrollMargin` tells the virtualizer about that offset so
+   * `scrollToIndex` lands where it says it will.
+   */
+  const [scrollMargin, setScrollMargin] = useState(0);
+
+  const estimateSize = useCallback(
+    (index: number) => {
+      const message = messages[index];
+      const base = message ? estimateHistoryRowHeight(message) : 120;
+      const { measured, estimated, count } = estimateScaleRef.current;
+      if (count < 4 || estimated <= 0) {
+        return base;
+      }
+      const scale = Math.min(4, Math.max(0.4, measured / estimated));
+      return Math.round(base * scale);
+    },
+    [messages]
+  );
+
+  const measureRow = useCallback(
+    (
+      element: HTMLDivElement,
+      entry: ResizeObserverEntry | undefined,
+      instance: Virtualizer<HTMLElement, HTMLDivElement>
+    ) => {
+      const size = measureElementDefault(element, entry, instance);
+      const index = Number(element.getAttribute('data-index'));
+      const message = Number.isFinite(index) ? messages[index] : undefined;
+
+      if (message && size > 0) {
+        const stats = estimateScaleRef.current;
+        stats.measured += size;
+        stats.estimated += estimateHistoryRowHeight(message);
+        stats.count += 1;
+        // Halve the accumulator periodically so the calibration tracks the
+        // conversation's recent shape instead of everything ever measured.
+        if (stats.count > 160) {
+          stats.measured /= 2;
+          stats.estimated /= 2;
+          stats.count = Math.round(stats.count / 2);
+        }
+      }
+
+      return size;
+    },
+    [messages]
+  );
+
   const rowVirtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
     count: messages.length,
-    estimateSize: (index) =>
-      estimateHistoryRowHeight(
-        messages[index] ?? {
-          id: `placeholder-${index}`,
-          conversationId: conversationId ?? 'placeholder',
-          role: 'assistant',
-          content: '',
-          reasoning: null,
-          parts: [],
-          status: 'complete',
-          providerId: null,
-          modelId: null,
-          inputTokens: null,
-          outputTokens: null,
-          reasoningTokens: null,
-          latencyMs: null,
-          errorCode: null,
-          createdAt: new Date(0).toISOString(),
-        },
-      ),
+    estimateSize,
+    measureElement: measureRow,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => messages[index]?.id ?? index,
     gap: HISTORY_GAP_PX,
     overscan: 0,
+    scrollMargin,
     rangeExtractor,
   });
   const virtualItems = rowVirtualizer.getVirtualItems();
   const visibleRange = rowVirtualizer.range;
-  const shouldRenderVirtualizedHistory = messages.length === 0 || virtualItems.length > 0;
+  const totalSize = rowVirtualizer.getTotalSize();
 
-  const loadOlderMessages = useCallback(async () => {
-    if (!detail || !hasOlder || isLoadingOlder) {
-      return;
-    }
+  // ---------------------------------------------------------------------
+  // Scroll lifecycle
+  // ---------------------------------------------------------------------
 
-    const scrollElement = scrollRef.current;
-    if (scrollElement) {
-      pendingPrependRef.current = {
-        conversationId: detail.conversation.id,
-        previousMessageCount: messages.length,
-        previousScrollHeight: scrollElement.scrollHeight,
-      };
-    }
-
-    if (!detail?.conversation) return;
-    await onLoadOlderMessages(detail.conversation.id);
-  }, [detail, hasOlder, isLoadingOlder, messages.length, onLoadOlderMessages, scrollRef]);
-
-  useEffect(() => {
-    lastAutoLoadCursorRef.current = null;
-  }, [conversationId]);
-
+  /**
+   * Conversation switch.
+   *
+   * `ChatWindow` cannot be keyed by conversation id from here (`App.tsx`
+   * owns that element), so the equivalent reset happens by hand: drop every
+   * per-conversation ref, clear the escape lock inside the stick-to-bottom
+   * state object, and land at the bottom instantly. Without this you used
+   * to arrive in a new thread parked wherever you left the previous one.
+   */
   useLayoutEffect(() => {
-    if (!detail?.conversation) {
+    estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
+    pendingPrependRef.current = null;
+    lastAutoLoadCursorRef.current = null;
+    userHasScrolledRef.current = false;
+
+    const element = scrollRef.current;
+    if (!element) {
       return;
     }
 
-    const pendingPrepend = pendingPrependRef.current;
-    const scrollElement = scrollRef.current;
+    stickState.escapedFromLock = false;
+    element.scrollTop = element.scrollHeight;
+    void scrollToBottom({ animation: 'instant', wait: false });
+  }, [conversationId, scrollRef, scrollToBottom, stickState, userHasScrolledRef]);
 
-    if (
-      !pendingPrepend ||
-      !scrollElement ||
-      pendingPrepend.conversationId !== detail.conversation.id ||
-      messages.length <= pendingPrepend.previousMessageCount
-    ) {
+  /** Measure where the virtual list sits inside the scroller. */
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+    const offset = Math.round(list.offsetTop);
+    setScrollMargin((current) => (current === offset ? current : offset));
+  }, [conversationId, hasOlder, showSuggestions, showSetupPrompt, isLoadingConversation, messages.length]);
+
+  /**
+   * Restore the reading position after older messages are prepended.
+   *
+   * The old implementation diffed `scrollHeight` before and after, which is
+   * measured against *estimated* heights for the newly inserted rows and
+   * therefore drifted. Re-anchoring on the message that used to be first is
+   * exact: it was already measured, and any correction as the prepended
+   * rows measure is absorbed by
+   * `shouldAdjustScrollPositionOnItemSizeChange`.
+   */
+  useLayoutEffect(() => {
+    const pending = pendingPrependRef.current;
+    if (!pending || !conversationId) {
+      return;
+    }
+    if (pending.conversationId !== conversationId) {
+      pendingPrependRef.current = null;
       return;
     }
 
-    const heightDelta = scrollElement.scrollHeight - pendingPrepend.previousScrollHeight;
-    if (heightDelta > 0) {
-      scrollElement.scrollTop += heightDelta;
+    const prependedCount = messages.length - pending.previousMessageCount;
+    if (prependedCount <= 0) {
+      return;
     }
 
     pendingPrependRef.current = null;
-  }, [detail, messages.length, scrollRef]);
+    rowVirtualizer.scrollToIndex(prependedCount, { align: 'start' });
+  }, [conversationId, messages.length, rowVirtualizer]);
 
-  useEffect(() => {
-    if (!detail || !hasOlder || isLoadingOlder || visibleRange?.startIndex !== 0 || !nextCursor) {
+  const loadOlderMessages = useCallback(async () => {
+    if (!detail?.conversation || !hasOlder || isLoadingOlder) {
       return;
     }
 
+    pendingPrependRef.current = {
+      conversationId: detail.conversation.id,
+      previousMessageCount: messages.length,
+    };
+
+    await onLoadOlderMessages(detail.conversation.id);
+  }, [detail, hasOlder, isLoadingOlder, messages.length, onLoadOlderMessages]);
+
+  /**
+   * Auto-load older history when the top of the list comes into view —
+   * gated on the user having actually scrolled. `startIndex === 0` is true
+   * on the first paint of every thread, which used to fire a page load
+   * nobody asked for on every conversation open.
+   */
+  useEffect(() => {
+    if (!hasOlder || isLoadingOlder || !nextCursor || visibleRange?.startIndex !== 0) {
+      return;
+    }
+    if (!userHasScrolledRef.current) {
+      return;
+    }
     if (lastAutoLoadCursorRef.current === nextCursor) {
       return;
     }
 
     lastAutoLoadCursorRef.current = nextCursor;
     void loadOlderMessages();
-  }, [detail, hasOlder, nextCursor, isLoadingOlder, loadOlderMessages, visibleRange?.startIndex]);
+  }, [
+    hasOlder,
+    isLoadingOlder,
+    nextCursor,
+    loadOlderMessages,
+    userHasScrolledRef,
+    visibleRange?.startIndex,
+  ]);
+
+  /**
+   * Post-send.
+   *
+   * Previously `{ animation: 'smooth', ignoreEscapes: true }`: the spring
+   * took ~1s from far up the thread and, while it ran, the library actively
+   * reverted any `scrollTop` the user produced. Sending a message therefore
+   * confiscated the scroll wheel. Now it is instant, and it only happens if
+   * the user was at the live edge to begin with — send while reading
+   * history and the transcript stays exactly where it is (the pill picks up
+   * the unread count instead).
+   */
+  const scrolledUpRef = useRef(false);
+  scrolledUpRef.current = isScrolledUp;
 
   useEffect(() => {
-    if (!draft?.requestId) {
+    if (!draft?.requestId || scrolledUpRef.current) {
+      return;
+    }
+    void scrollToBottom({ animation: 'instant', wait: false });
+  }, [draft?.requestId, scrollToBottom]);
+
+  // ---------------------------------------------------------------------
+  // Jump-to-latest / unread
+  // ---------------------------------------------------------------------
+
+  const completedAssistantCount = useMemo(() => countCompletedAssistantTurns(messages), [messages]);
+
+  /**
+   * What counts as seen. Tracks the arrival count while the view is following
+   * the live edge, then freezes the moment the user reads away from it, so
+   * "unread" is growth since that point.
+   */
+  const seenAssistantCountRef = useRef(0);
+  const [seenAssistantCount, setSeenAssistantCount] = useState(0);
+
+  const { isDetached, unreadCount } = deriveJumpState({
+    isScrolledUp,
+    isAtBottom,
+    completedAssistantCount,
+    seenAssistantCount,
+  });
+
+  useEffect(() => {
+    // A conversation switch starts from what is on screen; the previous
+    // thread's backlog is not unread in this one.
+    seenAssistantCountRef.current = completedAssistantCount;
+    setSeenAssistantCount(completedAssistantCount);
+    // Deliberately keyed on the conversation alone: this is the reset, and must
+    // not re-run as the count changes within a conversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (isDetached || seenAssistantCountRef.current === completedAssistantCount) {
       return;
     }
 
-    void scrollToBottom({
-      animation: 'smooth',
-      wait: false,
-      ignoreEscapes: true,
-    });
-  }, [draft?.requestId, scrollToBottom]);
+    // Attached, so everything that has landed has been seen.
+    seenAssistantCountRef.current = completedAssistantCount;
+    setSeenAssistantCount(completedAssistantCount);
+  }, [completedAssistantCount, isDetached]);
 
-  const showSuggestions = Boolean(detail && hasCredential && messages.length === 0 && !draft);
+  // ---------------------------------------------------------------------
+  // Turn-completion announcement
+  // ---------------------------------------------------------------------
 
-  if (!detail) {
-    return (
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-10 lg:px-12">
-        {isLoadingConversation ? (
-          <ConversationEmptyState
-            icon={<RefreshCw className="h-10 w-10 animate-spin text-text-muted" />}
-            title="Loading conversation"
-          role="status"
-          aria-live="polite"
-            description="Fetching the latest messages for this session."
-          />
-        ) : (
-          <SuggestionsState onSuggestionClick={onSuggestionClick} hasTools={hasTools} hasVision={hasVision} />
-        )}
+  /*
+    `role="log" aria-live="polite"` used to sit on the scroll container, so
+    every token *and* every virtualizer row swap was re-announced. The
+    transcript is now inert to assistive tech during streaming and a single
+    off-screen region reports turn boundaries.
+  */
+  const [announcement, setAnnouncement] = useState('');
+  const previousDraftStatusRef = useRef<DraftStateLike['status'] | null>(null);
+
+  useEffect(() => {
+    const status = draft?.status ?? null;
+    const previous = previousDraftStatusRef.current;
+    previousDraftStatusRef.current = status;
+
+    if (previous !== 'streaming' || status === 'streaming') {
+      return;
+    }
+
+    setAnnouncement(
+      status === 'error'
+        ? 'Response failed'
+        : status === 'aborted'
+          ? 'Response stopped'
+          : 'Response complete'
+    );
+  }, [draft?.status]);
+
+  // ---------------------------------------------------------------------
+  // Body
+  // ---------------------------------------------------------------------
+
+  const lastAssistantIndex = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === 'assistant') {
+        return index;
+      }
+    }
+    return -1;
+  }, [messages]);
+
+  const viewportHeight = rowVirtualizer.scrollRect?.height ?? 0;
+  const scrollOffset = rowVirtualizer.scrollOffset ?? 0;
+  const richWindow = Math.max(800, viewportHeight * RICH_CONTENT_WINDOW);
+  const richStart = scrollOffset - richWindow;
+  const richEnd = scrollOffset + viewportHeight + richWindow;
+
+  const emptyKind = isLoadingConversation
+    ? 'loading'
+    : showSetupPrompt
+      ? 'setup'
+      : !detail || showSuggestions
+        ? 'suggestions'
+        : null;
+
+  let body: ReactNode;
+
+  if (emptyKind === 'loading') {
+    body = (
+      <ConversationEmptyState
+        className="p-0"
+        icon={<Spinner className="h-6 w-6 border-2" />}
+        title="Loading conversation"
+        description="Fetching the latest messages for this session."
+        role="status"
+      />
+    );
+  } else if (emptyKind === 'setup') {
+    body = (
+      <div className="mx-auto w-full max-w-2xl rounded-xl border border-warning-border bg-warning-bg p-6 text-center">
+        <h2 className="text-lg font-normal text-text-primary">Add your API key to start</h2>
+        <p className="mt-2 text-sm text-text-tertiary">
+          Credentials are stored in your OS keychain. Nothing leaves your machine.
+        </p>
+        <button type="button" onClick={onOpenSettings} className="btn-primary mt-4 px-4 py-2 text-sm">
+          Open Settings
+        </button>
       </div>
     );
-  }
+  } else if (emptyKind === 'suggestions') {
+    // One wrapper for both the "no conversation selected" and the "empty
+    // conversation" paths — they used to be two states with different
+    // padding and centring, so the view jumped when `detail` resolved.
+    body = (
+      <SuggestionsState
+        onSuggestionClick={onSuggestionClick}
+        hasTools={hasTools}
+        projectName={projectName}
+      />
+    );
+  } else {
+    body = (
+      <>
+        {hasOlder ? (
+          /* Constant-height slot: the spinner appearing must not shove the
+             transcript. There is no manual button any more — one mechanism
+             (scroll to the top) instead of two competing ones. */
+          <div className="mb-4 flex h-6 shrink-0 items-center justify-center">
+            {isLoadingOlder ? (
+              <span className="inline-flex items-center gap-2 text-2xs text-text-faint">
+                <Spinner className="h-3 w-3" />
+                Loading earlier messages
+              </span>
+            ) : null}
+          </div>
+        ) : null}
 
-  if (showSetupPrompt) {
-    return (
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-10 lg:px-12">
-        <div className="mx-auto w-full max-w-2xl border border-warning-border bg-warning-bg p-6 text-center">
-          <h2 className="text-lg font-normal text-text-primary">Add your API key to start</h2>
-          <p className="mt-2 text-sm text-text-tertiary">
-            Credentials are stored in your OS keychain. Nothing leaves your machine.
-          </p>
-          <button type="button" onClick={onOpenSettings} className="btn-primary mt-4 px-4 py-2 text-sm">
-            Open Settings
-          </button>
+        <div ref={listRef} className="relative w-full" style={{ height: totalSize }}>
+          {virtualItems.map((virtualItem) => {
+            const message = messages[virtualItem.index];
+            if (!message) {
+              return null;
+            }
+
+            /*
+              Rows are only stripped to plain text when they are more than
+              ~1.5 viewports outside the window — the old rule degraded the
+              four overscan rows just above the fold, measured them at that
+              (much shorter) height, then jumped them to full height the
+              moment they scrolled in.
+
+              A stripped row is pinned to the height it was last measured
+              at. Detaching `measureElement` would not help — the
+              virtualizer's ResizeObserver keeps observing a still-connected
+              node — but a pinned height makes the re-measurement a no-op,
+              so the fallback's height can never enter the cache.
+            */
+            const isFarOutside = virtualItem.end < richStart || virtualItem.start > richEnd;
+
+            return (
+              <div
+                key={virtualItem.key}
+                ref={rowVirtualizer.measureElement}
+                data-index={virtualItem.index}
+                className={cn('absolute left-0 top-0 w-full', isFarOutside && 'overflow-hidden')}
+                style={{
+                  transform: `translateY(${virtualItem.start - scrollMargin}px)`,
+                  height: isFarOutside ? virtualItem.size : undefined,
+                }}
+                onTransitionEnd={(event) => {
+                  // Disclosures animate `grid-template-rows` over 160ms; the
+                  // ResizeObserver tracks it, this settles the final value.
+                  if (event.propertyName === 'grid-template-rows') {
+                    rowVirtualizer.measureElement(event.currentTarget);
+                  }
+                }}
+              >
+                <MessageRow
+                  message={message}
+                  deferRichContent={isFarOutside}
+                  onRegenerate={
+                    onRetryLastMessage && !draft && virtualItem.index === lastAssistantIndex
+                      ? onRetryLastMessage
+                      : undefined
+                  }
+                  onRespondToolApproval={onRespondToolApproval}
+                />
+              </div>
+            );
+          })}
         </div>
-      </div>
+
+        {draft ? (
+          <div style={{ marginTop: messages.length > 0 ? HISTORY_GAP_PX : 0 }}>
+            <StreamingRow
+              parts={draft.parts}
+              errorMessage={draft.errorMessage}
+              notice={draft.notice}
+              status={draft.status}
+              onRespondToolApproval={onRespondToolApproval}
+              onRetry={onRetryLastMessage}
+            />
+          </div>
+        ) : null}
+      </>
     );
   }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
-        ref={scrollRef}
-        className="scrollbar-auto-hide relative min-h-0 flex-1 overflow-y-auto"
-        role="log"
-        aria-live="polite"
+        ref={attachScrollRef}
+        /*
+          Focusable so PageUp/PageDown/Home/End reach the transcript at all.
+          The global `*:focus-visible` outline is pulled inside the box —
+          a 2px ring hanging off the pane edge would be clipped.
+        */
+        tabIndex={0}
+        aria-label="Conversation transcript"
+        className="scrollbar-auto-hide relative min-h-0 flex-1 overflow-y-auto focus-visible:[outline-offset:-2px]"
       >
         <div
           ref={contentRef}
           className={cn(
-            'mx-auto flex w-full max-w-content-max flex-col px-6 py-7 lg:px-7 lg:py-8 xl:px-8 xl:py-9',
-            showSuggestions && 'min-h-full justify-center',
+            'flex w-full flex-col py-8',
+            COLUMN_PADDING,
+            emptyKind && 'min-h-full justify-center'
           )}
         >
-          {hasOlder ? (
-            <div className="mb-6 flex justify-center">
-              <button
-                type="button"
-                onClick={() => void loadOlderMessages()}
-                disabled={isLoadingOlder}
-                className="inline-flex h-9 items-center gap-2 border border-border-default bg-bg-subtle px-4 text-[12.5px] font-normal text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isLoadingOlder ? 'animate-spin' : ''}`} />
-                <span>{isLoadingOlder ? 'Loading older messages…' : 'Load older messages'}</span>
-              </button>
-            </div>
-          ) : null}
-
-          {showSuggestions ? (
-            <div className="flex flex-1 items-center justify-center">
-              <SuggestionsState onSuggestionClick={onSuggestionClick} hasTools={hasTools} hasVision={hasVision} />
-            </div>
-          ) : shouldRenderVirtualizedHistory ? (
-            <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
-              {virtualItems.map((virtualItem) => {
-                const message = messages[virtualItem.index];
-                const isOutsideVisibleRange =
-                  visibleRange != null &&
-                  (virtualItem.index < visibleRange.startIndex || virtualItem.index > visibleRange.endIndex);
-
-                if (!message) {
-                  return null;
-                }
-
-                return (
-                  <div
-                    key={virtualItem.key}
-                    ref={rowVirtualizer.measureElement}
-                    data-index={virtualItem.index}
-                    className="absolute left-0 top-0 w-full"
-                    style={{ transform: `translateY(${virtualItem.start}px)` }}
-                  >
-                    <MessageRow
-                      message={message}
-                      deferRichContent={isOutsideVisibleRange}
-                      onRespondToolApproval={onRespondToolApproval}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="space-y-[22px]">
-              {messages.map((message) => (
-                <MessageRow key={message.id} message={message} onRespondToolApproval={onRespondToolApproval} />
-              ))}
-            </div>
-          )}
-
-          {draft ? (
-            <div className={messages.length > 0 || showSuggestions ? 'mt-6' : undefined}>
-              <StreamingRow
-                parts={draft.parts}
-                modelLabel={draft.modelId}
-                errorMessage={draft.errorMessage}
-                status={draft.status}
-                onRespondToolApproval={onRespondToolApproval}
-                onRetry={onRetryLastMessage}
-              />
-            </div>
-          ) : null}
+          <div className="mx-auto flex w-full max-w-content-max flex-1 flex-col">{body}</div>
         </div>
       </div>
 
-      {!isAtBottom ? (
-        <button
-          type="button"
-          onClick={() => void scrollToBottom({ animation: 'smooth' })}
-          className="absolute bottom-4 left-1/2 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-border-medium bg-bg-overlay px-4 text-sm text-text-primary shadow-elevated transition hover:bg-bg-active"
-        >
-          <ArrowDown className="h-4 w-4" />
-          <span>Jump to latest</span>
-        </button>
-      ) : null}
+      {/*
+        Always mounted so it can animate, and hysteretic (show past 120px,
+        hide inside 40px) so it cannot strobe while the transcript settles.
+      */}
+      <button
+        type="button"
+        onClick={() => void scrollToBottom({ animation: 'smooth' })}
+        tabIndex={isDetached ? 0 : -1}
+        aria-hidden={!isDetached}
+        className={cn(
+          'absolute bottom-3 right-4 z-10 inline-flex h-7 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-overlay px-2.5 text-2xs text-text-secondary shadow-elevated transition-[opacity,transform] duration-150 ease-out hover:text-text-primary motion-reduce:transition-none',
+          isDetached ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0'
+        )}
+      >
+        <ArrowDown className="h-3.5 w-3.5" />
+        <span>{unreadCount > 0 ? `${unreadCount} new` : 'Latest'}</span>
+      </button>
+
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
     </div>
   );
 }

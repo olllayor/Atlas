@@ -182,7 +182,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         providerExecuted: event.providerExecuted ?? part?.providerExecuted,
         title: event.title ?? part?.title,
         preliminary: part?.preliminary,
-        approval: part?.approval
+        approval: part?.approval,
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: part?.completedAt
       }));
     case 'tool-input-delta':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -200,7 +203,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         providerExecuted: part?.providerExecuted,
         title: part?.title,
         preliminary: part?.preliminary,
-        approval: part?.approval
+        approval: part?.approval,
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: part?.completedAt
       }));
     case 'tool-input-available':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -218,7 +224,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         providerExecuted: event.providerExecuted ?? part?.providerExecuted,
         title: event.title ?? part?.title,
         preliminary: part?.preliminary,
-        approval: part?.approval
+        approval: part?.approval,
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: part?.completedAt
       }));
     case 'tool-approval-requested':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -240,6 +249,9 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
           id: event.approvalId,
           reason: event.reason,
         },
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: part?.completedAt,
       }));
     case 'tool-approval-responded':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -262,6 +274,9 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
           approved: event.approved,
           reason: event.reason,
         },
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: part?.completedAt,
       }));
     case 'tool-output-available':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -279,7 +294,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         providerExecuted: event.providerExecuted ?? part?.providerExecuted,
         title: event.title ?? part?.title,
         preliminary: event.preliminary,
-        approval: part?.approval
+        approval: part?.approval,
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: event.preliminary ? part?.completedAt : (event.occurredAt ?? part?.completedAt)
       }));
     case 'tool-output-error':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -297,7 +315,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         providerExecuted: event.providerExecuted ?? part?.providerExecuted,
         title: event.title ?? part?.title,
         preliminary: false,
-        approval: part?.approval
+        approval: part?.approval,
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: event.occurredAt ?? part?.completedAt
       }));
     case 'tool-output-denied':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -318,7 +339,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: {
           id: part?.approval?.id ?? event.toolCallId,
           approved: false
-        }
+        },
+        toolType: event.toolType ?? part?.toolType,
+        startedAt: part?.startedAt ?? event.occurredAt,
+        completedAt: event.occurredAt ?? part?.completedAt
       }));
     case 'visual-start': {
       const visualPart: ChatVisualPart = {

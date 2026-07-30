@@ -15,8 +15,8 @@ interface BrushSpinnerProps {
 function BrushSpinner({
   size = 24,
   strokeWidth = 2.5,
-  color = "rgba(255,255,255,0.9)",
-  glowColor = "rgba(255,255,255,0.25)",
+  color = "currentColor",
+  glowColor = "color-mix(in oklab, currentColor 25%, transparent)",
   speed = 1.2,
   className,
 }: BrushSpinnerProps) {

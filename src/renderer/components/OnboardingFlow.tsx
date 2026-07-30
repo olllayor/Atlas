@@ -1,8 +1,13 @@
-import { KeyRound } from 'lucide-react';
+import { CheckIcon, PlusIcon } from '@radix-ui/react-icons';
+import type { CSSProperties } from 'react';
 
 /**
  * Atlas ships with no providers, so first run points at Model settings rather
  * than asking for a key it would not know where to send.
+ *
+ * `onContinue` is the single exit that does not go through Settings: it dismisses
+ * onboarding and drops the user into an empty chat. Before a credential exists
+ * that is "Skip for now"; once one exists it is "Start chatting".
  */
 type OnboardingFlowProps = {
   hasCredential: boolean;
@@ -11,81 +16,67 @@ type OnboardingFlowProps = {
 };
 
 export function OnboardingFlow({ hasCredential, onOpenProviderSettings, onContinue }: OnboardingFlowProps) {
-  if (hasCredential) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-overlay p-8 text-center shadow-elevated">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center border border-[var(--border-strong)] bg-[var(--bg-hover)]">
-            <svg
-              className="h-7 w-7 text-[var(--text-secondary)]"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h2 className="mt-5 text-xl font-normal text-text-primary">You're all set</h2>
-          <p className="mt-2 text-sm text-text-tertiary">
-            Your provider is configured and ready. Start a conversation below.
-          </p>
-          <button type="button" onClick={onContinue} className="btn-primary mt-6 w-full px-4 py-2.5">
-            Start chatting
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <div className="w-full max-w-md border border-[var(--border-default)] bg-bg-overlay p-8 shadow-elevated">
-        <div className="text-center">
-          <p className="text-xs font-normal uppercase tracking-[0.2em] text-text-muted">Welcome to</p>
-          <h1 className="mt-2 text-2xl font-normal text-text-primary">Atlas</h1>
-          <p className="mt-2 text-sm text-text-tertiary">
-            A local-first chat client. Bring your own endpoint and key, keep everything on your machine.
-          </p>
-        </div>
+    <div className="flex h-screen flex-col bg-bg-base">
+      {/* The window is otherwise undraggable while onboarding is mounted. */}
+      <div
+        className="h-titlebar-height shrink-0"
+        style={{ WebkitAppRegion: 'drag' } as CSSProperties}
+      />
 
-        <div className="mt-8 space-y-4">
-          <Step
-            index={1}
-            title="Add a model provider"
-            body="Pick a known provider, or enter any OpenAI-, Anthropic- or Responses-compatible endpoint."
-          />
-          <Step index={2} title="Paste your API key" body="Stored in your OS keychain. It never leaves this machine." />
-          <Step index={3} title="Choose your models" body="Fetch the provider's model list, or add model IDs by hand." />
-        </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6 pb-titlebar-height">
+        {hasCredential ? (
+          <Card>
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-success/15 text-success">
+              <CheckIcon className="h-5 w-5" />
+            </div>
+            <h1 className="mt-4 text-center text-xl font-normal text-text-primary">You're all set</h1>
+            <p className="mt-2 text-center text-sm leading-relaxed text-text-tertiary">
+              Your provider is configured. Pick a model in the composer and start a conversation.
+            </p>
+            <button
+              type="button"
+              onClick={onContinue}
+              className="mt-6 inline-flex h-9 w-full items-center justify-center rounded-md bg-bg-button px-4 text-sm text-text-inverse transition hover:bg-bg-button-hover"
+            >
+              Start chatting
+            </button>
+          </Card>
+        ) : (
+          <Card>
+            <h1 className="text-xl font-normal text-text-primary">Welcome to Atlas</h1>
+            <p className="mt-2 text-sm leading-relaxed text-text-tertiary">
+              A local-first chat client. Add any OpenAI-, Anthropic- or Responses-compatible endpoint and
+              its key — the key goes to your OS keychain, and conversations stay on this machine.
+            </p>
 
-        <button
-          type="button"
-          onClick={onOpenProviderSettings}
-          className="btn-primary mt-7 flex w-full items-center justify-center gap-2 px-4 py-2.5"
-        >
-          <KeyRound className="h-4 w-4" />
-          Add a provider
-        </button>
+            <button
+              type="button"
+              onClick={onOpenProviderSettings}
+              className="mt-6 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-bg-button px-4 text-sm text-text-inverse transition hover:bg-bg-button-hover"
+            >
+              <PlusIcon className="h-4 w-4" />
+              Add a provider
+            </button>
 
-        <p className="mt-6 text-center text-[11px] text-text-faint">
-          Keys are stored in your OS keychain. Nothing leaves your machine.
-        </p>
+            <button
+              type="button"
+              onClick={onContinue}
+              className="mt-2 inline-flex h-9 w-full items-center justify-center rounded-md px-4 text-sm text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
+            >
+              Skip for now
+            </button>
+          </Card>
+        )}
       </div>
     </div>
   );
 }
 
-function Step({ index, title, body }: { index: number; title: string; body: string }) {
+function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-3">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-[var(--border-strong)] bg-[var(--bg-hover)] text-sm font-normal text-text-primary">
-        {index}
-      </div>
-      <div>
-        <h3 className="text-sm font-normal text-text-primary">{title}</h3>
-        <p className="mt-0.5 text-xs text-text-muted">{body}</p>
-      </div>
+    <div className="w-full max-w-[420px] rounded-lg border border-border-default bg-bg-overlay p-7 shadow-elevated">
+      {children}
     </div>
   );
 }

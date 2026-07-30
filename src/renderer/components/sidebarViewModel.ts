@@ -1,13 +1,24 @@
-import type { ConversationSummary } from '../../shared/contracts';
+import type { ConversationSummary, WorkspaceProject } from '../../shared/contracts';
 import type { DraftStateLike } from './types';
 
 export type SidebarConversationItem = {
   id: string;
+  /** Which project's section the row belongs under; null means Recents. */
+  projectId: string | null;
   isRunning: boolean;
   status: DraftStateLike['status'] | 'idle';
   primaryLabel: string;
   secondaryLabel: string | null;
   timestampLabel: string | null;
+  /** Epoch ms of the row's timestamp, or null when it is unparseable. */
+  timestampMs: number | null;
+};
+
+export type SidebarConversationGroup = {
+  /** Stable key — the label is user-visible and may repeat across years. */
+  key: string;
+  label: string;
+  items: SidebarConversationItem[];
 };
 
 type BuildSidebarConversationItemsParams = {
@@ -15,6 +26,38 @@ type BuildSidebarConversationItemsParams = {
   draftsByConversation: Record<string, DraftStateLike | undefined>;
   now: number;
 };
+
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+const MONTHS_LONG = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const DAY_MS = 86_400_000;
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, ' ').trim();
@@ -30,17 +73,28 @@ function clipLabel(value: string | null | undefined, maxLength = 90) {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function formatRelativeTimestamp(timestamp: string | null | undefined, now: number) {
+function parseTimestamp(timestamp: string | null | undefined) {
   if (!timestamp) {
     return null;
   }
 
   const value = Date.parse(timestamp);
-  if (Number.isNaN(value)) {
+  return Number.isNaN(value) ? null : value;
+}
+
+/**
+ * Relative time that stays short and stays honest.
+ *
+ * `now` · `5m` · `4h` · `3d` up to a week, then a calendar date (`Mar 4`),
+ * then month + year (`Mar 2025`). The old formatter degraded to `412d`,
+ * which is both unreadable and wider than the slot it lives in.
+ */
+export function formatRelativeTimestamp(timestampMs: number | null, now: number) {
+  if (timestampMs == null) {
     return null;
   }
 
-  const diffMs = Math.max(0, now - value);
+  const diffMs = Math.max(0, now - timestampMs);
   const diffMinutes = Math.floor(diffMs / 60_000);
 
   if (diffMinutes < 1) {
@@ -57,7 +111,62 @@ function formatRelativeTimestamp(timestamp: string | null | undefined, now: numb
   }
 
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d`;
+  if (diffDays < 7) {
+    return `${diffDays}d`;
+  }
+
+  const then = new Date(timestampMs);
+  const nowDate = new Date(now);
+  const sameYear = then.getFullYear() === nowDate.getFullYear();
+
+  if (sameYear || diffMs < 365 * DAY_MS) {
+    return `${MONTHS[then.getMonth()]} ${then.getDate()}`;
+  }
+
+  return `${MONTHS[then.getMonth()]} ${then.getFullYear()}`;
+}
+
+function startOfDay(value: number) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+/** Which date bucket a row belongs to, as a stable key + a visible label. */
+function resolveGroup(timestampMs: number | null, now: number) {
+  if (timestampMs == null) {
+    return { key: 'earlier', label: 'Earlier' };
+  }
+
+  const todayStart = startOfDay(now);
+
+  if (timestampMs >= todayStart) {
+    return { key: 'today', label: 'Today' };
+  }
+
+  if (timestampMs >= todayStart - DAY_MS) {
+    return { key: 'yesterday', label: 'Yesterday' };
+  }
+
+  if (timestampMs >= todayStart - 6 * DAY_MS) {
+    return { key: 'week', label: 'This week' };
+  }
+
+  const nowDate = new Date(now);
+  const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
+  if (timestampMs >= monthStart) {
+    return { key: 'month', label: 'This month' };
+  }
+
+  const then = new Date(timestampMs);
+  const year = then.getFullYear();
+  const month = then.getMonth();
+  const label =
+    year === nowDate.getFullYear()
+      ? MONTHS_LONG[month]!
+      : `${MONTHS_LONG[month]} ${year}`;
+
+  return { key: `m-${year}-${month}`, label };
 }
 
 function buildSecondaryLabel(
@@ -97,19 +206,100 @@ export function buildSidebarConversationItems({
 }: BuildSidebarConversationItemsParams) {
   return conversations.map<SidebarConversationItem>((conversation) => {
     const draft = draftsByConversation[conversation.id];
-    const conversationTitle = clipLabel(conversation.title);
+    // No pre-clipping: the row truncates with CSS, and the `title` tooltip
+    // needs the *whole* title — an ellipsis baked into the string made the
+    // tooltip as useless as the row it was explaining.
+    const conversationTitle = compactWhitespace(conversation.title ?? '');
+    // The Codex reference lists chats by title (single line, right-aligned
+    // relative time). Fall back to message previews for untitled chats.
     const primaryLabel =
-      clipLabel(conversation.lastUserMessagePreview ?? '') ||
-      clipLabel(conversation.lastMessagePreview ?? '') ||
-      conversationTitle;
+      conversationTitle ||
+      compactWhitespace(conversation.lastUserMessagePreview ?? '') ||
+      compactWhitespace(conversation.lastMessagePreview ?? '');
+    const timestampMs = parseTimestamp(draft?.startedAt ?? conversation.updatedAt);
 
     return {
       id: conversation.id,
+      projectId: conversation.projectId,
       isRunning: draft?.status === 'streaming',
       status: draft?.status ?? 'idle',
       primaryLabel,
       secondaryLabel: buildSecondaryLabel(conversation, draft, primaryLabel),
-      timestampLabel: formatRelativeTimestamp(draft?.startedAt ?? conversation.updatedAt, now),
+      timestampLabel: formatRelativeTimestamp(timestampMs, now),
+      timestampMs,
     };
   });
+}
+
+/**
+ * Split an already-ordered (newest first) item list into date buckets:
+ * Today / Yesterday / This week / This month / one bucket per older month.
+ *
+ * Ordering comes from the input, so the buckets come out newest-first too
+ * without a second sort.
+ */
+export function groupSidebarConversationItems(
+  items: SidebarConversationItem[],
+  now: number
+): SidebarConversationGroup[] {
+  const groups: SidebarConversationGroup[] = [];
+  const byKey = new Map<string, SidebarConversationGroup>();
+
+  for (const item of items) {
+    const { key, label } = resolveGroup(item.timestampMs, now);
+    let group = byKey.get(key);
+
+    if (!group) {
+      group = { key, label, items: [] };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+
+    group.items.push(item);
+  }
+
+  return groups;
+}
+
+export type SidebarProjectSection = {
+  project: WorkspaceProject;
+  items: SidebarConversationItem[];
+};
+
+/**
+ * Split the sidebar into per-project sections and everything else.
+ *
+ * Project order comes from the projects list (most recently used first), not
+ * from conversation activity: a section that jumps position because a chat
+ * inside it got a reply is a section you cannot learn the position of. Within a
+ * section the conversation order is preserved, so it stays newest-first.
+ *
+ * A conversation pointing at a project that has since been detached falls back
+ * to Recents rather than vanishing.
+ */
+export function splitSidebarItemsByProject(
+  items: SidebarConversationItem[],
+  projects: WorkspaceProject[]
+): { sections: SidebarProjectSection[]; ungrouped: SidebarConversationItem[] } {
+  if (projects.length === 0) {
+    return { sections: [], ungrouped: items };
+  }
+
+  const sections = new Map<string, SidebarProjectSection>(
+    projects.map((project) => [project.id, { project, items: [] }])
+  );
+  const ungrouped: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    const section = item.projectId ? sections.get(item.projectId) : undefined;
+
+    if (section) {
+      section.items.push(item);
+      continue;
+    }
+
+    ungrouped.push(item);
+  }
+
+  return { sections: [...sections.values()], ungrouped };
 }

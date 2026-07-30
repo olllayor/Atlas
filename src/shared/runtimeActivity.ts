@@ -189,6 +189,9 @@ export function workLogEntryToChatToolPart(entry: WorkLogEntry): ChatToolPart {
     errorText: typeof entry.payload?.errorText === 'string' ? entry.payload.errorText : undefined,
     title: entry.title,
     preliminary: !entry.isFinal,
+    toolType: entry.toolType,
+    startedAt: entry.createdAt,
+    completedAt: entry.isFinal ? entry.updatedAt : undefined,
     approval: entry.approvalId
       ? {
           id: entry.approvalId,
@@ -207,6 +210,20 @@ export function workLogEntryToChatToolPart(entry: WorkLogEntry): ChatToolPart {
 export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event: RuntimeEventEnvelope) {
   const payload = event.payload;
   let legacy: StreamEvent | null = null;
+
+  /**
+   * Envelope-level facts the legacy `StreamEvent` shape has no room for.
+   * Spread onto every tool event below so the renderer can pick a verb,
+   * an accent and a duration instead of re-deriving them from the tool
+   * name string.
+   */
+  const toolMeta = {
+    toolType: event.toolType ?? inferCanonicalToolType({
+      toolName: typeof payload.toolName === 'string' ? payload.toolName : null,
+      dynamic: Boolean(payload.dynamic),
+    }),
+    occurredAt: event.occurredAt,
+  };
 
   switch (event.activityType) {
     case 'message.delta':
@@ -236,6 +253,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
     case 'tool.started':
       legacy = {
         type: 'tool-input-start',
+        ...toolMeta,
         requestId: event.requestId,
         toolCallId: event.toolCallId ?? event.eventId,
         toolName: String(payload.toolName ?? 'tool'),
@@ -247,6 +265,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
     case 'tool.updated':
       legacy = {
         type: 'tool-input-available',
+        ...toolMeta,
         requestId: event.requestId,
         toolCallId: event.toolCallId ?? event.eventId,
         toolName: String(payload.toolName ?? 'tool'),
@@ -261,6 +280,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
         payload.status === 'error'
           ? {
               type: 'tool-output-error',
+              ...toolMeta,
               requestId: event.requestId,
               toolCallId: event.toolCallId ?? event.eventId,
               toolName: String(payload.toolName ?? 'tool'),
@@ -273,6 +293,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
           : payload.status === 'denied'
             ? {
                 type: 'tool-output-denied',
+                ...toolMeta,
                 requestId: event.requestId,
                 toolCallId: event.toolCallId ?? event.eventId,
                 toolName: typeof payload.toolName === 'string' ? payload.toolName : undefined,
@@ -280,6 +301,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
               }
             : {
                 type: 'tool-output-available',
+                ...toolMeta,
                 requestId: event.requestId,
                 toolCallId: event.toolCallId ?? event.eventId,
                 toolName: String(payload.toolName ?? 'tool'),
@@ -307,6 +329,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
     case 'approval.requested':
       legacy = {
         type: 'tool-approval-requested',
+        ...toolMeta,
         requestId: event.requestId,
         approvalId: event.approvalId ?? event.eventId,
         toolCallId: event.toolCallId ?? event.eventId,
@@ -317,6 +340,7 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
     case 'approval.resolved':
       legacy = {
         type: 'tool-approval-responded',
+        ...toolMeta,
         requestId: event.requestId,
         approvalId: event.approvalId ?? event.eventId,
         toolCallId: event.toolCallId ?? event.eventId,

@@ -26,6 +26,16 @@ export class ModelRegistry {
    * enabled providers: the cache outlives providers, so a removed or disabled
    * endpoint would otherwise keep offering models that cannot be sent to.
    */
+  /** The last picked model, or null once it is no longer selectable. */
+  private resolveLastModelId() {
+    const lastModelId = this.settingsRepo.getLastModelId();
+    if (!lastModelId) {
+      return null;
+    }
+
+    return this.list().some((model) => model.id === lastModelId) ? lastModelId : null;
+  }
+
   list(options: ListModelsOptions = {}) {
     return this.modelsRepo.list({ ...options, configuredOnly: true });
   }
@@ -173,13 +183,25 @@ export class ModelRegistry {
         uiFontFamily: this.settingsRepo.getUiFontFamily(),
         codeFontFamily: this.settingsRepo.getCodeFontFamily(),
         borderRadius: this.settingsRepo.getBorderRadius(),
+        accentColor: this.settingsRepo.getThemeColor('accentColor'),
+        backgroundColor: this.settingsRepo.getThemeColor('backgroundColor'),
+        foregroundColor: this.settingsRepo.getThemeColor('foregroundColor'),
+        contrast: this.settingsRepo.getContrast(),
+        translucentSidebar: this.settingsRepo.getTranslucentSidebar(),
+        reduceMotion: this.settingsRepo.getReduceMotion(),
+        pointerCursors: this.settingsRepo.getPointerCursors(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()
       },
       chat: {
         reasoningEffort: this.settingsRepo.getReasoningEffort(),
-        toolPermissionMode: this.settingsRepo.getToolPermissionMode()
+        toolPermissionMode: this.settingsRepo.getToolPermissionMode(),
+        workspaceMode: this.settingsRepo.getWorkspaceMode(),
+        lastProjectId: this.settingsRepo.getLastProjectId(),
+        // Validated here rather than in the renderer: a stored id whose provider
+        // has since been removed or disabled must not be offered as a default.
+        lastModelId: this.resolveLastModelId()
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,

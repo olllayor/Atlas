@@ -166,9 +166,11 @@ export const Attachment = ({
           "group relative",
           variant === "grid" && "size-24 overflow-hidden",
           variant === "inline" && [
-            "flex h-8 max-w-full cursor-pointer select-none items-center gap-1.5",
+            // `cursor-default`: the chip is a hover/focus preview target, not a
+            // clickable control — a pointer cursor promised an action it lacked.
+            "flex h-8 min-w-0 max-w-full cursor-default select-none items-center gap-1.5",
             "rounded-[var(--radius-sm)] border border-[var(--border-default)] bg-[var(--bg-ghost)] px-1.5",
-            "font-medium text-[12px] text-text-secondary transition-all",
+            "font-medium text-xs text-text-secondary transition-all",
             "hover:bg-[var(--bg-hover)] hover:text-text-primary",
           ],
           variant === "list" && [
@@ -244,7 +246,7 @@ export const AttachmentPreview = ({
       className={cn(
         "flex shrink-0 items-center justify-center overflow-hidden",
         variant === "grid" && "size-full bg-muted",
-        variant === "inline" && "size-5 bg-bg-base",
+        variant === "inline" && "size-6 bg-bg-base",
         variant === "list" && "size-12",
         className,
       )}
@@ -313,13 +315,16 @@ export const AttachmentRemove = ({
       className={cn(
         variant === "grid" && [
           "absolute right-2 top-2 size-6 p-0",
-          "bg-bg-base opacity-0 transition-opacity group-hover:opacity-100",
+          "bg-bg-base opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
           "hover:bg-[var(--bg-hover)]",
           "[&>svg]:size-3",
         ],
         variant === "inline" && [
-          "size-5 p-0 opacity-0 transition-opacity group-hover:opacity-100",
-          "[&>svg]:size-2.5",
+          // 16px glyph, 28px hit target (the old 16px target sat ~2px from the
+          // chip edge and was effectively unclickable).
+          "size-7 shrink-0 p-0 opacity-0 transition-opacity",
+          "group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
+          "[&>svg]:size-4",
         ],
         variant === "list" && ["size-8 shrink-0 p-0", "[&>svg]:size-4"],
         className,

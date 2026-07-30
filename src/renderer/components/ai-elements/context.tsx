@@ -4,6 +4,8 @@ import { costFromUsage } from "tokenlens";
 import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
 import { createContext, useContext, useMemo } from "react";
 
+import type { ContextUsageSnapshot } from "../../../shared/contracts";
+
 type ContextUsage = {
   inputTokens?: number;
   outputTokens?: number;
@@ -19,7 +21,8 @@ type ContextContextValue = {
   percentageValue: number;
   percentageLabel: string;
   totalCost?: number;
-  processedTokens: number;
+  /** Where the prompt's tokens actually go, when the main process measured it. */
+  breakdown?: ContextUsageSnapshot;
 };
 
 const ContextData = createContext<ContextContextValue | null>(null);
@@ -39,13 +42,21 @@ function formatTokenCount(value: number) {
   }).format(value);
 }
 
-function formatContextPercentage(value: number) {
+/**
+ * A used window is never reported as `0`.
+ *
+ * The previous rounding sent anything under 0.05% through `toFixed(1)` and then
+ * stripped the `.0`, so a real prompt of a few hundred tokens against a 200K
+ * window rendered as a flat `0` — the same glyph as an untouched window. Small
+ * but nonzero now reads `<1`, which is a fact rather than a rounding artefact.
+ */
+export function formatContextPercentage(value: number) {
   if (value <= 0) {
     return "0";
   }
 
   if (value < 1) {
-    return value.toFixed(1).replace(/\.0$/, "");
+    return "<1";
   }
 
   if (value < 10) {
@@ -82,17 +93,17 @@ function getCost(modelId: string | undefined, usage: ContextUsage | undefined) {
 export type ContextProps = ComponentProps<typeof HoverCard> & {
   maxTokens: number;
   usedTokens: number;
-  processedTokens?: number;
   usage?: ContextUsage;
   modelId?: string;
+  breakdown?: ContextUsageSnapshot;
 };
 
 export const Context = ({
   maxTokens,
   usedTokens,
-  processedTokens,
   usage,
   modelId,
+  breakdown,
   children,
   openDelay = 120,
   closeDelay = 80,
@@ -104,16 +115,16 @@ export const Context = ({
     const percentageValue = Math.min(100, (safeUsed / safeMax) * 100);
 
     return {
+      breakdown,
       maxTokens: safeMax,
       modelId,
       percentageLabel: formatContextPercentage(percentageValue),
       percentageValue,
-      processedTokens: Math.max(safeUsed, processedTokens ?? safeUsed),
       totalCost: getCost(modelId, usage),
       usage,
       usedTokens: safeUsed,
     };
-  }, [maxTokens, modelId, processedTokens, usage, usedTokens]);
+  }, [breakdown, maxTokens, modelId, usage, usedTokens]);
 
   return (
     <ContextData.Provider value={value}>
@@ -133,14 +144,20 @@ export const ContextTrigger = ({
 }: ContextTriggerProps) => {
   const { percentageLabel, percentageValue } = useContextData();
   const circumference = 2 * Math.PI * 11;
-  const progress = Math.max(0.02, Math.min(1, percentageValue / 100));
+  // An untouched window draws no arc at all — with the figure gone from the
+  // face of the ring, a permanent starter stub would be the only mark on it and
+  // would read as usage. Anything above zero keeps the 2% minimum so a real but
+  // tiny conversation is still visible.
+  const ratio = percentageValue / 100;
+  const progress = ratio <= 0 ? 0 : Math.max(0.02, Math.min(1, ratio));
   const dashOffset = circumference * (1 - progress);
-  
+
+
   // Color based on usage percentage
   const getProgressColor = (percentage: number) => {
     if (percentage >= 90) return "var(--error)";
-    if (percentage >= 70) return "var(--warning, #f59e0b)";
-    return "var(--accent-primary, var(--text-secondary))";
+    if (percentage >= 70) return "var(--warning)";
+    return "var(--accent)";
   };
 
   if (children) {
@@ -151,34 +168,22 @@ export const ContextTrigger = ({
     <HoverCardTrigger asChild>
       <button
         type="button"
-          className={cn(
-            "group relative inline-flex size-8 items-center justify-center border border-[var(--border-default)] bg-gradient-to-b from-[var(--bg-elevated)] to-[var(--bg-subtle)] text-[10px] font-semibold tabular-nums text-[var(--text-primary)] shadow-sm transition-all hover:border-[var(--border-strong)] hover:shadow-md hover:scale-105 active:scale-100",
-            className
-          )}
+        aria-label={`Context used: ${percentageLabel}%`}
+        // Borderless size-9 circle so it reads as one of the row's ghost
+        // buttons instead of the only bordered, square, press-animated control.
+        // The dial is the whole control: the figure it used to carry was three
+        // glyphs of noise next to the model name, and the hover card already
+        // states it exactly, alongside the breakdown that explains it.
+        className={cn(
+          "group relative inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-bg-hover hover:text-[var(--text-primary)]",
+          className
+        )}
         {...props}
       >
-        {/* Outer glow ring */}
-        <svg
-          aria-hidden="true"
-          className="absolute inset-[-1px] -rotate-90 opacity-0 transition-opacity group-hover:opacity-100"
-          viewBox="0 0 34 34"
-        >
-          <circle
-            cx="17"
-            cy="17"
-            r="15"
-            fill="none"
-            stroke={getProgressColor(percentageValue)}
-            strokeWidth="1"
-            opacity="0.3"
-            className="blur-[1px]"
-          />
-        </svg>
-        
         {/* Main progress ring */}
         <svg
           aria-hidden="true"
-          className="absolute inset-0 -rotate-90"
+          className="absolute inset-[3px] -rotate-90"
           viewBox="0 0 32 32"
         >
           {/* Background track */}
@@ -208,11 +213,6 @@ export const ContextTrigger = ({
             }}
           />
         </svg>
-        
-        {/* Percentage text */}
-        <span className="relative z-10 bg-gradient-to-b from-[var(--text-primary)] to-[var(--text-secondary)] bg-clip-text text-transparent">
-          {percentageLabel}
-        </span>
       </button>
     </HoverCardTrigger>
   );
@@ -246,14 +246,14 @@ export const ContextContentHeader = ({
     <div className={cn("px-4 pt-3.5", className)} {...props}>
       {children ?? (
         <div className="space-y-1.5">
-          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
+          <div className="text-2xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
             Context Window
           </div>
-          <div className="text-[13px] font-medium leading-none tracking-tight">
+          <div className="text-sm font-medium leading-none tracking-tight">
             <span className="tabular-nums font-semibold text-[var(--text-primary)]">{percentageLabel}%</span>
             <span className="px-1.5 text-[var(--text-muted)]">•</span>
-            <span className="text-[13px] font-medium text-[var(--text-primary)]">
-              {formatTokenCount(usedTokens)}/{formatTokenCount(maxTokens)} context used
+            <span className="text-sm font-medium text-[var(--text-primary)]">
+              {formatTokenCount(usedTokens)}/{formatTokenCount(maxTokens)} used by this chat
             </span>
           </div>
         </div>
@@ -269,19 +269,61 @@ export const ContextContentBody = ({
   children,
   ...props
 }: ContextContentBodyProps) => {
-  const { processedTokens } = useContextData();
+  const { breakdown } = useContextData();
 
   return (
-    <div className={cn("px-4 pt-2 text-[13px] leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
-      {children ?? (
-        <span>
-          Total processed:{" "}
-          <span className="tabular-nums font-medium text-[var(--text-primary)]">{formatTokenCount(processedTokens)} tokens</span>
-        </span>
-      )}
+    <div className={cn("px-4 pt-2 text-sm leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
+      {children ?? (breakdown ? <ContextBreakdownRows breakdown={breakdown} /> : null)}
     </div>
   );
 };
+
+/**
+ * Where the prompt's tokens go.
+ *
+ * The percentage counts only what the conversation put in the window. The
+ * instructions and tool schemas are a fixed floor charged on every request, and
+ * omitting them entirely would misstate what a turn costs — so they are listed
+ * here, below the conversation rows and explicitly marked as sitting outside
+ * the figure above. Rows are omitted when zero so a tools-off conversation does
+ * not carry an empty line.
+ */
+function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }) {
+  const rows: Array<{ label: string; tokens: number }> = [
+    { label: "Conversation", tokens: breakdown.historyTokens },
+    { label: "Older turns (summarised)", tokens: breakdown.summaryTokens },
+    { label: "Not yet sent", tokens: breakdown.pendingTokens },
+  ].filter((row) => row.tokens > 0);
+
+  const floorTokens = breakdown.systemTokens + breakdown.toolTokens;
+
+  return (
+    <div className="flex flex-col gap-1">
+      {rows.map((row) => (
+        <div className="flex items-center justify-between gap-3 text-2xs" key={row.label}>
+          <span className="text-text-tertiary">{row.label}</span>
+          <span className="tabular-nums text-text-secondary">{formatTokenCount(row.tokens)}</span>
+        </div>
+      ))}
+
+      {floorTokens > 0 ? (
+        <div className="flex items-center justify-between gap-3 text-2xs">
+          <span className="text-text-faint">
+            {breakdown.toolTokens > 0 ? "Instructions and tools" : "Instructions"}, sent every turn
+          </span>
+          <span className="tabular-nums text-text-faint">+{formatTokenCount(floorTokens)}</span>
+        </div>
+      ) : null}
+
+      {breakdown.droppedTurnCount > 0 ? (
+        <div className="pt-1 text-2xs leading-4 text-text-tertiary">
+          {breakdown.droppedTurnCount} older {breakdown.droppedTurnCount === 1 ? "turn" : "turns"} compressed to
+          fit; the {breakdown.keptTurnCount} most recent are sent in full.
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export type ContextContentFooterProps = HTMLAttributes<HTMLDivElement>;
 
@@ -290,22 +332,24 @@ export const ContextContentFooter = ({
   children,
   ...props
 }: ContextContentFooterProps) => {
-  const { totalCost } = useContextData();
+  const { totalCost, breakdown } = useContextData();
   const formattedCost = formatUsd(totalCost);
 
   return (
     <div
       className={cn(
-        "px-4 pb-3.5 pt-2 text-[13px] leading-[1.25] text-[var(--text-muted)]",
+        "px-4 pb-3.5 pt-2 text-2xs leading-[1.35] text-[var(--text-muted)]",
         className
       )}
       {...props}
     >
       {children ?? (
         <span>
-          {formattedCost
-            ? `Estimated cost: ${formattedCost}`
-            : "Automatically compacts its context when needed."}
+          {breakdown?.overflow
+            ? "Over the window. The oldest turns are being summarised to fit."
+            : formattedCost
+              ? `Last turn cost about ${formattedCost}.`
+              : "Older turns are summarised automatically as the window fills."}
         </span>
       )}
     </div>
@@ -328,7 +372,7 @@ function UsageRow({ className, children, label, tokens, usageKey, ...props }: Us
   }
 
   return (
-    <div className={cn("flex items-center justify-between gap-3 text-[11px]", className)} {...props}>
+    <div className={cn("flex items-center justify-between gap-3 text-2xs", className)} {...props}>
       {children ?? (
         <>
           <span className="text-text-tertiary">{label}</span>

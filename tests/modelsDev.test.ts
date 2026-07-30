@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   ModelsDevCatalog,
+  deriveReasoningEfforts,
   inferApiFormat,
   normalizeModelKey,
   toModelFacts
@@ -21,7 +22,8 @@ const claude = {
   modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
   open_weights: false,
   limit: { context: 200_000, output: 64_000 },
-  cost: { input: 5, output: 25 }
+  cost: { input: 5, output: 25 },
+  reasoning_options: [{ type: 'budget_tokens', min: 1024, max: 32_000 }]
 } as never;
 
 const freeModel = {
@@ -60,6 +62,8 @@ test('toModelFacts maps models.dev capabilities onto the fields the app stores',
   // Recorded explicitly, and sending temperature anyway is a hard error.
   assert.equal(facts.supportsTemperature, false);
   assert.equal(facts.isFree, false);
+  // A token budget maps onto the app's ladder.
+  assert.deepEqual(facts.reasoningEfforts, ['off', 'low', 'medium', 'high', 'max']);
 });
 
 test('toModelFacts only calls a model free when the price is genuinely zero', () => {
@@ -127,8 +131,9 @@ test('enrich fills in what an OpenAI-compatible model list cannot report', async
       label: 'anthropic/claude-opus-4-6',
       contextWindow: null,
       maxOutputTokens: null,
-      supportsVision: false,
-      supportsDocumentInput: false,
+      // What OpenAI-compatible discovery now produces: unknown, not "cannot".
+      supportsVision: null,
+      supportsDocumentInput: null,
       detailed: false
     }
   ]);
@@ -137,8 +142,41 @@ test('enrich fills in what an OpenAI-compatible model list cannot report', async
   assert.equal(enriched?.maxOutputTokens, 64_000);
   assert.equal(enriched?.supportsVision, true);
   assert.equal(enriched?.supportsReasoning, true);
+  assert.deepEqual(enriched?.reasoningEfforts, ['off', 'low', 'medium', 'high', 'max']);
   assert.equal(enriched?.label, 'Claude Opus 4.6');
   assert.equal(enriched?.detailed, true);
+});
+
+test('enrich does not overrule a modality the endpoint stated outright', async () => {
+  const catalog = catalogWith({
+    openrouter: {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      npm: '@openrouter/ai-sdk-provider',
+      doc: '',
+      env: [],
+      models: { 'claude-opus-4-6': claude }
+    }
+  });
+
+  const [enriched] = await catalog.enrich([
+    {
+      id: 'anthropic/claude-opus-4-6',
+      label: 'anthropic/claude-opus-4-6',
+      contextWindow: null,
+      maxOutputTokens: null,
+      // An Anthropic-format list reports capabilities for the deployment in
+      // front of us; the catalog describes the weights in general.
+      supportsVision: false,
+      supportsDocumentInput: false,
+      detailed: false
+    }
+  ]);
+
+  assert.equal(enriched?.supportsVision, false);
+  assert.equal(enriched?.supportsDocumentInput, false);
+  // Everything the endpoint said nothing about is still filled in.
+  assert.equal(enriched?.contextWindow, 200_000);
 });
 
 test('enrich leaves a model the endpoint already described alone', async () => {
@@ -221,4 +259,79 @@ test('the catalog is fetched once and reused', async () => {
   await catalog.load();
 
   assert.equal(calls, 1);
+});
+
+test('deriveReasoningEfforts flattens each models.dev control surface', () => {
+  const base = { ...(freeModel as object), reasoning: true } as Record<string, unknown>;
+
+  // Toggle + graded levels (deepseek-v4-flash shape): off joins the levels.
+  assert.deepEqual(
+    deriveReasoningEfforts({
+      ...base,
+      reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['high', 'max'] }]
+    } as never),
+    ['off', 'high', 'max']
+  );
+
+  // Toggle only (glm shape): binary switch, nothing graded to offer.
+  assert.deepEqual(deriveReasoningEfforts({ ...base, reasoning_options: [{ type: 'toggle' }] } as never), [
+    'off',
+    'on'
+  ]);
+
+  // `none`/null spell an explicit opt-out; `default` is not a pickable level.
+  assert.deepEqual(
+    deriveReasoningEfforts({
+      ...base,
+      reasoning_options: [{ type: 'effort', values: ['none', null, 'default', 'low', 'xhigh'] }]
+    } as never),
+    ['off', 'low', 'xhigh']
+  );
+
+  // Token budget: the app's ladder maps onto it.
+  assert.deepEqual(
+    deriveReasoningEfforts({ ...base, reasoning_options: [{ type: 'budget_tokens', min: 1024 }] } as never),
+    ['off', 'low', 'medium', 'high', 'max']
+  );
+
+  // An empty options array is an uncatalogued entry, not "no control": the
+  // same model carries real levels under other providers.
+  assert.equal(deriveReasoningEfforts({ ...base, reasoning_options: [] } as never), null);
+
+  // Options that name no pickable level say nothing either.
+  assert.equal(
+    deriveReasoningEfforts({ ...base, reasoning_options: [{ type: 'effort', values: ['default'] }] } as never),
+    null
+  );
+
+  // The database said nothing: unknown, so the caller falls back to defaults.
+  assert.equal(deriveReasoningEfforts({ ...base, reasoning_options: undefined } as never), null);
+  assert.equal(deriveReasoningEfforts(freeModel), null);
+});
+
+test('lookup borrows reasoning levels from a better-catalogued provider entry', async () => {
+  const bare = {
+    ...(claude as object),
+    id: 'gpt-oss-120b',
+    name: 'GPT OSS 120B',
+    reasoning: true,
+    reasoning_options: []
+  };
+  const rich = {
+    ...(bare as object),
+    id: 'openai/gpt-oss-120b',
+    limit: { context: 111, output: 222 },
+    reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }]
+  };
+
+  const catalog = catalogWith({
+    // The hinted provider knows the model but not its levels.
+    greenpt: { id: 'greenpt', name: 'GreenPT', npm: '', doc: '', env: [], models: { 'gpt-oss-120b': bare } },
+    nvidia: { id: 'nvidia', name: 'NVIDIA', npm: '', doc: '', env: [], models: { 'openai/gpt-oss-120b': rich } }
+  });
+
+  const facts = await catalog.lookup('gpt-oss-120b', 'greenpt');
+  assert.deepEqual(facts?.reasoningEfforts, ['low', 'medium', 'high']);
+  // Limits still come from the hinted provider's own entry, not the donor's.
+  assert.equal(facts?.contextWindow, 200_000);
 });

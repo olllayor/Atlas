@@ -1,21 +1,26 @@
-import { useEffect, useEffectEvent, useMemo, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
+import { DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
-import { Composer } from './components/Composer';
+import { Composer, type ComposerAttachment } from './components/Composer';
 import { OnboardingFlow } from './components/OnboardingFlow';
-import { AppUpdateButton } from './components/AppUpdateButton';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { SitesWorkspace } from './components/sites/SitesWorkspace';
 import { Sidebar } from './components/Sidebar';
+import { PanelResizeHandle } from './components/PanelResizeHandle';
+import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
+import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
+import { WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
+import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
@@ -32,8 +37,21 @@ import {
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
+import { buildThemeOverrides } from './lib/themeOverrides';
 import { runViewTransition } from './lib/viewTransitions';
-import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
+import { cn } from './lib/utils';
+import {
+  EMPTY_COMPOSER_ATTACHMENTS,
+  selectDiagnosticsSummary,
+  selectLoadedConversationMetrics,
+  useAppStore,
+} from './stores/useAppStore';
+
+// macOS traffic lights overlay the top-left of the frameless window; the main
+// titlebar needs extra left inset only there, and only when the collapsed rail
+// is too narrow to clear them (Windows/Linux controls sit top-right via
+// titleBarOverlay).
+const isMacLike = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
 function LoadingScreen() {
   return (
@@ -119,14 +137,34 @@ function buildFontFamilyValue(override: FontFamilyOverride, fallbackVariable: '-
 }
 
 export default function App() {
-  const [composerValue, setComposerValue] = useState('');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Sidebar collapse and width persist: both used to be volatile React
+  // state, so every restart reset the layout.
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistentFlag('atlas.sidebar.collapsed', false);
+  const sidebarResize = useResizablePanel({
+    storageKey: 'atlas.sidebar.width',
+    defaultWidth: 284,
+    minWidth: 208,
+    maxWidth: 460,
+    edge: 'start',
+  });
+  const [workbenchOpen, setWorkbenchOpen] = usePersistentFlag('atlas.workbench.open', false);
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes');
+  const workbenchResize = useResizablePanel({
+    storageKey: 'atlas.workbench.width',
+    defaultWidth: 420,
+    minWidth: 300,
+    maxWidth: 720,
+    edge: 'end',
+  });
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [showConversationJumpHints, setShowConversationJumpHints] = useState(false);
   const [showNewChatShortcutHint, setShowNewChatShortcutHint] = useState(false);
   const [showSidebarToggleShortcutHint, setShowSidebarToggleShortcutHint] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  /** Did onboarding's own CTA send the user into Settings? See the effect below. */
+  const onboardingRequestedSettingsRef = useRef(false);
+  const wasSettingsViewRef = useRef(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [telemetryEnabled, setTelemetryEnabledState] = useState(true);
 
@@ -162,6 +200,8 @@ export default function App() {
     isLoadingConversationId,
     selectedConversationId,
     selectedModelIdByConversation,
+    composerDraftsByConversation,
+    composerAttachmentsByConversation,
     draftsByConversation,
     conversationStats,
     diagnostics,
@@ -187,6 +227,9 @@ export default function App() {
     checkForUpdates,
     performUpdatePrimaryAction,
     setSelectedModel,
+    setComposerDraft,
+    setComposerAttachments,
+    clearComposerDraft,
     selectAdjacentConversation,
     selectConversationByIndex,
     sendMessage,
@@ -194,11 +237,17 @@ export default function App() {
     abortConversation,
     respondToolApproval,
     deleteConversation,
+    renameConversation,
     handleStreamEvent,
     openLanding,
     closeLanding,
     openSites,
     closeSites,
+    projects,
+    attachProject,
+    detachProject,
+    setConversationWorkspace,
+    createConversationInProject,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -225,6 +274,8 @@ export default function App() {
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
+      composerDraftsByConversation: state.composerDraftsByConversation,
+      composerAttachmentsByConversation: state.composerAttachmentsByConversation,
       draftsByConversation: state.draftsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
@@ -248,6 +299,9 @@ export default function App() {
       checkForUpdates: state.checkForUpdates,
       performUpdatePrimaryAction: state.performUpdatePrimaryAction,
       setSelectedModel: state.setSelectedModel,
+      setComposerDraft: state.setComposerDraft,
+      setComposerAttachments: state.setComposerAttachments,
+      clearComposerDraft: state.clearComposerDraft,
       selectAdjacentConversation: state.selectAdjacentConversation,
       selectConversationByIndex: state.selectConversationByIndex,
       sendMessage: state.sendMessage,
@@ -255,11 +309,17 @@ export default function App() {
       abortConversation: state.abortConversation,
       respondToolApproval: state.respondToolApproval,
       deleteConversation: state.deleteConversation,
+      renameConversation: state.renameConversation,
       handleStreamEvent: state.handleStreamEvent,
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
       openSites: state.openSites,
       closeSites: state.closeSites,
+      projects: state.projects,
+      attachProject: state.attachProject,
+      createConversationInProject: state.createConversationInProject,
+      detachProject: state.detachProject,
+      setConversationWorkspace: state.setConversationWorkspace,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -267,16 +327,71 @@ export default function App() {
 
   const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
   const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+  /**
+   * A session nobody has spoken in yet — no stored turns and no draft in
+   * flight. Same test the transcript uses to decide it should show the
+   * suggestions screen, so the workspace chips and that screen come and go
+   * together rather than on two different definitions of "new".
+   */
+  const isUntouchedSession = Boolean(
+    activeConversation && activeConversation.messages.length === 0 && !activeDraft
+  );
   const isLoadingOlder = selectedConversationId ? Boolean(isLoadingOlderByConversation[selectedConversationId]) : false;
   const isLoadingConversation =
     selectedConversationId != null && isLoadingConversationId === selectedConversationId;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
+
+  // Mode and project are per conversation, not per window: two threads on two
+  // repos are the normal case, and a global switch would silently retarget the
+  // one you were not looking at.
+  const activeConversationSummary = selectedConversationId
+    ? conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+    : null;
+  const workspaceMode = activeConversationSummary?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
+  const activeProject = activeConversationSummary?.projectId
+    ? projects.find((project) => project.id === activeConversationSummary.projectId) ?? null
+    : null;
+  const workspaceReady = isWorkspaceModeReady(workspaceMode, Boolean(activeProject?.exists));
+
+  // Composer state is per-conversation: a single global string used to carry a
+  // half-typed message (and its staged files) into whichever thread you opened.
+  const composerValue = selectedConversationId ? composerDraftsByConversation[selectedConversationId] ?? '' : '';
+  const composerAttachments = selectedConversationId
+    ? composerAttachmentsByConversation[selectedConversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
+    : EMPTY_COMPOSER_ATTACHMENTS;
+  const setComposerValue = useCallback(
+    (next: string) => {
+      if (selectedConversationId) {
+        setComposerDraft(selectedConversationId, next);
+      }
+    },
+    [selectedConversationId, setComposerDraft]
+  );
+  const updateComposerAttachments = useCallback(
+    (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => {
+      if (selectedConversationId) {
+        setComposerAttachments(selectedConversationId, updater);
+      }
+    },
+    [selectedConversationId, setComposerAttachments]
+  );
+  /** Suggestions and gallery inserts append; they never discard typed text. */
+  const appendToComposer = useCallback(
+    (text: string) => {
+      if (!selectedConversationId) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(selectedConversationId, current.trim() ? `${current.replace(/\s+$/, '')}\n${text}` : text);
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
+  );
   const selectedModelSummary = useMemo(
     () => (selectedModelId ? models.find((m) => m.id === selectedModelId) ?? null : null),
     [models, selectedModelId]
   );
-  const hasModelTools = Boolean(selectedModelSummary?.supportsTools);
-  const hasModelVision = Boolean(selectedModelSummary?.supportsVision);
+  // `!== false`, not `Boolean(...)`: unknown means nobody has said, and the
+  // request is allowed to carry tools until a provider refuses them.
+  const hasModelTools = selectedModelSummary != null && selectedModelSummary.supportsTools !== false;
   const hasCredential = Boolean(settings?.providers.some((provider) => provider.hasSecret));
   const activeCredentialProvider = resolveProviderMetadata(
     activeCredentialProviderId,
@@ -366,15 +481,35 @@ export default function App() {
           (definition.command === 'sidebar.toggle' && activeView !== 'chat') ||
           (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming')) ||
           ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
-            !selectedConversationId),
+            !selectedConversationId) ||
+          ((definition.command === 'workspace.mode.toggle' || definition.command === 'workspace.project.attach') &&
+            (activeView !== 'chat' || !selectedConversationId)),
         section: definition.section,
         shortcutLabel: shortcutLabelForCommand(resolvedKeybindings, definition.command, {
           context: keybindingContext,
           platform: shortcutPlatform
         }),
         title: definition.title,
+        // Synonyms ("hide sidebar", "new conversation", …) so the palette
+        // matches what people type, not only the command's own wording.
+        keywords: definition.keywords,
       })),
     [activeDraft?.status, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
+  );
+  /**
+   * The sidebar's "Search" row opens the palette, so the palette has to offer
+   * chats — every one of them, because cmdk can only match what it renders.
+   * The palette itself trims the *resting* list to a handful so the launcher
+   * does not open as a second sidebar; typing searches the lot.
+   */
+  const commandPaletteConversations = useMemo(
+    () =>
+      sidebarItems.map((item) => ({
+        id: item.id,
+        title: item.primaryLabel || 'Untitled chat',
+        timestampLabel: item.timestampLabel,
+      })),
+    [sidebarItems]
   );
 
   const onStreamEvent = useEffectEvent((event: StreamEvent) => {
@@ -422,6 +557,34 @@ export default function App() {
       return;
     }
 
+    if (command === 'workspace.mode.toggle') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat' || !liveSelectedConversationId) {
+        return;
+      }
+
+      const current =
+        live.conversations.find((conversation) => conversation.id === liveSelectedConversationId)?.workspaceMode ??
+        DEFAULT_WORKSPACE_MODE;
+      const next = current === 'code' ? 'work' : 'code';
+      captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: next });
+      void live.setConversationWorkspace(liveSelectedConversationId, { mode: next });
+      if (next === 'code') {
+        setWorkbenchOpen(true);
+      }
+      return;
+    }
+
+    if (command === 'workspace.project.attach') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      void live.attachProject({ conversationId: liveSelectedConversationId ?? undefined });
+      return;
+    }
+
     if (command === 'settings.open') {
       live.setCommandPaletteOpen(false);
       captureEvent(POSTHOG_EVENTS.SETTINGS_OPENED);
@@ -432,7 +595,12 @@ export default function App() {
     }
 
     if (command === 'composer.focus') {
-      live.requestComposerFocus();
+      // Close first: the palette's FocusScope returns focus to its trigger on
+      // unmount, so focusing the composer in the same tick is undone at once.
+      live.setCommandPaletteOpen(false);
+      requestAnimationFrame(() => {
+        live.requestComposerFocus();
+      });
       return;
     }
 
@@ -492,14 +660,22 @@ export default function App() {
     return unsubscribe;
   }, [onUpdateState]);
 
+  // The startup backfill can enrich the model catalog after this window has
+  // already loaded its list; re-read from cache when the main process says so.
+  useEffect(() => {
+    const unsubscribe = window.atlasChat.models.subscribe(() => {
+      void useAppStore.getState().reloadModels();
+    });
+    return unsubscribe;
+  }, []);
+
+  // Onboarding opens when there is no credential and closes only by user
+  // action. It deliberately does *not* auto-close the moment a key lands:
+  // `OnboardingFlow` swaps to its "You're all set" screen on `hasCredential`,
+  // and unmounting on that same signal meant nobody ever saw it.
   useEffect(() => {
     if (initialized && !hasCredential) {
       setShowOnboarding(true);
-      return;
-    }
-
-    if (hasCredential) {
-      setShowOnboarding(false);
     }
   }, [initialized, hasCredential]);
 
@@ -509,6 +685,30 @@ export default function App() {
       setOnboardingDone(false);
     }
   }, [onboardingDone, hasCredential, refreshModels]);
+
+  /*
+   * Settings is reachable from onboarding *and* straight past it (the
+   * `settings.open` keybinding works while onboarding is up). Coming back
+   * from the latter used to drop the user on a stale "You're all set" screen,
+   * because `showOnboarding` was never cleared. Only the onboarding-initiated
+   * visit still owns that screen.
+   */
+  useEffect(() => {
+    const isSettings = activeView === 'settings';
+    const leftSettings = wasSettingsViewRef.current && !isSettings;
+    wasSettingsViewRef.current = isSettings;
+
+    if (!leftSettings) {
+      return;
+    }
+
+    const requestedByOnboarding = onboardingRequestedSettingsRef.current;
+    onboardingRequestedSettingsRef.current = false;
+
+    if (!requestedByOnboarding && hasCredential) {
+      setShowOnboarding(false);
+    }
+  }, [activeView, hasCredential]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -533,6 +733,46 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.borderRadius = appearance.borderRadius;
   }, [appearance.borderRadius]);
+
+  // Color overrides ride on top of the design theme as inline custom
+  // properties; removing an override falls straight back to the theme value.
+  const appliedOverrideKeysRef = useRef<string[]>([]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const overrides = buildThemeOverrides(appearance);
+
+    for (const key of appliedOverrideKeysRef.current) {
+      if (!(key in overrides)) {
+        root.style.removeProperty(key);
+      }
+    }
+
+    for (const [key, value] of Object.entries(overrides)) {
+      root.style.setProperty(key, value);
+    }
+
+    appliedOverrideKeysRef.current = Object.keys(overrides);
+  }, [appearance]);
+
+  useEffect(() => {
+    document.documentElement.dataset.translucentSidebar = appearance.translucentSidebar ? 'true' : 'false';
+  }, [appearance.translucentSidebar]);
+
+  useEffect(() => {
+    document.documentElement.dataset.pointerCursors = appearance.pointerCursors ? 'true' : 'false';
+  }, [appearance.pointerCursors]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const apply = () => {
+      const reduced = appearance.reduceMotion === 'on' || (appearance.reduceMotion === 'system' && mediaQuery.matches);
+      document.documentElement.dataset.reduceMotion = reduced ? 'true' : 'false';
+    };
+
+    apply();
+    mediaQuery.addEventListener('change', apply);
+    return () => mediaQuery.removeEventListener('change', apply);
+  }, [appearance.reduceMotion]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -677,6 +917,10 @@ export default function App() {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'codeFontFamily', value });
           void updatePreferences({ appearance: { codeFontFamily: value } });
         }}
+        onAppearancePatch={(patch) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: Object.keys(patch).join(',') });
+          void updatePreferences({ appearance: patch });
+        }}
         onUpdateKeybindings={(rules) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'keybindings' });
           void updatePreferences({ keyboard: { keybindings: rules } });
@@ -700,10 +944,11 @@ export default function App() {
           void setRendererTelemetryEnabled(value);
         }}
       />
-    ) : showOnboarding && !hasCredential ? (
+    ) : showOnboarding ? (
       <OnboardingFlow
         hasCredential={hasCredential}
         onOpenProviderSettings={() => {
+          onboardingRequestedSettingsRef.current = true;
           setShowOnboarding(false);
           setOnboardingDone(true);
           runViewTransition(() => openSettings('providers'));
@@ -718,6 +963,7 @@ export default function App() {
       <div className="flex h-screen overflow-hidden bg-bg-base">
         <Sidebar
           items={sidebarItems}
+          projects={projects}
           selectedConversationId={selectedConversationId}
           collapsed={sidebarCollapsed}
           settings={settings}
@@ -735,62 +981,75 @@ export default function App() {
           onSelect={(id) => void loadConversation(id)}
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
+          onRename={(id, title) => void renameConversation(id, title)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
+          onAttachProject={() => {
+            void attachProject({ conversationId: selectedConversationId ?? undefined });
+          }}
+          onCreateInProject={(projectId) => void createConversationInProject(projectId)}
+          onRevealProject={(projectId) => void window.atlasChat.projects.reveal(projectId)}
+          onDetachProject={(projectId) => void detachProject(projectId)}
           onOpenLanding={() => openLanding()}
           onOpenSites={() => runViewTransition(() => openSites())}
+          onOpenSearch={() => {
+            setModelPickerOpen(false);
+            captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+            setCommandPaletteOpen(true);
+          }}
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
+          width={sidebarResize.width}
         />
+
+        {/* Resizing is meaningless while the rail is collapsed. */}
+        {!sidebarCollapsed && (
+          <PanelResizeHandle
+            ariaLabel="Resize sidebar"
+            isResizing={sidebarResize.isResizing}
+            width={sidebarResize.width}
+            minWidth={sidebarResize.minWidth}
+            maxWidth={sidebarResize.maxWidth}
+            onPointerDown={sidebarResize.onPointerDown}
+            onKeyDown={sidebarResize.onKeyDown}
+            onReset={sidebarResize.reset}
+          />
+        )}
 
         <div
           className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-base`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
           {/*
-            Draggable title bar — matches the sidebar title bar height. Holds
-            the active conversation title (when present), the streaming
-            indicator while a request is in flight, and the app update CTA.
+            Draggable title bar — matches the sidebar title bar height and is
+            borderless per the Codex reference: thread title on the left, a
+            centered "Chat | Work" segmented control (Work drives the
+            workbench panel), and the app update CTA on the right.
+
+            Drag regions: `no-drag` belongs on the *controls*, never on the
+            grid cells. Two of the three cells are `1fr` and span most of the
+            bar, so exempting them left only the `px-5` slivers draggable and
+            killed macOS double-click-to-zoom.
           */}
           <div
-            className={`relative flex h-titlebar-height shrink-0 items-center px-5 ${sidebarCollapsed ? '' : 'border-b border-border-default'}`}
+            className={cn(
+              'titlebar-overlay-safe relative grid h-titlebar-height shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 px-5',
+              // With the 56px collapsed rail, macOS traffic lights (x:16, ~70px
+              // wide) end ~30px into this bar; inset the title clear of them.
+              sidebarCollapsed && isMacLike && 'pl-12'
+            )}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
-            <div
-              className="flex min-w-0 flex-1 items-center gap-2.5"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            >
+            {/* Title + streaming badge are inert text: they drag the window. */}
+            <div className="flex min-w-0 items-center gap-2.5">
               {activeConversation?.conversation ? (
-                <>
-                  <h2
-                    className="truncate text-[13px] font-normal text-text-secondary"
-                    title={activeConversation.conversation.title}
-                  >
-                    {activeConversation.conversation.title}
-                  </h2>
-                  {selectedModelSummary ? (
-                    <>
-                      <span aria-hidden="true" className="text-[var(--text-faint)]">·</span>
-                      <span
-                        className="truncate text-[12px] text-text-muted"
-                        title={selectedModelSummary.label}
-                      >
-                        {selectedModelSummary.label}
-                      </span>
-                    </>
-                  ) : null}
-                </>
-              ) : selectedModelSummary ? (
-                <span
-                  className="truncate text-[12px] text-text-muted"
-                  title={selectedModelSummary.label}
-                >
-                  {selectedModelSummary.label}
-                </span>
+                <h2 className="truncate text-md font-medium text-text-primary">
+                  {activeConversation.conversation.title}
+                </h2>
               ) : null}
               {activeDraft?.status === 'streaming' ? (
                 <span
-                  className="inline-flex items-center gap-1.5 text-[11px] text-text-muted"
+                  className="inline-flex items-center gap-1.5 text-2xs text-text-muted"
                   role="status"
                   aria-live="polite"
                 >
@@ -802,9 +1061,42 @@ export default function App() {
                 </span>
               ) : null}
             </div>
-            <AppUpdateButton updateState={updateState} onClick={() => void performUpdatePrimaryAction()} />
+
+            {/* Mode + folder. This cell is `auto` — it hugs the controls, so
+                each control carries its own `no-drag` and the gaps still drag
+                the window. */}
+            <div className="flex shrink-0 items-center gap-1.5">
+              <WorkspaceModeSwitch
+                mode={workspaceMode}
+                ready={workspaceReady}
+                disabled={!selectedConversationId}
+                onChange={(mode) => {
+                  if (!selectedConversationId) return;
+                  captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: mode });
+                  void setConversationWorkspace(selectedConversationId, { mode });
+                  // Code is the mode with a panel worth seeing; opening it on
+                  // the switch saves the second click without locking the two
+                  // together — the toggle still wins afterwards.
+                  if (mode === 'code') {
+                    setWorkbenchOpen(true);
+                  }
+                }}
+              />
+            </div>
+
+            {/* The cell is `1fr` wide but its contents are not: each control
+                carries its own `no-drag`, so the empty run beside them drags. */}
+            <div className="flex shrink-0 items-center justify-end gap-1">
+              <WorkbenchToggle open={workbenchOpen} onToggle={setWorkbenchOpen} />
+            </div>
           </div>
 
+          {/*
+            The boundary wraps the transcript only. It used to enclose the
+            composer too, so one bad message part took the input box down with
+            it and left no way to type your way out — including no way to
+            start a new chat, since the transcript is what crashed.
+          */}
           <RendererErrorBoundary resetKey={selectedConversationId}>
             <ChatWindow
               detail={activeConversation}
@@ -813,68 +1105,137 @@ export default function App() {
               isLoadingConversation={isLoadingConversation}
               isLoadingOlder={isLoadingOlder}
               onOpenSettings={() => runViewTransition(() => openSettings())}
-              onSuggestionClick={(prompt) => setComposerValue(prompt)}
+              onSuggestionClick={appendToComposer}
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
               onRespondToolApproval={(request) => respondToolApproval(request)}
               onRetryLastMessage={() => void resendLastUserMessage()}
               hasTools={hasModelTools}
-              hasVision={hasModelVision}
-            />
-
-            <Composer
-              value={composerValue}
-              disabled={!selectedConversationId}
-              isStreaming={activeDraft?.status === 'streaming'}
-              models={models}
-              selectedModelId={selectedModelId}
-              modelPickerOpen={modelPickerOpen}
-              composerFocusNonce={composerFocusNonce}
-              detail={activeConversation}
-              draft={activeDraft}
-              onChange={setComposerValue}
-              onSend={(message) => {
-                const fallbackValue = message.text;
-                captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
-                  hasFiles: message.files && message.files.length > 0,
-                  fileCount: message.files?.length ?? 0,
-                });
-                return sendMessage({
-                  text: message.text,
-                  files: message.files,
-                })
-                  .then(() => setComposerValue(''))
-                  .catch(() => setComposerValue(fallbackValue));
-              }}
-              onAbort={() => {
-                if (selectedConversationId) {
-                  captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
-                  void abortConversation(selectedConversationId);
-                }
-              }}
-              onSelectModel={(modelId) => {
-                if (selectedConversationId) {
-                  captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
-                  setSelectedModel(selectedConversationId, modelId);
-                }
-              }}
-              onModelPickerOpenChange={setModelPickerOpen}
-              onComposerFocusChange={setComposerFocused}
-              onRefreshModels={() => void refreshModels()}
-              isRefreshingModels={isRefreshingModels}
-              customProviders={settings?.customProviders}
-              credentials={settings?.providers}
-              defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
-              onManageProviders={() => runViewTransition(() => openSettings('providers'))}
-              reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
-              toolPermissionMode={settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE}
-              onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
-              onToolPermissionModeChange={(toolPermissionMode) =>
-                void updatePreferences({ chat: { toolPermissionMode } })
-              }
-              onOpenGallery={() => setGalleryOpen(true)}
+              projectName={activeProject?.exists ? activeProject.title : null}
             />
           </RendererErrorBoundary>
+
+          {/*
+            Chips only on an untouched session. Once the conversation has a
+            turn in it the folder, runner and branch are settled facts that the
+            transcript itself evidences — leaving the strip up spends a row of
+            the composer's column restating them above every reply.
+          */}
+          {isUntouchedSession ? (
+            <WorkspaceContextBar
+              mode={workspaceMode}
+              project={activeProject}
+              projects={projects}
+              disabled={!selectedConversationId}
+              onAttach={() => {
+                void attachProject({ conversationId: selectedConversationId ?? undefined });
+              }}
+              onSelect={(projectId) => {
+                if (!selectedConversationId) return;
+                void setConversationWorkspace(selectedConversationId, { projectId });
+              }}
+              onDetach={() => {
+                if (!selectedConversationId) return;
+                void setConversationWorkspace(selectedConversationId, { projectId: null });
+              }}
+              onReveal={(projectId) => {
+                void window.atlasChat.projects.reveal(projectId);
+              }}
+            />
+          ) : null}
+
+          <Composer
+            value={composerValue}
+            disabled={!selectedConversationId}
+            isStreaming={activeDraft?.status === 'streaming'}
+            models={models}
+            selectedModelId={selectedModelId}
+            modelPickerOpen={modelPickerOpen}
+            composerFocusNonce={composerFocusNonce}
+            detail={activeConversation}
+            draft={activeDraft}
+            attachments={composerAttachments}
+            onAttachmentsChange={updateComposerAttachments}
+            onChange={setComposerValue}
+            onSend={(message) => {
+              const conversationId = selectedConversationId;
+              captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
+                hasFiles: message.files && message.files.length > 0,
+                fileCount: message.files?.length ?? 0,
+              });
+              const sentAttachmentIds = message.files.map((file) => file.id);
+              return sendMessage({
+                text: message.text,
+                files: message.files,
+                // Pin the thread: the composer awaits a blob→dataURL pass
+                // before calling us, so the selection may have moved on.
+                conversationId: conversationId ?? undefined,
+              }).then(() => {
+                // Only a successful send clears the thread's draft; a failure
+                // leaves the text (and files) in place to retry.
+                if (conversationId) {
+                  clearComposerDraft(conversationId, sentAttachmentIds);
+                }
+              });
+            }}
+            onAbort={() => {
+              if (selectedConversationId) {
+                captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+                void abortConversation(selectedConversationId);
+              }
+            }}
+            onSelectModel={(modelId) => {
+              if (selectedConversationId) {
+                captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
+                setSelectedModel(selectedConversationId, modelId);
+              }
+            }}
+            onModelPickerOpenChange={setModelPickerOpen}
+            onComposerFocusChange={setComposerFocused}
+            onRefreshModels={() => void refreshModels()}
+            isRefreshingModels={isRefreshingModels}
+            customProviders={settings?.customProviders}
+            credentials={settings?.providers}
+            defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
+            onManageProviders={() => runViewTransition(() => openSettings('providers'))}
+            reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
+            toolPermissionMode={settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE}
+            onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
+            onToolPermissionModeChange={(toolPermissionMode) =>
+              void updatePreferences({ chat: { toolPermissionMode } })
+            }
+            onOpenGallery={() => setGalleryOpen(true)}
+          />
         </div>
+
+        {workbenchOpen && (
+          <>
+            <PanelResizeHandle
+              ariaLabel="Resize workbench"
+              isResizing={workbenchResize.isResizing}
+              width={workbenchResize.width}
+              minWidth={workbenchResize.minWidth}
+              maxWidth={workbenchResize.maxWidth}
+              onPointerDown={workbenchResize.onPointerDown}
+              onKeyDown={workbenchResize.onKeyDown}
+              onReset={workbenchResize.reset}
+            />
+            <aside
+              className="shrink-0 overflow-hidden border-l border-border-default"
+              style={{ width: workbenchResize.width }}
+              aria-label="Workbench"
+            >
+              <RendererErrorBoundary resetKey={selectedConversationId}>
+                <WorkbenchPanel
+                  mode={workspaceMode}
+                  messages={activeConversation?.messages ?? []}
+                  activeTab={workbenchTab}
+                  onTabChange={setWorkbenchTab}
+                  onClose={() => setWorkbenchOpen(false)}
+                />
+              </RendererErrorBoundary>
+            </aside>
+          </>
+        )}
       </div>
     );
 
@@ -883,6 +1244,8 @@ export default function App() {
       <AtlasToaster />
       <CommandPalette
         items={commandPaletteItems}
+        conversations={commandPaletteConversations}
+        onSelectConversation={(id) => void loadConversation(id)}
         onOpenChange={setCommandPaletteOpen}
         onSelect={runCommand}
         open={commandPaletteOpen}
@@ -892,7 +1255,7 @@ export default function App() {
         onClose={() => setGalleryOpen(false)}
         onSelect={(visual) => {
           setGalleryOpen(false);
-          setComposerValue(visual.content);
+          appendToComposer(visual.content);
         }}
       />
       {content}

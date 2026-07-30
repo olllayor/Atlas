@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from '../../../shared/chatParameters';
+import { isReasoningEffort } from '../../../shared/chatParameters';
 import type { ProviderId } from '../../../shared/contracts';
 import type {
   CustomProvider,
@@ -24,11 +26,13 @@ type ModelRow = {
   is_free: number;
   context_window: number | null;
   max_output_tokens: number | null;
-  supports_tools: number;
-  supports_vision: number;
-  supports_document_input: number;
+  supports_tools: number | null;
+  /** NULL when no source has described the modality. */
+  supports_vision: number | null;
+  supports_document_input: number | null;
   supports_reasoning: number;
   supports_temperature: number;
+  reasoning_efforts: string | null;
   sort_order: number;
 };
 
@@ -47,12 +51,42 @@ function toModel(row: ModelRow): CustomProviderModel {
     isFree: Boolean(row.is_free),
     contextWindow: row.context_window,
     maxOutputTokens: row.max_output_tokens,
-    supportsTools: Boolean(row.supports_tools),
-    supportsVision: Boolean(row.supports_vision),
-    supportsDocumentInput: Boolean(row.supports_document_input),
+    supportsTools: toTriState(row.supports_tools),
+    supportsVision: toTriState(row.supports_vision),
+    supportsDocumentInput: toTriState(row.supports_document_input),
     supportsReasoning: Boolean(row.supports_reasoning),
-    supportsTemperature: Boolean(row.supports_temperature)
+    supportsTemperature: Boolean(row.supports_temperature),
+    reasoningEfforts: parseReasoningEfforts(row.reasoning_efforts)
   };
+}
+
+/**
+ * SQLite has no boolean, and here it has to carry three states: 1, 0, and "no
+ * source has said". NULL is that third state on both sides of the boundary.
+ */
+export function toTriState(value: number | null): boolean | null {
+  return value == null ? null : Boolean(value);
+}
+
+export function fromTriState(value: boolean | null | undefined): number | null {
+  return value == null ? null : value ? 1 : 0;
+}
+
+export function parseReasoningEfforts(value: string | null): ReasoningEffort[] | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(isReasoningEffort) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function serializeReasoningEfforts(value: ReasoningEffort[] | null | undefined): string | null {
+  return value == null ? null : JSON.stringify(value);
 }
 
 export type CustomProviderRecord = Omit<CustomProvider, 'hasApiKey'>;
@@ -81,7 +115,7 @@ export class CustomProvidersRepo {
         `
           SELECT provider_id, model_id, label, is_free, context_window, max_output_tokens,
                  supports_tools, supports_vision, supports_document_input,
-                 supports_reasoning, supports_temperature, sort_order
+                 supports_reasoning, supports_temperature, reasoning_efforts, sort_order
           FROM custom_provider_models
           ORDER BY sort_order ASC, model_id ASC
         `
@@ -240,12 +274,12 @@ export class CustomProvidersRepo {
         INSERT INTO custom_provider_models (
           provider_id, model_id, label, is_free, context_window, max_output_tokens,
           supports_tools, supports_vision, supports_document_input,
-          supports_reasoning, supports_temperature, sort_order
+          supports_reasoning, supports_temperature, reasoning_efforts, sort_order
         )
         VALUES (
           @providerId, @modelId, @label, @isFree, @contextWindow, @maxOutputTokens,
           @supportsTools, @supportsVision, @supportsDocumentInput,
-          @supportsReasoning, @supportsTemperature, @sortOrder
+          @supportsReasoning, @supportsTemperature, @reasoningEfforts, @sortOrder
         )
         ON CONFLICT(provider_id, model_id) DO UPDATE SET
           label = excluded.label,
@@ -257,6 +291,7 @@ export class CustomProvidersRepo {
           supports_document_input = excluded.supports_document_input,
           supports_reasoning = excluded.supports_reasoning,
           supports_temperature = excluded.supports_temperature,
+          reasoning_efforts = excluded.reasoning_efforts,
           sort_order = excluded.sort_order
       `
     );
@@ -269,11 +304,12 @@ export class CustomProvidersRepo {
         isFree: model.isFree ? 1 : 0,
         contextWindow: model.contextWindow,
         maxOutputTokens: model.maxOutputTokens,
-        supportsTools: model.supportsTools ? 1 : 0,
-        supportsVision: model.supportsVision ? 1 : 0,
-        supportsDocumentInput: model.supportsDocumentInput ? 1 : 0,
+        supportsTools: fromTriState(model.supportsTools),
+        supportsVision: fromTriState(model.supportsVision),
+        supportsDocumentInput: fromTriState(model.supportsDocumentInput),
         supportsReasoning: model.supportsReasoning ? 1 : 0,
         supportsTemperature: model.supportsTemperature ? 1 : 0,
+        reasoningEfforts: serializeReasoningEfforts(model.reasoningEfforts),
         sortOrder: index
       });
     });

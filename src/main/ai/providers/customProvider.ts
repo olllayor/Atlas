@@ -95,6 +95,9 @@ export function parseDiscoveredModels(apiFormat: CustomProviderApiFormat, payloa
           maxOutputTokens: isPositiveNumber(entry.max_tokens) ? entry.max_tokens : null,
           supportsVision: capabilities?.image_input?.supported === true,
           supportsDocumentInput: capabilities?.pdf_input?.supported === true,
+          // The endpoint states thinking support outright; without capability
+          // metadata, leave it unset so the optimistic default applies.
+          ...(capabilities != null ? { supportsReasoning: capabilities.thinking?.supported === true } : {}),
           detailed: capabilities != null
         } satisfies DiscoveredModel;
       });
@@ -113,8 +116,11 @@ export function parseDiscoveredModels(apiFormat: CustomProviderApiFormat, payloa
       label: id,
       contextWindow: null,
       maxOutputTokens: null,
-      supportsVision: false,
-      supportsDocumentInput: false,
+      // Unknown, not unsupported: this list is ids and nothing else, and
+      // writing `false` here is what made Atlas refuse images on models that
+      // take them perfectly well.
+      supportsVision: null,
+      supportsDocumentInput: null,
       detailed: false
     }));
 }
@@ -204,6 +210,7 @@ export class CustomProviderAdapter implements ProviderAdapter {
       supportsTools: model.supportsTools,
       supportsTemperature: model.supportsTemperature,
       supportsReasoning: model.supportsReasoning,
+      reasoningEfforts: model.reasoningEfforts,
       maxOutputTokens: model.maxOutputTokens,
       archived: false,
       lastSyncedAt: syncedAt,
@@ -227,6 +234,7 @@ export class CustomProviderAdapter implements ProviderAdapter {
       apiFormat: this.config.apiFormat,
       effort: request.reasoningEffort,
       supportsReasoning: request.modelHints?.supportsReasoning,
+      allowedEfforts: request.modelHints?.reasoningEfforts,
       maxOutputTokens: resolveMaxOutputTokens(
         request.maxOutputTokens,
         request.modelHints,

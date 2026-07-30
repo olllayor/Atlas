@@ -96,6 +96,120 @@ test('CustomProvidersRepo round-trips a provider with its model list', async (t)
   assert.equal(repo.getById('custom:one')?.models[0]?.id, 'z-ai/glm-5.2');
 });
 
+test('CustomProvidersRepo round-trips per-model reasoning effort levels', async (t) => {
+  const { repo } = createHarness(t);
+
+  repo.create({
+    id: 'custom:one',
+    name: 'Gateway',
+    baseUrl: 'https://api.example.com/v1',
+    apiFormat: 'chat-completions',
+    models: normalizeModelInputs([
+      { id: 'deepseek-v4-flash', reasoningEfforts: ['off', 'high', 'max'] },
+      { id: 'mimo-v2.5', reasoningEfforts: [] },
+      { id: 'unknown-model' }
+    ])
+  });
+
+  const models = repo.getById('custom:one')?.models ?? [];
+  assert.deepEqual(models.find((m) => m.id === 'deepseek-v4-flash')?.reasoningEfforts, ['off', 'high', 'max']);
+  // Empty means "always reasons, no control" and must survive as [] rather than null.
+  assert.deepEqual(models.find((m) => m.id === 'mimo-v2.5')?.reasoningEfforts, []);
+  // Absent means the catalog never said, stored as NULL.
+  assert.equal(models.find((m) => m.id === 'unknown-model')?.reasoningEfforts, null);
+});
+
+test('backfillModelFacts fills levels for models saved before they were recorded', async (t) => {
+  const { repo, modelsRepo, settingsRepo, registry, secrets } = createHarness(t);
+
+  const facts = new Map([
+    ['deepseek-v4-flash', { supportsReasoning: true, reasoningEfforts: ['off', 'high', 'max'] }],
+    // The catalog says this one cannot reason at all.
+    ['some-embedder', { supportsReasoning: false, reasoningEfforts: null }]
+  ]);
+  const service = new CustomProviderService({
+    repo,
+    modelsRepo,
+    settingsRepo,
+    keychain: { getSecret: async () => null, setSecret: async () => {}, deleteSecret: async () => {} } as never,
+    registry,
+    modelsDev: { lookup: async (modelId: string) => facts.get(modelId) ?? null } as never
+  });
+
+  repo.create({
+    id: 'custom:one',
+    name: 'Gateway',
+    baseUrl: 'https://api.example.com/v1',
+    apiFormat: 'chat-completions',
+    models: normalizeModelInputs([
+      { id: 'deepseek-v4-flash' },
+      { id: 'some-embedder' },
+      { id: 'unknown-model' },
+      // Already recorded: the backfill must not touch it.
+      { id: 'pinned', reasoningEfforts: ['off', 'low'] }
+    ])
+  });
+
+  await service.backfillModelFacts();
+
+  const models = repo.getById('custom:one')?.models ?? [];
+  assert.deepEqual(models.find((m) => m.id === 'deepseek-v4-flash')?.reasoningEfforts, ['off', 'high', 'max']);
+  assert.equal(models.find((m) => m.id === 'some-embedder')?.supportsReasoning, false);
+  // Not in the catalog: stays unknown so a later launch can try again.
+  assert.equal(models.find((m) => m.id === 'unknown-model')?.reasoningEfforts, null);
+  assert.deepEqual(models.find((m) => m.id === 'pinned')?.reasoningEfforts, ['off', 'low']);
+
+  // Nothing left to fill: a second run must not rewrite the models.
+  const before = repo.getById('custom:one');
+  await service.backfillModelFacts();
+  assert.deepEqual(repo.getById('custom:one'), before);
+});
+
+test('backfillModelFacts corrects stale context windows from the catalog', async (t) => {
+  const { repo, modelsRepo, settingsRepo, registry } = createHarness(t);
+
+  const facts = new Map([
+    ['glm-5.2', { contextWindow: 1_000_000, maxOutputTokens: 131_072, supportsReasoning: true, reasoningEfforts: null }],
+    // Known model, but the catalog records no limits: nothing to correct with.
+    ['limitless', { contextWindow: null, maxOutputTokens: null, supportsReasoning: false, reasoningEfforts: null }]
+  ]);
+  const service = new CustomProviderService({
+    repo,
+    modelsRepo,
+    settingsRepo,
+    keychain: { getSecret: async () => null, setSecret: async () => {}, deleteSecret: async () => {} } as never,
+    registry,
+    modelsDev: { lookup: async (modelId: string) => facts.get(modelId) ?? null } as never
+  });
+
+  repo.create({
+    id: 'custom:one',
+    name: 'Gateway',
+    baseUrl: 'https://api.example.com/v1',
+    apiFormat: 'chat-completions',
+    models: normalizeModelInputs([
+      // Saved with a window an order of magnitude too small — the whole reason
+      // an empty conversation could report a third of the context consumed.
+      { id: 'glm-5.2', contextWindow: 16_384 },
+      { id: 'limitless', contextWindow: 4_096 },
+      { id: 'unknown-model', contextWindow: 8_192 }
+    ])
+  });
+
+  await service.backfillModelFacts();
+
+  const models = repo.getById('custom:one')?.models ?? [];
+  assert.equal(models.find((m) => m.id === 'glm-5.2')?.contextWindow, 1_000_000);
+  assert.equal(models.find((m) => m.id === 'glm-5.2')?.maxOutputTokens, 131_072);
+  // The catalog said nothing about these two, so the saved values stand.
+  assert.equal(models.find((m) => m.id === 'limitless')?.contextWindow, 4_096);
+  assert.equal(models.find((m) => m.id === 'unknown-model')?.contextWindow, 8_192);
+
+  const before = repo.getById('custom:one');
+  await service.backfillModelFacts();
+  assert.deepEqual(repo.getById('custom:one'), before);
+});
+
 test('CustomProvidersRepo setModels replaces the list rather than merging', async (t) => {
   const { repo } = createHarness(t);
 
@@ -330,4 +444,59 @@ test('a gateway free-tier suffix marks the model free without any extra input', 
     ['vendor/model:free']
   );
   assert.equal(modelsRepo.list().length, 2);
+});
+
+test('a saved custom model starts with unknown capabilities, not claimed ones', async (t) => {
+  const { service } = createHarness(t);
+
+  const provider = await service.create({
+    name: 'Gateway',
+    baseUrl: 'https://api.example.com/v1',
+    apiFormat: 'chat-completions',
+    models: [{ id: 'vendor/model' }]
+  });
+
+  const model = provider.models[0]!;
+  // Claiming support the endpoint never described is what produced 400s at
+  // send time; claiming the opposite blocked models that can in fact see.
+  assert.equal(model.supportsVision, null);
+  assert.equal(model.supportsDocumentInput, null);
+  // Tool support is the same argument: a refusal is recoverable and now
+  // recorded, so claiming it up front buys nothing.
+  assert.equal(model.supportsTools, null);
+  // Everything else still defaults optimistically.
+  assert.equal(model.supportsReasoning, true);
+});
+
+test('a capability rejection is recorded against the model that was refused', async (t) => {
+  const { service, registry, modelsRepo } = createHarness(t);
+
+  const provider = await service.create({
+    name: 'Gateway',
+    baseUrl: 'https://api.example.com/v1',
+    apiFormat: 'chat-completions',
+    models: [{ id: 'text-only' }, { id: 'other-model' }]
+  });
+
+  modelsRepo.upsertModels(await registry.get(provider.id)!.listModels(null));
+  assert.equal(modelsRepo.getById('text-only')?.supportsVision, null);
+
+  assert.equal(await service.recordCapabilityRejection('text-only', 'image'), true);
+
+  const saved = (await service.list())[0]!.models;
+  assert.equal(saved.find((model) => model.id === 'text-only')?.supportsVision, false);
+  // Only the refused model and only the refused modality.
+  assert.equal(saved.find((model) => model.id === 'text-only')?.supportsDocumentInput, null);
+  assert.equal(saved.find((model) => model.id === 'other-model')?.supportsVision, null);
+
+  // Tool refusals ride the same path and land on their own field.
+  assert.equal(await service.recordCapabilityRejection('other-model', 'tools'), true);
+  const afterTools = (await service.list())[0]!.models;
+  assert.equal(afterTools.find((model) => model.id === 'other-model')?.supportsTools, false);
+  assert.equal(afterTools.find((model) => model.id === 'text-only')?.supportsTools, null);
+
+  // A repeat rejection is not another write.
+  assert.equal(await service.recordCapabilityRejection('text-only', 'image'), false);
+  // A model no provider serves cannot be recorded against.
+  assert.equal(await service.recordCapabilityRejection('unknown-model', 'image'), false);
 });

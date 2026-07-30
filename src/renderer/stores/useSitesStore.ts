@@ -39,6 +39,8 @@ type SitesState = {
   renameSite: (siteId: string, title: string) => Promise<void>;
   deleteSite: (siteId: string) => Promise<void>;
   selectFile: (path: string | null) => Promise<void>;
+  /** Opens an unsaved, empty buffer for a path that does not exist yet. */
+  createDraftFile: (path: string) => void;
   setFileContents: (contents: string) => void;
   saveFile: () => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
@@ -188,6 +190,13 @@ export const useSitesStore = create<SitesState>((set, get) => {
         set({ error: getErrorMessage(error), fileContents: null });
       }
     },
+
+    /**
+     * A brand-new file exists only as an unsaved buffer until `saveFile`
+     * writes it, so there is nothing to read from disk — the empty contents
+     * and the dirty flag *are* the file.
+     */
+    createDraftFile: (path) => set({ selectedFilePath: path, fileContents: '', fileDirty: true }),
 
     setFileContents: (contents) => set({ fileContents: contents, fileDirty: true }),
 

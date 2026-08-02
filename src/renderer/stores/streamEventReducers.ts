@@ -75,6 +75,7 @@ export function applyRuntimeSnapshotToStore(
   state: RuntimeEventFanOut,
   conversationId: string,
   snapshot: RuntimeStateSnapshot,
+  page?: Pick<ConversationPage, 'hasOlder' | 'nextCursor' | 'limit'>,
 ): RuntimeEventFanOutPatch {
   const existingDetail = state.conversationDetails[conversationId];
   const detail: ConversationPage = {
@@ -87,9 +88,15 @@ export function applyRuntimeSnapshotToStore(
       defaultModelId: null,
     },
     messages: snapshot.messages,
-    hasOlder: existingDetail?.hasOlder ?? false,
-    nextCursor: existingDetail?.nextCursor ?? null,
-    limit: existingDetail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
+    // `page` carries the pagination truth a caller already has (e.g. the
+    // `conversations.getPage` result in `loadConversation`). It wins over the
+    // cached detail because that call site only runs when the conversation is
+    // NOT yet cached, so `existingDetail` is empty there; once a conversation
+    // is cached with richer paging (after pre-pending older pages), the cached
+    // `existingDetail` values take precedence via the fallback below.
+    hasOlder: page?.hasOlder ?? existingDetail?.hasOlder ?? false,
+    nextCursor: page?.nextCursor ?? existingDetail?.nextCursor ?? null,
+    limit: page?.limit ?? existingDetail?.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE,
   };
 
   const nextDraft = buildDraftFromRuntimeSnapshot(snapshot, state.draftsByConversation[conversationId]);

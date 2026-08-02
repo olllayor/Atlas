@@ -621,7 +621,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         window.atlasChat.chat.getRuntimeState({ conversationId }),
       ]);
       set((current) => ({
-        ...applyRuntimeSnapshotToStore(current, conversationId, runtimeState),
+        ...applyRuntimeSnapshotToStore(current, conversationId, runtimeState, detail),
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
         selectedModelIdByConversation:

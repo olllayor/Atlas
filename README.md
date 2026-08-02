@@ -6,7 +6,7 @@
 
 Atlas is a local-first desktop chat client for BYOK AI interactions. Save your API keys once, browse cached model catalogs, pick models manually, chat with streaming responses, and keep your conversation history on your machine.
 
-This repository is open source. The core app scaffold is in place and production builds work. Development startup still has an unresolved Electron runtime issue in this environment, so the project should currently be treated as an early OSS codebase rather than a polished public release.
+This repository is open source. The core app scaffold is in place, production builds pass, and the automated test suite is green. Room to improve remains (see the roadmap and `docs/`), but the project is active rather than a dormant scaffold.
 
 ## What it does
 
@@ -41,9 +41,9 @@ This repository is open source. The core app scaffold is in place and production
 - Tool calling with built-in local tools
 - Visual rendering (markdown, code, diagrams, math, iframes)
 - Full conversation persistence in SQLite
-- `pnpm dev` is not stable yet in this environment because of an Electron module-resolution/runtime mismatch during startup
+- `pnpm dev` uses a re-branded macOS launcher (custom dock icon, isolated dev bundle id); if that launcher build ever fails it now falls back to the stock Electron binary with a warning instead of taking the dev loop down. Set `ATLAS_SKIP_DEV_LAUNCHER=1` to bypass it entirely.
 
-If you want to contribute, the highest-value first task is fixing the dev runner so the local development loop matches the build output cleanly.
+Highest-value contribution areas are in the roadmap below (conversation search, export/import, theme switching) rather than the dev runner, which is in a working state.
 
 ## Getting started
 
@@ -65,7 +65,11 @@ pnpm install
 pnpm dev
 ```
 
-Known issue as of April 7, 2026: this currently fails in this environment during Electron startup. See the notes in this README and the source for the current runtime wiring.
+`pnpm dev` boots electron-vite with HMR. On macOS the dev script builds a
+re-branded app launcher (proper dock icon + an isolated `com.olllayor.atlaschat.dev`
+bundle id so keychain entries don't collide with the installed app); if that
+build fails it falls back to the stock Electron binary and prints a warning. Set
+`ATLAS_SKIP_DEV_LAUNCHER=1` to skip the branded launcher.
 
 ### Build
 

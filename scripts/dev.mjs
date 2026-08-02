@@ -178,10 +178,34 @@ function buildMacLauncher() {
 
 function resolveElectronExecPath() {
   if (process.platform !== 'darwin') {
+    // Non-mac builds don't need the custom launcher (no dock icon / helper-plist
+    // re-branding) and have nothing to patch, so electron-vite's stock binary is
+    // correct as-is.
     return undefined;
   }
 
-  return buildMacLauncher();
+  // `ATLAS_SKIP_DEV_LAUNCHER=1` bypasses the re-branded dev launcher (used when
+  // the local icon source is missing or plist tooling is unavailable). The
+  // launcher's only job is cosmetic: a proper dock icon, display name and isolated
+  // dev bundle id. Dev still works without it, just with Electron's default
+  // look.
+  if (process.env.ATLAS_SKIP_DEV_LAUNCHER) {
+    console.warn(
+      '[dev] ATLAS_SKIP_DEV_LAUNCHER is set — launching the stock Electron binary (no custom dock icon / dev bundle id).'
+    );
+    return undefined;
+  }
+
+  try {
+    return buildMacLauncher();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A broken launcher must not take down the dev loop: fall back to the stock
+    // binary and warn loudly so the cause can be fixed without losing HMR.
+    console.warn(`[dev] Could not build the branded macOS launcher (${message}).\n`);
+    console.warn('[dev] Falling back to the stock Electron binary. Run `pnpm icons:mac` to regenerate icons.');
+    return undefined;
+  }
 }
 
 const electronViteDir = dirname(require.resolve('electron-vite/package.json'));

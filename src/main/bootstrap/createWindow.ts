@@ -65,7 +65,11 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // The preload only uses `contextBridge` and `ipcRenderer` (both available
+      // inside a sandboxed renderer) and electron-vite bundles it into one
+      // self-contained file, so the renderer runs fully sandboxed. This keeps
+      // the UI process from ever reaching Node/Electron host APIs directly.
+      sandbox: true
     }
   });
 

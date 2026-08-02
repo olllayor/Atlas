@@ -112,13 +112,18 @@ work the selected model cannot do.
 - **`--sidebar-expanded` / `--sidebar-collapsed`** — still exported to `@theme` while
   marked deprecated in `styles.css`. Harmless, but dead.
 
-## Non-parity bug found, reported, not fixed
+## Non-parity bug found, reported — FIXED
 
-History pagination is dropped on the click-to-open path: `loadConversation`
-(`useAppStore.ts:439-459`) fetches `conversations.getPage` and then passes only the
-runtime snapshot to `applyRuntimeSnapshotToStore`, which resets `hasOlder` to `false`
-(`streamEventReducers.ts:73-86`). Result: **"load older messages" only ever works for the
-conversation auto-selected at startup.** The bootstrap path handles it correctly.
+History pagination was dropped on the click-to-open path: `loadConversation`
+(`useAppStore.ts:582-650`) fetched `conversations.getPage` and then passed only
+the runtime snapshot to `applyRuntimeSnapshotToStore`, which reset `hasOlder` to
+`false` (`streamEventReducers.ts:87-91`). Result: **"load older messages" only
+ever worked for the conversation auto-selected at startup.** The bootstrap path
+handled it correctly.
 
-Out of scope for a UI migration and left alone deliberately — it is a data-flow fix and
-should be its own change.
+**Fixed (2026-08-01):** `applyRuntimeSnapshotToStore` gained an optional
+`page?: Pick<ConversationPage, 'hasOlder' | 'nextCursor' | 'limit'>` parameter,
+and `loadConversation` now passes its `getPage` result through, so pagination
+state survives the click-to-open snapshot application. Covered by two new tests
+in `tests/streamEventReducers.test.ts` ("keeps page pagination..." and "without a
+page keeps the false/null defaults").

@@ -10,6 +10,7 @@ import {
   isStreamingEvent,
   type RuntimeEventFanOut
 } from '../src/renderer/stores/streamEventReducers.js';
+import { DEFAULT_CONVERSATION_PAGE_SIZE } from '../src/renderer/stores/conversationCache.js';
 
 function makeFanOut(overrides: Partial<RuntimeEventFanOut> = {}): RuntimeEventFanOut {
   return {
@@ -180,6 +181,84 @@ test('applyRuntimeSnapshotToStore hydrates drafts and details from a snapshot', 
   assert.equal(patch.conversationDetails?.['c1']?.conversation.id, 'c1');
   assert.equal(patch.draftsByConversation?.['c1']?.requestId, 'r1');
   assert.equal(patch.runtimeSequenceByConversation?.['c1'], 7);
+});
+
+test('applyRuntimeSnapshotToStore keeps page pagination when a page is supplied (history fix)', () => {
+  const snapshot: RuntimeStateSnapshot = {
+    conversationId: 'c1',
+    conversation: {
+      id: 'c1',
+      title: 'My chat',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      defaultProviderId: null,
+      defaultModelId: null,
+    },
+    lastSequence: 7,
+    checkpointSequence: 0,
+    messages: [],
+    activities: [],
+    pendingApprovals: [],
+    providerSession: {
+      requestId: 'r1',
+      providerId: 'openrouter',
+      modelId: 'm1',
+      status: 'active',
+      startedAt: new Date(0).toISOString(),
+    },
+    latestCheckpoint: null,
+  };
+
+  // Regression: on the click-to-open path `loadConversation` fetches
+  // `getPage` (whose result carries real pagination) and feeds it into this
+  // reducer. It must NOT reset hasOlder/nextCursor back to false/null for a
+  // conversation that is not yet cached — that is what made "load older
+  // messages" unreachable for every conversation except the bootstrap one.
+  const patch = applyRuntimeSnapshotToStore(makeFanOut(), 'c1', snapshot, {
+    hasOlder: true,
+    nextCursor: 'cursor-1',
+    limit: 50,
+  });
+  assert.equal(patch.conversationDetails?.['c1']?.hasOlder, true);
+  assert.equal(patch.conversationDetails?.['c1']?.nextCursor, 'cursor-1');
+  assert.equal(patch.conversationDetails?.['c1']?.limit, 50);
+});
+
+test('applyRuntimeSnapshotToStore without a page keeps the false/null defaults', () => {
+  const snapshot: RuntimeStateSnapshot = {
+    conversationId: 'c1',
+    conversation: {
+      id: 'c1',
+      title: 'My chat',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      defaultProviderId: null,
+      defaultModelId: null,
+    },
+    lastSequence: 7,
+    checkpointSequence: 0,
+    messages: [],
+    activities: [],
+    pendingApprovals: [],
+    providerSession: {
+      requestId: 'r1',
+      providerId: 'openrouter',
+      modelId: 'm1',
+      status: 'active',
+      startedAt: new Date(0).toISOString(),
+    },
+    latestCheckpoint: null,
+  };
+
+  // Call sites that don't have a page (event recovery, bootstrap draft
+  // derivation) must keep the original fallback semantics untouched.
+  const patch = applyRuntimeSnapshotToStore(makeFanOut(), 'c1', snapshot);
+  assert.equal(patch.conversationDetails?.['c1']?.hasOlder, false);
+  assert.equal(patch.conversationDetails?.['c1']?.nextCursor, null);
+  assert.equal(
+    patch.conversationDetails?.['c1']?.limit,
+    DEFAULT_CONVERSATION_PAGE_SIZE
+  );
 });
 
 test('applyRecoveredRuntimeEventsToStore skips events at-or-before the last sequence', () => {

@@ -27,6 +27,7 @@ import { registerModelsIpc } from './ipc/models';
 import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
+import { assertTrustedSender } from './ipc/security';
 import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
@@ -273,17 +274,24 @@ app.whenReady().then(async () => {
 
   // Wrapped like every other handler: these are registered here rather than in
   // an `ipc/` module, which is exactly how a surface ends up being the one that
-  // still throws raw internals at the renderer.
+  // still throws raw internals at the renderer. They are also the only handlers
+  // that bypass `./ipc/security`, so each one starts by asserting a trusted
+  // sender — otherwise an XSS'd or loaded-iframe renderer could drive
+  // analytics/telemetry on the main process.
   ipcMain.handle(
     IPC_CHANNELS.posthogGetAnonymousId,
-    withUserFacingErrors(IPC_CHANNELS.posthogGetAnonymousId, () => getAnonymousId()),
+    withUserFacingErrors(IPC_CHANNELS.posthogGetAnonymousId, (event) => {
+      assertTrustedSender(event);
+      return getAnonymousId();
+    }),
   );
 
   ipcMain.handle(
     IPC_CHANNELS.posthogCaptureEvent,
     withUserFacingErrors(
       IPC_CHANNELS.posthogCaptureEvent,
-      (_event: Electron.IpcMainInvokeEvent, eventName: string, properties?: Record<string, unknown>) => {
+      (event: Electron.IpcMainInvokeEvent, eventName: string, properties?: Record<string, unknown>) => {
+        assertTrustedSender(event);
         capturePostHogEvent(eventName, properties);
       },
     ),
@@ -291,14 +299,20 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     IPC_CHANNELS.posthogGetTelemetryEnabled,
-    withUserFacingErrors(IPC_CHANNELS.posthogGetTelemetryEnabled, () => getTelemetryEnabled()),
+    withUserFacingErrors(IPC_CHANNELS.posthogGetTelemetryEnabled, (event) => {
+      assertTrustedSender(event);
+      return getTelemetryEnabled();
+    }),
   );
 
   ipcMain.handle(
     IPC_CHANNELS.posthogSetTelemetryEnabled,
     withUserFacingErrors(
       IPC_CHANNELS.posthogSetTelemetryEnabled,
-      (_event: Electron.IpcMainInvokeEvent, enabled: boolean) => setTelemetryEnabled(enabled),
+      (event: Electron.IpcMainInvokeEvent, enabled: boolean) => {
+        assertTrustedSender(event);
+        setTelemetryEnabled(enabled);
+      },
     ),
   );
 

@@ -850,9 +850,19 @@ export async function bashToolExecute(input: {
     }
   );
 
+  const isSuccess = !result.interrupted && result.code === 0;
+  const rawStdout = result.stdout;
+  const rawStderr = result.stderr;
+  // Silent commands (e.g. `rm`, `mkdir`, `touch`) produce empty stdout and stderr.
+  // Models like DeepSeek often interpret empty output as unconfirmed/failed and enter
+  // retry loops. Providing explicit success text gives clear feedback to the model.
+  const stdout = isSuccess && !rawStdout.trim() && !rawStderr.trim()
+    ? '(Command executed successfully with exit code 0)'
+    : rawStdout;
+
   return {
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout,
+    stderr: rawStderr,
     interrupted: result.interrupted,
     dangerouslyDisableSandbox: Boolean(input.dangerouslyDisableSandbox),
     returnCodeInterpretation:

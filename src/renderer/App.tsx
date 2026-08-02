@@ -1124,6 +1124,7 @@ export default function App() {
           */}
           {isUntouchedSession ? (
             <WorkspaceContextBar
+              conversationId={selectedConversationId ?? undefined}
               mode={workspaceMode}
               project={activeProject}
               projects={projects}
@@ -1236,6 +1237,7 @@ export default function App() {
             >
               <RendererErrorBoundary resetKey={selectedConversationId}>
                 <WorkbenchPanel
+                  conversationId={selectedConversationId ?? undefined}
                   mode={workspaceMode}
                   messages={activeConversation?.messages ?? []}
                   activeTab={workbenchTab}

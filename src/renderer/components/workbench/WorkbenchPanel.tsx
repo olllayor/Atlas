@@ -17,10 +17,10 @@
  * borderless rows, hairline separators only, opacity-based hierarchy.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 
-import type { ChatMessage, ChatToolPart, WorkspaceMode } from '../../../shared/contracts';
+import type { ChatMessage, ChatToolPart, FileChangeRecord, TerminalHistoryEntry, WorkspaceMode } from '../../../shared/contracts';
 import {
   type DiffFile,
   type ToolCell,
@@ -54,6 +54,7 @@ export function workbenchTabsForMode(mode: WorkspaceMode) {
 }
 
 type WorkbenchPanelProps = {
+  conversationId?: string;
   mode: WorkspaceMode;
   messages: ChatMessage[];
   activeTab: WorkbenchTab;
@@ -72,7 +73,7 @@ function collectToolParts(messages: ChatMessage[]): ChatToolPart[] {
   return parts;
 }
 
-export function WorkbenchPanel({ mode, messages, activeTab, onTabChange, onClose }: WorkbenchPanelProps) {
+export function WorkbenchPanel({ conversationId, mode, messages, activeTab, onTabChange, onClose }: WorkbenchPanelProps) {
   const toolParts = useMemo(() => collectToolParts(messages), [messages]);
   const tabs = useMemo(() => workbenchTabsForMode(mode), [mode]);
   // Switching a conversation to Work with Changes open would otherwise leave a
@@ -130,8 +131,8 @@ export function WorkbenchPanel({ mode, messages, activeTab, onTabChange, onClose
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-auto-hide" role="tabpanel">
-        {visibleTab === 'changes' && <ChangesTab parts={toolParts} />}
-        {visibleTab === 'terminal' && <TerminalTab parts={toolParts} />}
+        {visibleTab === 'changes' && <ChangesTab conversationId={conversationId} parts={toolParts} />}
+        {visibleTab === 'terminal' && <TerminalTab conversationId={conversationId} parts={toolParts} />}
         {visibleTab === 'tasks' && <TasksTab parts={toolParts} />}
       </div>
     </div>
@@ -153,22 +154,63 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 // hairline separators, each expanding to its diff.
 // ---------------------------------------------------------------------------
 
-function ChangesTab({ parts }: { parts: ChatToolPart[] }) {
+function ChangesTab({ conversationId, parts }: { conversationId?: string; parts: ChatToolPart[] }) {
+  const [dbRecords, setDbRecords] = useState<FileChangeRecord[]>([]);
+  const [overrideStatus, setOverrideStatus] = useState<Record<string, 'pending' | 'accepted' | 'reverted'>>({});
+
+  useEffect(() => {
+    if (!conversationId || !window.atlasChat?.fileChanges?.list) return;
+    window.atlasChat.fileChanges.list(conversationId).then(setDbRecords).catch(() => {});
+  }, [conversationId, parts]);
+
   const files = useMemo(() => {
-    // Later edits to the same path supersede earlier ones, so the panel
-    // shows the current state of each file rather than a replay.
-    const byPath = new Map<string, DiffFile>();
+    const byPath = new Map<string, { file: DiffFile; recordId?: string; status: 'pending' | 'accepted' | 'reverted' }>();
 
     for (const part of parts) {
       if (toolCellKind(part) !== 'edit') continue;
       const output = typeof part.output === 'string' ? part.output : '';
       const parsed = parseUnifiedDiff(output);
       if (!parsed) continue;
-      for (const file of parsed) byPath.set(file.path, file);
+      for (const file of parsed) {
+        byPath.set(file.path, { file, status: overrideStatus[file.path] ?? 'pending' });
+      }
     }
 
-    return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
-  }, [parts]);
+    // Merge IPC DB records if available
+    for (const rec of dbRecords) {
+      const parsed = parseUnifiedDiff(rec.diffText);
+      const diffFile = parsed?.[0] ?? { path: rec.filePath, added: 1, removed: 0, hunks: [] };
+      byPath.set(rec.filePath, {
+        file: diffFile,
+        recordId: rec.id,
+        status: overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
+      });
+    }
+
+    return [...byPath.values()].sort((a, b) => a.file.path.localeCompare(b.file.path));
+  }, [parts, dbRecords, overrideStatus]);
+
+  const handleAccept = async (filePath: string, recordId?: string) => {
+    setOverrideStatus((prev) => ({ ...prev, [filePath]: 'accepted' }));
+    if (recordId && window.atlasChat?.fileChanges?.accept) {
+      try {
+        await window.atlasChat.fileChanges.accept(recordId);
+      } catch (err) {
+        console.warn('Accept failed:', err);
+      }
+    }
+  };
+
+  const handleRevert = async (filePath: string, recordId?: string) => {
+    setOverrideStatus((prev) => ({ ...prev, [filePath]: 'reverted' }));
+    if (conversationId && recordId && window.atlasChat?.fileChanges?.revert) {
+      try {
+        await window.atlasChat.fileChanges.revert(conversationId, recordId);
+      } catch (err) {
+        console.warn('Revert failed:', err);
+      }
+    }
+  };
 
   if (!files.length) {
     return (
@@ -179,8 +221,8 @@ function ChangesTab({ parts }: { parts: ChatToolPart[] }) {
     );
   }
 
-  const added = files.reduce((sum, file) => sum + file.added, 0);
-  const removed = files.reduce((sum, file) => sum + file.removed, 0);
+  const added = files.reduce((sum, item) => sum + item.file.added, 0);
+  const removed = files.reduce((sum, item) => sum + item.file.removed, 0);
 
   return (
     <div className="px-4 py-2">
@@ -193,8 +235,15 @@ function ChangesTab({ parts }: { parts: ChatToolPart[] }) {
       </p>
 
       <div>
-        {files.map((file) => (
-          <FileChangeRow key={file.path} file={file} defaultOpen={files.length === 1} />
+        {files.map(({ file, recordId, status }) => (
+          <FileChangeRow
+            key={file.path}
+            file={file}
+            defaultOpen={files.length === 1}
+            status={status}
+            onAccept={() => handleAccept(file.path, recordId)}
+            onRevert={() => handleRevert(file.path, recordId)}
+          />
         ))}
       </div>
     </div>
@@ -288,14 +337,44 @@ function FileChangeRow({
 // only primary-intensity text, output stays recessive.
 // ---------------------------------------------------------------------------
 
-function TerminalTab({ parts }: { parts: ChatToolPart[] }) {
-  const commands = useMemo(
-    () =>
-      buildToolCells(parts.filter((part) => toolCellKind(part) === 'command')).filter(
-        (cell) => cell.kind === 'command'
-      ),
-    [parts]
-  );
+function TerminalTab({ conversationId, parts }: { conversationId?: string; parts: ChatToolPart[] }) {
+  const [historyEntries, setHistoryEntries] = useState<TerminalHistoryEntry[]>([]);
+
+  useEffect(() => {
+    if (!conversationId || !window.atlasChat?.terminal?.getHistory) return;
+    window.atlasChat.terminal.getHistory(conversationId).then(setHistoryEntries).catch(() => {});
+  }, [conversationId, parts]);
+
+  const commands = useMemo(() => {
+    const cells = buildToolCells(parts.filter((part) => toolCellKind(part) === 'command')).filter(
+      (cell) => cell.kind === 'command'
+    );
+    if (!historyEntries.length) return cells;
+
+    // Combine history entries with cells
+    const existingCommands = new Set(cells.map((c) => c.subject));
+    const extraCells: typeof cells = [];
+    for (const h of historyEntries) {
+      if (!existingCommands.has(h.command)) {
+        extraCells.push({
+          id: h.id,
+          kind: 'command',
+          status: h.exitCode === 0 ? 'success' : h.exitCode == null ? 'pending' : 'failed',
+          label: `Ran ${h.command}`,
+          verb: 'Ran',
+          subject: h.command,
+          subjectIsCode: true,
+          continuation: [],
+          continuationOmitted: 0,
+          continuationAll: [],
+          detail: { type: 'none' },
+          durationMs: null,
+          parts: []
+        });
+      }
+    }
+    return [...cells, ...extraCells];
+  }, [parts, historyEntries]);
 
   if (!commands.length) {
     return (

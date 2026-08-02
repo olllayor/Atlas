@@ -10,9 +10,9 @@ import {
   Laptop,
   Unlink,
 } from 'lucide-react';
-import { forwardRef } from 'react';
+import { forwardRef, useState } from 'react';
 
-import type { ProjectTypeInfo, WorkspaceMode, WorkspaceProject } from '../../../shared/contracts';
+import type { GitBranchInfo, ProjectTypeInfo, WorkspaceMode, WorkspaceProject } from '../../../shared/contracts';
 import { describeWorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DropdownMenu,
@@ -73,6 +73,7 @@ const ContextChip = forwardRef<
  * scrollbar rail) so the chips line up with the slab below them.
  */
 export function WorkspaceContextBar({
+  conversationId,
   mode,
   project,
   projects,
@@ -83,6 +84,7 @@ export function WorkspaceContextBar({
   onDetach,
   onReveal,
 }: {
+  conversationId?: string;
   mode: WorkspaceMode;
   project: WorkspaceProject | null;
   projects: WorkspaceProject[];
@@ -160,7 +162,9 @@ export function WorkspaceContextBar({
                 <ProjectTypeChip projectType={projectType} />
               ) : null}
 
-              {project?.exists && project.branch ? <BranchChip branch={project.branch} /> : null}
+              {project?.exists && project.branch ? (
+                <BranchChip branch={project.branch} conversationId={conversationId} />
+              ) : null}
 
               {needsProject ? (
                 <span className="flex min-w-0 items-center gap-1.5 text-2xs text-text-faint">
@@ -185,39 +189,90 @@ export function WorkspaceContextBar({
 }
 
 /**
- * The branch, and a way to get it out of the app — the name is the thing you
- * paste into a `git checkout` or a PR description, and reading it off a chip
- * to retype it is the kind of small tax that adds up.
+ * The branch chip — opens a dropdown with all local/remote git branches
+ * and allows quick copy or branch switching.
  */
-function BranchChip({ branch }: { branch: string }) {
+function BranchChip({ branch, conversationId }: { branch: string; conversationId?: string }) {
   const { copied, copy } = useClipboard();
+  const [branches, setBranches] = useState<GitBranchInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchBranches = async () => {
+    if (!conversationId || !window.atlasChat?.git?.getBranches) return;
+    setLoading(true);
+    try {
+      const list = await window.atlasChat.git.getBranches(conversationId);
+      setBranches(list);
+    } catch (err) {
+      console.warn('Failed to load branches:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <ContextChip
-          // The repository is the item allowed to lose characters when the
-          // column narrows; the project and the runner are short by nature.
-          className="max-w-48"
-          aria-label={`Branch ${branch} — copy name`}
-          onClick={() => void copy(branch)}
-        >
-          {copied ? (
-            <ClipboardCheck
-              className="size-4 shrink-0 text-success"
-              strokeWidth={1.75}
-              aria-hidden="true"
-            />
-          ) : (
-            <GitBranch className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-          )}
-          <span className="min-w-0 truncate">{branch}</span>
-        </ContextChip>
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        {copied ? 'Copied' : 'Checked-out branch — click to copy'}
-      </TooltipContent>
-    </Tooltip>
+    <DropdownMenu onOpenChange={(open) => { if (open) void fetchBranches(); }}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <ContextChip
+              className="max-w-48"
+              aria-label={`Branch ${branch} — click to view branches`}
+            >
+              {copied ? (
+                <ClipboardCheck
+                  className="size-4 shrink-0 text-success"
+                  strokeWidth={1.75}
+                  aria-hidden="true"
+                />
+              ) : (
+                <GitBranch className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+              )}
+              <span className="min-w-0 truncate">{branch}</span>
+            </ContextChip>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          Current branch: {branch} (click to view branches)
+        </TooltipContent>
+      </Tooltip>
+
+      <DropdownMenuContent align="start" className="w-56">
+        <div className="flex items-center justify-between px-2 py-1.5 text-xs font-semibold text-text-tertiary">
+          <span>Git Branches</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void copy(branch);
+            }}
+            className="text-2xs text-text-faint hover:text-text-primary"
+          >
+            {copied ? 'Copied!' : 'Copy name'}
+          </button>
+        </div>
+        <DropdownMenuSeparator />
+
+        {branches.length > 0 ? (
+          branches.map((b) => (
+            <DropdownMenuItem
+              key={b.name}
+              onClick={() => void copy(b.name)}
+              className="flex items-center justify-between text-xs"
+            >
+              <span className={cn('truncate', (b.current || b.name === branch) && 'font-medium text-text-primary')}>
+                {b.name} {b.remote ? '(remote)' : ''}
+              </span>
+              {b.current || b.name === branch ? <Check className="size-3.5 text-success" /> : null}
+            </DropdownMenuItem>
+          ))
+        ) : (
+          <DropdownMenuItem disabled className="text-xs text-text-faint">
+            {loading ? 'Loading branches...' : branch}
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

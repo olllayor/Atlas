@@ -407,7 +407,10 @@ export class ChatSessionRuntime {
     const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
     const maxTokens = positiveOrNull(modelHints.contextWindow);
 
-    const toolPermissionMode = request.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE;
+    const toolPermissionMode =
+      request.toolPermissionMode ??
+      this.conversationsRepo.getToolPermissionMode(request.conversationId) ??
+      DEFAULT_TOOL_PERMISSION_MODE;
     const workspace = this.resolveWorkspace(request.conversationId);
     const siteTools = this.resolveSiteTools(request);
     const tools = request.enableTools
@@ -572,7 +575,10 @@ export class ChatSessionRuntime {
 
     // Resolve once per turn: retries must not change which tools are offered.
     const siteTools = this.resolveSiteTools(request);
-    const toolPermissionMode = request.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE;
+    const toolPermissionMode =
+      request.toolPermissionMode ??
+      this.conversationsRepo.getToolPermissionMode(request.conversationId) ??
+      DEFAULT_TOOL_PERMISSION_MODE;
     // Resolved once per turn, like the tool set: a mode switch mid-stream must
     // not change what this turn was allowed to do.
     const workspace = this.resolveWorkspace(request.conversationId);

@@ -45,7 +45,8 @@ const api: RendererApi = {
     delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId),
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
-    setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request)
+    setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
+    setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),

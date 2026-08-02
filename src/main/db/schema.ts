@@ -528,6 +528,10 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE conversations ADD COLUMN completed_at TEXT');
   }
 
+  if (!conversationColumns.includes('tool_permission_mode')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN tool_permission_mode TEXT NOT NULL DEFAULT 'ask'");
+  }
+
   // Migration: Add border_radius to app_settings
   const settingsKeys = database
     .prepare<[], { key: string }>('SELECT key FROM app_settings')

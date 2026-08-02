@@ -574,6 +574,7 @@ export type ConversationSummary = {
   defaultModelId: string | null;
   workspaceMode: WorkspaceMode;
   projectId: string | null;
+  toolPermissionMode: ToolPermissionMode;
   status?: ConversationStatus;
   lastError?: string | null;
   startedAt?: string | null;
@@ -615,14 +616,17 @@ export type ConversationDetail = {
 export type CreateConversationRequest = {
   /**
    * Which project the new chat belongs to.
-   *
-   * Present — including an explicit `null` — the caller is stating where the
-   * user is right now, and it wins. Absent, the last project the user worked
-   * in is inherited. The renderer always states it, because "the project I am
-   * looking at" and "the last project I explicitly picked" drift apart the
-   * moment you open a chat from a different folder.
    */
   projectId?: string | null;
+  /**
+   * Initial tool permission mode.
+   */
+  toolPermissionMode?: ToolPermissionMode;
+};
+
+export type SetConversationToolPermissionModeRequest = {
+  conversationId: string;
+  toolPermissionMode: ToolPermissionMode;
 };
 
 export type ConversationPageRequest = {
@@ -1245,6 +1249,7 @@ export type RendererApi = {
     rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
+    setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
   };
   projects: {
     list: () => Promise<WorkspaceProject[]>;

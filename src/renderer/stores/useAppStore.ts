@@ -136,6 +136,10 @@ type AppState = {
     conversationId: string,
     patch: { mode?: WorkspaceMode; projectId?: string | null }
   ) => Promise<void>;
+  setConversationToolPermissionMode: (
+    conversationId: string,
+    mode: ToolPermissionMode
+  ) => Promise<void>;
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
   openLanding: () => void;
@@ -817,6 +821,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setConversationToolPermissionMode: async (conversationId: string, mode: ToolPermissionMode) => {
+    const previous = get().conversations;
+
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === conversationId ? { ...c, toolPermissionMode: mode } : c
+      )
+    }));
+
+    try {
+      await window.atlasChat.conversations.setToolPermissionMode({
+        conversationId,
+        toolPermissionMode: mode
+      });
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError('Could not update tool permission mode', error);
+    }
+  },
+
   openSettings: (section = 'general') =>
     set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, modelPickerOpen: false }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
@@ -1136,7 +1160,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Models without a thinking mode ignore this; the adapters gate on the
         // catalog's supportsReasoning before sending anything.
         reasoningEffort: state.settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-        toolPermissionMode: state.settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE
+        toolPermissionMode:
+          state.conversations.find((c) => c.id === conversationId)?.toolPermissionMode ??
+          state.settings?.chat.toolPermissionMode ??
+          DEFAULT_TOOL_PERMISSION_MODE
       });
     } catch (error) {
       notifyError('Could not send the message', error);

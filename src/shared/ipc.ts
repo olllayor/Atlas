@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
   conversationsRename: 'conversations:rename',
   conversationsGetWorkspace: 'conversations:getWorkspace',
   conversationsSetWorkspace: 'conversations:setWorkspace',
+  conversationsSetToolPermissionMode: 'conversations:setToolPermissionMode',
   projectsList: 'projects:list',
   projectsCreate: 'projects:create',
   projectsRename: 'projects:rename',

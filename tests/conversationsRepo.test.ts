@@ -373,3 +373,47 @@ test('stored attachments reach the renderer over the attachment scheme, not file
     rmSync(tempDir, { force: true, recursive: true });
   }
 });
+
+test('per-conversation toolPermissionMode is isolated and persistent', () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-tool-perm-test-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction: <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) => (...args: TArgs) => {
+      raw.exec('BEGIN');
+      try {
+        const res = callback(...args);
+        raw.exec('COMMIT');
+        return res;
+      } catch (err) {
+        raw.exec('ROLLBACK');
+        throw err;
+      }
+    }
+  } as unknown as SqliteDatabase;
+
+  try {
+    applySchema(database);
+    const conversations = new ConversationsRepo(database);
+
+    const convA = conversations.create({ toolPermissionMode: 'ask' });
+    const convB = conversations.create({ toolPermissionMode: 'full-access' });
+
+    assert.equal(conversations.getToolPermissionMode(convA.id), 'ask');
+    assert.equal(conversations.getToolPermissionMode(convB.id), 'full-access');
+
+    // Updating convA should NOT affect convB
+    conversations.setToolPermissionMode(convA.id, 'read-only');
+
+    assert.equal(conversations.getToolPermissionMode(convA.id), 'read-only');
+    assert.equal(conversations.getToolPermissionMode(convB.id), 'full-access');
+
+    const list = conversations.list();
+    assert.equal(list.find((c) => c.id === convA.id)?.toolPermissionMode, 'read-only');
+    assert.equal(list.find((c) => c.id === convB.id)?.toolPermissionMode, 'full-access');
+  } finally {
+    raw.close();
+    rmSync(tempDir, { force: true, recursive: true });
+  }
+});

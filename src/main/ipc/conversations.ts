@@ -57,7 +57,8 @@ export function registerConversationsIpc({
 
       const conversation = conversationsRepo.create({
         workspaceMode: settingsRepo.getWorkspaceMode(),
-        projectId
+        projectId,
+        toolPermissionMode: request?.toolPermissionMode ?? settingsRepo.getToolPermissionMode()
       });
 
       // Keep the fallback honest for the next caller that cannot state a
@@ -156,5 +157,16 @@ export function registerConversationsIpc({
 
       return describeConversationWorkspace(database, request.conversationId);
     })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetToolPermissionMode,
+    withUserFacingErrors(
+      IPC_CHANNELS.conversationsSetToolPermissionMode,
+      (event, request: { conversationId: string; toolPermissionMode: import('../../shared/chatParameters').ToolPermissionMode }) => {
+        assertTrustedSender(event);
+        return conversationsRepo.setToolPermissionMode(request.conversationId, request.toolPermissionMode);
+      }
+    )
   );
 }

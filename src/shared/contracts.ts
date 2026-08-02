@@ -57,6 +57,90 @@ export type CreateWorkspaceProjectRequest = {
   title?: string;
 };
 
+export type ProjectType = 'node' | 'python' | 'rust' | 'go' | 'unknown';
+
+export type ProjectTypeInfo = {
+  type: ProjectType;
+  packageManager?: string;
+  framework?: string;
+  entryFile?: string;
+};
+
+export type ProjectContextInfo = {
+  project: WorkspaceProject | null;
+  projectType: ProjectTypeInfo;
+  envKeys: string[];
+  detectedEnvKeys: string[];
+  mode: WorkspaceMode;
+};
+
+export type EnvVarItem = {
+  key: string;
+  maskedValue: string;
+};
+
+export type GitFileStatus = {
+  path: string;
+  indexStatus: string;
+  workingTreeStatus: string;
+};
+
+export type GitLogEntry = {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+};
+
+export type GitBranchInfo = {
+  name: string;
+  current: boolean;
+  remote: boolean;
+};
+
+export type GitStateSummary = {
+  isRepo: boolean;
+  branch: string | null;
+  files: GitFileStatus[];
+};
+
+export type FileChangeSummary = {
+  fileCount: number;
+  added: number;
+  removed: number;
+  files: Array<{
+    id: string;
+    filePath: string;
+    diffText: string;
+    status: 'pending' | 'accepted' | 'reverted';
+  }>;
+};
+
+export type FileChangeStatus = 'pending' | 'accepted' | 'reverted';
+
+export type FileChangeRecord = {
+  id: string;
+  conversationId: string;
+  filePath: string;
+  beforeContent: string | null;
+  afterContent: string | null;
+  diffText: string;
+  status: FileChangeStatus;
+  toolCallId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TerminalHistoryEntry = {
+  id: string;
+  conversationId: string;
+  command: string;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 /** What the runtime resolved for a conversation: its mode and its folder. */
 export type ConversationWorkspace = {
   conversationId: string;
@@ -490,6 +574,8 @@ export type SettingsSummary = {
   modelCatalogCount: number;
 };
 
+export type ConversationStatus = 'idle' | 'running' | 'completed' | 'failed' | 'queued';
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -503,6 +589,11 @@ export type ConversationSummary = {
   defaultModelId: string | null;
   workspaceMode: WorkspaceMode;
   projectId: string | null;
+  toolPermissionMode: ToolPermissionMode;
+  status?: ConversationStatus;
+  lastError?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 export type ChatMessage = {
@@ -540,14 +631,17 @@ export type ConversationDetail = {
 export type CreateConversationRequest = {
   /**
    * Which project the new chat belongs to.
-   *
-   * Present — including an explicit `null` — the caller is stating where the
-   * user is right now, and it wins. Absent, the last project the user worked
-   * in is inherited. The renderer always states it, because "the project I am
-   * looking at" and "the last project I explicitly picked" drift apart the
-   * moment you open a chat from a different folder.
    */
   projectId?: string | null;
+  /**
+   * Initial tool permission mode.
+   */
+  toolPermissionMode?: ToolPermissionMode;
+};
+
+export type SetConversationToolPermissionModeRequest = {
+  conversationId: string;
+  toolPermissionMode: ToolPermissionMode;
 };
 
 export type ConversationPageRequest = {
@@ -1170,6 +1264,7 @@ export type RendererApi = {
     rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
+    setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
   };
   projects: {
     list: () => Promise<WorkspaceProject[]>;
@@ -1232,5 +1327,26 @@ export type RendererApi = {
     captureEvent: (event: string, properties?: Record<string, unknown>) => void;
     isTelemetryEnabled: () => Promise<boolean>;
     setTelemetryEnabled: (enabled: boolean) => Promise<boolean>;
+  };
+  workspace: {
+    getContext: (conversationId: string) => Promise<ProjectContextInfo>;
+    listEnv: (projectId: string) => Promise<EnvVarItem[]>;
+    setEnv: (projectId: string, key: string, value: string) => Promise<void>;
+    deleteEnv: (projectId: string, key: string) => Promise<void>;
+  };
+  git: {
+    getState: (conversationId: string) => Promise<GitStateSummary>;
+    getLog: (conversationId: string, maxCount?: number) => Promise<GitLogEntry[]>;
+    getBranches: (conversationId: string) => Promise<GitBranchInfo[]>;
+  };
+  fileChanges: {
+    list: (conversationId: string) => Promise<FileChangeRecord[]>;
+    revert: (conversationId: string, changeId: string) => Promise<FileChangeRecord>;
+    accept: (changeId: string) => Promise<FileChangeRecord>;
+    getSummary: (conversationId: string) => Promise<FileChangeSummary>;
+  };
+  terminal: {
+    getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
+    record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
   };
 };

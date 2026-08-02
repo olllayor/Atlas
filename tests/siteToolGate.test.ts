@@ -45,6 +45,7 @@ function createHarness(siteToolsProvider: (context: SiteToolContext) => Record<s
     {
       getModelHistory: () => [],
       addMessage: () => 'assistant-message-1',
+      getToolPermissionMode: () => 'ask',
     } as never,
     { list: () => [], getRuntimeHints: () => ({}) } as never,
     { getSecret: async () => 'test-key' } as never,

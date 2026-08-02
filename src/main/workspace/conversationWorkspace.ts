@@ -59,14 +59,38 @@ export function resolveNewConversationProjectId(
   return project?.exists ? project.id : null;
 }
 
+import type { FileChangeTracker } from './FileChangeTracker';
+import type { EnvStore } from './EnvStore';
+
 export function resolveConversationWorkspace(
   database: WorkspaceDatabase,
-  conversationId: string
+  conversationId: string,
+  options?: {
+    fileChangeTracker?: FileChangeTracker;
+    envStore?: EnvStore;
+  }
 ): ToolWorkspace {
   const workspace = describeConversationWorkspace(database, conversationId);
+  const root = workspace.project?.exists ? workspace.project.root : null;
+  const projectId = workspace.project?.exists ? workspace.project.id : null;
 
-  return {
+  const toolWorkspace: ToolWorkspace = {
     mode: workspace.mode,
-    root: workspace.project?.exists ? workspace.project.root : null
+    root,
+    projectId
   };
+
+  if (options?.fileChangeTracker) {
+    toolWorkspace.onFileChange = (change) => {
+      options.fileChangeTracker?.recordChange({
+        conversationId,
+        filePath: change.filePath,
+        beforeContent: change.beforeContent,
+        afterContent: change.afterContent,
+        diffText: change.diffText
+      });
+    };
+  }
+
+  return toolWorkspace;
 }

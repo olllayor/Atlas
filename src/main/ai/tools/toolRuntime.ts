@@ -283,12 +283,14 @@ export function runCommand(
   options: {
     cwd?: string;
     timeoutMs?: number;
+    env?: Record<string, string>;
   } = {}
 ) {
   return new Promise<CommandResult>((resolvePromise, reject) => {
+    const combinedEnv = options.env ? { ...process.env, ...options.env } : process.env;
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: process.env,
+      env: combinedEnv,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -816,10 +818,12 @@ export async function bashToolExecute(input: {
 
   const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh';
 
+  const combinedEnv = workspace?.env ? { ...process.env, ...workspace.env } : process.env;
+
   if (input.run_in_background) {
     const child = spawn(shell, process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command], {
       cwd,
-      env: process.env,
+      env: combinedEnv,
       detached: true,
       stdio: 'ignore'
     });
@@ -841,6 +845,7 @@ export async function bashToolExecute(input: {
     process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command],
     {
       cwd,
+      env: workspace?.env,
       timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
     }
   );

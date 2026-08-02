@@ -45,7 +45,8 @@ const api: RendererApi = {
     delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId),
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
-    setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request)
+    setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
+    setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
@@ -130,6 +131,40 @@ const api: RendererApi = {
     },
     isTelemetryEnabled: () => ipcRenderer.invoke(IPC_CHANNELS.posthogGetTelemetryEnabled),
     setTelemetryEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.posthogSetTelemetryEnabled, enabled)
+  },
+  workspace: {
+    getContext: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceContext, conversationId),
+    listEnv: (projectId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvList, projectId),
+    setEnv: (projectId: string, key: string, value: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvSet, projectId, key, value),
+    deleteEnv: (projectId: string, key: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvDelete, projectId, key)
+  },
+  git: {
+    getState: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitState, conversationId),
+    getLog: (conversationId: string, maxCount?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitLog, conversationId, maxCount),
+    getBranches: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitBranches, conversationId)
+  },
+  fileChanges: {
+    list: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.fileChangesList, conversationId),
+    revert: (conversationId: string, changeId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.fileChangesRevert, conversationId, changeId),
+    accept: (changeId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.fileChangesAccept, changeId),
+    getSummary: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.fileChangesSummary, conversationId)
+  },
+  terminal: {
+    getHistory: (conversationId: string, limit?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalHistory, conversationId, limit),
+    record: (conversationId: string, command: string, exitCode?: number | null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalRecord, conversationId, command, exitCode)
   }
 };
 

@@ -56,6 +56,7 @@ function createRuntime(options: {
       addMessageCalls.push(input);
       return options.addMessage?.(input) ?? 'assistant-message-1';
     },
+    getToolPermissionMode: () => 'ask',
   } as const;
 
   const modelsRepo = {

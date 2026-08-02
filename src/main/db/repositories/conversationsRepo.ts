@@ -25,6 +25,8 @@ import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspa
 import { decodeConversationPageCursor, encodeConversationPageCursor } from '../../../shared/conversationPaging';
 import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
 import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
+import { DEFAULT_TOOL_PERMISSION_MODE, isToolPermissionMode } from '../../../shared/chatParameters';
 import type { SqliteDatabase } from '../client';
 import type { RuntimeStateRepo } from './runtimeStateRepo';
 import type { ToolExecutionsRepo } from './toolExecutionsRepo';
@@ -38,6 +40,7 @@ type ConversationRow = {
   default_model_id: string | null;
   workspace_mode: string | null;
   project_id: string | null;
+  tool_permission_mode: string | null;
 };
 
 type ConversationSummaryRow = {
@@ -53,6 +56,11 @@ type ConversationSummaryRow = {
   defaultModelId: string | null;
   workspaceMode: string | null;
   projectId: string | null;
+  toolPermissionMode: string | null;
+  status: import('../../../shared/contracts').ConversationStatus | null;
+  lastError: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
 };
 
 type MessageRow = {
@@ -477,7 +485,12 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     defaultProviderId: row.defaultProviderId,
     defaultModelId: row.defaultModelId,
     workspaceMode: normalizeWorkspaceMode(row.workspaceMode),
-    projectId: row.projectId
+    projectId: row.projectId,
+    toolPermissionMode: isToolPermissionMode(row.toolPermissionMode) ? row.toolPermissionMode : DEFAULT_TOOL_PERMISSION_MODE,
+    status: row.status || 'idle',
+    lastError: row.lastError,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt
   };
 }
 
@@ -570,7 +583,12 @@ export class ConversationsRepo {
             c.default_provider_id AS defaultProviderId,
             c.default_model_id AS defaultModelId,
             c.workspace_mode AS workspaceMode,
-            c.project_id AS projectId
+            c.project_id AS projectId,
+            c.tool_permission_mode AS toolPermissionMode,
+            c.status AS status,
+            c.last_error AS lastError,
+            c.started_at AS startedAt,
+            c.completed_at AS completedAt
           FROM conversations c
           ORDER BY c.updated_at DESC
         `
@@ -586,11 +604,12 @@ export class ConversationsRepo {
    * thread on the same repo needs no setup. The caller supplies them because
    * the preference lives in settings, not here.
    */
-  create(defaults: { workspaceMode?: WorkspaceMode; projectId?: string | null } = {}) {
+  create(defaults: { workspaceMode?: WorkspaceMode; projectId?: string | null; toolPermissionMode?: ToolPermissionMode } = {}) {
     const now = new Date();
     const createdAt = now.toISOString();
     const id = randomUUID();
     const title = formatConversationTitle(now);
+    const toolPermissionMode = defaults.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE;
 
     this.db
       .prepare(
@@ -603,7 +622,8 @@ export class ConversationsRepo {
             default_provider_id,
             default_model_id,
             workspace_mode,
-            project_id
+            project_id,
+            tool_permission_mode
           )
           VALUES (
             @id,
@@ -613,7 +633,8 @@ export class ConversationsRepo {
             NULL,
             NULL,
             @workspaceMode,
-            @projectId
+            @projectId,
+            @toolPermissionMode
           )
         `
       )
@@ -622,8 +643,9 @@ export class ConversationsRepo {
         title,
         createdAt,
         updatedAt: createdAt,
-        workspaceMode: normalizeWorkspaceMode(defaults.workspaceMode),
-        projectId: defaults.projectId ?? null
+        workspaceMode: defaults.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
+        projectId: defaults.projectId ?? null,
+        toolPermissionMode
       });
 
     return this.list().find((conversation: ConversationSummary) => conversation.id === id)!;
@@ -1301,5 +1323,63 @@ export class ConversationsRepo {
 
     transaction(id, createdAt);
     return id;
+  }
+
+  updateStatus(
+    id: string,
+    input: {
+      status: import('../../../shared/contracts').ConversationStatus;
+      lastError?: string | null;
+      startedAt?: string | null;
+      completedAt?: string | null;
+    }
+  ) {
+    const updatedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE conversations
+         SET status = @status,
+             last_error = @lastError,
+             started_at = COALESCE(@startedAt, started_at),
+             completed_at = COALESCE(@completedAt, completed_at),
+             updated_at = @updatedAt
+         WHERE id = @id`
+      )
+      .run({
+        id,
+        status: input.status,
+        lastError: input.lastError ?? null,
+        startedAt: input.startedAt ?? null,
+        completedAt: input.completedAt ?? null,
+        updatedAt
+      });
+  }
+
+  getToolPermissionMode(conversationId: string): ToolPermissionMode {
+    const row = this.db
+      .prepare<{ conversationId: string }, { tool_permission_mode: string | null }>(
+        `SELECT tool_permission_mode FROM conversations WHERE id = @conversationId`
+      )
+      .get({ conversationId });
+
+    return isToolPermissionMode(row?.tool_permission_mode)
+      ? row.tool_permission_mode
+      : DEFAULT_TOOL_PERMISSION_MODE;
+  }
+
+  setToolPermissionMode(conversationId: string, mode: ToolPermissionMode): ToolPermissionMode {
+    const result = this.db
+      .prepare(
+        `UPDATE conversations
+         SET tool_permission_mode = @mode, updated_at = @updatedAt
+         WHERE id = @conversationId`
+      )
+      .run({ conversationId, mode, updatedAt: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    return mode;
   }
 }

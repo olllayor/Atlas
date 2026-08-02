@@ -247,6 +247,7 @@ export default function App() {
     attachProject,
     detachProject,
     setConversationWorkspace,
+    setConversationToolPermissionMode,
     createConversationInProject,
   } = useAppStore(
     useShallow((state) => ({
@@ -320,6 +321,7 @@ export default function App() {
       createConversationInProject: state.createConversationInProject,
       detachProject: state.detachProject,
       setConversationWorkspace: state.setConversationWorkspace,
+      setConversationToolPermissionMode: state.setConversationToolPermissionMode,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -1198,11 +1200,19 @@ export default function App() {
             defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
             onManageProviders={() => runViewTransition(() => openSettings('providers'))}
             reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
-            toolPermissionMode={settings?.chat.toolPermissionMode ?? DEFAULT_TOOL_PERMISSION_MODE}
-            onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
-            onToolPermissionModeChange={(toolPermissionMode) =>
-              void updatePreferences({ chat: { toolPermissionMode } })
+            toolPermissionMode={
+              activeConversationSummary?.toolPermissionMode ??
+              settings?.chat.toolPermissionMode ??
+              DEFAULT_TOOL_PERMISSION_MODE
             }
+            onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
+            onToolPermissionModeChange={(toolPermissionMode) => {
+              if (selectedConversationId) {
+                void setConversationToolPermissionMode(selectedConversationId, toolPermissionMode);
+              } else {
+                void updatePreferences({ chat: { toolPermissionMode } });
+              }
+            }}
             onOpenGallery={() => setGalleryOpen(true)}
           />
         </div>

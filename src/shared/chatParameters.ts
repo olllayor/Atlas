@@ -156,11 +156,14 @@ export const SIDE_EFFECTING_TOOL_NAMES = [
   'web_fetch',
   'web_search',
   'write_file',
-  'edit_file'
+  'edit_file',
+  'git_commit',
+  'git_stash',
+  'git_branch'
 ] as const;
 
 /** Tools that pause for approval in `ask` mode. */
-export const APPROVAL_GATED_TOOL_NAMES = ['bash', 'web_fetch', 'write_file', 'edit_file'] as const;
+export const APPROVAL_GATED_TOOL_NAMES = ['bash', 'web_fetch', 'write_file', 'edit_file', 'git_commit', 'git_stash', 'git_branch'] as const;
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return REASONING_EFFORTS.some((entry) => entry.value === value);

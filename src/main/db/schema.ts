@@ -353,6 +353,45 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS idx_projects_last_used
 ON projects (last_used_at DESC, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS project_env_vars (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_env_vars_project
+ON project_env_vars (project_id);
+
+CREATE TABLE IF NOT EXISTS file_changes (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  before_content TEXT,
+  after_content TEXT,
+  diff_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  tool_call_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_changes_conversation
+ON file_changes (conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS terminal_history (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  command TEXT NOT NULL,
+  exit_code INTEGER,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_history_conversation
+ON terminal_history (conversation_id, started_at);
 `;
 
 export function applySchema(database: SqliteDatabase) {
@@ -471,6 +510,26 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!conversationColumns.includes('project_id')) {
     database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL');
+  }
+
+  if (!conversationColumns.includes('status')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'idle'");
+  }
+
+  if (!conversationColumns.includes('last_error')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN last_error TEXT');
+  }
+
+  if (!conversationColumns.includes('started_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN started_at TEXT');
+  }
+
+  if (!conversationColumns.includes('completed_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN completed_at TEXT');
+  }
+
+  if (!conversationColumns.includes('tool_permission_mode')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN tool_permission_mode TEXT NOT NULL DEFAULT 'ask'");
   }
 
   // Migration: Add border_radius to app_settings

@@ -13,6 +13,17 @@ export type ToolWorkspace = {
   mode: WorkspaceMode;
   /** Absolute project root; null when no project is attached. */
   root: string | null;
+  /** Attached project ID if available */
+  projectId?: string | null;
+  /** Project-specific environment variables to pass to sub-processes */
+  env?: Record<string, string>;
+  /** Callback fired when write_file or edit_file modifies a file */
+  onFileChange?: (change: {
+    filePath: string;
+    beforeContent: string | null;
+    afterContent: string;
+    diffText: string;
+  }) => void;
 };
 
 export const DEFAULT_TOOL_WORKSPACE: ToolWorkspace = {

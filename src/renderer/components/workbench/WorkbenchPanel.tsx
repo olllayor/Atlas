@@ -176,14 +176,23 @@ function ChangesTab({ conversationId, parts }: { conversationId?: string; parts:
       }
     }
 
-    // Merge IPC DB records if available
+    // Merge IPC DB records if available, deduplicating with parts by suffix match
     for (const rec of dbRecords) {
       const parsed = parseUnifiedDiff(rec.diffText);
       const diffFile = parsed?.[0] ?? { path: rec.filePath, added: 1, removed: 0, hunks: [] };
-      byPath.set(rec.filePath, {
+      
+      let matchingKey = rec.filePath;
+      for (const existingKey of byPath.keys()) {
+        if (rec.filePath.endsWith(existingKey) || existingKey.endsWith(rec.filePath)) {
+          matchingKey = existingKey;
+          break;
+        }
+      }
+
+      byPath.set(matchingKey, {
         file: diffFile,
         recordId: rec.id,
-        status: overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
+        status: overrideStatus[matchingKey] ?? overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
       });
     }
 

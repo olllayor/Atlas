@@ -1002,7 +1002,7 @@ function FontFamilyField({
  */
 const SEGMENT_BASE =
   'inline-flex h-8 items-center rounded-full border px-3 text-sm font-normal transition';
-const SEGMENT_ACTIVE = 'border-border-default bg-bg-elevated text-text-primary shadow-sm';
+const SEGMENT_ACTIVE = 'border-border-default bg-bg-elevated text-text-primary';
 const SEGMENT_IDLE =
   'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary';
 

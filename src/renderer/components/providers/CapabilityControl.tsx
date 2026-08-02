@@ -58,7 +58,7 @@ export function CapabilityControl({
               aria-checked={isSelected}
               title={option.hint}
               onClick={() => onChange(option.value)}
-              className={`h-7 min-w-[52px] rounded-[5px] px-2.5 text-xs transition ${
+              className={`h-7 min-w-[52px] rounded-sm px-2.5 text-xs transition ${
                 isSelected
                   ? 'bg-bg-button text-text-inverse'
                   : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'

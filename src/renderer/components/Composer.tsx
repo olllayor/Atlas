@@ -412,7 +412,7 @@ const ComposerAttachmentItem = memo(
               hidden control is a control you have to go hunting for, and it
               has to work on a trackpad tap and a keyboard alike.
             */}
-            <AttachmentRemove className="!absolute !right-1 !top-1 !size-5 !p-0 !opacity-100 rounded-full bg-bg-button text-bg-base shadow-sm hover:bg-bg-button-hover [&>svg]:size-3" />
+            <AttachmentRemove className="!absolute !right-1 !top-1 !size-5 !p-0 !opacity-100 rounded-full bg-bg-button text-bg-base hover:bg-bg-button-hover [&>svg]:size-3" />
       </Attachment>
     );
 

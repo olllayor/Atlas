@@ -498,7 +498,7 @@ function MessageRow({
             // Right-aligned bubble on a subtle elevated tint — no border,
             // no avatar, no name, no timestamp (reference-visual-spec §5).
             // Radius ~22px: a single-line message reads as a pill.
-            <div className="max-w-full rounded-[22px] bg-bg-surface px-5 py-3">
+            <div className="max-w-full rounded-2xl bg-bg-surface px-5 py-3">
               <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">{userText}</p>
             </div>
           ) : null}

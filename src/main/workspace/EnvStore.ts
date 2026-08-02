@@ -72,25 +72,17 @@ export class EnvStore {
     await keytar.setPassword(SERVICE_NAME, accountName, value);
 
     const now = new Date().toISOString();
-    const existing = this.db
-      .prepare<{ projectId: string; key: string }, { id: string }>(
-        `SELECT id FROM project_env_vars WHERE project_id = @projectId AND key = @key`
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO project_env_vars (id, project_id, key, created_at)
+         VALUES (@id, @projectId, @key, @createdAt)`
       )
-      .get({ projectId, key: normalizedKey });
-
-    if (!existing) {
-      this.db
-        .prepare(
-          `INSERT INTO project_env_vars (id, project_id, key, created_at)
-           VALUES (@id, @projectId, @key, @createdAt)`
-        )
-        .run({ id: randomUUID(), projectId, key: normalizedKey, createdAt: now });
-    }
+      .run({ id: randomUUID(), projectId, key: normalizedKey, createdAt: now });
   }
 
   async deleteEnvVar(projectId: string, key: string): Promise<void> {
     const accountName = `${projectId}:${key}`;
-    await keytar.deletePassword(SERVICE_NAME, accountName).catch(() => undefined);
+    await keytar.deletePassword(SERVICE_NAME, accountName).catch((err) => { console.warn('keytar delete failed:', err); });
 
     this.db
       .prepare(`DELETE FROM project_env_vars WHERE project_id = @projectId AND key = @key`)
@@ -101,7 +93,7 @@ export class EnvStore {
     const keys = this.listEnvKeys(projectId);
     for (const key of keys) {
       const accountName = `${projectId}:${key}`;
-      await keytar.deletePassword(SERVICE_NAME, accountName).catch(() => undefined);
+      await keytar.deletePassword(SERVICE_NAME, accountName).catch((err) => { console.warn('keytar delete failed:', err); });
     }
     this.db.prepare(`DELETE FROM project_env_vars WHERE project_id = @projectId`).run({ projectId });
   }

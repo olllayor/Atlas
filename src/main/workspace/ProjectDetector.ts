@@ -18,6 +18,7 @@ export type GitInfo = {
 export class ProjectDetector {
   private cache = new Map<string, { typeInfo: ProjectTypeInfo; timestamp: number }>();
   private readonly CACHE_TTL_MS = 10_000;
+  private readonly MAX_CACHE_SIZE = 50;
 
   detectProjectType(root: string): ProjectTypeInfo {
     const absRoot = resolve(root);
@@ -27,6 +28,15 @@ export class ProjectDetector {
     }
 
     const typeInfo = this.runDetection(absRoot);
+
+    // Evict oldest entries when cache grows beyond limit
+    if (this.cache.size >= this.MAX_CACHE_SIZE) {
+      const oldest = [...this.cache.entries()]
+        .sort((a, b) => a[1].timestamp - b[1].timestamp)
+        .slice(0, Math.floor(this.MAX_CACHE_SIZE / 4));
+      for (const [key] of oldest) this.cache.delete(key);
+    }
+
     this.cache.set(absRoot, { typeInfo, timestamp: Date.now() });
     return typeInfo;
   }
@@ -170,7 +180,7 @@ export class ProjectDetector {
           for (const line of content.split('\n')) {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) continue;
-            const match = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(trimmed);
+            const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/.exec(trimmed);
             if (match?.[1]) {
               keysSet.add(match[1]);
             }

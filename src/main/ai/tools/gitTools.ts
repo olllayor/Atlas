@@ -16,6 +16,18 @@ export async function gitLogToolExecute(
   return output.trim() || 'No commit history.';
 }
 
+/** Reject names that look like git flags to prevent flag-injection attacks. */
+function validateBranchName(raw: string | undefined): string {
+  const name = raw?.trim() ?? '';
+  if (!name) {
+    throw new Error('Branch name is required.');
+  }
+  if (name.startsWith('-')) {
+    throw new Error(`Invalid branch name: '${name}'. Branch names cannot start with '-'.`);
+  }
+  return name;
+}
+
 export async function gitBranchToolExecute(
   input: { action: 'list' | 'create' | 'switch' | 'delete'; name?: string },
   workspace?: ToolWorkspace
@@ -27,27 +39,21 @@ export async function gitBranchToolExecute(
     }
 
     case 'create': {
-      if (!input.name?.trim()) {
-        throw new Error('Branch name is required for create.');
-      }
-      await runGit(['branch', input.name.trim()], workspace);
-      return `Branch '${input.name.trim()}' created.`;
+      const name = validateBranchName(input.name);
+      await runGit(['branch', '--', name], workspace);
+      return `Branch '${name}' created.`;
     }
 
     case 'switch': {
-      if (!input.name?.trim()) {
-        throw new Error('Branch name is required for switch.');
-      }
-      await runGit(['checkout', input.name.trim()], workspace);
-      return `Switched to branch '${input.name.trim()}'.`;
+      const name = validateBranchName(input.name);
+      await runGit(['switch', name], workspace);
+      return `Switched to branch '${name}'.`;
     }
 
     case 'delete': {
-      if (!input.name?.trim()) {
-        throw new Error('Branch name is required for delete.');
-      }
-      await runGit(['branch', '-d', input.name.trim()], workspace);
-      return `Branch '${input.name.trim()}' deleted.`;
+      const name = validateBranchName(input.name);
+      await runGit(['branch', '-d', '--', name], workspace);
+      return `Branch '${name}' deleted.`;
     }
 
     default:

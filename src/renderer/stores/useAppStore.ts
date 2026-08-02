@@ -18,6 +18,7 @@ import type {
   SettingsUpdateRequest,
   StreamEvent,
   ToolApprovalResponseRequest,
+  ToolPermissionMode,
   WorkspaceMode,
   WorkspaceProject
 } from '../../shared/contracts';

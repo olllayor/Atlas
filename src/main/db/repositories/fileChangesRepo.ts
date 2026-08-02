@@ -1,21 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import type { SqliteDatabase } from '../client';
+import type { FileChangeStatus, FileChangeRecord } from '../../../shared/contracts';
 
-export type FileChangeStatus = 'pending' | 'accepted' | 'reverted';
-
-export type FileChangeRecord = {
-  id: string;
-  conversationId: string;
-  filePath: string;
-  beforeContent: string | null;
-  afterContent: string | null;
-  diffText: string;
-  status: FileChangeStatus;
-  toolCallId: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
+export type { FileChangeStatus, FileChangeRecord };
 
 type FileChangeRow = {
   id: string;

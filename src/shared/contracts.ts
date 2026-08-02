@@ -117,6 +117,21 @@ export type FileChangeSummary = {
   }>;
 };
 
+export type FileChangeStatus = 'pending' | 'accepted' | 'reverted';
+
+export type FileChangeRecord = {
+  id: string;
+  conversationId: string;
+  filePath: string;
+  beforeContent: string | null;
+  afterContent: string | null;
+  diffText: string;
+  status: FileChangeStatus;
+  toolCallId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TerminalHistoryEntry = {
   id: string;
   conversationId: string;
@@ -1312,5 +1327,26 @@ export type RendererApi = {
     captureEvent: (event: string, properties?: Record<string, unknown>) => void;
     isTelemetryEnabled: () => Promise<boolean>;
     setTelemetryEnabled: (enabled: boolean) => Promise<boolean>;
+  };
+  workspace: {
+    getContext: (conversationId: string) => Promise<ProjectContextInfo>;
+    listEnv: (projectId: string) => Promise<EnvVarItem[]>;
+    setEnv: (projectId: string, key: string, value: string) => Promise<void>;
+    deleteEnv: (projectId: string, key: string) => Promise<void>;
+  };
+  git: {
+    getState: (conversationId: string) => Promise<GitStateSummary>;
+    getLog: (conversationId: string, maxCount?: number) => Promise<GitLogEntry[]>;
+    getBranches: (conversationId: string) => Promise<GitBranchInfo[]>;
+  };
+  fileChanges: {
+    list: (conversationId: string) => Promise<FileChangeRecord[]>;
+    revert: (conversationId: string, changeId: string) => Promise<FileChangeRecord>;
+    accept: (changeId: string) => Promise<FileChangeRecord>;
+    getSummary: (conversationId: string) => Promise<FileChangeSummary>;
+  };
+  terminal: {
+    getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
+    record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
   };
 };

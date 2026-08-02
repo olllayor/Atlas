@@ -48,7 +48,9 @@ export function registerGitIpc(
         const project = workspace.project;
 
         if (!project || !project.exists) return [];
-        return gitStateService.getLog(project.root, maxCount);
+        // Clamp to valid range to prevent bad CLI args
+        const clampedCount = Math.max(1, Math.min(Number(maxCount) || 20, 200));
+        return gitStateService.getLog(project.root, clampedCount);
       }
     )
   );

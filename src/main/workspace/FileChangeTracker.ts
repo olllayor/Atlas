@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync } from 'node:fs';
+import { rmSync, statSync, writeFileSync } from 'node:fs';
 
 import type { FileChangeRecord, FileChangesRepo } from '../db/repositories/fileChangesRepo';
 import type { ToolWorkspace } from '../ai/tools/toolWorkspace';
@@ -45,7 +45,16 @@ export class FileChangeTracker {
     if (change.beforeContent != null) {
       writeFileSync(resolvedPath, change.beforeContent, 'utf8');
     } else {
-      rmSync(resolvedPath, { force: true });
+      // File was created by the agent — remove it. Guard against accidentally
+      // targeting a directory (which would need recursive: true).
+      try {
+        const stat = statSync(resolvedPath, { throwIfNoEntry: false });
+        if (stat && stat.isFile()) {
+          rmSync(resolvedPath, { force: true });
+        }
+      } catch (err) {
+        console.warn(`[FileChangeTracker] Failed to remove ${resolvedPath}:`, err);
+      }
     }
 
     return this.repo.updateStatus(id, 'reverted');

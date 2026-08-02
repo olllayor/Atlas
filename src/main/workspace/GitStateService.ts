@@ -36,7 +36,8 @@ export class GitStateService {
     try {
       const output = await runGit(['branch', '--show-current'], workspace);
       return output.trim() || 'HEAD (detached)';
-    } catch {
+    } catch (err) {
+      console.warn('[GitStateService] getBranch failed:', err);
       return null;
     }
   }
@@ -50,10 +51,15 @@ export class GitStateService {
       return lines.map((line) => {
         const indexStatus = line[0] || ' ';
         const workingTreeStatus = line[1] || ' ';
-        const path = line.slice(3).trim();
+        let path = line.slice(3).trim();
+        // Handle renamed/copied files: 'R  old -> new' or 'C  old -> new'
+        if ((indexStatus === 'R' || indexStatus === 'C') && path.includes(' -> ')) {
+          path = path.split(' -> ').pop()!.trim();
+        }
         return { path, indexStatus, workingTreeStatus };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[GitStateService] getStatus failed:', err);
       return [];
     }
   }
@@ -72,7 +78,8 @@ export class GitStateService {
         const [hash = '', shortHash = '', message = '', author = '', date = ''] = line.split('\x1f');
         return { hash, shortHash, message, author, date };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[GitStateService] getLog failed:', err);
       return [];
     }
   }
@@ -89,7 +96,8 @@ export class GitStateService {
         const remote = cleanName.startsWith('remotes/');
         return { name: cleanName, current, remote };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[GitStateService] getBranches failed:', err);
       return [];
     }
   }

@@ -53,6 +53,10 @@ type ConversationSummaryRow = {
   defaultModelId: string | null;
   workspaceMode: string | null;
   projectId: string | null;
+  status: import('../../../shared/contracts').ConversationStatus | null;
+  lastError: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
 };
 
 type MessageRow = {
@@ -477,7 +481,11 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     defaultProviderId: row.defaultProviderId,
     defaultModelId: row.defaultModelId,
     workspaceMode: normalizeWorkspaceMode(row.workspaceMode),
-    projectId: row.projectId
+    projectId: row.projectId,
+    status: row.status || 'idle',
+    lastError: row.lastError,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt
   };
 }
 
@@ -570,7 +578,11 @@ export class ConversationsRepo {
             c.default_provider_id AS defaultProviderId,
             c.default_model_id AS defaultModelId,
             c.workspace_mode AS workspaceMode,
-            c.project_id AS projectId
+            c.project_id AS projectId,
+            c.status AS status,
+            c.last_error AS lastError,
+            c.started_at AS startedAt,
+            c.completed_at AS completedAt
           FROM conversations c
           ORDER BY c.updated_at DESC
         `
@@ -1301,5 +1313,35 @@ export class ConversationsRepo {
 
     transaction(id, createdAt);
     return id;
+  }
+
+  updateStatus(
+    id: string,
+    input: {
+      status: import('../../../shared/contracts').ConversationStatus;
+      lastError?: string | null;
+      startedAt?: string | null;
+      completedAt?: string | null;
+    }
+  ) {
+    const updatedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE conversations
+         SET status = @status,
+             last_error = @lastError,
+             started_at = COALESCE(@startedAt, started_at),
+             completed_at = COALESCE(@completedAt, completed_at),
+             updated_at = @updatedAt
+         WHERE id = @id`
+      )
+      .run({
+        id,
+        status: input.status,
+        lastError: input.lastError ?? null,
+        startedAt: input.startedAt ?? null,
+        completedAt: input.completedAt ?? null,
+        updatedAt
+      });
   }
 }

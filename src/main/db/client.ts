@@ -13,6 +13,8 @@ import { SettingsRepo } from './repositories/settingsRepo';
 import { SitesRepo } from './repositories/sitesRepo';
 import { ToolExecutionsRepo } from './repositories/toolExecutionsRepo';
 import { VisualsRepo } from './repositories/visualsRepo';
+import { FileChangesRepo } from './repositories/fileChangesRepo';
+import { TerminalHistoryRepo } from './repositories/terminalHistoryRepo';
 import { applySchema } from './schema';
 
 export type SqliteDatabase = InstanceType<typeof Database>;
@@ -22,6 +24,8 @@ export type AppDatabase = {
   conversations: ConversationsRepo;
   runtimeState: RuntimeStateRepo;
   toolExecutions: ToolExecutionsRepo;
+  fileChanges: FileChangesRepo;
+  terminalHistory: TerminalHistoryRepo;
   models: ModelsRepo;
   projects: ProjectsRepo;
   customProviders: CustomProvidersRepo;
@@ -44,6 +48,8 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     conversations,
     runtimeState,
     toolExecutions,
+    fileChanges: new FileChangesRepo(raw),
+    terminalHistory: new TerminalHistoryRepo(raw),
     models: new ModelsRepo(raw),
     projects: new ProjectsRepo(raw),
     customProviders: new CustomProvidersRepo(raw),

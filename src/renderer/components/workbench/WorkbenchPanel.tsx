@@ -201,33 +201,78 @@ function ChangesTab({ parts }: { parts: ChatToolPart[] }) {
   );
 }
 
-function FileChangeRow({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean }) {
+function FileChangeRow({
+  file,
+  defaultOpen,
+  status = 'pending',
+  onAccept,
+  onRevert
+}: {
+  file: DiffFile;
+  defaultOpen: boolean;
+  status?: 'pending' | 'accepted' | 'reverted';
+  onAccept?: () => void;
+  onRevert?: () => void;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const label = file.previousPath ? `${file.previousPath} → ${file.path}` : file.path;
 
   return (
-    <div className="border-t border-border-subtle first:border-t-0">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-bg-hover"
-      >
-        <span className="min-w-0 flex-1 truncate text-base text-text-primary" title={label}>
-          {label}
-        </span>
-        <span className="shrink-0 tabular-nums text-sm">
-          <span className="text-diff-add-fg">+{file.added}</span>{' '}
-          <span className="text-diff-del-fg">−{file.removed}</span>
-        </span>
-        <ChevronDown
-          aria-hidden
-          className={cn(
-            'size-3.5 shrink-0 text-text-faint transition-transform',
-            !open && '-rotate-90'
-          )}
-        />
-      </button>
+    <div className={cn('border-t border-border-subtle first:border-t-0', status === 'reverted' && 'opacity-50 line-through')}>
+      <div className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-bg-hover">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="min-w-0 flex-1 truncate text-base text-text-primary" title={label}>
+            {label}
+          </span>
+          <span className="shrink-0 tabular-nums text-sm">
+            <span className="text-diff-add-fg">+{file.added}</span>{' '}
+            <span className="text-diff-del-fg">−{file.removed}</span>
+          </span>
+          <ChevronDown
+            aria-hidden
+            className={cn(
+              'size-3.5 shrink-0 text-text-faint transition-transform',
+              !open && '-rotate-90'
+            )}
+          />
+        </button>
+
+        {status === 'pending' && (onAccept || onRevert) ? (
+          <div className="flex shrink-0 items-center gap-1">
+            {onAccept ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAccept();
+                }}
+                className="rounded bg-bg-surface px-2 py-0.5 text-xs text-success transition-colors hover:bg-bg-hover"
+              >
+                Accept
+              </button>
+            ) : null}
+            {onRevert ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRevert();
+                }}
+                className="rounded bg-bg-surface px-2 py-0.5 text-xs text-error transition-colors hover:bg-bg-hover"
+              >
+                Revert
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {status === 'accepted' ? <span className="shrink-0 text-xs font-medium text-success">Accepted</span> : null}
+        {status === 'reverted' ? <span className="shrink-0 text-xs font-medium text-error">Reverted</span> : null}
+      </div>
 
       {open && (
         <div className="pb-3">

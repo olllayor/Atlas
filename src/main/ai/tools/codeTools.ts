@@ -183,6 +183,14 @@ export async function writeFileToolExecute(
   const diff = buildUnifiedDiff(displayPath, previous ?? '', input.content);
 
   if (diff) {
+    if (workspace?.onFileChange) {
+      workspace.onFileChange({
+        filePath: target,
+        beforeContent: previous,
+        afterContent: input.content,
+        diffText: diff
+      });
+    }
     return diff;
   }
 
@@ -229,10 +237,21 @@ export async function editFileToolExecute(
   await writeFile(target, next, 'utf8');
 
   const displayPath = displayPathFor(target, workspace);
-  return buildUnifiedDiff(displayPath, previous, next) ?? `${displayPath} unchanged.`;
+  const diff = buildUnifiedDiff(displayPath, previous, next);
+
+  if (diff && workspace?.onFileChange) {
+    workspace.onFileChange({
+      filePath: target,
+      beforeContent: previous,
+      afterContent: next,
+      diffText: diff
+    });
+  }
+
+  return diff ?? `${displayPath} unchanged.`;
 }
 
-async function runGit(args: string[], workspace: ToolWorkspace | undefined) {
+export async function runGit(args: string[], workspace: ToolWorkspace | undefined) {
   const cwd = resolveWorkspaceCwd(workspace);
   const result = await runCommand('git', args, { cwd, timeoutMs: 20_000 });
 

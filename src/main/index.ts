@@ -27,6 +27,14 @@ import { registerModelsIpc } from './ipc/models';
 import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
+import { registerWorkspaceIpc } from './ipc/workspace';
+import { registerGitIpc } from './ipc/git';
+import { registerFileChangesIpc } from './ipc/fileChanges';
+import { registerTerminalIpc } from './ipc/terminal';
+import { ProjectDetector } from './workspace/ProjectDetector';
+import { EnvStore } from './workspace/EnvStore';
+import { GitStateService } from './workspace/GitStateService';
+import { FileChangeTracker } from './workspace/FileChangeTracker';
 import { assertTrustedSender } from './ipc/security';
 import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
@@ -219,6 +227,11 @@ app.whenReady().then(async () => {
   const siteExporter = new SiteExporter(siteService);
   sitePreviewHost.registerProtocolHandler();
 
+  const projectDetector = new ProjectDetector();
+  const envStore = new EnvStore(database.raw);
+  const gitStateService = new GitStateService();
+  const fileChangeTracker = new FileChangeTracker(database.fileChanges);
+
   const chatEngine = new ChatEngine(
     database.conversations,
     database.models,
@@ -238,16 +251,11 @@ app.whenReady().then(async () => {
         });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
-      (conversationId) => resolveConversationWorkspace(database, conversationId),
+      (conversationId) => resolveConversationWorkspace(database, conversationId, { fileChangeTracker }),
     ),
     database.runtimeState,
     toolStateStore,
     undefined,
-    // A provider refusing an image — or the tool definitions — is the only
-    // place most endpoints ever say what they can do. Recording it turns one
-    // failed send into a permanent answer, and the broadcast inside
-    // `afterChange` takes the affordance away in the open window rather than at
-    // the next launch.
     async ({ modelId, capability }) => {
       await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
     },
@@ -266,6 +274,10 @@ app.whenReady().then(async () => {
     settingsRepo: database.settings,
   });
   registerProjectsIpc(database.projects);
+  registerWorkspaceIpc(database, projectDetector, envStore);
+  registerGitIpc(database, gitStateService);
+  registerFileChangesIpc(database, fileChangeTracker);
+  registerTerminalIpc(database);
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);

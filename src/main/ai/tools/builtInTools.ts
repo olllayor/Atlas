@@ -17,6 +17,12 @@ import {
   writeFileToolExecute
 } from './codeTools';
 import {
+  gitBranchToolExecute,
+  gitCommitToolExecute,
+  gitLogToolExecute,
+  gitStashToolExecute
+} from './gitTools';
+import {
   bashToolExecute,
   globToolExecute,
   grepToolExecute,
@@ -312,6 +318,48 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
       }),
       strict: true,
       execute: (input: { staged?: boolean; path?: string }) => gitDiffToolExecute(input, workspace)
+    }),
+    git_log: tool({
+      description: 'Show recent commit log for the project.',
+      inputSchema: z.object({
+        maxCount: z.number().int().min(1).max(100).optional().describe('Maximum number of commits to return (default: 20)'),
+        path: z.string().trim().optional().describe('Limit the log to commits touching this path')
+      }),
+      strict: true,
+      execute: (input: { maxCount?: number; path?: string }) => gitLogToolExecute(input, workspace)
+    }),
+    git_branch: tool({
+      description: 'Manage or list git branches (list, create, switch, delete).',
+      inputSchema: z.object({
+        action: z.enum(['list', 'create', 'switch', 'delete']).describe('Branch operation to perform'),
+        name: z.string().trim().optional().describe('Branch name (required for create, switch, delete)')
+      }),
+      strict: true,
+      execute: (input: { action: 'list' | 'create' | 'switch' | 'delete'; name?: string }) =>
+        gitBranchToolExecute(input, workspace)
+    }),
+    git_commit: tool({
+      description: 'Create a new commit in the repository.',
+      needsApproval: true,
+      inputSchema: z.object({
+        message: z.string().trim().describe('Commit message'),
+        amend: z.boolean().optional().describe('Amend the previous commit'),
+        addAll: z.boolean().optional().describe('Stage all changes (git add -A) before committing')
+      }),
+      strict: true,
+      execute: (input: { message: string; amend?: boolean; addAll?: boolean }) =>
+        gitCommitToolExecute(input, workspace)
+    }),
+    git_stash: tool({
+      description: 'Stash or pop working directory changes.',
+      needsApproval: true,
+      inputSchema: z.object({
+        action: z.enum(['push', 'pop', 'list', 'drop']).describe('Stash operation to perform'),
+        message: z.string().trim().optional().describe('Optional message when pushing to stash')
+      }),
+      strict: true,
+      execute: (input: { action: 'push' | 'pop' | 'list' | 'drop'; message?: string }) =>
+        gitStashToolExecute(input, workspace)
     })
   };
 }

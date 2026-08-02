@@ -57,6 +57,75 @@ export type CreateWorkspaceProjectRequest = {
   title?: string;
 };
 
+export type ProjectType = 'node' | 'python' | 'rust' | 'go' | 'unknown';
+
+export type ProjectTypeInfo = {
+  type: ProjectType;
+  packageManager?: string;
+  framework?: string;
+  entryFile?: string;
+};
+
+export type ProjectContextInfo = {
+  project: WorkspaceProject | null;
+  projectType: ProjectTypeInfo;
+  envKeys: string[];
+  detectedEnvKeys: string[];
+  mode: WorkspaceMode;
+};
+
+export type EnvVarItem = {
+  key: string;
+  maskedValue: string;
+};
+
+export type GitFileStatus = {
+  path: string;
+  indexStatus: string;
+  workingTreeStatus: string;
+};
+
+export type GitLogEntry = {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+};
+
+export type GitBranchInfo = {
+  name: string;
+  current: boolean;
+  remote: boolean;
+};
+
+export type GitStateSummary = {
+  isRepo: boolean;
+  branch: string | null;
+  files: GitFileStatus[];
+};
+
+export type FileChangeSummary = {
+  fileCount: number;
+  added: number;
+  removed: number;
+  files: Array<{
+    id: string;
+    filePath: string;
+    diffText: string;
+    status: 'pending' | 'accepted' | 'reverted';
+  }>;
+};
+
+export type TerminalHistoryEntry = {
+  id: string;
+  conversationId: string;
+  command: string;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 /** What the runtime resolved for a conversation: its mode and its folder. */
 export type ConversationWorkspace = {
   conversationId: string;
@@ -490,6 +559,8 @@ export type SettingsSummary = {
   modelCatalogCount: number;
 };
 
+export type ConversationStatus = 'idle' | 'running' | 'completed' | 'failed' | 'queued';
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -503,6 +574,10 @@ export type ConversationSummary = {
   defaultModelId: string | null;
   workspaceMode: WorkspaceMode;
   projectId: string | null;
+  status?: ConversationStatus;
+  lastError?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 };
 
 export type ChatMessage = {

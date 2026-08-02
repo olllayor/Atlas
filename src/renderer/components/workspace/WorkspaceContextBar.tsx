@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Check,
   ClipboardCheck,
+  Code2,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -11,7 +12,7 @@ import {
 } from 'lucide-react';
 import { forwardRef } from 'react';
 
-import type { WorkspaceMode, WorkspaceProject } from '../../../shared/contracts';
+import type { ProjectTypeInfo, WorkspaceMode, WorkspaceProject } from '../../../shared/contracts';
 import { describeWorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DropdownMenu,
@@ -75,6 +76,7 @@ export function WorkspaceContextBar({
   mode,
   project,
   projects,
+  projectType,
   disabled,
   onAttach,
   onSelect,
@@ -84,6 +86,7 @@ export function WorkspaceContextBar({
   mode: WorkspaceMode;
   project: WorkspaceProject | null;
   projects: WorkspaceProject[];
+  projectType?: ProjectTypeInfo | null;
   disabled?: boolean;
   onAttach: () => void;
   onSelect: (projectId: string) => void;
@@ -151,6 +154,10 @@ export function WorkspaceContextBar({
                     Runs on this machine — reveal the folder
                   </TooltipContent>
                 </Tooltip>
+              ) : null}
+
+              {project?.exists && projectType && projectType.type !== 'unknown' ? (
+                <ProjectTypeChip projectType={projectType} />
               ) : null}
 
               {project?.exists && project.branch ? <BranchChip branch={project.branch} /> : null}
@@ -335,3 +342,25 @@ function ProjectMenu({
     </DropdownMenu>
   );
 }
+
+function ProjectTypeChip({ projectType }: { projectType: ProjectTypeInfo }) {
+  const label = [
+    projectType.type.toUpperCase(),
+    projectType.framework || projectType.packageManager
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <ContextChip className="shrink-0 max-w-40 text-text-tertiary">
+          <Code2 className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          <span className="min-w-0 truncate">{label}</span>
+        </ContextChip>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        Detected environment: {projectType.type} {projectType.framework ? `(${projectType.framework})` : ''}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+

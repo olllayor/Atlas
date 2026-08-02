@@ -23,3 +23,4 @@ plan.md
 npx
 skills-lock.json
 skills/
+.pnpm-store/

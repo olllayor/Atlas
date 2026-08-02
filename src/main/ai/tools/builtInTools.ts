@@ -330,6 +330,7 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
     }),
     git_branch: tool({
       description: 'Manage or list git branches (list, create, switch, delete).',
+      needsApproval: true,
       inputSchema: z.object({
         action: z.enum(['list', 'create', 'switch', 'delete']).describe('Branch operation to perform'),
         name: z.string().trim().optional().describe('Branch name (required for create, switch, delete)')

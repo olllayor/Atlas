@@ -148,7 +148,12 @@ const api: RendererApi = {
     getLog: (conversationId: string, maxCount?: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.gitLog, conversationId, maxCount),
     getBranches: (conversationId: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.gitBranches, conversationId)
+      ipcRenderer.invoke(IPC_CHANNELS.gitBranches, conversationId),
+    switchBranch: (conversationId: string, name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitSwitchBranch, conversationId, name),
+    createBranch: (conversationId: string, name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitCreateBranch, conversationId, name),
+    commit: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitCommit, request)
   },
   fileChanges: {
     list: (conversationId: string) =>
@@ -164,7 +169,25 @@ const api: RendererApi = {
     getHistory: (conversationId: string, limit?: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.terminalHistory, conversationId, limit),
     record: (conversationId: string, command: string, exitCode?: number | null) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalRecord, conversationId, command, exitCode)
+      ipcRenderer.invoke(IPC_CHANNELS.terminalRecord, conversationId, command, exitCode),
+    start: (conversationId: string, cols?: number, rows?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalStart, conversationId, cols, rows),
+    input: (conversationId: string, data: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalInput, conversationId, data),
+    resize: (conversationId: string, cols: number, rows: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalResize, conversationId, cols, rows),
+    kill: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.terminalKill, conversationId),
+    subscribe: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.terminalOutput, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.terminalOutput, handler);
+      };
+    }
   }
 };
 

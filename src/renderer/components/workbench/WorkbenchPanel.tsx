@@ -1,13 +1,18 @@
 /**
  * The right-hand workbench — Codex's diff / terminal / task surfaces.
  *
- * Codex backs these with a repository, a PTY and an agent fleet. Atlas has a
- * repository binding in Code mode (the attached project) but still no PTY, so
- * these panels read from the tool calls in the open conversation.
+ * Codex backs these with a repository, a PTY and an agent fleet. Atlas binds a
+ * repository in Code mode (the attached project) and hosts one PTY per
+ * conversation; the task list is still this conversation's tool calls rather
+ * than a fleet.
  *
  *   Changes  — every `file_change` call's diff, aggregated across the thread
- *   Terminal — every `command_execution` call, as a session command log
+ *   Git      — branch, working tree, history, and commit
  *   Tasks    — every tool call in the thread with its status
+ *
+ * The shell is not here: it is docked along the bottom of the window
+ * (`TerminalDock`), the way Codex's desktop app places it, so a diff and a
+ * running command are readable at the same time.
  *
  * That keeps the Codex silhouette while remaining honest: each panel says
  * plainly what it is showing and what it is not.
@@ -20,7 +25,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 
-import type { ChatMessage, ChatToolPart, FileChangeRecord, TerminalHistoryEntry, WorkspaceMode } from '../../../shared/contracts';
+import type {
+  ChatMessage,
+  ChatToolPart,
+  FileChangeRecord,
+  GitFileStatus,
+  WorkspaceMode,
+} from '../../../shared/contracts';
 import {
   type DiffFile,
   type ToolCell,
@@ -34,18 +45,18 @@ import {
 } from '../../../shared/toolCellGrammar';
 import { cn } from '../../lib/utils';
 import { DiffBlock } from '../transcript/DiffBlock';
-import { TerminalBlock, stripAnsi } from '../transcript/TerminalBlock';
+import { GitPanel } from './GitPanel';
 
-export type WorkbenchTab = 'changes' | 'terminal' | 'tasks';
+export type WorkbenchTab = 'changes' | 'git' | 'tasks';
 
 /**
  * `modes` decides where a tab is worth showing. Work mode cannot produce a diff
- * or run a build, so offering Changes and Terminal there would be three tabs
+ * or touch a repository, so offering Changes and Git there would be three tabs
  * where only one can ever have content.
  */
 export const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; modes: WorkspaceMode[] }> = [
   { id: 'changes', label: 'Changes', modes: ['code'] },
-  { id: 'terminal', label: 'Terminal', modes: ['code'] },
+  { id: 'git', label: 'Git', modes: ['code'] },
   { id: 'tasks', label: 'Tasks', modes: ['work', 'code'] },
 ];
 
@@ -82,13 +93,10 @@ export function WorkbenchPanel({ conversationId, mode, messages, activeTab, onTa
 
   const counts = useMemo(() => {
     let changes = 0;
-    let terminal = 0;
     for (const part of toolParts) {
-      const kind = toolCellKind(part);
-      if (kind === 'edit') changes += 1;
-      if (kind === 'command') terminal += 1;
+      if (toolCellKind(part) === 'edit') changes += 1;
     }
-    return { changes, terminal, tasks: toolParts.length };
+    return { changes, git: 0, tasks: toolParts.length };
   }, [toolParts]);
 
   return (
@@ -132,7 +140,7 @@ export function WorkbenchPanel({ conversationId, mode, messages, activeTab, onTa
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-auto-hide" role="tabpanel">
         {visibleTab === 'changes' && <ChangesTab conversationId={conversationId} parts={toolParts} />}
-        {visibleTab === 'terminal' && <TerminalTab conversationId={conversationId} parts={toolParts} />}
+        {visibleTab === 'git' && <GitPanel conversationId={conversationId} />}
         {visibleTab === 'tasks' && <TasksTab parts={toolParts} />}
       </div>
     </div>
@@ -156,11 +164,23 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 
 function ChangesTab({ conversationId, parts }: { conversationId?: string; parts: ChatToolPart[] }) {
   const [dbRecords, setDbRecords] = useState<FileChangeRecord[]>([]);
+  const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
   const [overrideStatus, setOverrideStatus] = useState<Record<string, 'pending' | 'accepted' | 'reverted'>>({});
 
   useEffect(() => {
     if (!conversationId || !window.atlasChat?.fileChanges?.list) return;
     window.atlasChat.fileChanges.list(conversationId).then(setDbRecords).catch(() => {});
+  }, [conversationId, parts]);
+
+  // The working tree is the other half of "what changed": files touched
+  // outside this thread (by the user, by a rebase) never produced a tool call,
+  // so nothing above would ever mention them.
+  useEffect(() => {
+    if (!conversationId || !window.atlasChat?.git?.getState) return;
+    window.atlasChat.git
+      .getState(conversationId)
+      .then((state) => setGitFiles(state.isRepo ? state.files : []))
+      .catch(() => {});
   }, [conversationId, parts]);
 
   const files = useMemo(() => {
@@ -176,23 +196,31 @@ function ChangesTab({ conversationId, parts }: { conversationId?: string; parts:
       }
     }
 
-    // Merge IPC DB records if available, deduplicating with parts by suffix match
+    // The DB records carry the same project-relative path the diff header
+    // does, so they key straight onto the tool-call rows — and they are the
+    // ones that can be accepted or reverted, so they win.
+    //
+    // Legacy rows written before the path was normalised hold an absolute
+    // path; the suffix pass folds those onto the row they belong to instead of
+    // listing the same file twice.
     for (const rec of dbRecords) {
       const parsed = parseUnifiedDiff(rec.diffText);
       const diffFile = parsed?.[0] ?? { path: rec.filePath, added: 1, removed: 0, hunks: [] };
-      
-      let matchingKey = rec.filePath;
-      for (const existingKey of byPath.keys()) {
-        if (rec.filePath.endsWith(existingKey) || existingKey.endsWith(rec.filePath)) {
-          matchingKey = existingKey;
-          break;
+
+      let key = rec.filePath;
+      if (!byPath.has(key)) {
+        for (const existingKey of byPath.keys()) {
+          if (rec.filePath.endsWith(`/${existingKey}`) || existingKey.endsWith(`/${rec.filePath}`)) {
+            key = existingKey;
+            break;
+          }
         }
       }
 
-      byPath.set(matchingKey, {
+      byPath.set(key, {
         file: diffFile,
         recordId: rec.id,
-        status: overrideStatus[matchingKey] ?? overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
+        status: overrideStatus[key] ?? overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
       });
     }
 
@@ -221,11 +249,14 @@ function ChangesTab({ conversationId, parts }: { conversationId?: string; parts:
     }
   };
 
-  if (!files.length) {
+  const editedPaths = new Set(files.map((item) => item.file.path));
+  const untouchedGitFiles = gitFiles.filter((file) => !editedPaths.has(file.path));
+
+  if (!files.length && !untouchedGitFiles.length) {
     return (
       <EmptyState
         title="No file changes yet"
-        body="Edits made in this conversation appear here as diffs. This is the thread's history, not a live view of your working tree — ask for git_diff to see that."
+        body="Edits made in this conversation appear here as diffs, alongside anything else git sees in the working tree."
       />
     );
   }
@@ -235,26 +266,53 @@ function ChangesTab({ conversationId, parts }: { conversationId?: string; parts:
 
   return (
     <div className="px-4 py-2">
-      <p className="py-1.5 text-sm text-text-tertiary">
-        {files.length} file{files.length === 1 ? '' : 's'} edited{' '}
-        <span className="tabular-nums">
-          <span className="text-diff-add-fg">+{added}</span>{' '}
-          <span className="text-diff-del-fg">−{removed}</span>
-        </span>
-      </p>
+      {files.length > 0 ? (
+        <>
+          <p className="py-1.5 text-sm text-text-tertiary">
+            {files.length} file{files.length === 1 ? '' : 's'} edited{' '}
+            <span className="tabular-nums">
+              <span className="text-diff-add-fg">+{added}</span>{' '}
+              <span className="text-diff-del-fg">−{removed}</span>
+            </span>
+          </p>
 
-      <div>
-        {files.map(({ file, recordId, status }) => (
-          <FileChangeRow
-            key={file.path}
-            file={file}
-            defaultOpen={files.length === 1}
-            status={status}
-            onAccept={() => handleAccept(file.path, recordId)}
-            onRevert={() => handleRevert(file.path, recordId)}
-          />
-        ))}
-      </div>
+          <div>
+            {files.map(({ file, recordId, status }) => (
+              <FileChangeRow
+                key={file.path}
+                file={file}
+                defaultOpen={files.length === 1}
+                status={status}
+                onAccept={() => handleAccept(file.path, recordId)}
+                onRevert={() => handleRevert(file.path, recordId)}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {untouchedGitFiles.length > 0 ? (
+        <section>
+          {/* No diff and no revert: these are the user's own changes, and the
+              workbench does not get to undo those. */}
+          <h3 className="pb-1 pt-3 text-sm font-normal text-text-tertiary">Also in the working tree</h3>
+          <ul>
+            {untouchedGitFiles.map((file) => (
+              <li
+                key={file.path}
+                className="flex min-h-8 items-center gap-2.5 border-t border-border-subtle first:border-t-0"
+              >
+                <span className="min-w-0 flex-1 truncate text-base text-text-secondary" title={file.path}>
+                  {file.path}
+                </span>
+                <span className="shrink-0 font-mono text-sm text-text-faint">
+                  {`${file.indexStatus}${file.workingTreeStatus}`.trim() || '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -337,101 +395,6 @@ function FileChangeRow({
           <DiffBlock file={file} />
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Terminal — a dim mono session log. Borderless; the command line is the
-// only primary-intensity text, output stays recessive.
-// ---------------------------------------------------------------------------
-
-function TerminalTab({ conversationId, parts }: { conversationId?: string; parts: ChatToolPart[] }) {
-  const [historyEntries, setHistoryEntries] = useState<TerminalHistoryEntry[]>([]);
-
-  useEffect(() => {
-    if (!conversationId || !window.atlasChat?.terminal?.getHistory) return;
-    window.atlasChat.terminal.getHistory(conversationId).then(setHistoryEntries).catch(() => {});
-  }, [conversationId, parts]);
-
-  const commands = useMemo(() => {
-    const cells = buildToolCells(parts.filter((part) => toolCellKind(part) === 'command')).filter(
-      (cell) => cell.kind === 'command'
-    );
-    if (!historyEntries.length) return cells;
-
-    // Combine history entries with cells
-    const existingCommands = new Set(cells.map((c) => c.subject));
-    const extraCells: typeof cells = [];
-    for (const h of historyEntries) {
-      if (!existingCommands.has(h.command)) {
-        extraCells.push({
-          id: h.id,
-          kind: 'command',
-          status: h.exitCode === 0 ? 'success' : h.exitCode == null ? 'pending' : 'failed',
-          label: `Ran ${h.command}`,
-          verb: 'Ran',
-          subject: h.command,
-          subjectIsCode: true,
-          continuation: [],
-          continuationOmitted: 0,
-          continuationAll: [],
-          detail: { type: 'none' },
-          durationMs: null,
-          parts: []
-        });
-      }
-    }
-    return [...cells, ...extraCells];
-  }, [parts, historyEntries]);
-
-  if (!commands.length) {
-    return (
-      <EmptyState
-        title="No commands run yet"
-        body="Shell commands executed by tool calls in this conversation are logged here. This is a transcript, not an interactive shell — Atlas does not host a PTY."
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-4 px-4 py-3">
-      {commands.map((cell) => {
-        const detail = cell.detail;
-        const duration =
-          cell.durationMs != null && cell.durationMs >= 1000 ? formatElapsed(cell.durationMs) : null;
-
-        return (
-          <div key={cell.id}>
-            <div className="flex items-baseline gap-1.5">
-              <span aria-hidden className="app-code-compact select-none text-text-faint">
-                $
-              </span>
-              <code className="app-code-compact min-w-0 flex-1 break-all text-text-primary">
-                {cell.subject}
-              </code>
-              {duration && (
-                <span className="shrink-0 tabular-nums text-xs text-text-faint">{duration}</span>
-              )}
-              <TaskStatusGlyph status={cell.status} className="shrink-0 self-center" />
-            </div>
-
-            {detail.type === 'text' && !detail.empty && (
-              <div className="mt-1">
-                <TerminalBlock lines={detail.lines} omitted={detail.omitted} />
-              </div>
-            )}
-            {detail.type === 'text' && detail.empty && (
-              <p className="app-code-compact mt-1 pl-3 text-text-faint">(no output)</p>
-            )}
-            {detail.type === 'error' && (
-              <pre className="app-code-compact mt-1 overflow-x-auto whitespace-pre-wrap break-words pl-3 text-error">
-                {stripAnsi(detail.text)}
-              </pre>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }

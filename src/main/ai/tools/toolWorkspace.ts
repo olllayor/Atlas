@@ -17,6 +17,8 @@ export type ToolWorkspace = {
   projectId?: string | null;
   /** Project-specific environment variables to pass to sub-processes */
   env?: Record<string, string>;
+  /** Callback fired when the agent runs a shell command, for terminal history. */
+  onCommandRun?: (command: { command: string; exitCode: number | null }) => void;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;

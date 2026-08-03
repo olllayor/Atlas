@@ -184,8 +184,12 @@ export async function writeFileToolExecute(
 
   if (diff) {
     if (workspace?.onFileChange) {
+      // The project-relative path, matching the one written into the diff
+      // header. Storing the absolute path here left the Changes tab unable to
+      // line a DB record up with the diff it came from. `resolveWritablePath`
+      // resolves it against the root again on revert.
       workspace.onFileChange({
-        filePath: target,
+        filePath: displayPath,
         beforeContent: previous,
         afterContent: input.content,
         diffText: diff
@@ -241,7 +245,7 @@ export async function editFileToolExecute(
 
   if (diff && workspace?.onFileChange) {
     workspace.onFileChange({
-      filePath: target,
+      filePath: displayPath,
       beforeContent: previous,
       afterContent: next,
       diffText: diff

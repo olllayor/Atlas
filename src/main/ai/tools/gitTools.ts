@@ -17,7 +17,7 @@ export async function gitLogToolExecute(
 }
 
 /** Reject names that look like git flags to prevent flag-injection attacks. */
-function validateBranchName(raw: string | undefined): string {
+export function validateBranchName(raw: string | undefined): string {
   const name = raw?.trim() ?? '';
   if (!name) {
     throw new Error('Branch name is required.');

@@ -18,6 +18,12 @@ export type WorkspaceMode = 'work' | 'code';
 export const WORKSPACE_MODES: Array<{
   value: WorkspaceMode;
   label: string;
+  /**
+   * Three or four words under the label in the mode menu. Codex/ChatGPT put a
+   * verb list there ("Build, debug, and ship") rather than a sentence — the
+   * menu is picked from at a glance, and `hint` is the sentence for tooltips.
+   */
+  tagline: string;
   /** One line for the mode switcher tooltip. */
   hint: string;
   /** `code` cannot run without a project folder; `work` is happy without one. */
@@ -28,6 +34,7 @@ export const WORKSPACE_MODES: Array<{
   {
     value: 'work',
     label: 'Work',
+    tagline: 'Create, learn, and explore',
     hint: 'Research, writing, sites and visuals. Reads anywhere, writes nothing on disk.',
     requiresProject: false,
     allowsFileWrites: false
@@ -35,6 +42,7 @@ export const WORKSPACE_MODES: Array<{
   {
     value: 'code',
     label: 'Code',
+    tagline: 'Build, debug, and ship',
     hint: 'Edit and run a project. Needs a folder; writes and commands stay inside it.',
     requiresProject: true,
     allowsFileWrites: true

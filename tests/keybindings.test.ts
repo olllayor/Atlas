@@ -259,3 +259,27 @@ test('conversation navigation helpers resolve adjacent and jump targets', () => 
   assert.equal(getAdjacentConversationId(conversations, 'two', 'next'), 'three');
   assert.equal(getConversationJumpId(conversations, 1), 'two');
 });
+
+test('the terminal dock has a default shortcut, scoped to the chat view', () => {
+  const rules = resolveKeybindingRules(getDefaultKeybindingRules());
+  const terminalRule = rules.find((rule) => rule.command === 'terminal.toggle');
+
+  assert.ok(terminalRule, 'terminal.toggle should ship with a default binding');
+  assert.equal(terminalRule.shortcut.key, '`');
+  assert.equal(terminalRule.shortcut.modKey, true);
+
+  // Settings has no terminal, so the shortcut must not fire there.
+  const resolved = resolveShortcutCommand(
+    { altKey: false, code: 'Backquote', ctrlKey: false, key: '`', metaKey: true, shiftKey: false },
+    rules,
+    { context: { 'view.chat': true }, platform: 'mac' }
+  );
+  assert.equal(resolved, 'terminal.toggle');
+
+  const inSettings = resolveShortcutCommand(
+    { altKey: false, code: 'Backquote', ctrlKey: false, key: '`', metaKey: true, shiftKey: false },
+    rules,
+    { context: { 'view.settings': true }, platform: 'mac' }
+  );
+  assert.equal(inSettings, null);
+});

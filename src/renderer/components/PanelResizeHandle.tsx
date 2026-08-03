@@ -19,6 +19,7 @@ export function PanelResizeHandle({
   onPointerDown,
   onKeyDown,
   onReset,
+  orientation = 'vertical',
 }: {
   ariaLabel: string;
   isResizing: boolean;
@@ -29,11 +30,19 @@ export function PanelResizeHandle({
   onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
   /** Double-click / Home restores the shipped width. */
   onReset?: () => void;
+  /**
+   * ARIA's sense, not the drag's: a `vertical` separator is a vertical line
+   * between two side-by-side panels; `horizontal` is the seam above a
+   * bottom-docked panel.
+   */
+  orientation?: 'vertical' | 'horizontal';
 }) {
+  const isRow = orientation === 'horizontal';
+
   return (
     <div
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={orientation}
       aria-label={ariaLabel}
       aria-valuenow={Math.round(width)}
       aria-valuemin={minWidth}
@@ -44,13 +53,19 @@ export function PanelResizeHandle({
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
       onDoubleClick={onReset}
-      className="group relative z-10 -mx-1.5 w-3 shrink-0 cursor-col-resize touch-none select-none"
+      className={cn(
+        'group relative z-10 shrink-0 touch-none select-none',
+        isRow ? '-my-1.5 h-3 cursor-row-resize' : '-mx-1.5 w-3 cursor-col-resize'
+      )}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       <span
         aria-hidden
         className={cn(
-          'pointer-events-none absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-brand',
+          'pointer-events-none absolute rounded-full bg-brand',
+          isRow
+            ? 'inset-x-0 top-1/2 h-0.5 -translate-y-1/2'
+            : 'inset-y-0 left-1/2 w-0.5 -translate-x-1/2',
           'opacity-0 transition-opacity duration-150 delay-75 group-hover:opacity-100 group-focus-visible:opacity-100',
           isResizing && 'opacity-100 delay-0'
         )}

@@ -9,6 +9,7 @@ import type {
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
+  ConversationStatus,
   ContextUsageSnapshot,
   GetContextUsageRequest,
   OpenVisualWindowRequest,
@@ -138,8 +139,20 @@ function formatToolNameForDeniedCopy(toolName?: string) {
  */
 const TITLE_GENERATION_TIMEOUT_MS = 90_000;
 
+/**
+ * How many turns may stream at once, across all conversations.
+ *
+ * Three is what a single provider key tolerates before rate limiting turns
+ * "parallel" into "all of them slower"; the rest wait as `queued`.
+ */
+const MAX_CONCURRENT_TURNS = 3;
+
 export class ChatEngine {
   private readonly activeRequests = new Map<string, ActiveRequest>();
+  /** Requests currently holding one of the concurrency slots. */
+  private readonly runningRequestIds = new Set<string>();
+  /** Requests accepted but waiting for a slot, oldest first. */
+  private readonly queuedRequestIds: string[] = [];
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
 
   constructor(
@@ -322,11 +335,78 @@ export class ChatEngine {
         : null,
     });
 
-    setImmediate(() => {
-      void this.runRequest(requestId, request);
-    });
+    // Turns run in parallel across conversations, but not without a ceiling:
+    // each one holds a provider stream and a tool runtime, and a user who
+    // fires off six tasks should get four of them queued rather than six
+    // fighting for the same rate limit.
+    if (this.runningRequestIds.size >= MAX_CONCURRENT_TURNS) {
+      this.queuedRequestIds.push(requestId);
+      this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
+      return { requestId };
+    }
+
+    this.beginRun(requestId, request);
 
     return { requestId };
+  }
+
+  /** Marks a request as occupying a slot and starts it. */
+  private beginRun(requestId: string, request: ChatStartRequest, messagesOverride?: ModelMessage[]) {
+    this.runningRequestIds.add(requestId);
+    this.markConversationStatus(request.conversationId, 'running', {
+      startedAt: new Date().toISOString(),
+      lastError: null,
+    });
+
+    setImmediate(() => {
+      void this.runRequest(requestId, request, messagesOverride);
+    });
+  }
+
+  /**
+   * Hands the freed slot to the next queued turn.
+   *
+   * Requests that were aborted while queued have already been dropped from
+   * `activeRequests`, so they are skipped rather than resurrected.
+   */
+  private startNextQueuedRequest() {
+    while (this.runningRequestIds.size < MAX_CONCURRENT_TURNS) {
+      const nextId = this.queuedRequestIds.shift();
+      if (!nextId) {
+        return;
+      }
+
+      const queued = this.activeRequests.get(nextId);
+      if (queued) {
+        this.beginRun(nextId, queued.request);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Conversation-level status, which outlives the request the way a task does.
+   *
+   * The renderer already knows a turn is live from its own draft state; this
+   * exists so the fact survives a reload and so a conversation the user
+   * switched away from can still be shown as running or failed. Persisting it
+   * must never take a turn down, hence the swallow.
+   */
+  private markConversationStatus(
+    conversationId: string,
+    status: ConversationStatus,
+    fields: { startedAt?: string | null; completedAt?: string | null; lastError?: string | null } = {},
+  ) {
+    try {
+      this.conversationsRepo.updateStatus(conversationId, {
+        status,
+        startedAt: fields.startedAt ?? null,
+        completedAt: fields.completedAt ?? null,
+        lastError: fields.lastError ?? null,
+      });
+    } catch (error) {
+      logger.warn('conversation.status.persist_failed', { conversationId, status, error });
+    }
   }
 
   private persistInputParts(conversationId: string, requestId: string, parts: ChatInputPart[]): ChatMessagePart[] {
@@ -364,6 +444,23 @@ export class ChatEngine {
   abort(requestId: string) {
     const active = this.activeRequests.get(requestId);
     active?.controller.abort();
+
+    // A turn still waiting for a slot has no stream to abort, so the signal
+    // would go nowhere: drop it from the queue and close it out here.
+    const queuedIndex = this.queuedRequestIds.indexOf(requestId);
+    if (queuedIndex >= 0) {
+      this.queuedRequestIds.splice(queuedIndex, 1);
+      if (active) {
+        this.markConversationStatus(active.request.conversationId, 'idle', {
+          completedAt: new Date().toISOString(),
+        });
+        this.conversationsRepo.updateMessage({
+          messageId: active.assistantMessageId,
+          status: 'aborted',
+        });
+        this.cleanupRequest(requestId, active);
+      }
+    }
   }
 
   /**
@@ -600,6 +697,11 @@ export class ChatEngine {
         parts: result.parts?.length ?? 0,
       });
 
+      this.markConversationStatus(request.conversationId, 'completed', {
+        completedAt: new Date().toISOString(),
+        lastError: null,
+      });
+
       this.sendCompletionEvents(active.window, requestId, result);
       this.cleanupRequest(requestId, active);
 
@@ -644,6 +746,15 @@ export class ChatEngine {
       });
       this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(active.request.conversationId), 'aborted');
       this.runtimeStateRepo.updateProviderSession(requestId, { status: 'aborted' });
+      // An abort is the user's own decision, not a failure of the task.
+      this.markConversationStatus(
+        active.request.conversationId,
+        normalized.code === 'aborted' ? 'idle' : 'failed',
+        {
+          completedAt: new Date().toISOString(),
+          lastError: normalized.code === 'aborted' ? null : normalized.message,
+        },
+      );
       this.sendEvent(active.window, {
         type: 'error',
         requestId,
@@ -782,6 +893,8 @@ export class ChatEngine {
     this.bufferedEvents.delete(requestId);
     this.activeRequests.delete(requestId);
     this.approvalController.clearRequest(requestId);
+    this.runningRequestIds.delete(requestId);
+    this.startNextQueuedRequest();
   }
 
   private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {

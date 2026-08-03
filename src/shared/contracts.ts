@@ -103,6 +103,16 @@ export type GitStateSummary = {
   isRepo: boolean;
   branch: string | null;
   files: GitFileStatus[];
+  /** Commits this branch is ahead of / behind its upstream; null with no upstream. */
+  ahead: number | null;
+  behind: number | null;
+};
+
+export type GitCommitRequest = {
+  conversationId: string;
+  message: string;
+  amend?: boolean;
+  addAll?: boolean;
 };
 
 export type FileChangeSummary = {
@@ -139,6 +149,22 @@ export type TerminalHistoryEntry = {
   exitCode: number | null;
   startedAt: string;
   finishedAt: string | null;
+};
+
+/** `agent` marks a line echoed from a tool call rather than shell output. */
+export type TerminalOutputKind = 'stdout' | 'stderr' | 'exit' | 'agent';
+
+export type TerminalOutputEvent = {
+  conversationId: string;
+  data: string;
+  kind: TerminalOutputKind;
+};
+
+export type TerminalStartResult = {
+  cwd: string;
+  /** Output produced before this panel attached, so a re-mount isn't blank. */
+  scrollback: string;
+  reused: boolean;
 };
 
 /** What the runtime resolved for a conversation: its mode and its folder. */
@@ -1338,6 +1364,9 @@ export type RendererApi = {
     getState: (conversationId: string) => Promise<GitStateSummary>;
     getLog: (conversationId: string, maxCount?: number) => Promise<GitLogEntry[]>;
     getBranches: (conversationId: string) => Promise<GitBranchInfo[]>;
+    switchBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
+    createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
+    commit: (request: GitCommitRequest) => Promise<string>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;
@@ -1348,5 +1377,11 @@ export type RendererApi = {
   terminal: {
     getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
     record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
+    /** Spawns the conversation's shell, or attaches to the running one. */
+    start: (conversationId: string, cols?: number, rows?: number) => Promise<TerminalStartResult>;
+    input: (conversationId: string, data: string) => Promise<void>;
+    resize: (conversationId: string, cols: number, rows: number) => Promise<void>;
+    kill: (conversationId: string) => Promise<void>;
+    subscribe: (listener: (event: TerminalOutputEvent) => void) => () => void;
   };
 };

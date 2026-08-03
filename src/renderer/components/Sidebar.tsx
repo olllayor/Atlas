@@ -3,8 +3,8 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  GitBranch,
   LayoutGrid,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -24,6 +24,7 @@ import type {
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
 import { SidebarConversationRow } from './SidebarConversationRow';
+import { SidebarConversationHoverCard, SidebarProjectHoverCard } from './SidebarHoverCard';
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
 import { BrushSpinner } from './ui/brush-spinner';
 import {
@@ -32,6 +33,13 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from './ui/context-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import {
   groupSidebarConversationItems,
@@ -74,12 +82,24 @@ type SidebarProps = {
   onCreateInProject: (projectId: string) => void;
   onRevealProject: (projectId: string) => void;
   onDetachProject: (projectId: string) => void;
+  /**
+   * Optional for the same reason as `onRename`: without wiring the sidebar
+   * hides "Edit project" rather than offering a rename that goes nowhere.
+   */
+  onRenameProject?: (projectId: string, title: string) => void;
   onOpenLanding: () => void;
   onOpenSites: () => void;
   onOpenSearch: () => void;
   onRefreshModels: () => void;
   onCheckForUpdates: () => void;
   onToggleCollapsed: () => void;
+  /**
+   * The workspace mode control, rendered where the wordmark used to sit.
+   * Passed in rather than built here because the mode belongs to the open
+   * conversation, which the sidebar knows nothing about. Optional: without it
+   * the header falls back to the wordmark.
+   */
+  modeSwitcher?: React.ReactNode;
   /** Live width in px, driven by the drag handle in App. */
   width: number;
 };
@@ -165,6 +185,49 @@ function RailButton({
   );
 }
 
+/**
+ * Radix opens a hover card on focus as well as on hover, and the list moves
+ * focus with the arrow keys — so keyboard navigation used to fire a card per
+ * row, and clicking a row left its card parked over the transcript until focus
+ * moved on. `preventDefault` is what `composeEventHandlers` checks before
+ * running the primitive's own handler, so this suppresses the focus path and
+ * leaves the pointer path alone.
+ */
+function suppressHoverCardOnFocus(event: React.FocusEvent) {
+  event.preventDefault();
+}
+
+/**
+ * Hover-revealed row action. Ghost until the row is hovered, and never in the
+ * tab order — every one of these has a twin in the row's context menu, and two
+ * extra tab stops per row would bury the list under them.
+ */
+function RowIconButton({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-active hover:text-text-primary"
+    >
+      {icon}
+    </button>
+  );
+}
+
 export function Sidebar({
   items,
   projects,
@@ -191,21 +254,28 @@ export function Sidebar({
   onCreateInProject,
   onRevealProject,
   onDetachProject,
+  onRenameProject,
   onOpenLanding,
   onOpenSites,
   onOpenSearch,
   onRefreshModels,
   onCheckForUpdates,
   onToggleCollapsed,
+  modeSwitcher,
   width,
 }: SidebarProps) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [projectRenameValue, setProjectRenameValue] = useState('');
+  /** The project whose "…" menu is open, so its icons stay put under it. */
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
   const [rovingId, setRovingId] = useState<string | null>(null);
   const [isScrolled, setIsScrolled] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const cancelRenameRef = useRef(false);
+  const cancelProjectRenameRef = useRef(false);
 
   const { sections, ungrouped } = useMemo(
     () => splitSidebarItemsByProject(items, projects),
@@ -401,6 +471,39 @@ export function Sidebar({
     }
   }, [items, onRename, renameValue, renamingId]);
 
+  /**
+   * "Edit project" in the hover card and the "…" menu both land here: the row
+   * turns into an input in place, same as a chat rename, rather than opening a
+   * dialog for a single text field.
+   */
+  const startProjectRename = useCallback(
+    (project: WorkspaceProject) => {
+      if (!onRenameProject) {
+        return;
+      }
+      cancelProjectRenameRef.current = false;
+      setProjectRenameValue(project.title);
+      setRenamingProjectId(project.id);
+    },
+    [onRenameProject]
+  );
+
+  const commitProjectRename = useCallback(() => {
+    const id = renamingProjectId;
+    setRenamingProjectId(null);
+
+    if (!id || cancelProjectRenameRef.current) {
+      cancelProjectRenameRef.current = false;
+      return;
+    }
+
+    const next = projectRenameValue.trim();
+    const current = projects.find((project) => project.id === id)?.title ?? '';
+    if (next && next !== current) {
+      onRenameProject?.(id, next);
+    }
+  }, [onRenameProject, projectRenameValue, projects, renamingProjectId]);
+
   const onListKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       return;
@@ -499,57 +602,107 @@ export function Sidebar({
         );
       }
 
+      const project = item.projectId
+        ? (projects.find((candidate) => candidate.id === item.projectId) ?? null)
+        : null;
+
       return (
-        <ContextMenu key={item.id}>
-          <ContextMenuTrigger asChild>
-            <button
-              type="button"
-              data-conversation-row
-              aria-current={isActive ? 'page' : undefined}
-              tabIndex={item.id === rovingTargetId ? 0 : -1}
-              onFocus={() => setRovingId(item.id)}
-              onClick={() => {
-                setPendingDeleteId(null);
-                onSelect(item.id);
-              }}
-              onDoubleClick={() => startRename(item)}
-              className={cn(
-                'relative flex h-8 w-full items-center rounded-md pr-2 text-left transition-colors',
-                indentClass,
-                isActive
-                  ? 'bg-bg-active font-medium text-text-primary'
-                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-              )}
-            >
-              <SidebarConversationRow
-                isRunning={item.isRunning}
-                primaryLabel={item.primaryLabel}
-                timestampLabel={showTimestamp ? item.timestampLabel : null}
-                jumpLabel={conversationJumpLabelById.get(item.id)}
-                showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
-              />
-            </button>
-          </ContextMenuTrigger>
-          <ContextMenuContent className="w-40">
-            {onRename ? (
-              <ContextMenuItem onSelect={() => startRename(item)}>
-                <Pencil aria-hidden />
-                Rename
+        <HoverCard key={item.id} openDelay={450} closeDelay={120}>
+          <ContextMenu>
+            <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
+              <ContextMenuTrigger asChild>
+                {/*
+                  The row is a wrapper, not a single button: hover actions are
+                  buttons of their own and cannot nest inside the row button.
+                  The wrapper owns the hover fill so pointing at an icon does
+                  not un-highlight the row it belongs to.
+                */}
+                <div
+                  className={cn(
+                    'group/row relative flex items-center rounded-md transition-colors',
+                    isActive ? 'bg-bg-active' : 'hover:bg-bg-hover'
+                  )}
+                >
+                  <button
+                    type="button"
+                    data-conversation-row
+                    aria-current={isActive ? 'page' : undefined}
+                    tabIndex={item.id === rovingTargetId ? 0 : -1}
+                    onFocus={() => setRovingId(item.id)}
+                    onClick={() => {
+                      setPendingDeleteId(null);
+                      onSelect(item.id);
+                    }}
+                    onDoubleClick={() => startRename(item)}
+                    className={cn(
+                      'relative flex h-8 min-w-0 flex-1 items-center rounded-md pr-2 text-left',
+                      indentClass,
+                      isActive
+                        ? 'font-medium text-text-primary'
+                        : 'text-text-secondary group-hover/row:text-text-primary'
+                    )}
+                  >
+                    <SidebarConversationRow
+                      isRunning={item.isRunning}
+                      isFailed={item.isFailed}
+                      primaryLabel={item.primaryLabel}
+                      timestampLabel={showTimestamp ? item.timestampLabel : null}
+                      jumpLabel={conversationJumpLabelById.get(item.id)}
+                      showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
+                    />
+                  </button>
+
+                  {/*
+                    Actions sit over the trailing slot, which fades out under
+                    them — the two never share the space, so nothing reflows
+                    when the pointer arrives.
+                  */}
+                  <div className="pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100">
+                    {onRename ? (
+                      <RowIconButton
+                        icon={<Pencil className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                        label="Rename chat"
+                        onClick={() => startRename(item)}
+                      />
+                    ) : null}
+                    <RowIconButton
+                      icon={<Trash2 className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                      label="Delete chat"
+                      onClick={() => setPendingDeleteId(item.id)}
+                    />
+                  </div>
+                </div>
+              </ContextMenuTrigger>
+            </HoverCardTrigger>
+            <ContextMenuContent className="w-40">
+              {onRename ? (
+                <ContextMenuItem onSelect={() => startRename(item)}>
+                  <Pencil aria-hidden />
+                  Rename
+                </ContextMenuItem>
+              ) : null}
+              <ContextMenuItem
+                variant="destructive"
+                onSelect={() => {
+                  // Radix restores focus on close; arm after that so the
+                  // confirm's autoFocus wins.
+                  setTimeout(() => setPendingDeleteId(item.id), 0);
+                }}
+              >
+                <Trash2 aria-hidden />
+                Delete
               </ContextMenuItem>
-            ) : null}
-            <ContextMenuItem
-              variant="destructive"
-              onSelect={() => {
-                // Radix restores focus on close; arm after that so the
-                // confirm's autoFocus wins.
-                setTimeout(() => setPendingDeleteId(item.id), 0);
-              }}
-            >
-              <Trash2 aria-hidden />
-              Delete
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
+            </ContextMenuContent>
+          </ContextMenu>
+
+          <SidebarConversationHoverCard
+            title={item.primaryLabel}
+            timestampLabel={item.timestampLabel}
+            project={project}
+            isRunning={item.isRunning}
+            isFailed={item.isFailed}
+          />
+        </HoverCard>
       );
     },
     [
@@ -559,6 +712,7 @@ export function Sidebar({
       onRename,
       onSelect,
       pendingDeleteId,
+      projects,
       renameValue,
       renamingId,
       rovingTargetId,
@@ -599,8 +753,15 @@ export function Sidebar({
         )}
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
+        {/*
+          The mode switcher takes the wordmark's place — the app name is
+          already on the window and in the menu bar, while the mode is the one
+          thing here that changes what the next message can do.
+        */}
         {!collapsed ? (
-          <h1 className="pl-1 text-lg font-semibold leading-none text-text-primary">Atlas</h1>
+          (modeSwitcher ?? (
+            <h1 className="pl-1 text-lg font-semibold leading-none text-text-primary">Atlas</h1>
+          ))
         ) : null}
 
         <div className="flex items-center gap-1.5">
@@ -758,65 +919,169 @@ export function Sidebar({
 
                   return (
                     <div key={project.id} className="mt-0.5 flex flex-col first:mt-0">
-                      <ContextMenu>
-                        <ContextMenuTrigger asChild>
-                          <button
-                            type="button"
-                            onClick={() => toggleProject(project.id)}
-                            aria-expanded={!isCollapsed}
-                            title={project.exists ? project.root : `Missing — ${project.root}`}
-                            className={cn(
-                              // No fill on the current project: the selected
-                              // chat directly beneath it is also filled, and
-                              // the two merged into one anonymous slab that
-                              // read as a single selected item.
-                              'group flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors hover:bg-bg-hover',
-                              isCurrent ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
-                            )}
-                          >
-                            <span className="flex size-4 shrink-0 items-center justify-center">
-                              {/* The folder itself is the disclosure: shut when
-                                  the section is collapsed, open when it is.
-                                  This used to hide the state behind a chevron
-                                  that only appeared on hover, so a collapsed
-                                  section looked identical to an empty one until
-                                  you pointed at it. */}
-                              <FolderIcon
-                                className={cn(
-                                  'size-4',
-                                  project.exists ? 'text-text-tertiary' : 'text-warning-text'
-                                )}
-                                strokeWidth={1.75}
-                                aria-hidden
-                              />
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-md">{project.title}</span>
-                            {project.branch ? (
-                              <span className="hidden shrink-0 items-center gap-1 text-2xs text-text-faint group-hover:flex">
-                                <GitBranch className="size-3" strokeWidth={1.75} aria-hidden />
-                                <span className="max-w-24 truncate">{project.branch}</span>
-                              </span>
-                            ) : null}
-                          </button>
-                        </ContextMenuTrigger>
-                        <ContextMenuContent className="w-52">
-                          <ContextMenuItem onSelect={() => onCreateInProject(project.id)}>
-                            <SquarePen aria-hidden />
-                            New chat here
-                          </ContextMenuItem>
-                          <ContextMenuItem
-                            disabled={!project.exists}
-                            onSelect={() => onRevealProject(project.id)}
-                          >
-                            <FolderOpen aria-hidden />
-                            Reveal in file manager
-                          </ContextMenuItem>
-                          <ContextMenuItem variant="destructive" onSelect={() => onDetachProject(project.id)}>
-                            <Unlink aria-hidden />
-                            Remove project
-                          </ContextMenuItem>
-                        </ContextMenuContent>
-                      </ContextMenu>
+                      {renamingProjectId === project.id ? (
+                        <input
+                          autoFocus
+                          value={projectRenameValue}
+                          aria-label="Rename project"
+                          onChange={(event) => setProjectRenameValue(event.target.value)}
+                          onFocus={(event) => event.currentTarget.select()}
+                          onBlur={commitProjectRename}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              commitProjectRename();
+                            } else if (event.key === 'Escape') {
+                              event.preventDefault();
+                              cancelProjectRenameRef.current = true;
+                              setRenamingProjectId(null);
+                            }
+                          }}
+                          className="h-8 w-full rounded-md bg-bg-hover px-2 text-md text-text-primary ring-1 ring-border-strong outline-none"
+                        />
+                      ) : (
+                        <HoverCard openDelay={450} closeDelay={120}>
+                          <ContextMenu>
+                            <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
+                              <ContextMenuTrigger asChild>
+                                <div
+                                  className={cn(
+                                    // No fill on the current project: the
+                                    // selected chat directly beneath it is also
+                                    // filled, and the two merged into one
+                                    // anonymous slab that read as a single
+                                    // selected item.
+                                    'group/row relative flex items-center rounded-md transition-colors hover:bg-bg-hover',
+                                    isCurrent ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
+                                  )}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleProject(project.id)}
+                                    aria-expanded={!isCollapsed}
+                                    title={project.exists ? project.root : `Missing — ${project.root}`}
+                                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left"
+                                  >
+                                    <span className="flex size-4 shrink-0 items-center justify-center">
+                                      {/* The folder itself is the disclosure: shut when
+                                          the section is collapsed, open when it is.
+                                          This used to hide the state behind a chevron
+                                          that only appeared on hover, so a collapsed
+                                          section looked identical to an empty one until
+                                          you pointed at it. */}
+                                      <FolderIcon
+                                        className={cn(
+                                          'size-4',
+                                          project.exists ? 'text-text-tertiary' : 'text-warning-text'
+                                        )}
+                                        strokeWidth={1.75}
+                                        aria-hidden
+                                      />
+                                    </span>
+                                    {/* Branch and path moved into the hover card:
+                                        they were hover-only chips here, which is
+                                        exactly the space the row actions want. */}
+                                    <span className="min-w-0 flex-1 truncate text-md">{project.title}</span>
+                                  </button>
+
+                                  <div
+                                    className={cn(
+                                      'pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100',
+                                      openProjectMenuId === project.id && 'pointer-events-auto opacity-100'
+                                    )}
+                                  >
+                                    <DropdownMenu
+                                      open={openProjectMenuId === project.id}
+                                      onOpenChange={(open) =>
+                                        setOpenProjectMenuId(open ? project.id : null)
+                                      }
+                                    >
+                                      <DropdownMenuTrigger asChild>
+                                        <button
+                                          type="button"
+                                          tabIndex={-1}
+                                          aria-label={`Project options for ${project.title}`}
+                                          onClick={(event) => event.stopPropagation()}
+                                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-active hover:text-text-primary"
+                                        >
+                                          <MoreHorizontal className="size-3.5" strokeWidth={1.75} aria-hidden />
+                                        </button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="start" className="w-52">
+                                        {onRenameProject ? (
+                                          <DropdownMenuItem onSelect={() => startProjectRename(project)}>
+                                            <Pencil aria-hidden />
+                                            Rename project
+                                          </DropdownMenuItem>
+                                        ) : null}
+                                        <DropdownMenuItem
+                                          disabled={!project.exists}
+                                          onSelect={() => onRevealProject(project.id)}
+                                        >
+                                          <FolderOpen aria-hidden />
+                                          Reveal in file manager
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem
+                                          variant="destructive"
+                                          onSelect={() => onDetachProject(project.id)}
+                                        >
+                                          <Unlink aria-hidden />
+                                          Remove project
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+
+                                    <RowIconButton
+                                      icon={<SquarePen className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                                      label={`New chat in ${project.title}`}
+                                      onClick={() => onCreateInProject(project.id)}
+                                    />
+                                  </div>
+                                </div>
+                              </ContextMenuTrigger>
+                            </HoverCardTrigger>
+                            <ContextMenuContent className="w-52">
+                              <ContextMenuItem onSelect={() => onCreateInProject(project.id)}>
+                                <SquarePen aria-hidden />
+                                New chat here
+                              </ContextMenuItem>
+                              {onRenameProject ? (
+                                <ContextMenuItem onSelect={() => startProjectRename(project)}>
+                                  <Pencil aria-hidden />
+                                  Rename project
+                                </ContextMenuItem>
+                              ) : null}
+                              <ContextMenuItem
+                                disabled={!project.exists}
+                                onSelect={() => onRevealProject(project.id)}
+                              >
+                                <FolderOpen aria-hidden />
+                                Reveal in file manager
+                              </ContextMenuItem>
+                              <ContextMenuItem variant="destructive" onSelect={() => onDetachProject(project.id)}>
+                                <Unlink aria-hidden />
+                                Remove project
+                              </ContextMenuItem>
+                            </ContextMenuContent>
+                          </ContextMenu>
+
+                          <SidebarProjectHoverCard
+                            project={project}
+                            chatCount={projectItems.length}
+                            onEdit={
+                              onRenameProject
+                                ? () => {
+                                    // Radix returns focus to the trigger as it
+                                    // closes; arm the input after that or the
+                                    // autoFocus is stolen back.
+                                    setTimeout(() => startProjectRename(project), 0);
+                                  }
+                                : undefined
+                            }
+                          />
+                        </HoverCard>
+                      )}
 
                       {!isCollapsed ? (
                         <div className="flex flex-col">

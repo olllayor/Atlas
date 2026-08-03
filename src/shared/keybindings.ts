@@ -9,6 +9,7 @@ export const KEYBINDING_COMMANDS = [
   'models.openSwitcher',
   'workspace.mode.toggle',
   'workspace.project.attach',
+  'terminal.toggle',
   'conversation.previous',
   'conversation.next',
   'conversation.jump.1',
@@ -168,6 +169,20 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
       metaKey: false,
       ctrlKey: false,
       shiftKey: true,
+      altKey: false,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
+    // The dock lives at the bottom of the window, so it takes the shortcut
+    // every terminal-in-an-app takes.
+    command: 'terminal.toggle',
+    shortcut: {
+      key: '`',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
       altKey: false,
       modKey: true,
     },

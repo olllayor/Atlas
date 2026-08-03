@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
+import type { WorkspaceMode } from '../shared/workspaceModes';
 import { DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
@@ -19,8 +20,10 @@ import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
-import { WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
+import { TerminalDock } from './components/workbench/TerminalDock';
+import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
 import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
+import { useWorkspaceContext } from './hooks/useWorkspaceContext';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
@@ -156,6 +159,17 @@ export default function App() {
     maxWidth: 720,
     edge: 'end',
   });
+  // Codex docks its terminal along the bottom of the window rather than in the
+  // right-hand panel, so a diff and a running command can be read at once.
+  const [terminalOpen, setTerminalOpen] = usePersistentFlag('atlas.terminal.open', false);
+  const terminalResize = useResizablePanel({
+    storageKey: 'atlas.terminal.height',
+    defaultWidth: 260,
+    minWidth: 120,
+    maxWidth: 720,
+    edge: 'end',
+    axis: 'vertical',
+  });
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [showConversationJumpHints, setShowConversationJumpHints] = useState(false);
   const [showNewChatShortcutHint, setShowNewChatShortcutHint] = useState(false);
@@ -244,8 +258,10 @@ export default function App() {
     openSites,
     closeSites,
     projects,
+    refreshProjects,
     attachProject,
     detachProject,
+    renameProject,
     setConversationWorkspace,
     setConversationToolPermissionMode,
     createConversationInProject,
@@ -317,9 +333,11 @@ export default function App() {
       openSites: state.openSites,
       closeSites: state.closeSites,
       projects: state.projects,
+      refreshProjects: state.refreshProjects,
       attachProject: state.attachProject,
       createConversationInProject: state.createConversationInProject,
       detachProject: state.detachProject,
+      renameProject: state.renameProject,
       setConversationWorkspace: state.setConversationWorkspace,
       setConversationToolPermissionMode: state.setConversationToolPermissionMode,
     }))
@@ -354,6 +372,29 @@ export default function App() {
     ? projects.find((project) => project.id === activeConversationSummary.projectId) ?? null
     : null;
   const workspaceReady = isWorkspaceModeReady(workspaceMode, Boolean(activeProject?.exists));
+  // Lives here rather than in the switcher because the mode is a property of
+  // the open conversation, and the switcher itself now renders inside the
+  // sidebar, which has no idea which conversation that is.
+  const handleWorkspaceModeChange = useCallback(
+    (mode: WorkspaceMode) => {
+      if (!selectedConversationId) return;
+      captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: mode });
+      void setConversationWorkspace(selectedConversationId, { mode });
+      // Code is the mode with a panel worth seeing; opening it on the switch
+      // saves the second click without locking the two together — the toggle
+      // still wins afterwards.
+      if (mode === 'code') {
+        setWorkbenchOpen(true);
+      }
+    },
+    [selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
+  );
+  // What the main process detected about that folder — project type, framework,
+  // configured env keys. Fetched, not derived: it comes from the filesystem.
+  const { context: projectContext, refresh: refreshProjectContext } = useWorkspaceContext(
+    selectedConversationId,
+    activeProject?.id ?? null,
+  );
 
   // Composer state is per-conversation: a single global string used to carry a
   // half-typed message (and its staged files) into whichever thread you opened.
@@ -480,7 +521,8 @@ export default function App() {
         command: definition.command,
         description: definition.description,
         disabled:
-          (definition.command === 'sidebar.toggle' && activeView !== 'chat') ||
+          ((definition.command === 'sidebar.toggle' || definition.command === 'terminal.toggle') &&
+            activeView !== 'chat') ||
           (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming')) ||
           ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
             !selectedConversationId) ||
@@ -574,6 +616,16 @@ export default function App() {
       if (next === 'code') {
         setWorkbenchOpen(true);
       }
+      return;
+    }
+
+    if (command === 'terminal.toggle') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      setTerminalOpen((current) => !current);
       return;
     }
 
@@ -991,6 +1043,7 @@ export default function App() {
           onCreateInProject={(projectId) => void createConversationInProject(projectId)}
           onRevealProject={(projectId) => void window.atlasChat.projects.reveal(projectId)}
           onDetachProject={(projectId) => void detachProject(projectId)}
+          onRenameProject={(projectId, title) => void renameProject(projectId, title)}
           onOpenLanding={() => openLanding()}
           onOpenSites={() => runViewTransition(() => openSites())}
           onOpenSearch={() => {
@@ -1001,6 +1054,15 @@ export default function App() {
           onRefreshModels={() => void refreshModels()}
           onCheckForUpdates={() => void checkForUpdates({ manual: true })}
           onToggleCollapsed={() => runViewTransition(() => setSidebarCollapsed(!sidebarCollapsed))}
+          modeSwitcher={
+            <WorkspaceModeSwitch
+              mode={workspaceMode}
+              ready={workspaceReady}
+              disabled={!selectedConversationId}
+              variant="heading"
+              onChange={handleWorkspaceModeChange}
+            />
+          }
           width={sidebarResize.width}
         />
 
@@ -1024,18 +1086,18 @@ export default function App() {
         >
           {/*
             Draggable title bar — matches the sidebar title bar height and is
-            borderless per the Codex reference: thread title on the left, a
-            centered "Chat | Work" segmented control (Work drives the
-            workbench panel), and the app update CTA on the right.
+            borderless per the Codex reference: thread title on the left, panel
+            toggles on the right. The mode switcher used to sit centred here;
+            it now heads the sidebar, where Codex keeps it.
 
             Drag regions: `no-drag` belongs on the *controls*, never on the
-            grid cells. Two of the three cells are `1fr` and span most of the
-            bar, so exempting them left only the `px-5` slivers draggable and
-            killed macOS double-click-to-zoom.
+            grid cells. The first cell is `1fr` and spans most of the bar, so
+            exempting it left only the `px-5` slivers draggable and killed
+            macOS double-click-to-zoom.
           */}
           <div
             className={cn(
-              'titlebar-overlay-safe relative grid h-titlebar-height shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 px-5',
+              'titlebar-overlay-safe relative grid h-titlebar-height shrink-0 grid-cols-[1fr_auto] items-center gap-3 px-5',
               // With the 56px collapsed rail, macOS traffic lights (x:16, ~70px
               // wide) end ~30px into this bar; inset the title clear of them.
               sidebarCollapsed && isMacLike && 'pl-12'
@@ -1064,31 +1126,17 @@ export default function App() {
               ) : null}
             </div>
 
-            {/* Mode + folder. This cell is `auto` — it hugs the controls, so
-                each control carries its own `no-drag` and the gaps still drag
-                the window. */}
-            <div className="flex shrink-0 items-center gap-1.5">
-              <WorkspaceModeSwitch
-                mode={workspaceMode}
-                ready={workspaceReady}
-                disabled={!selectedConversationId}
-                onChange={(mode) => {
-                  if (!selectedConversationId) return;
-                  captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: mode });
-                  void setConversationWorkspace(selectedConversationId, { mode });
-                  // Code is the mode with a panel worth seeing; opening it on
-                  // the switch saves the second click without locking the two
-                  // together — the toggle still wins afterwards.
-                  if (mode === 'code') {
-                    setWorkbenchOpen(true);
-                  }
-                }}
-              />
-            </div>
-
             {/* The cell is `1fr` wide but its contents are not: each control
                 carries its own `no-drag`, so the empty run beside them drags. */}
             <div className="flex shrink-0 items-center justify-end gap-1">
+              <TerminalToggle
+                open={terminalOpen}
+                onToggle={setTerminalOpen}
+                shortcutLabel={shortcutLabelForCommand(resolvedKeybindings, 'terminal.toggle', {
+                  context: keybindingContext,
+                  platform: shortcutPlatform,
+                })}
+              />
               <WorkbenchToggle open={workbenchOpen} onToggle={setWorkbenchOpen} />
             </div>
           </div>
@@ -1111,6 +1159,10 @@ export default function App() {
               onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
               onRespondToolApproval={(request) => respondToolApproval(request)}
               onRetryLastMessage={() => void resendLastUserMessage()}
+              onReviewChanges={() => {
+                setWorkbenchOpen(true);
+                setWorkbenchTab('changes');
+              }}
               hasTools={hasModelTools}
               projectName={activeProject?.exists ? activeProject.title : null}
             />
@@ -1128,7 +1180,12 @@ export default function App() {
               mode={workspaceMode}
               project={activeProject}
               projects={projects}
+              projectContext={projectContext}
               disabled={!selectedConversationId}
+              onProjectContextChanged={() => {
+                void refreshProjectContext();
+                void refreshProjects();
+              }}
               onAttach={() => {
                 void attachProject({ conversationId: selectedConversationId ?? undefined });
               }}
@@ -1216,6 +1273,37 @@ export default function App() {
             }}
             onOpenGallery={() => setGalleryOpen(true)}
           />
+
+          {/*
+            The dock sits under the composer and inside the conversation
+            column, so the workbench keeps its full height beside it — the
+            same division Codex draws between its bottom terminal and its
+            right-hand panel.
+          */}
+          {terminalOpen && (
+            <>
+              <PanelResizeHandle
+                ariaLabel="Resize terminal"
+                orientation="horizontal"
+                isResizing={terminalResize.isResizing}
+                width={terminalResize.width}
+                minWidth={terminalResize.minWidth}
+                maxWidth={terminalResize.maxWidth}
+                onPointerDown={terminalResize.onPointerDown}
+                onKeyDown={terminalResize.onKeyDown}
+                onReset={terminalResize.reset}
+              />
+              <RendererErrorBoundary resetKey={selectedConversationId}>
+                <TerminalDock
+                  conversationId={selectedConversationId ?? undefined}
+                  workspacePath={activeProject?.exists ? activeProject.root : null}
+                  onClose={() => setTerminalOpen(false)}
+                  className="shrink-0"
+                  style={{ height: terminalResize.width }}
+                />
+              </RendererErrorBoundary>
+            </>
+          )}
         </div>
 
         {workbenchOpen && (

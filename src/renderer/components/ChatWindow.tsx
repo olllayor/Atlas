@@ -57,6 +57,8 @@ type ChatWindowProps = {
   onSuggestionClick: (prompt: string) => void;
   onLoadOlderMessages: (conversationId: string) => Promise<void>;
   onRespondToolApproval: (request: { requestId: string; approvalId: string; decision: ApprovalDecision; reason?: string }) => Promise<void>;
+  /** Opens the workbench Changes tab from a turn's changed-files bar. */
+  onReviewChanges?: () => void;
   onRetryLastMessage?: () => void;
   hasTools?: boolean;
   /** Attached project, so the opening question names what you are working in. */
@@ -465,11 +467,13 @@ function MessageRow({
   deferRichContent = false,
   onRegenerate,
   onRespondToolApproval,
+  onReviewChanges,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
   onRegenerate?: () => void;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+  onReviewChanges?: ChatWindowProps['onReviewChanges'];
 }) {
   const isAssistant = message.role === 'assistant';
   const fileParts = getMessageFileParts(message.parts);
@@ -522,7 +526,7 @@ function MessageRow({
           onRespondToolApproval={onRespondToolApproval}
         />
 
-        {changedFiles ? <ChangedFilesBar summary={changedFiles} /> : null}
+        {changedFiles ? <ChangedFilesBar summary={changedFiles} onReview={onReviewChanges} /> : null}
 
         <div className={ACTION_ROW}>
           <CopyAction text={message.content} label="Copy response" />
@@ -787,6 +791,7 @@ export function ChatWindow({
   onLoadOlderMessages,
   onRespondToolApproval,
   onRetryLastMessage,
+  onReviewChanges,
   hasTools = false,
   projectName = null,
 }: ChatWindowProps) {
@@ -1241,6 +1246,7 @@ export function ChatWindow({
                       : undefined
                   }
                   onRespondToolApproval={onRespondToolApproval}
+                  onReviewChanges={onReviewChanges}
                 />
               </div>
             );

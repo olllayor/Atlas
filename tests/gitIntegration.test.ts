@@ -93,3 +93,61 @@ test('git_commit tool creates a new commit', async () => {
     cleanup();
   }
 });
+
+test('GitStateService switches, creates branches and commits from the UI path', async () => {
+  const { root, cleanup } = makeGitRepo();
+  try {
+    const gitService = new GitStateService();
+
+    await gitService.createBranch(root, 'feature-ui');
+    assert.equal(await gitService.getBranch(root), 'feature-ui');
+
+    await gitService.switchBranch(root, 'main');
+    assert.equal(await gitService.getBranch(root), 'main');
+
+    writeFileSync(join(root, 'ui.txt'), 'from the commit dialog');
+    const output = await gitService.commit(root, { message: 'ui commit', addAll: true });
+    assert.ok(output.length > 0);
+
+    const log = await gitService.getLog(root);
+    assert.equal(log[0]!.message, 'ui commit');
+  } finally {
+    cleanup();
+  }
+});
+
+test('GitStateService refuses branch names that would be read as git flags', async () => {
+  const { root, cleanup } = makeGitRepo();
+  try {
+    const gitService = new GitStateService();
+    await assert.rejects(() => gitService.switchBranch(root, '--force'), /cannot start with/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a remote-listed branch name is switched to as its local name', async () => {
+  const { root, cleanup } = makeGitRepo();
+  try {
+    const gitService = new GitStateService();
+    await gitService.createBranch(root, 'shared');
+    await gitService.switchBranch(root, 'main');
+
+    // What `git branch -a` prints for a remote branch; `git switch` only
+    // accepts the trailing local name.
+    await gitService.switchBranch(root, 'remotes/origin/shared');
+    assert.equal(await gitService.getBranch(root), 'shared');
+  } finally {
+    cleanup();
+  }
+});
+
+test('ahead/behind is null when the branch has no upstream', async () => {
+  const { root, cleanup } = makeGitRepo();
+  try {
+    const gitService = new GitStateService();
+    assert.deepEqual(await gitService.getAheadBehind(root), { ahead: null, behind: null });
+  } finally {
+    cleanup();
+  }
+});

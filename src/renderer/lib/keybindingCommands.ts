@@ -54,6 +54,14 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     keywords: ['project', 'folder', 'repository', 'repo', 'open folder', 'workspace', 'directory'],
   },
   {
+    command: 'terminal.toggle',
+    title: 'Toggle terminal',
+    description: 'Show or hide the terminal docked at the bottom of the window.',
+    section: 'General',
+    allowWhileEditable: true,
+    keywords: ['terminal', 'shell', 'console', 'bash', 'zsh', 'command line', 'panel', 'bottom'],
+  },
+  {
     command: 'settings.open',
     title: 'Open settings',
     description: 'Open Atlas settings.',

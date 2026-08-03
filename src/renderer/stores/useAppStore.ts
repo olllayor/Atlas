@@ -133,6 +133,7 @@ type AppState = {
   /** Opens the native folder picker unless a root is supplied. Null when cancelled. */
   attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
   detachProject: (projectId: string) => Promise<void>;
+  renameProject: (projectId: string, title: string) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
     patch: { mode?: WorkspaceMode; projectId?: string | null }
@@ -769,6 +770,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     return project;
+  },
+
+  renameProject: async (projectId, title) => {
+    const next = title.trim();
+    if (!next) {
+      return;
+    }
+
+    // Optimistic: the sidebar row is the thing being renamed, and a round trip
+    // before it repaints reads as the rename not having taken.
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === projectId ? { ...project, title: next } : project
+      ),
+    }));
+
+    await window.atlasChat.projects.rename(projectId, next);
+    await get().refreshProjects();
   },
 
   detachProject: async (projectId) => {
@@ -1582,6 +1601,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         diagnostics
       };
     });
+
+    // A turn the user walked away from finishes silently otherwise — the
+    // sidebar's spinner just stops, in a row they are not looking at.
+    if (conversationId !== get().selectedConversationId) {
+      const title =
+        conversations.find((conversation) => conversation.id === conversationId)?.title ?? 'A task';
+      notify({
+        tone: 'info',
+        title: 'Finished in the background',
+        description: title,
+        actionLabel: 'Open',
+        onAction: () => {
+          void get().loadConversation(conversationId);
+        },
+      });
+    }
   },
 }));
 

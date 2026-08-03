@@ -21,12 +21,16 @@ type ConversationsIpcDependencies = {
   conversationsRepo: ConversationsRepo;
   projectsRepo: AppDatabase['projects'];
   settingsRepo: SettingsRepo;
+  /** Lets the deleted conversation's shell and other per-conversation
+   *  resources be torn down with it. */
+  onConversationDeleted?: (conversationId: string) => void;
 };
 
 export function registerConversationsIpc({
   conversationsRepo,
   projectsRepo,
-  settingsRepo
+  settingsRepo,
+  onConversationDeleted
 }: ConversationsIpcDependencies) {
   const database = { conversations: conversationsRepo, projects: projectsRepo };
 
@@ -103,6 +107,7 @@ export function registerConversationsIpc({
     withUserFacingErrors(IPC_CHANNELS.conversationsDelete, (event, conversationId: string) => {
       assertTrustedSender(event);
       conversationsRepo.delete(conversationId);
+      onConversationDeleted?.(conversationId);
     })
   );
 

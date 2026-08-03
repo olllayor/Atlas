@@ -826,6 +826,7 @@ export function Composer({
     return bare || undefined;
   }, [selectedModel]);
 
+
   // Dimensions are unknown until the image is decoded, so the estimator falls
   // back to its typical-screenshot allowance rather than guessing from bytes.
   const pendingAttachments = useMemo(

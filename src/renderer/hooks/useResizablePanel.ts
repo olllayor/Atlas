@@ -23,6 +23,7 @@ export function useResizablePanel({
   minWidth,
   maxWidth,
   edge = 'start',
+  axis = 'horizontal',
 }: {
   storageKey: string;
   defaultWidth: number;
@@ -30,7 +31,14 @@ export function useResizablePanel({
   maxWidth: number;
   /** Which side of the panel the handle sits on. */
   edge?: 'start' | 'end';
+  /**
+   * `vertical` makes the measured dimension a height and the drag a
+   * top-edge drag — what a bottom-docked panel needs. Everything else
+   * (persistence, clamping, keyboard steps) is identical.
+   */
+  axis?: 'horizontal' | 'vertical';
 }) {
+  const isVertical = axis === 'vertical';
   const [width, setWidth] = useState(() => readStoredNumber(storageKey, defaultWidth, minWidth, maxWidth));
   const [isResizing, setIsResizing] = useState(false);
   const frame = useRef<number | null>(null);
@@ -58,17 +66,21 @@ export function useResizablePanel({
       handle.setPointerCapture(event.pointerId);
       setIsResizing(true);
 
-      const startX = event.clientX;
+      const start = isVertical ? event.clientY : event.clientX;
       const startWidth = widthRef.current;
       let latest = startWidth;
 
       const previousCursor = document.body.style.cursor;
       const previousUserSelect = document.body.style.userSelect;
-      document.body.style.cursor = 'col-resize';
+      document.body.style.cursor = isVertical ? 'row-resize' : 'col-resize';
       document.body.style.userSelect = 'none';
 
       const onMove = (moveEvent: PointerEvent) => {
-        const delta = edge === 'start' ? moveEvent.clientX - startX : startX - moveEvent.clientX;
+        const position = isVertical ? moveEvent.clientY : moveEvent.clientX;
+        // `end` means the handle is on the panel's leading edge (a right
+        // sidebar's left edge, a bottom dock's top edge), where moving the
+        // pointer *back* is what grows the panel.
+        const delta = edge === 'start' ? position - start : start - position;
         const next = Math.min(maxWidth, Math.max(minWidth, startWidth + delta));
         latest = next;
 
@@ -111,7 +123,7 @@ export function useResizablePanel({
       window.addEventListener('pointercancel', onUp);
       handle.addEventListener('lostpointercapture', onLostCapture);
     },
-    [edge, maxWidth, minWidth, persist]
+    [edge, isVertical, maxWidth, minWidth, persist]
   );
 
   /** Snap back to the shipped width — bound to Home and to double-click. */
@@ -124,8 +136,11 @@ export function useResizablePanel({
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLElement>) => {
       const step = event.shiftKey ? 48 : 16;
-      const grow = edge === 'start' ? 'ArrowRight' : 'ArrowLeft';
-      const shrink = edge === 'start' ? 'ArrowLeft' : 'ArrowRight';
+      const [forward, backward] = isVertical
+        ? (['ArrowDown', 'ArrowUp'] as const)
+        : (['ArrowRight', 'ArrowLeft'] as const);
+      const grow = edge === 'start' ? forward : backward;
+      const shrink = edge === 'start' ? backward : forward;
 
       if (event.key === grow) {
         event.preventDefault();
@@ -146,7 +161,7 @@ export function useResizablePanel({
         reset();
       }
     },
-    [edge, maxWidth, minWidth, persist, reset]
+    [edge, isVertical, maxWidth, minWidth, persist, reset]
   );
 
   useEffect(

@@ -48,7 +48,14 @@ function disambiguateNames(files: DiffFile[]): string[] {
   });
 }
 
-export function ChangedFilesBar({ summary }: { summary: ChangedFilesSummary }) {
+export function ChangedFilesBar({
+  summary,
+  onReview,
+}: {
+  summary: ChangedFilesSummary;
+  /** Opens the workbench Changes tab. Absent, the bar only expands inline. */
+  onReview?: () => void;
+}) {
   const count = summary.files.length;
 
   // Keyed by the file set so the bar's open state survives the virtualizer
@@ -64,7 +71,7 @@ export function ChangedFilesBar({ summary }: { summary: ChangedFilesSummary }) {
   return (
     // `overflow-hidden` so the last expanded diff cannot square off the
     // bar's bottom corners.
-    <div className="mt-4 overflow-hidden rounded-xl bg-bg-surface">
+    <div className="relative mt-4 overflow-hidden rounded-xl bg-bg-surface">
       <button
         type="button"
         onClick={toggleOpen}
@@ -84,7 +91,7 @@ export function ChangedFilesBar({ summary }: { summary: ChangedFilesSummary }) {
           {summary.removed}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1 text-base text-text-secondary">
-          Review
+          {onReview ? null : 'Review'}
           <ChevronRight
             aria-hidden
             className={cn(
@@ -94,6 +101,22 @@ export function ChangedFilesBar({ summary }: { summary: ChangedFilesSummary }) {
           />
         </span>
       </button>
+
+      {/*
+        With a workbench to send it to, "Review" means the panel — the chevron
+        keeps the inline expansion for a quick look without leaving the
+        transcript. It sits outside the toggle button because a button inside a
+        button is not a thing the DOM allows.
+      */}
+      {onReview ? (
+        <button
+          type="button"
+          onClick={onReview}
+          className="absolute right-11 top-0 flex h-12 cursor-pointer items-center text-base text-text-secondary transition-colors hover:text-text-primary"
+        >
+          Review
+        </button>
+      ) : null}
 
       <Disclosure open={isOpen}>
         <div className="px-4 pb-2">

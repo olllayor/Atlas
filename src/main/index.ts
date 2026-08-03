@@ -35,6 +35,7 @@ import { ProjectDetector } from './workspace/ProjectDetector';
 import { EnvStore } from './workspace/EnvStore';
 import { GitStateService } from './workspace/GitStateService';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
+import { PtyService } from './terminal/PtyService';
 import { assertTrustedSender } from './ipc/security';
 import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
@@ -232,6 +233,25 @@ app.whenReady().then(async () => {
   const gitStateService = new GitStateService();
   const fileChangeTracker = new FileChangeTracker(database.fileChanges);
 
+  // The Terminal panel's shells. Output is pushed to every open window: the
+  // panel filters by conversation, and a second window showing the same
+  // conversation should see the same session rather than a dead pane.
+  const ptyService = new PtyService((payload) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.terminalOutput, payload);
+    }
+  }, database.terminalHistory);
+
+  app.on('will-quit', () => {
+    ptyService.disposeAll();
+  });
+
+  // The turn path reads project env vars synchronously, so the keychain values
+  // are loaded once here rather than on the first command that needs them.
+  void envStore.primeAll().catch((err) => {
+    console.warn('[main] env prime failed:', err);
+  });
+
   const chatEngine = new ChatEngine(
     database.conversations,
     database.models,
@@ -251,7 +271,16 @@ app.whenReady().then(async () => {
         });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
-      (conversationId) => resolveConversationWorkspace(database, conversationId, { fileChangeTracker }),
+      (conversationId) =>
+        resolveConversationWorkspace(database, conversationId, {
+          fileChangeTracker,
+          envStore,
+          terminalHistory: database.terminalHistory,
+          // Display-only echo: the agent's command already ran through the
+          // approval ladder in `runCommand`, and nothing here touches stdin.
+          onAgentCommand: (command, exitCode) =>
+            ptyService.echoAgentCommand(conversationId, command, exitCode),
+        }),
     ),
     database.runtimeState,
     toolStateStore,
@@ -272,12 +301,13 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     projectsRepo: database.projects,
     settingsRepo: database.settings,
+    onConversationDeleted: (conversationId) => ptyService.kill(conversationId),
   });
   registerProjectsIpc(database.projects);
   registerWorkspaceIpc(database, projectDetector, envStore);
   registerGitIpc(database, gitStateService);
   registerFileChangesIpc(database, fileChangeTracker);
-  registerTerminalIpc(database);
+  registerTerminalIpc(database, ptyService);
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);

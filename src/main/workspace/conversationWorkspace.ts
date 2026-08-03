@@ -61,6 +61,7 @@ export function resolveNewConversationProjectId(
 
 import type { FileChangeTracker } from './FileChangeTracker';
 import type { EnvStore } from './EnvStore';
+import type { TerminalHistoryRepo } from '../db/repositories/terminalHistoryRepo';
 
 export function resolveConversationWorkspace(
   database: WorkspaceDatabase,
@@ -68,6 +69,8 @@ export function resolveConversationWorkspace(
   options?: {
     fileChangeTracker?: FileChangeTracker;
     envStore?: EnvStore;
+    terminalHistory?: TerminalHistoryRepo;
+    onAgentCommand?: (command: string, exitCode: number | null) => void;
   }
 ): ToolWorkspace {
   const workspace = describeConversationWorkspace(database, conversationId);
@@ -79,6 +82,41 @@ export function resolveConversationWorkspace(
     root,
     projectId
   };
+
+  // Project env vars are read from the in-memory cache: this resolver runs on
+  // the synchronous turn-setup path, and the keychain read that fills the cache
+  // is async. A cold cache means the turn runs without them rather than
+  // blocking, which is why the store primes at boot and on every write.
+  if (options?.envStore && projectId) {
+    const env = options.envStore.getCachedEnv(projectId);
+    if (Object.keys(env).length > 0) {
+      toolWorkspace.env = env;
+    }
+  }
+
+  // Shell commands the agent runs land in the same history the Terminal panel
+  // reads, so the panel shows the conversation's commands rather than only
+  // whatever the user typed.
+  if (options?.terminalHistory || options?.onAgentCommand) {
+    toolWorkspace.onCommandRun = (command) => {
+      try {
+        options.terminalHistory?.add({
+          conversationId,
+          command: command.command,
+          exitCode: command.exitCode,
+          finishedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.warn('[conversationWorkspace] failed to record command history:', err);
+      }
+
+      try {
+        options.onAgentCommand?.(command.command, command.exitCode);
+      } catch (err) {
+        console.warn('[conversationWorkspace] failed to echo command to terminal:', err);
+      }
+    };
+  }
 
   if (options?.fileChangeTracker) {
     toolWorkspace.onFileChange = (change) => {

@@ -829,6 +829,8 @@ export async function bashToolExecute(input: {
     });
     child.unref();
 
+    workspace?.onCommandRun?.({ command: input.command, exitCode: null });
+
     return {
       stdout: '',
       stderr: '',
@@ -849,6 +851,8 @@ export async function bashToolExecute(input: {
       timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
     }
   );
+
+  workspace?.onCommandRun?.({ command: input.command, exitCode: result.code ?? null });
 
   const isSuccess = !result.interrupted && result.code === 0;
   const rawStdout = result.stdout;

@@ -1,6 +1,11 @@
 import { ipcMain } from 'electron/main';
 
-import type { GitBranchInfo, GitLogEntry, GitStateSummary } from '../../shared/contracts';
+import type {
+  GitBranchInfo,
+  GitCommitRequest,
+  GitLogEntry,
+  GitStateSummary
+} from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
 import type { GitStateService } from '../workspace/GitStateService';
@@ -12,6 +17,49 @@ export function registerGitIpc(
   db: AppDatabase,
   gitStateService: GitStateService
 ) {
+  const EMPTY_STATE: GitStateSummary = {
+    isRepo: false,
+    branch: null,
+    files: [],
+    ahead: null,
+    behind: null
+  };
+
+  /**
+   * The repository this conversation may act on.
+   *
+   * Resolved from the conversation row rather than from an argument, so a git
+   * write can only ever land in the folder the conversation is attached to.
+   */
+  const resolveRepoRoot = (conversationId: string): string => {
+    const workspace = describeConversationWorkspace(db, conversationId);
+    const project = workspace.project;
+
+    if (!project || !project.exists) {
+      throw new Error('This conversation has no project folder attached.');
+    }
+
+    if (workspace.mode !== 'code') {
+      throw new Error('Git actions are only available in Code mode.');
+    }
+
+    if (!gitStateService.isGitRepo(project.root)) {
+      throw new Error(`${project.root} is not a git repository.`);
+    }
+
+    return project.root;
+  };
+
+  const readState = async (root: string): Promise<GitStateSummary> => {
+    const [branch, files, aheadBehind] = await Promise.all([
+      gitStateService.getBranch(root),
+      gitStateService.getStatus(root),
+      gitStateService.getAheadBehind(root)
+    ]);
+
+    return { isRepo: true, branch, files, ahead: aheadBehind.ahead, behind: aheadBehind.behind };
+  };
+
   ipcMain.handle(
     IPC_CHANNELS.gitState,
     withUserFacingErrors(
@@ -21,19 +69,53 @@ export function registerGitIpc(
         const workspace = describeConversationWorkspace(db, conversationId);
         const project = workspace.project;
 
-        if (!project || !project.exists) {
-          return { isRepo: false, branch: null, files: [] };
+        if (!project || !project.exists || !gitStateService.isGitRepo(project.root)) {
+          return EMPTY_STATE;
         }
 
-        const isRepo = gitStateService.isGitRepo(project.root);
-        if (!isRepo) {
-          return { isRepo: false, branch: null, files: [] };
-        }
+        return readState(project.root);
+      }
+    )
+  );
 
-        const branch = await gitStateService.getBranch(project.root);
-        const files = await gitStateService.getStatus(project.root);
+  ipcMain.handle(
+    IPC_CHANNELS.gitSwitchBranch,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitSwitchBranch,
+      async (event, conversationId: string, name: string): Promise<GitStateSummary> => {
+        assertTrustedSender(event);
+        const root = resolveRepoRoot(conversationId);
+        await gitStateService.switchBranch(root, name);
+        return readState(root);
+      }
+    )
+  );
 
-        return { isRepo: true, branch, files };
+  ipcMain.handle(
+    IPC_CHANNELS.gitCreateBranch,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitCreateBranch,
+      async (event, conversationId: string, name: string): Promise<GitStateSummary> => {
+        assertTrustedSender(event);
+        const root = resolveRepoRoot(conversationId);
+        await gitStateService.createBranch(root, name);
+        return readState(root);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitCommit,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitCommit,
+      async (event, request: GitCommitRequest): Promise<string> => {
+        assertTrustedSender(event);
+        const root = resolveRepoRoot(request.conversationId);
+        return gitStateService.commit(root, {
+          message: request.message,
+          amend: request.amend,
+          addAll: request.addAll
+        });
       }
     )
   );

@@ -12,8 +12,16 @@ import {
 } from 'lucide-react';
 import { forwardRef, useState } from 'react';
 
-import type { GitBranchInfo, ProjectTypeInfo, WorkspaceMode, WorkspaceProject } from '../../../shared/contracts';
+import type {
+  GitBranchInfo,
+  ProjectContextInfo,
+  ProjectTypeInfo,
+  WorkspaceMode,
+  WorkspaceProject,
+} from '../../../shared/contracts';
 import { describeWorkspaceMode } from '../../../shared/workspaceModes';
+import { notify, notifyError } from '../../lib/notify';
+import { EnvironmentDialog } from './EnvironmentDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -77,26 +85,31 @@ export function WorkspaceContextBar({
   mode,
   project,
   projects,
-  projectType,
+  projectContext,
   disabled,
   onAttach,
   onSelect,
   onDetach,
   onReveal,
+  onProjectContextChanged,
 }: {
   conversationId?: string;
   mode: WorkspaceMode;
   project: WorkspaceProject | null;
   projects: WorkspaceProject[];
-  projectType?: ProjectTypeInfo | null;
+  /** Detected type + configured env keys, from `workspace.context`. */
+  projectContext?: ProjectContextInfo | null;
   disabled?: boolean;
   onAttach: () => void;
   onSelect: (projectId: string) => void;
   onDetach: () => void;
   onReveal: (projectId: string) => void;
+  onProjectContextChanged?: () => void;
 }) {
   const needsProject = describeWorkspaceMode(mode).requiresProject && !project?.exists;
   const isMissing = project != null && !project.exists;
+  const projectType = projectContext?.projectType ?? null;
+  const [environmentOpen, setEnvironmentOpen] = useState(false);
 
   return (
     <div className="pr-[6px]">
@@ -124,6 +137,8 @@ export function WorkspaceContextBar({
               <ProjectMenu
                 project={project}
                 projects={projects}
+                projectType={projectType}
+                envCount={projectContext?.envKeys.length ?? 0}
                 needsProject={needsProject}
                 isMissing={isMissing}
                 disabled={disabled}
@@ -131,6 +146,7 @@ export function WorkspaceContextBar({
                 onSelect={onSelect}
                 onDetach={onDetach}
                 onReveal={onReveal}
+                onOpenEnvironment={() => setEnvironmentOpen(true)}
               />
 
               {/*
@@ -158,12 +174,12 @@ export function WorkspaceContextBar({
                 </Tooltip>
               ) : null}
 
-              {project?.exists && projectType && projectType.type !== 'unknown' ? (
-                <ProjectTypeChip projectType={projectType} />
-              ) : null}
-
               {project?.exists && project.branch ? (
-                <BranchChip branch={project.branch} conversationId={conversationId} />
+                <BranchChip
+                  branch={project.branch}
+                  conversationId={conversationId}
+                  onBranchChanged={onProjectContextChanged}
+                />
               ) : null}
 
               {needsProject ? (
@@ -184,6 +200,18 @@ export function WorkspaceContextBar({
           </div>
         </div>
       </div>
+
+      {project?.exists && projectContext ? (
+        <EnvironmentDialog
+          open={environmentOpen}
+          onOpenChange={setEnvironmentOpen}
+          project={project}
+          context={projectContext}
+          branch={project.branch}
+          onReveal={onReveal}
+          onEnvChanged={() => onProjectContextChanged?.()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -192,10 +220,19 @@ export function WorkspaceContextBar({
  * The branch chip — opens a dropdown with all local/remote git branches
  * and allows quick copy or branch switching.
  */
-function BranchChip({ branch, conversationId }: { branch: string; conversationId?: string }) {
+function BranchChip({
+  branch,
+  conversationId,
+  onBranchChanged,
+}: {
+  branch: string;
+  conversationId?: string;
+  onBranchChanged?: () => void;
+}) {
   const { copied, copy } = useClipboard();
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [switching, setSwitching] = useState(false);
 
   const fetchBranches = async () => {
     if (!conversationId || !window.atlasChat?.git?.getBranches) return;
@@ -210,6 +247,25 @@ function BranchChip({ branch, conversationId }: { branch: string; conversationId
     }
   };
 
+  /**
+   * Checking out moves the files the conversation is about, so the failure
+   * path matters more than the happy one: git refuses a switch that would
+   * discard local changes, and that refusal is what the user needs to read.
+   */
+  const switchTo = async (name: string) => {
+    if (!conversationId || switching) return;
+    setSwitching(true);
+    try {
+      const state = await window.atlasChat.git.switchBranch(conversationId, name);
+      notify({ tone: 'success', title: `Switched to ${state.branch ?? name}` });
+      onBranchChanged?.();
+    } catch (err) {
+      notifyError('Could not switch branch', err);
+    } finally {
+      setSwitching(false);
+    }
+  };
+
   return (
     <DropdownMenu onOpenChange={(open) => { if (open) void fetchBranches(); }}>
       <Tooltip>
@@ -217,7 +273,7 @@ function BranchChip({ branch, conversationId }: { branch: string; conversationId
           <DropdownMenuTrigger asChild>
             <ContextChip
               className="max-w-48"
-              aria-label={`Branch ${branch} — click to view branches`}
+              aria-label={`Branch ${branch} — click to switch branches`}
             >
               {copied ? (
                 <ClipboardCheck
@@ -233,7 +289,7 @@ function BranchChip({ branch, conversationId }: { branch: string; conversationId
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="top">
-          Current branch: {branch} (click to view branches)
+          Current branch: {branch} (click to switch)
         </TooltipContent>
       </Tooltip>
 
@@ -254,18 +310,23 @@ function BranchChip({ branch, conversationId }: { branch: string; conversationId
         <DropdownMenuSeparator />
 
         {branches.length > 0 ? (
-          branches.map((b) => (
-            <DropdownMenuItem
-              key={b.name}
-              onClick={() => void copy(b.name)}
-              className="flex items-center justify-between text-xs"
-            >
-              <span className={cn('truncate', (b.current || b.name === branch) && 'font-medium text-text-primary')}>
-                {b.name} {b.remote ? '(remote)' : ''}
-              </span>
-              {b.current || b.name === branch ? <Check className="size-3.5 text-success" /> : null}
-            </DropdownMenuItem>
-          ))
+          branches.map((b) => {
+            const isCurrent = b.current || b.name === branch;
+
+            return (
+              <DropdownMenuItem
+                key={b.name}
+                disabled={isCurrent || switching}
+                onSelect={() => void switchTo(b.name)}
+                className="flex items-center justify-between text-xs"
+              >
+                <span className={cn('truncate', isCurrent && 'font-medium text-text-primary')}>
+                  {b.name} {b.remote ? '(remote)' : ''}
+                </span>
+                {isCurrent ? <Check className="size-3.5 text-success" /> : null}
+              </DropdownMenuItem>
+            );
+          })
         ) : (
           <DropdownMenuItem disabled className="text-xs text-text-faint">
             {loading ? 'Loading branches...' : branch}
@@ -279,6 +340,8 @@ function BranchChip({ branch, conversationId }: { branch: string; conversationId
 function ProjectMenu({
   project,
   projects,
+  projectType,
+  envCount,
   needsProject,
   isMissing,
   disabled,
@@ -286,9 +349,12 @@ function ProjectMenu({
   onSelect,
   onDetach,
   onReveal,
+  onOpenEnvironment,
 }: {
   project: WorkspaceProject | null;
   projects: WorkspaceProject[];
+  projectType: ProjectTypeInfo | null;
+  envCount: number;
   needsProject: boolean;
   isMissing: boolean;
   disabled?: boolean;
@@ -296,6 +362,7 @@ function ProjectMenu({
   onSelect: (projectId: string) => void;
   onDetach: () => void;
   onReveal: (projectId: string) => void;
+  onOpenEnvironment: () => void;
 }) {
   const label = project ? project.title : needsProject ? 'Choose folder' : 'No folder';
 
@@ -376,6 +443,30 @@ function ProjectMenu({
 
         {project ? (
           <>
+            {/*
+              Detected stack and configured variables belong to the folder, so
+              they live in the folder's menu rather than as another chip in the
+              strip: neither changes what a send does, and the reference bar
+              carries only things that do.
+            */}
+            <DropdownMenuItem
+              onSelect={onOpenEnvironment}
+              disabled={!project.exists}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+            >
+              <Code2 className="size-4 shrink-0" strokeWidth={1.75} />
+              Environment
+              <span className="ml-auto shrink-0 text-2xs text-text-faint">
+                {[
+                  projectType && projectType.type !== 'unknown'
+                    ? [projectType.type, projectType.packageManager].filter(Boolean).join(' · ')
+                    : null,
+                  envCount > 0 ? `${envCount} var${envCount === 1 ? '' : 's'}` : null,
+                ]
+                  .filter(Boolean)
+                  .join('  ')}
+              </span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => onReveal(project.id)}
               disabled={!project.exists}
@@ -397,25 +488,3 @@ function ProjectMenu({
     </DropdownMenu>
   );
 }
-
-function ProjectTypeChip({ projectType }: { projectType: ProjectTypeInfo }) {
-  const label = [
-    projectType.type.toUpperCase(),
-    projectType.framework || projectType.packageManager
-  ].filter(Boolean).join(' · ');
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <ContextChip className="shrink-0 max-w-40 text-text-tertiary">
-          <Code2 className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-          <span className="min-w-0 truncate">{label}</span>
-        </ContextChip>
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        Detected environment: {projectType.type} {projectType.framework ? `(${projectType.framework})` : ''}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-

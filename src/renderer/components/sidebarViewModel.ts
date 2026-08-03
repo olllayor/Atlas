@@ -6,6 +6,8 @@ export type SidebarConversationItem = {
   /** Which project's section the row belongs under; null means Recents. */
   projectId: string | null;
   isRunning: boolean;
+  /** The turn ended in an error the user has not seen yet. */
+  isFailed: boolean;
   status: DraftStateLike['status'] | 'idle';
   primaryLabel: string;
   secondaryLabel: string | null;
@@ -89,6 +91,23 @@ function parseTimestamp(timestamp: string | null | undefined) {
  * then month + year (`Mar 2025`). The old formatter degraded to `412d`,
  * which is both unreadable and wider than the slot it lives in.
  */
+/** Elapsed time for a live task: `12s`, `4m`, `1h 05m`. */
+export function formatElapsedSince(startedMs: number, now: number) {
+  const seconds = Math.max(0, Math.floor((now - startedMs) / 1000));
+
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
+}
+
 export function formatRelativeTimestamp(timestampMs: number | null, now: number) {
   if (timestampMs == null) {
     return null;
@@ -124,6 +143,26 @@ export function formatRelativeTimestamp(timestampMs: number | null, now: number)
   }
 
   return `${MONTHS[then.getMonth()]} ${then.getFullYear()}`;
+}
+
+/**
+ * `/Users/ada/Code/Atlas` → `~/Code/Atlas`.
+ *
+ * The renderer has no home directory to compare against, so the prefix is
+ * matched structurally — the two user roots every platform we ship on uses.
+ * Anything else (`/opt/src`, a network mount) passes through untouched rather
+ * than being guessed at.
+ */
+export function formatHomeRelativePath(root: string) {
+  const home =
+    /^\/(?:Users|home)\/[^/]+(?=\/|$)/.exec(root) ?? /^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/.exec(root);
+
+  if (!home) {
+    return root;
+  }
+
+  const rest = root.slice(home[0].length);
+  return rest ? `~${rest}` : '~';
 }
 
 function startOfDay(value: number) {
@@ -217,15 +256,29 @@ export function buildSidebarConversationItems({
       compactWhitespace(conversation.lastUserMessagePreview ?? '') ||
       compactWhitespace(conversation.lastMessagePreview ?? '');
     const timestampMs = parseTimestamp(draft?.startedAt ?? conversation.updatedAt);
+    // The draft is what this window is streaming right now; the persisted
+    // status is what a turn started before a reload — or in another window —
+    // left behind. The draft wins where both speak.
+    const isRunning = draft ? draft.status === 'streaming' : conversation.status === 'running';
+    const isFailed = draft ? draft.status === 'error' : conversation.status === 'failed';
+    const startedMs = isRunning
+      ? parseTimestamp(draft?.startedAt ?? conversation.startedAt ?? null)
+      : null;
 
     return {
       id: conversation.id,
       projectId: conversation.projectId,
-      isRunning: draft?.status === 'streaming',
+      isRunning,
+      isFailed,
       status: draft?.status ?? 'idle',
       primaryLabel,
       secondaryLabel: buildSecondaryLabel(conversation, draft, primaryLabel),
-      timestampLabel: formatRelativeTimestamp(timestampMs, now),
+      // A running task reports how long it has been going, which is the only
+      // number that changes while you watch it. Everything else reports age.
+      timestampLabel:
+        startedMs != null
+          ? formatElapsedSince(startedMs, now)
+          : formatRelativeTimestamp(timestampMs, now),
       timestampMs,
     };
   });

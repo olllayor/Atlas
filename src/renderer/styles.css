@@ -31,6 +31,9 @@
   --bg-overlay: #1a1e29;
   /* Opaque composer slab; themes without an opinion inherit the overlay. */
   --bg-composer: var(--bg-overlay);
+  /* The slab is borderless by default — dark themes separate it from the page
+     by tone alone. A light theme cannot: white on white needs the hairline. */
+  --border-composer: transparent;
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -94,6 +97,61 @@
   --diff-del-gutter-bg: transparent;
   --diff-gutter-fg: rgba(255, 255, 255, 0.4);
 
+  /*
+   * Terminal type.
+   *
+   * The size follows the app's own code-font setting — the Codex CLI takes the
+   * same position from the other end ("monospace only, inherits the user's
+   * terminal font; no font control exists in config",
+   * docs/codex-parity/research-raw.md §2.2), and a shell that ignores the
+   * setting every other code surface obeys is a shell that looks pasted in.
+   * A theme can still diverge by overriding `--term-font-size`.
+   *
+   * Leading is Codex's small-text rule — `line-height: font-size + 4px`
+   * (`--line-height-small`, §2.1) — expressed as the absolute term so it holds
+   * at every zoom step: 9px text gets the air it needs, 24px text does not get
+   * a gap you could park a line in.
+   */
+  --term-font-size: var(--code-font-size);
+  --term-leading-extra: 4px;
+
+  /*
+   * Terminal (xterm) palette.
+   *
+   * xterm.js takes literal colours, not custom properties, so `TerminalPanel`
+   * reads these once per theme change and hands them over as a theme object.
+   * They are declared here — in the contract, not in the component — so a
+   * theme file can restyle the shell the same way it restyles everything
+   * else.
+   *
+   * The 16 ANSI slots are tuned for a dark backdrop: every one of them clears
+   * 4.5:1 on `--bg-base`, because programs pick their own colours and a `red`
+   * that only *technically* renders is a red nobody can read.
+   */
+  --term-bg: var(--bg-base);
+  --term-fg: var(--text-secondary);
+  --term-cursor: var(--accent);
+  --term-cursor-accent: var(--bg-base);
+  --term-selection: rgba(255, 255, 255, 0.2);
+  --term-selection-inactive: rgba(255, 255, 255, 0.1);
+
+  --term-black: #4b5262;
+  --term-red: #ff6d78;
+  --term-green: #5dd68a;
+  --term-yellow: #f5c26b;
+  --term-blue: #7aa9ff;
+  --term-magenta: #c79bf5;
+  --term-cyan: #59d6d0;
+  --term-white: #d6dbe4;
+  --term-bright-black: #7b8497;
+  --term-bright-red: #ff9098;
+  --term-bright-green: #86e5a7;
+  --term-bright-yellow: #ffd894;
+  --term-bright-blue: #9dc0ff;
+  --term-bright-magenta: #dab6ff;
+  --term-bright-cyan: #7fe6e1;
+  --term-bright-white: #ffffff;
+
   /* Per-tool accent hues for the transcript timeline. */
   --tool-read: #60a5fa;
   --tool-search: #2dd4bf;
@@ -134,7 +192,14 @@
    */
   --font-ui-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
   --font-ui-family: var(--font-ui-system);
-  --font-mono-system: 'SF Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace;
+  /*
+   * Codex's own stack, in Codex's own order (`visualize.css:39-42`, quoted in
+   * docs/codex-parity/research-raw.md §2.1). `ui-monospace` leads deliberately:
+   * it resolves to the platform's optically-corrected UI mono (SF Mono on
+   * macOS, Cascadia/Consolas on Windows) rather than to whatever "SF Mono" a
+   * machine happens to have installed at whatever hinting.
+   */
+  --font-mono-system: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
 
@@ -462,6 +527,13 @@ select {
 *:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* The slab's own hairline. A border rather than a shadow so the squircle
+   corner-shape still applies, and transparent in every theme that separates
+   the composer from the page by tone. */
+.composer-slab {
+  border: 1px solid var(--border-composer);
 }
 
 /* Text fields always match :focus-visible, which would draw a ring inside
@@ -838,6 +910,21 @@ select {
   line-height: 1.55;
 }
 
+/*
+ * Terminal output — the transcript's command blocks and anything else that is
+ * a shell talking rather than source being read.
+ *
+ * Leading is Codex's small-text rule (`font-size + 4px`,
+ * docs/codex-parity/research-raw.md §2.1) rather than the 1.5-ish body ratio
+ * `.app-code-text` uses: a 40-line build log wants the lines to read as one
+ * stream, and prose leading pulls them apart into a list.
+ */
+.app-terminal-text {
+  font-family: var(--font-mono);
+  font-size: var(--term-font-size);
+  line-height: calc(var(--term-font-size) + var(--term-leading-extra));
+}
+
 .app-code-compact {
   font-family: var(--font-mono);
   font-size: calc(var(--code-font-size) - 2px);
@@ -872,6 +959,83 @@ select {
 
 .ui-text-size-minus-5 {
   font-size: calc(var(--ui-font-size) - 5px);
+}
+
+/* ============================================
+    Terminal (xterm)
+    ============================================ */
+
+/*
+ * A light backdrop flips the ANSI palette: the dark-theme colours are picked
+ * for legibility *on black* and turn to pastel mush on white. These are the
+ * GitHub light values, which every one of these hues was designed against.
+ *
+ * The selector is on `data-theme` alone rather than on a specific design
+ * theme, so a future light theme inherits a readable shell for free.
+ */
+[data-theme='light'] {
+  --term-selection: rgba(0, 0, 0, 0.16);
+  --term-selection-inactive: rgba(0, 0, 0, 0.08);
+
+  --term-black: #24292f;
+  --term-red: #cf222e;
+  --term-green: #1a7f37;
+  --term-yellow: #9a6700;
+  --term-blue: #0969da;
+  --term-magenta: #8250df;
+  --term-cyan: #1b7c83;
+  --term-white: #6e7781;
+  --term-bright-black: #57606a;
+  --term-bright-red: #a40e26;
+  --term-bright-green: #116329;
+  --term-bright-yellow: #7d4e00;
+  --term-bright-blue: #0550ae;
+  --term-bright-magenta: #6639ba;
+  --term-bright-cyan: #1b7c83;
+  --term-bright-white: #24292f;
+}
+
+/*
+ * xterm ships its own stylesheet; these rules only cover the chrome around
+ * the cell grid — the parts the theme object cannot reach.
+ */
+.atlas-terminal .xterm {
+  height: 100%;
+  padding: 0;
+}
+
+.atlas-terminal .xterm-viewport {
+  /* xterm hard-codes the viewport background, which then peeks out from
+     under the padding at the edge of the dock. */
+  background-color: transparent !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+  overscroll-behavior: contain;
+}
+
+.atlas-terminal .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.atlas-terminal .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.atlas-terminal .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.atlas-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-hover);
+}
+
+/* A link is only a link once you can tell — matches the transcript's rule. */
+.atlas-terminal .xterm-screen .xterm-link-layer a:hover,
+.atlas-terminal .xterm .xterm-underline-1 {
+  text-decoration-color: var(--accent);
 }
 
 /* ============================================
@@ -920,9 +1084,83 @@ select {
   cursor: pointer;
 }
 
-/* Translucent sidebar: the window vibrancy behind the page shows through
-   wherever --bg-panel is translucent. Without vibrancy (non-macOS or before
-   restart) the fallback tint keeps the sidebar legible. */
-:root[data-translucent-sidebar='true'] {
-  --bg-panel: color-mix(in srgb, var(--bg-base) 55%, transparent);
+/* ---- Translucent sidebar (macOS vibrancy) ----------------------------
+ *
+ * The sidebar paints through these two classes rather than a `bg-bg-panel`
+ * utility, because the translucency is applied to the *element* and not to
+ * the `--bg-panel` token. Retinting the token looked simpler and was broken
+ * twice over:
+ *
+ *   1. A background colour override writes `--bg-panel` inline on <html>
+ *      (see lib/themeOverrides.ts), and an inline custom property beats every
+ *      stylesheet rule — so the setting did nothing at all for anyone who had
+ *      picked a custom background.
+ *   2. `:root[data-translucent-sidebar='true']` (0,2,0) ties with the themes'
+ *      light blocks (`[data-theme='light'][data-design-theme='codex']`, also
+ *      0,2,0), and themes/*.css is imported *after* this file — so the token
+ *      lost on source order in every light theme.
+ *
+ * Painting the element also keeps the theme's own panel colour (codex ships a
+ * pure-black sidebar, #000) instead of substituting --bg-base, and leaves the
+ * other --bg-panel surfaces (the Settings rail) opaque, which is what they
+ * want: they sit inside an opaque page with no material behind them.
+ */
+.sidebar-surface,
+.sidebar-section-heading {
+  background: var(--bg-panel);
+}
+
+html[data-translucent-sidebar='true'] .sidebar-surface {
+  background: color-mix(in srgb, var(--bg-panel) 55%, transparent);
+}
+
+/*
+  Light themes need a denser tint than dark ones. macOS renders the sidebar
+  material as a light grey in light appearance, and 55% of a near-white panel
+  over light grey lands halfway between the two — the sidebar reads as a grey
+  slab rather than as white with the desktop faintly behind it. Dark keeps 55%
+  because black over a dark material stays black.
+*/
+html[data-translucent-sidebar='true'][data-theme='light'] .sidebar-surface {
+  background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
+}
+
+/*
+  Section headings pin to the top of the list so a long scroll always says
+  which run of rows you are in. That needs an opaque fill to hide the rows
+  passing under it — which is exactly what cannot exist inside a translucent
+  panel: any fill is a *second* layer over the panel's own, so the heading
+  reads as a grey slab sliding over glass. A denser tint plus a backdrop blur
+  was tried first and looked worse, not better: the blur resamples the
+  wallpaper and the heading came out a different colour from the panel around
+  it.
+
+  So translucency and pinning are mutually exclusive, and translucency wins
+  while it is on: the headings scroll away with their rows, one uniform sheet
+  of material and no slab. That is also how the reference sidebar behaves —
+  its headings are not pinned either.
+*/
+html[data-translucent-sidebar='true'] .sidebar-section-heading {
+  position: static;
+  background: transparent;
+}
+
+/*
+  Vibrancy is behind the *page*, so it only reaches the eye through pixels
+  nothing else has painted. `body` and the shell both fill themselves with
+  --bg-base, and either one alone is enough to hide the material completely —
+  which is why the setting appeared to do nothing but tint the sidebar.
+
+  `.app-shell` is worn by every two-column view that has a rail: the chat
+  shell, Settings and Sites. Each pairs a `.sidebar-surface` rail with a
+  content column that paints its own opaque --bg-base, so the rail is the only
+  hole left in the window — and the sidebar stays the same material wherever
+  you navigate instead of turning solid the moment you open Settings.
+
+  Views with no rail (onboarding, the landing page) keep their own opaque
+  --bg-base and are unaffected: there is no panel there to see through.
+*/
+html[data-translucent-sidebar='true'] body,
+html[data-translucent-sidebar='true'] .app-shell {
+  background: transparent;
 }

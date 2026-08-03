@@ -23,8 +23,10 @@ import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import { DEFAULT_TOOL_PERMISSION_MODE } from '../../../shared/chatParameters';
 import {
+  PLAN_TOOL_SYSTEM_PROMPT,
   TOOL_USE_SYSTEM_PROMPT,
   createBuiltInTools,
+  describeAgentInstructionsForPrompt,
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
@@ -81,9 +83,44 @@ export type ExecuteTurnResult = {
 type TurnState = {
   parts: ChatMessagePart[];
   lastTextPartId: string;
+  /**
+   * Bumped every time a tool call starts, and mixed into the id of the text
+   * and reasoning parts that follow.
+   *
+   * Providers are free to reuse one part id across the steps of a tool loop
+   * (several of the OpenRouter free models do). Without this, the text a model
+   * writes *after* a search appends to the part it wrote *before* the search,
+   * so the transcript shows one run-on paragraph with every tool row stranded
+   * below it — the model appears to have kept working after it answered. The
+   * step number makes each stretch of prose its own part, in the order it was
+   * actually produced.
+   */
+  stepIndex: number;
+  /** Tool calls already counted, so one call cannot bump the step twice. */
+  steppedToolCallIds: Set<string>;
   visualParser: VisualStreamParser;
   pendingApprovals: Map<string, PendingToolApproval>;
 };
+
+/**
+ * Namespace a provider's text/reasoning part id by the step it belongs to.
+ *
+ * Step 0 keeps the raw id so nothing about single-step turns changes — including
+ * the ids already written to the database.
+ */
+export function stepScopedPartId(partId: string, stepIndex: number) {
+  return stepIndex === 0 ? partId : `${partId}#${stepIndex}`;
+}
+
+/** Open a new step the first time a given tool call is seen. */
+function beginToolStep(turnState: Pick<TurnState, 'stepIndex' | 'steppedToolCallIds'>, toolCallId: string) {
+  if (turnState.steppedToolCallIds.has(toolCallId)) {
+    return;
+  }
+
+  turnState.steppedToolCallIds.add(toolCallId);
+  turnState.stepIndex += 1;
+}
 
 /**
  * Retries only ever fire before the first token reaches the user, so raising
@@ -520,12 +557,20 @@ export class ChatSessionRuntime {
     const basePrompt = siteToolsActive
       ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${SITE_TOOL_SYSTEM_PROMPT}`
       : TOOL_USE_SYSTEM_PROMPT;
+    // The project's own instructions go last, after the statements Atlas
+    // enforces: what the model may do is settled before anything a file on disk
+    // gets to say, and the block is bracketed so its edges are unambiguous.
+    const agentInstructionsPrompt = workspace.instructions
+      ? describeAgentInstructionsForPrompt(workspace.instructions)
+      : null;
     // Tell the model what it may actually do, so it does not plan around a tool
     // that was withheld from its tool set.
     const toolPrompt = [
       basePrompt,
+      PLAN_TOOL_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
-      describeToolPermissionsForPrompt(toolPermissionMode)
+      describeToolPermissionsForPrompt(toolPermissionMode),
+      ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
     const base = enableTools ? `${toolPrompt}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
     if (!contextAddendum) {
@@ -594,6 +639,8 @@ export class ChatSessionRuntime {
       const turnState: TurnState = {
         parts: [...(initialParts ?? [])],
         lastTextPartId: 'assistant-text',
+        stepIndex: 0,
+        steppedToolCallIds: new Set<string>(),
         visualParser: new VisualStreamParser(),
         pendingApprovals: new Map<string, PendingToolApproval>(),
       };
@@ -646,7 +693,7 @@ export class ChatSessionRuntime {
           signal,
           onChunk: (event) => {
             streamedAnyResponse = true;
-            turnState.lastTextPartId = event.id;
+            turnState.lastTextPartId = stepScopedPartId(event.id, turnState.stepIndex);
             this.applyParsedChunks(turnState, turnState.visualParser.feed(event.delta, requestId), requestId, emitEvent);
           },
           onReasoningChunk: (event) => {
@@ -656,7 +703,7 @@ export class ChatSessionRuntime {
               {
                 type: 'reasoning',
                 requestId,
-                id: event.id,
+                id: stepScopedPartId(event.id, turnState.stepIndex),
                 delta: event.delta,
               },
               emitEvent,
@@ -664,6 +711,7 @@ export class ChatSessionRuntime {
           },
           onToolInputStart: (event) => {
             streamedAnyResponse = true;
+            beginToolStep(turnState, event.toolCallId);
             this.applyEvent(turnState, { type: 'tool-input-start', requestId, ...event }, emitEvent);
           },
           onToolInputDelta: (event) => {
@@ -672,10 +720,14 @@ export class ChatSessionRuntime {
           },
           onToolInputAvailable: (event) => {
             streamedAnyResponse = true;
+            beginToolStep(turnState, event.toolCallId);
             this.applyEvent(turnState, { type: 'tool-input-available', requestId, ...event }, emitEvent);
           },
           onToolOutputAvailable: (event) => {
             streamedAnyResponse = true;
+            // Provider-executed tools (hosted web search) can surface only an
+            // output event, with no input phase to notice.
+            beginToolStep(turnState, event.toolCallId);
             this.applyEvent(turnState, { type: 'tool-output-available', requestId, ...event }, emitEvent);
           },
           onToolOutputError: (event) => {

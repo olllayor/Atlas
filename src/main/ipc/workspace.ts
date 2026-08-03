@@ -1,18 +1,47 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { shell } from 'electron/common';
 import { ipcMain } from 'electron/main';
 
-import type { EnvVarItem, ProjectContextInfo } from '../../shared/contracts';
+import type { AgentInstructionsSummary, EnvVarItem, ProjectContextInfo } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
+import type { AgentInstructionsResult, AgentInstructionsService } from '../workspace/AgentInstructions';
+import { generateStarterAgentsMd } from '../workspace/AgentInstructions';
 import type { EnvStore } from '../workspace/EnvStore';
 import type { ProjectDetector } from '../workspace/ProjectDetector';
 import { describeConversationWorkspace } from '../workspace/conversationWorkspace';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
 
+/**
+ * Paths and sizes for the menu, never the text: the instructions are already in
+ * the model's prompt, and a null summary is how the UI learns to offer creating
+ * the file instead of opening it.
+ */
+function summarizeAgentInstructions(instructions: AgentInstructionsResult): AgentInstructionsSummary | null {
+  if (instructions.sources.length === 0 && instructions.nestedPaths.length === 0) {
+    return null;
+  }
+
+  return {
+    sources: instructions.sources.map((source) => ({
+      path: source.path,
+      scope: source.scope,
+      bytes: source.bytes,
+      truncated: source.truncated
+    })),
+    nestedPaths: instructions.nestedPaths,
+    totalBytes: instructions.totalBytes,
+    truncated: instructions.truncated
+  };
+}
+
 export function registerWorkspaceIpc(
   db: AppDatabase,
   projectDetector: ProjectDetector,
-  envStore: EnvStore
+  envStore: EnvStore,
+  agentInstructions: AgentInstructionsService
 ) {
   ipcMain.handle(
     IPC_CHANNELS.workspaceContext,
@@ -29,7 +58,10 @@ export function registerWorkspaceIpc(
             projectType: { type: 'unknown' },
             envKeys: [],
             detectedEnvKeys: [],
-            mode: workspace.mode
+            mode: workspace.mode,
+            // Global instructions still apply to a conversation with no folder,
+            // and the turn is told about them, so the UI says so too.
+            agentInstructions: summarizeAgentInstructions(agentInstructions.getForRoot(null))
           };
         }
 
@@ -42,7 +74,8 @@ export function registerWorkspaceIpc(
           projectType,
           envKeys,
           detectedEnvKeys,
-          mode: workspace.mode
+          mode: workspace.mode,
+          agentInstructions: summarizeAgentInstructions(agentInstructions.getForRoot(project.root))
         };
       }
     )
@@ -77,6 +110,64 @@ export function registerWorkspaceIpc(
       async (event, projectId: string, key: string): Promise<void> => {
         assertTrustedSender(event);
         await envStore.deleteEnvVar(projectId, key);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceInstructionsOpen,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceInstructionsOpen,
+      async (event, conversationId: string, sourcePath: string): Promise<void> => {
+        assertTrustedSender(event);
+        const workspace = describeConversationWorkspace(db, conversationId);
+        const root = workspace.project?.exists ? workspace.project.root : null;
+        const known = agentInstructions.getForRoot(root);
+
+        // The renderer names a path, but only one the main process itself
+        // discovered — same rule as `ToolWorkspace.root`: a boundary the client
+        // can name is not a boundary, and this one ends in `shell.openPath`.
+        if (!known.sources.some((source) => source.path === sourcePath)) {
+          throw new Error('Not a loaded instruction file for this conversation.');
+        }
+
+        await shell.openPath(sourcePath);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceInstructionsInit,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceInstructionsInit,
+      async (event, conversationId: string): Promise<void> => {
+        assertTrustedSender(event);
+        const workspace = describeConversationWorkspace(db, conversationId);
+        const project = workspace.project?.exists ? workspace.project : null;
+
+        if (!project) {
+          throw new Error('Attach a project folder before creating AGENTS.md.');
+        }
+
+        // A deterministic skeleton rather than a generated description: there is
+        // no turn around this handler, and an invented account of a project
+        // nobody checked is worse than a form with blanks in it.
+        const path = join(project.root, 'AGENTS.md');
+        try {
+          // `wx` so an existing file is never clobbered by a menu click.
+          writeFileSync(path, generateStarterAgentsMd(project.title, projectDetector.detectProjectType(project.root)), {
+            encoding: 'utf8',
+            flag: 'wx'
+          });
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+            throw new Error('AGENTS.md already exists in this project.');
+          }
+          throw err;
+        }
+
+        agentInstructions.invalidate(project.root);
+        await shell.openPath(path);
       }
     )
   );

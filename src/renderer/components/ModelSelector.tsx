@@ -1,5 +1,5 @@
 // Aliased: bare `Image` would shadow the DOM constructor in this module.
-import { Check, ChevronDown, Image as ImageIcon } from 'lucide-react';
+import { Check, Image as ImageIcon } from 'lucide-react';
 import { useCallback, useMemo, useRef } from 'react';
 
 import {
@@ -120,7 +120,11 @@ export function ModelSelector({
               ref={triggerRef}
               type="button"
               disabled={disabled}
-              className="group flex h-9 min-w-0 max-w-[240px] items-center gap-1.5 rounded-full bg-bg-subtle px-3 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+              // Bare label, not a filled pill: in the reference the model is
+              // the quietest thing in the control row — a tinted chip plus a
+              // chevron made the least-changed setting the loudest. Hover and
+              // the open state still light the hit area.
+              className="group flex h-9 min-w-0 max-w-[240px] items-center gap-1.5 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={
                 selectedModel
                   ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${
@@ -130,8 +134,10 @@ export function ModelSelector({
               }
             >
               <span
-                className={`min-w-0 truncate ${
-                  selectedModel ? 'text-text-primary' : 'text-text-tertiary'
+                className={`min-w-0 truncate transition-colors ${
+                  selectedModel
+                    ? 'text-text-tertiary group-hover:text-text-primary group-data-[state=open]:text-text-primary'
+                    : 'text-text-tertiary'
                 }`}
               >
                 {chipLabel}
@@ -144,7 +150,6 @@ export function ModelSelector({
               {effortLabel ? (
                 <span className="shrink-0 text-text-tertiary">{effortLabel}</span>
               ) : null}
-              <ChevronDown className="size-3.5 shrink-0 text-text-tertiary transition-transform group-data-[state=open]:rotate-180" />
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>

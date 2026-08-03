@@ -61,6 +61,7 @@ export function resolveNewConversationProjectId(
 
 import type { FileChangeTracker } from './FileChangeTracker';
 import type { EnvStore } from './EnvStore';
+import type { AgentInstructionsService } from './AgentInstructions';
 import type { TerminalHistoryRepo } from '../db/repositories/terminalHistoryRepo';
 
 export function resolveConversationWorkspace(
@@ -69,6 +70,7 @@ export function resolveConversationWorkspace(
   options?: {
     fileChangeTracker?: FileChangeTracker;
     envStore?: EnvStore;
+    agentInstructions?: AgentInstructionsService;
     terminalHistory?: TerminalHistoryRepo;
     onAgentCommand?: (command: string, exitCode: number | null) => void;
   }
@@ -82,6 +84,17 @@ export function resolveConversationWorkspace(
     root,
     projectId
   };
+
+  // AGENTS.md is re-read every turn through an mtime-revalidated cache, so a
+  // file the agent just edited applies to its next turn. A root with nothing to
+  // say is left off the workspace entirely rather than carried as an empty
+  // object, which is what the prompt builder tests for.
+  if (options?.agentInstructions) {
+    const instructions = options.agentInstructions.getForRoot(root);
+    if (instructions.text || instructions.nestedPaths.length > 0) {
+      toolWorkspace.instructions = instructions;
+    }
+  }
 
   // Project env vars are read from the in-memory cache: this resolver runs on
   // the synchronous turn-setup path, and the keychain read that fills the cache

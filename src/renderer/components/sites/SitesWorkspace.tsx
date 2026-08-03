@@ -1,5 +1,4 @@
 import {
-  ArrowLeftIcon,
   DotsHorizontalIcon,
   ExternalLinkIcon,
   PlusIcon,
@@ -35,6 +34,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import { RailBackButton, RailSectionLabel } from '../railPrimitives';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 type RightPanelTab = 'preview' | 'review' | 'versions';
@@ -177,8 +177,8 @@ function SiteListPanel({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className={LABEL_CLASS}>Sites</span>
+      <div className="flex items-center justify-between px-3 pb-1.5 pt-5">
+        <RailSectionLabel>Sites</RailSectionLabel>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -194,11 +194,11 @@ function SiteListPanel({
         </Tooltip>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3 scroll-container">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 scroll-container">
         {isLoading && sites.length === 0 ? (
-          <div className="px-2 py-3 text-xs text-text-faint">Loading…</div>
+          <div className="px-2 py-3 text-sm text-text-faint">Loading…</div>
         ) : sites.length === 0 ? (
-          <div className="px-2 py-3 text-xs leading-5 text-text-faint">
+          <div className="px-2 py-3 text-sm leading-5 text-text-faint">
             No sites yet. Create one here, or ask the assistant to build a site in chat.
           </div>
         ) : (
@@ -207,13 +207,13 @@ function SiteListPanel({
               key={site.id}
               type="button"
               onClick={() => onSelect(site.id)}
-              className={`flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-2 text-left transition ${
+              className={`flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors ${
                 site.id === selectedSiteId
-                  ? 'bg-bg-hover text-text-primary'
+                  ? 'bg-bg-active font-medium text-text-primary'
                   : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
               }`}
             >
-              <span className="w-full truncate text-sm">{site.title}</span>
+              <span className="w-full truncate text-md">{site.title}</span>
               <span className="text-2xs text-text-faint">
                 {STATUS_LABEL[site.status] ?? site.status} · {formatTimestamp(site.updatedAt)}
               </span>
@@ -710,20 +710,22 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      <aside className="flex w-sidebar-width shrink-0 flex-col border-r border-border-subtle bg-bg-base">
+    <div className="app-shell flex h-screen overflow-hidden bg-bg-base text-text-primary">
+      {/*
+        Same rail contract as the chat shell and Settings: `--bg-panel`, no
+        right border (the colour change is the boundary), no rule under the
+        drag strip. This one used to paint `--bg-base` behind a hairline, so
+        Sites was the one place the sidebar changed colour under you.
+      */}
+      <aside className="sidebar-surface flex w-sidebar-width shrink-0 flex-col">
         <div
-          className="h-titlebar-height shrink-0 border-b border-border-subtle"
+          className="h-titlebar-height shrink-0"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         />
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
-        >
-          <ArrowLeftIcon className="h-4 w-4 shrink-0" />
-          Back to chat
-        </button>
+        {/* Padded to the same gutter as the list below it, as in Settings. */}
+        <div className="px-3">
+          <RailBackButton label="Back to chat" onClick={onBack} />
+        </div>
         <SiteListPanel
           sites={sites}
           selectedSiteId={selectedSiteId}
@@ -735,7 +737,9 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header
-          className="titlebar-overlay-safe flex h-titlebar-height shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-4"
+          // Borderless, like the chat and Settings headers: the reference
+          // header floats over the content background (spec §1).
+          className="titlebar-overlay-safe flex h-titlebar-height shrink-0 items-center justify-between gap-3 px-4"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         >
           <div className="min-w-0" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>

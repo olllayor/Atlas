@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
+import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
 
 /**
  * Where a turn's tools run, resolved in the main process from the conversation
@@ -17,6 +18,15 @@ export type ToolWorkspace = {
   projectId?: string | null;
   /** Project-specific environment variables to pass to sub-processes */
   env?: Record<string, string>;
+  /**
+   * Merged AGENTS.md instructions for this root, resolved in the main process.
+   *
+   * It rides on the workspace rather than on the request because both the send
+   * path and the context meter build their prompt from the same resolved
+   * workspace, and a number that disagrees with what was sent is worse than no
+   * number at all.
+   */
+  instructions?: AgentInstructionsResult;
   /** Callback fired when the agent runs a shell command, for terminal history. */
   onCommandRun?: (command: { command: string; exitCode: number | null }) => void;
   /** Callback fired when write_file or edit_file modifies a file */

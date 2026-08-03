@@ -9,6 +9,7 @@ const EMPTY: ProjectContextInfo = {
   envKeys: [],
   detectedEnvKeys: [],
   mode: DEFAULT_WORKSPACE_MODE,
+  agentInstructions: null,
 };
 
 /**

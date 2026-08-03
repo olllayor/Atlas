@@ -8,6 +8,7 @@ import { RequestTimeoutError } from '../src/main/ai/core/ErrorNormalizer.js';
 import { VISUAL_PROMPT } from '../src/main/ai/core/VISUAL_PROMPT.js';
 import { TOOL_USE_SYSTEM_PROMPT } from '../src/main/ai/tools/builtInTools.js';
 import type { ProviderAdapter } from '../src/main/ai/core/ProviderAdapter.js';
+import type { ToolWorkspace } from '../src/main/ai/tools/toolWorkspace.js';
 import type { ChatMessagePart, ChatStartRequest, StreamEvent } from '../src/shared/contracts.js';
 
 function createRequest(overrides: Partial<ChatStartRequest> = {}): ChatStartRequest {
@@ -43,6 +44,7 @@ function createRuntime(options: {
   apiKey?: string | null;
   addMessage?: (input: Record<string, unknown>) => string;
   runtimeHints?: Record<string, unknown>;
+  workspace?: ToolWorkspace;
 }) {
   const history = options.history ?? [];
   const addMessageCalls: Array<Record<string, unknown>> = [];
@@ -75,9 +77,35 @@ function createRuntime(options: {
     modelsRepo as never,
     keychain as never,
     providers as never,
+    undefined,
+    null,
+    options.workspace ? () => options.workspace as ToolWorkspace : undefined,
   );
 
   return { runtime, addMessageCalls };
+}
+
+/** A workspace carrying the instructions the main process would have loaded. */
+function workspaceWithInstructions(): ToolWorkspace {
+  const source = {
+    path: '/tmp/atlas/AGENTS.md',
+    scope: 'project' as const,
+    bytes: 42,
+    truncated: false,
+  };
+
+  return {
+    mode: 'code',
+    root: '/tmp/atlas',
+    instructions: {
+      text: 'Always run pnpm test before claiming a change works.',
+      segments: [{ source, text: 'Always run pnpm test before claiming a change works.' }],
+      sources: [source],
+      nestedPaths: ['packages/ui/AGENTS.md'],
+      totalBytes: 42,
+      truncated: false,
+    },
+  };
 }
 
 test('ChatSessionRuntime preserves current history and omits tools when disabled', async () => {
@@ -278,6 +306,53 @@ test('ChatSessionRuntime normalizes streamed text, reasoning, tool, and visual e
     assert.deepEqual(toolPart.input, { query: 'glm' });
     assert.deepEqual(toolPart.output, { models: [] });
   }
+});
+
+test('text written after a tool call becomes its own part, in call order', async () => {
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      // A provider that reuses one text-part id across the steps of a tool
+      // loop — several OpenRouter free models do exactly this.
+      request.onChunk({ id: 'msg-0', delta: 'Let me search. ' });
+      request.onToolInputStart?.({ toolCallId: 'tool-1', toolName: 'search_model_catalog' });
+      request.onToolOutputAvailable?.({
+        toolCallId: 'tool-1',
+        toolName: 'search_model_catalog',
+        input: { query: 'glm' },
+        output: { models: [] },
+      });
+      request.onChunk({ id: 'msg-0', delta: 'Nothing found.' });
+
+      return {
+        content: 'ignored',
+        responseMessages: [{ role: 'assistant', content: 'ignored' }],
+        latencyMs: 12,
+      };
+    },
+  };
+
+  const { runtime, addMessageCalls } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-step-scope',
+    request: createRequest({ enableTools: true }),
+    signal: new AbortController().signal,
+    emitEvent: () => {},
+  });
+
+  const parts = (addMessageCalls[0]?.parts as ChatMessagePart[] | undefined) ?? [];
+  assert.deepEqual(
+    parts.map((part) => part.type),
+    ['text', 'tool', 'text'],
+    'the second stretch of prose must not append to the first one'
+  );
+  assert.equal(parts[0]?.type === 'text' ? parts[0].text : null, 'Let me search. ');
+  assert.equal(parts[2]?.type === 'text' ? parts[2].text : null, 'Nothing found.');
 });
 
 test('ChatSessionRuntime falls back to message parts when provider returns content without stream events', async () => {
@@ -756,7 +831,10 @@ test('ChatSessionRuntime clears approval gating in full-access mode', async () =
     emitEvent: () => undefined,
   });
 
-  assert.equal(capturedTools?.bash?.needsApproval, false);
+  assert.equal(capturedTools?.web_fetch?.needsApproval, false);
+  // bash keeps a per-call check so a request to run outside the OS sandbox
+  // still pauses; everything else about it runs unattended.
+  assert.equal(typeof capturedTools?.bash?.needsApproval, 'function');
 });
 
 test('ChatSessionRuntime defaults to asking for approval when no mode is sent', async () => {
@@ -788,6 +866,106 @@ test('ChatSessionRuntime defaults to asking for approval when no mode is sent', 
   });
 
   assert.equal(capturedTools?.bash?.needsApproval, true);
+});
+
+test('ChatSessionRuntime ships AGENTS.md instructions in a bracketed, advisory block', async () => {
+  let capturedSystem: string | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedSystem = request.system;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, workspace: workspaceWithInstructions() });
+
+  await runtime.executeTurn({
+    requestId: 'request-agent-instructions',
+    request: createRequest({ enableTools: true }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.ok(capturedSystem?.includes('=== PROJECT INSTRUCTIONS'));
+  assert.ok(capturedSystem?.includes('=== END PROJECT INSTRUCTIONS ==='));
+  assert.ok(capturedSystem?.includes('Always run pnpm test before claiming a change works.'));
+  // Nested files are named, never inlined, so the model knows to read them.
+  assert.ok(capturedSystem?.includes('packages/ui/AGENTS.md'));
+  // The enforcement statements come first; the project's own text comes last.
+  assert.ok(
+    (capturedSystem?.indexOf('Code mode is active') ?? -1) <
+      (capturedSystem?.indexOf('=== PROJECT INSTRUCTIONS') ?? -1),
+  );
+});
+
+test('ChatSessionRuntime omits AGENTS.md instructions on a turn without tools', async () => {
+  let capturedSystem: string | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedSystem = request.system;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, workspace: workspaceWithInstructions() });
+
+  await runtime.executeTurn({
+    requestId: 'request-agent-instructions-no-tools',
+    request: createRequest({ enableTools: false }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(capturedSystem?.includes('=== PROJECT INSTRUCTIONS'), false);
+});
+
+test('the context meter counts the AGENTS.md instructions the turn will send', async () => {
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      return { content: 'ok', responseMessages: [], latencyMs: 1 };
+    },
+  };
+
+  const withoutInstructions = createRuntime({ provider }).runtime.measureContextUsage({
+    conversationId: 'conversation-1',
+    modelId: 'openrouter/test-model',
+    enableTools: true,
+  });
+  const withInstructions = createRuntime({
+    provider,
+    workspace: workspaceWithInstructions(),
+  }).runtime.measureContextUsage({
+    conversationId: 'conversation-1',
+    modelId: 'openrouter/test-model',
+    enableTools: true,
+  });
+
+  assert.ok(withInstructions.systemTokens > withoutInstructions.systemTokens);
 });
 
 test('ChatSessionRuntime forwards the requested reasoning effort to the provider', async () => {

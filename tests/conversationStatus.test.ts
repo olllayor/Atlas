@@ -80,6 +80,9 @@ function summary(overrides: Partial<ConversationSummary>): ConversationSummary {
     projectId: null,
     toolPermissionMode: 'ask',
     status: 'idle',
+    changeStats: { fileCount: 0, linesAdded: 0, linesRemoved: 0 },
+    pinnedAt: null,
+    archivedAt: null,
     ...overrides
   };
 }

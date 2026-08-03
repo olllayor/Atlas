@@ -1,4 +1,9 @@
-import type { ConversationSummary, WorkspaceProject } from '../../shared/contracts';
+import type {
+  ConversationChangeStats,
+  ConversationSummary,
+  WorkspaceProject,
+  WorkspaceMode,
+} from '../../shared/contracts';
 import type { DraftStateLike } from './types';
 
 export type SidebarConversationItem = {
@@ -14,6 +19,30 @@ export type SidebarConversationItem = {
   timestampLabel: string | null;
   /** Epoch ms of the row's timestamp, or null when it is unparseable. */
   timestampMs: number | null;
+  /**
+   * What the chat can do — the one property of a chat that is invisible from
+   * the list and changes what the next message is allowed to touch. Read by the
+   * hover card; the row itself stays one line.
+   *
+   * Nullable because a summary written before modes existed carries none, and a
+   * card that guesses "Work" at a Code chat is worse than a card that says
+   * nothing.
+   */
+  workspaceMode: WorkspaceMode | null;
+  /** Raw provider spelling (`vendor/deepseek-v4-flash`) — tooltip material. */
+  modelId: string | null;
+  /**
+   * What the chat did to the working tree. Read by the hover card, which is the
+   * only place a row can say whether it wrote forty files or answered a
+   * question — until now every row looked identical either way.
+   *
+   * Not nullable, unlike `workspaceMode`: a mode that was never recorded has
+   * nothing truthful to render, but "changed nothing" is a fact, and zeros say
+   * it. Callers branch on `fileCount === 0`, never on the field being absent.
+   */
+  changeStats: ConversationChangeStats;
+  /** When the chat was pinned, or null. Orders the Pinned section. */
+  pinnedAt: string | null;
 };
 
 export type SidebarConversationGroup = {
@@ -143,6 +172,122 @@ export function formatRelativeTimestamp(timestampMs: number | null, now: number)
   }
 
   return `${MONTHS[then.getMonth()]} ${then.getFullYear()}`;
+}
+
+/**
+ * The minus the transcript's changed-files bar already uses (U+2212). An ASCII
+ * hyphen renders a third of the height of the `+` beside it, so a diff written
+ * with one reads as `+240 -18` with a speck where the minus should be.
+ */
+const CHANGE_MINUS = '−';
+
+const NO_CHANGE_STATS: ConversationChangeStats = {
+  fileCount: 0,
+  linesAdded: 0,
+  linesRemoved: 0,
+};
+
+export type ConversationChangeStatsLabel = {
+  /** `1 file` · `12 files`. */
+  files: string;
+  /** `+240`, or null when nothing was added. */
+  added: string | null;
+  /** `−18`, or null when nothing was removed. */
+  removed: string | null;
+  /** Long form for a `title`: exact, ungrouped-free, and never compacted. */
+  detail: string;
+};
+
+function normalizeCount(value: number | null | undefined) {
+  // A negative or NaN count can only come from a malformed row, and a card
+  // reading `+NaN` is a worse bug report than a card reading `+0`.
+  return Number.isFinite(value) && (value as number) > 0 ? Math.floor(value as number) : 0;
+}
+
+/** `1204` → `1,204`. Hand-rolled: see `formatChangeCount`. */
+function groupThousands(value: number) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * A line count that survives a 256px card: `240` · `1,204` · `12.5k` · `1.4M`.
+ *
+ * Exact up to four digits, then compacted. A raw `+12480` is both unreadable
+ * and — next to `−9812` — impossible to compare at a glance, which is the only
+ * thing the row is for. The exact numbers are not lost: they are the row's
+ * tooltip.
+ *
+ * Grouping is done by hand rather than with `toLocaleString`, which renders
+ * `12 480` (narrow no-break space) under a French locale and `12.480` under a
+ * German one — a separator that changes both the width and the meaning of the
+ * string depending on who is looking at it.
+ */
+export function formatChangeCount(value: number) {
+  const count = normalizeCount(value);
+
+  if (count < 1_000) {
+    return String(count);
+  }
+
+  if (count < 10_000) {
+    return groupThousands(count);
+  }
+
+  // Below 100 units keep one decimal (`12.5k`); above it the decimal is noise
+  // (`124.3k` is no more useful than `124k` and is two characters wider).
+  const compact = (scaled: number, suffix: string) => {
+    const rounded = scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+    return `${rounded}${suffix}`;
+  };
+
+  // 999_500 rather than 1_000_000: anything above it rounds to `1000k`, which
+  // is a unit that should have carried.
+  return count < 999_500 ? compact(count / 1_000, 'k') : compact(count / 1_000_000, 'M');
+}
+
+/**
+ * `12 files · +240 −18`, or null when the chat never touched the filesystem.
+ *
+ * Returned in pieces, not as one string: the two counts are coloured as a diff
+ * by the caller, and a pre-joined string would force the card to re-parse its
+ * own label to do that.
+ *
+ * Three judgement calls, all of them about not printing noise:
+ *
+ * - The count stays at `1 file` rather than collapsing to `file`. Every other
+ *   row in the sidebar shows a number in that position, and a row that drops it
+ *   for the singular breaks the column the eye is scanning down.
+ * - A zero side is dropped entirely instead of rendering `−0`. `+240` already
+ *   says nothing was removed; `+240 −0` says we measured a removal and it came
+ *   back zero, which is a different and untrue claim.
+ * - Files with no line counts at all (an empty file created, a pure rename)
+ *   render as `3 files` alone. Following rule four one level down: a count that
+ *   is only ever zero is a row that only ever wastes a line.
+ */
+export function formatConversationChangeStats(
+  stats: ConversationChangeStats | null | undefined
+): ConversationChangeStatsLabel | null {
+  const fileCount = normalizeCount(stats?.fileCount);
+
+  if (fileCount === 0) {
+    return null;
+  }
+
+  const linesAdded = normalizeCount(stats?.linesAdded);
+  const linesRemoved = normalizeCount(stats?.linesRemoved);
+  const files = `${groupThousands(fileCount)} ${fileCount === 1 ? 'file' : 'files'}`;
+
+  return {
+    files,
+    added: linesAdded > 0 ? `+${formatChangeCount(linesAdded)}` : null,
+    removed: linesRemoved > 0 ? `${CHANGE_MINUS}${formatChangeCount(linesRemoved)}` : null,
+    detail:
+      linesAdded === 0 && linesRemoved === 0
+        ? `${files} changed`
+        : `${files} changed, ${groupThousands(linesAdded)} lines added, ${groupThousands(
+            linesRemoved
+          )} removed`,
+  };
 }
 
 /**
@@ -280,7 +425,55 @@ export function buildSidebarConversationItems({
           ? formatElapsedSince(startedMs, now)
           : formatRelativeTimestamp(timestampMs, now),
       timestampMs,
+      workspaceMode: conversation.workspaceMode ?? null,
+      modelId: conversation.defaultModelId ?? null,
+      // The contract promises zeros rather than null, but the sidebar also
+      // renders summaries that were cached before the column existed; falling
+      // back here keeps that one row from reading `undefined files`.
+      changeStats: conversation.changeStats ?? NO_CHANGE_STATS,
+      pinnedAt: conversation.pinnedAt ?? null,
     };
+  });
+}
+
+/**
+ * Lift pinned chats out of the list into their own section, newest pin first.
+ *
+ * They are *moved*, not copied: the reference sidebar has one row per chat, and
+ * a pinned chat that also sits in its project section reads as two chats with
+ * the same name until you click one.
+ */
+export function splitPinnedSidebarItems(items: SidebarConversationItem[]) {
+  const pinned: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    (item.pinnedAt ? pinned : rest).push(item);
+  }
+
+  pinned.sort((left, right) => (right.pinnedAt ?? '').localeCompare(left.pinnedAt ?? ''));
+
+  return { pinned, rest };
+}
+
+/**
+ * Pinned projects float to the top of the Projects list, newest pin first.
+ *
+ * Unlike chats they keep their section rather than moving into Pinned: a
+ * project *is* its chats, and lifting the header away from them would leave the
+ * chats orphaned under a header that moved.
+ */
+export function sortProjectsByPin(projects: WorkspaceProject[]) {
+  return [...projects].sort((left, right) => {
+    if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) {
+      return left.pinnedAt ? -1 : 1;
+    }
+
+    if (left.pinnedAt && right.pinnedAt) {
+      return right.pinnedAt.localeCompare(left.pinnedAt);
+    }
+
+    return 0;
   });
 }
 

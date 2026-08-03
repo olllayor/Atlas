@@ -257,6 +257,9 @@ export async function editFileToolExecute(
 
 export async function runGit(args: string[], workspace: ToolWorkspace | undefined) {
   const cwd = resolveWorkspaceCwd(workspace);
+  // Deliberately unsandboxed: the argv is built here rather than by the model,
+  // and these commands exist to write `.git`, which the bash sandbox protects.
+  // The approval ladder is what gates them.
   const result = await runCommand('git', args, { cwd, timeoutMs: 20_000 });
 
   if (result.code !== 0) {

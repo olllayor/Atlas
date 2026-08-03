@@ -3,6 +3,10 @@ import test from 'node:test';
 
 import { resolveConversationWorkspace } from '../src/main/workspace/conversationWorkspace.js';
 import type { WorkspaceDatabase } from '../src/main/workspace/conversationWorkspace.js';
+import type {
+  AgentInstructionsResult,
+  AgentInstructionsService
+} from '../src/main/workspace/AgentInstructions.js';
 import type { EnvStore } from '../src/main/workspace/EnvStore.js';
 import type { FileChangeTracker } from '../src/main/workspace/FileChangeTracker.js';
 import type { TerminalHistoryRepo } from '../src/main/db/repositories/terminalHistoryRepo.js';
@@ -27,6 +31,29 @@ function makeDatabase(mode: 'work' | 'code' = 'code'): WorkspaceDatabase {
       get: (id: string) => (id === PROJECT.id ? PROJECT : null)
     }
   } as unknown as WorkspaceDatabase;
+}
+
+function makeAgentInstructions(roots: Array<string | null>) {
+  const result: AgentInstructionsResult = {
+    text: 'Project rule: run pnpm test.',
+    segments: [
+      {
+        source: { path: `${PROJECT.root}/AGENTS.md`, scope: 'project', bytes: 27, truncated: false },
+        text: 'Project rule: run pnpm test.'
+      }
+    ],
+    sources: [{ path: `${PROJECT.root}/AGENTS.md`, scope: 'project', bytes: 27, truncated: false }],
+    nestedPaths: [],
+    totalBytes: 27,
+    truncated: false
+  };
+
+  return {
+    getForRoot: (root: string | null) => {
+      roots.push(root);
+      return result;
+    }
+  } as unknown as AgentInstructionsService;
 }
 
 test('project env vars reach the tool workspace so child processes inherit them', () => {
@@ -92,6 +119,34 @@ test('a failing history write still lets the terminal echo run', () => {
   workspace.onCommandRun?.({ command: 'ls', exitCode: 0 });
 
   assert.deepEqual(echoed, ['ls']);
+});
+
+test('AGENTS.md instructions reach the tool workspace for the resolved root', () => {
+  const roots: Array<string | null> = [];
+
+  const workspace = resolveConversationWorkspace(makeDatabase(), 'conversation-1', {
+    agentInstructions: makeAgentInstructions(roots)
+  });
+
+  assert.deepEqual(roots, [PROJECT.root]);
+  assert.equal(workspace.instructions?.text, 'Project rule: run pnpm test.');
+});
+
+test('a resolver with no instructions service leaves the workspace without any', () => {
+  const workspace = resolveConversationWorkspace(makeDatabase(), 'conversation-1');
+
+  assert.equal(workspace.instructions, undefined);
+});
+
+test('work mode with a project attached still gets the project instructions', () => {
+  const roots: Array<string | null> = [];
+
+  const workspace = resolveConversationWorkspace(makeDatabase('work'), 'conversation-1', {
+    agentInstructions: makeAgentInstructions(roots)
+  });
+
+  assert.deepEqual(roots, [PROJECT.root]);
+  assert.equal(workspace.instructions?.sources.length, 1);
 });
 
 test('file changes are recorded against the conversation that produced them', () => {

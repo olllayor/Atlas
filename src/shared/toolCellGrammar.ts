@@ -14,6 +14,7 @@
  */
 
 import type { CanonicalToolType, ChatToolPart, ChatToolState } from './contracts';
+import { isPlanToolPart } from './planTool';
 
 /** Head/tail line budget for an agent tool call's output block. */
 export const TOOL_OUTPUT_MAX_LINES = 5;
@@ -689,6 +690,14 @@ export function buildToolCells(parts: ChatToolPart[]): ToolCell[] {
   };
 
   for (const part of parts) {
+    // The plan renders as its own checklist cell, and this function is called
+    // with unfiltered part lists (the row-height estimator, the workbench), so
+    // the exclusion belongs here rather than only at the transcript's grouping
+    // step — otherwise a stray `Called update_plan` row appears beside it.
+    if (isPlanToolPart(part)) {
+      continue;
+    }
+
     const coalescable =
       toolCellKind(part) === 'explore' && toolCellStatus(part.state) !== 'awaiting-approval';
 

@@ -185,6 +185,40 @@ describe('buildToolCells', () => {
     assert.deepEqual(detail.entries[0].values, ['a.ts', 'b.ts', 'c.ts']);
   });
 
+  it('produces no cell for an update_plan call', () => {
+    // The plan has its own checklist cell; a generic `Called update_plan` row
+    // beside it would show the same event twice.
+    const cells = buildToolCells([
+      toolPart({
+        id: 'p1',
+        toolName: 'update_plan',
+        input: { plan: [{ step: 'Read the code', status: 'in_progress' }] },
+        output: { message: 'Plan updated.' },
+      }),
+    ]);
+
+    assert.equal(cells.length, 0);
+  });
+
+  it('excludes update_plan from a mixed run', () => {
+    const cells = buildToolCells([
+      toolPart({ id: 'r1', toolName: 'read_file', input: { path: 'src/a.ts' }, output: '' }),
+      toolPart({ id: 'p1', toolName: 'update_plan', input: { plan: [] }, output: '' }),
+      toolPart({
+        id: 'c1',
+        toolName: 'bash',
+        toolType: 'command_execution',
+        input: { command: 'pnpm test' },
+        output: 'ok',
+      }),
+    ]);
+
+    assert.deepEqual(
+      cells.map((cell) => cell.kind),
+      ['explore', 'command']
+    );
+  });
+
   it('deduplicates repeated read targets', () => {
     const cells = buildToolCells([
       toolPart({ id: 'r1', toolName: 'read_file', input: { path: 'src/a.ts' }, output: '' }),

@@ -27,6 +27,7 @@ export type * from './mentions';
 export type * from './customProviders';
 export type * from './chatParameters';
 export type * from './workspaceModes';
+export type * from './planTool';
 
 import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
 import type { WorkspaceMode } from './workspaceModes';
@@ -49,6 +50,8 @@ export type WorkspaceProject = {
   createdAt: string;
   updatedAt: string;
   lastUsedAt: string | null;
+  /** When the project was pinned, or null. Pinned projects sort above the rest. */
+  pinnedAt: string | null;
 };
 
 export type CreateWorkspaceProjectRequest = {
@@ -66,12 +69,26 @@ export type ProjectTypeInfo = {
   entryFile?: string;
 };
 
+/**
+ * What the main process loaded from AGENTS.md for this conversation. Paths and
+ * sizes only — the text itself belongs in the system prompt, not in a renderer
+ * the user would then be reading twice.
+ */
+export type AgentInstructionsSummary = {
+  sources: Array<{ path: string; scope: 'global' | 'project'; bytes: number; truncated: boolean }>;
+  nestedPaths: string[];
+  totalBytes: number;
+  truncated: boolean;
+};
+
 export type ProjectContextInfo = {
   project: WorkspaceProject | null;
   projectType: ProjectTypeInfo;
   envKeys: string[];
   detectedEnvKeys: string[];
   mode: WorkspaceMode;
+  /** Null when no instruction file was found at either scope. */
+  agentInstructions: AgentInstructionsSummary | null;
 };
 
 export type EnvVarItem = {
@@ -138,6 +155,9 @@ export type FileChangeRecord = {
   diffText: string;
   status: FileChangeStatus;
   toolCallId: string | null;
+  /** Counted from `diffText` when the change was recorded, never at read time. */
+  linesAdded: number;
+  linesRemoved: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -602,6 +622,19 @@ export type SettingsSummary = {
 
 export type ConversationStatus = 'idle' | 'running' | 'completed' | 'failed' | 'queued';
 
+/**
+ * The file-change footprint of one conversation, as `12 files · +240 −18`.
+ *
+ * Reverted changes are left out: the point of the line is what the session left
+ * behind, and a change that was taken back left nothing.
+ */
+export type ConversationChangeStats = {
+  /** Distinct files touched — editing one file twice is still one file. */
+  fileCount: number;
+  linesAdded: number;
+  linesRemoved: number;
+};
+
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -620,6 +653,20 @@ export type ConversationSummary = {
   lastError?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  /**
+   * What this conversation did to the working tree, in one glance. Always
+   * present — a chat that changed nothing reports zeros rather than null, so no
+   * caller has to distinguish "no edits" from "not loaded".
+   */
+  changeStats: ConversationChangeStats;
+  /** When the chat was pinned, or null. Orders the sidebar's pinned section. */
+  pinnedAt: string | null;
+  /**
+   * When the chat was archived, or null. Archived chats are absent from the
+   * default listing, so this is only ever non-null on a row fetched by id or
+   * with `includeArchived`.
+   */
+  archivedAt: string | null;
 };
 
 export type ChatMessage = {
@@ -650,6 +697,8 @@ export type ConversationDetail = {
     defaultModelId: string | null;
     workspaceMode: WorkspaceMode;
     projectId: string | null;
+    pinnedAt: string | null;
+    archivedAt: string | null;
   };
   messages: ChatMessage[];
 };
@@ -668,6 +717,68 @@ export type CreateConversationRequest = {
 export type SetConversationToolPermissionModeRequest = {
   conversationId: string;
   toolPermissionMode: ToolPermissionMode;
+};
+
+export type ListConversationsRequest = {
+  /**
+   * Include archived chats. Omitted behaves exactly like the listing did before
+   * archive existed, so no caller has to be updated to keep its current view.
+   */
+  includeArchived?: boolean;
+};
+
+export type SetConversationPinnedRequest = {
+  conversationId: string;
+  pinned: boolean;
+};
+
+export type SetConversationArchivedRequest = {
+  conversationId: string;
+  archived: boolean;
+};
+
+export type SearchMessagesRequest = {
+  /**
+   * Raw user input. It is never handed to the search engine as written — see
+   * `toFtsMatchExpression` — so `"`, `*` and `NEAR` are ordinary characters
+   * here, not a syntax error waiting to be typed.
+   */
+  query: string;
+  /** Hits to return, clamped to `MESSAGE_SEARCH_MAX_LIMIT`. Default 50. */
+  limit?: number;
+  /** Mirrors `ListConversationsRequest`: archived chats are out of sight until asked for. */
+  includeArchived?: boolean;
+};
+
+/**
+ * The matched span inside `MessageSearchHit.snippet` is wrapped in this pair.
+ *
+ * They are Private Use Area code points rather than `<mark>` tags because the
+ * rest of the snippet is whatever the user or model typed: with markup as the
+ * marker, a message containing the literal text `<mark>` would be
+ * indistinguishable from a real highlight. Split on them, never inject them.
+ */
+export const MESSAGE_SEARCH_MATCH_OPEN = '\uE000';
+export const MESSAGE_SEARCH_MATCH_CLOSE = '\uE001';
+
+/** Hard ceiling on hits, so a one-letter query cannot drag the whole history through IPC. */
+export const MESSAGE_SEARCH_MAX_LIMIT = 100;
+
+export type MessageSearchHit = {
+  conversationId: string;
+  /** Carried along so a result row can name its chat without a second lookup. */
+  conversationTitle: string;
+  messageId: string;
+  role: MessageRole;
+  /**
+   * A window of the message around the match, with the matched terms wrapped in
+   * `MESSAGE_SEARCH_MATCH_OPEN`/`_CLOSE`. Plain text otherwise.
+   */
+  snippet: string;
+  /** The message's timestamp, for ordering or display — results come back by relevance. */
+  createdAt: string;
+  /** True only ever with `includeArchived`; lets a result row mark itself. */
+  archived: boolean;
 };
 
 export type ConversationPageRequest = {
@@ -1281,7 +1392,8 @@ export type RendererApi = {
     listPresets: () => Promise<ProviderPreset[]>;
   };
   conversations: {
-    list: () => Promise<ConversationSummary[]>;
+    /** Archived chats are excluded unless `request.includeArchived` is set. */
+    list: (request?: ListConversationsRequest) => Promise<ConversationSummary[]>;
     create: (request?: CreateConversationRequest) => Promise<ConversationSummary>;
     get: (conversationId: string) => Promise<ConversationDetail>;
     getPage: (conversationId: string, request?: ConversationPageRequest) => Promise<ConversationPage>;
@@ -1291,6 +1403,14 @@ export type RendererApi = {
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
     setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
+    /** Resolves to the updated row so an optimistic sidebar can reconcile. */
+    setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
+    setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;
+    /**
+     * Ranked message-body hits, capped and archived-filtered. Any string is a
+     * legal query — it is sanitized in the main process, never parsed here.
+     */
+    searchMessages: (request: SearchMessagesRequest) => Promise<MessageSearchHit[]>;
   };
   projects: {
     list: () => Promise<WorkspaceProject[]>;
@@ -1299,6 +1419,7 @@ export type RendererApi = {
     rename: (projectId: string, title: string) => Promise<WorkspaceProject>;
     delete: (projectId: string) => Promise<void>;
     reveal: (projectId: string) => Promise<void>;
+    setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
   };
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
@@ -1359,6 +1480,8 @@ export type RendererApi = {
     listEnv: (projectId: string) => Promise<EnvVarItem[]>;
     setEnv: (projectId: string, key: string, value: string) => Promise<void>;
     deleteEnv: (projectId: string, key: string) => Promise<void>;
+    openInstructions: (conversationId: string, sourcePath: string) => Promise<void>;
+    initInstructions: (conversationId: string) => Promise<void>;
   };
   git: {
     getState: (conversationId: string) => Promise<GitStateSummary>;

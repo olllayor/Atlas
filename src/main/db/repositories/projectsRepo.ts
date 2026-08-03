@@ -12,6 +12,7 @@ type ProjectRow = {
   createdAt: string;
   updatedAt: string;
   lastUsedAt: string | null;
+  pinnedAt: string | null;
 };
 
 const SELECT_COLUMNS = `
@@ -20,7 +21,8 @@ const SELECT_COLUMNS = `
   root,
   created_at AS createdAt,
   updated_at AS updatedAt,
-  last_used_at AS lastUsedAt
+  last_used_at AS lastUsedAt,
+  pinned_at AS pinnedAt
 `;
 
 /**
@@ -104,6 +106,7 @@ function mapProject(row: ProjectRow): WorkspaceProject {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastUsedAt: row.lastUsedAt,
+    pinnedAt: row.pinnedAt,
     ...describeRoot(row.root)
   };
 }
@@ -207,6 +210,32 @@ export class ProjectsRepo {
   /** Detaching a project leaves its conversations in place (`ON DELETE SET NULL`). */
   delete(projectId: string) {
     this.db.prepare('DELETE FROM projects WHERE id = @projectId').run({ projectId });
+  }
+
+  /**
+   * Pin or unpin. Touches neither `updated_at` nor `last_used_at`: those two
+   * are what the list is ordered by, and a pin is not use — the pinned split
+   * happens in the renderer, over the same recency order everything else sees.
+   *
+   * Pinning an already-pinned project keeps its original timestamp so a
+   * redundant toggle cannot reshuffle the pinned section.
+   */
+  setPinned(projectId: string, pinned: boolean): WorkspaceProject {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE projects
+          SET pinned_at = CASE WHEN @pinned = 1 THEN COALESCE(pinned_at, @now) ELSE NULL END
+          WHERE id = @projectId
+        `
+      )
+      .run({ projectId, pinned: pinned ? 1 : 0, now: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Project ${projectId} not found.`);
+    }
+
+    return this.get(projectId)!;
   }
 
   touch(projectId: string) {

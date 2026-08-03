@@ -37,7 +37,7 @@ const api: RendererApi = {
     listPresets: () => ipcRenderer.invoke(IPC_CHANNELS.providersListPresets)
   },
   conversations: {
-    list: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsList),
+    list: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsList, request),
     create: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsCreate, request),
     get: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGet, conversationId),
     getPage: (conversationId, request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetPage, conversationId, request),
@@ -46,14 +46,18 @@ const api: RendererApi = {
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
     setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
-    setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request)
+    setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request),
+    setPinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetPinned, request),
+    setArchived: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetArchived, request),
+    searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
     create: (request) => ipcRenderer.invoke(IPC_CHANNELS.projectsCreate, request),
     rename: (projectId, title) => ipcRenderer.invoke(IPC_CHANNELS.projectsRename, projectId, title),
     delete: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsDelete, projectId),
-    reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId)
+    reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId),
+    setPinned: (projectId, pinned) => ipcRenderer.invoke(IPC_CHANNELS.projectsSetPinned, projectId, pinned)
   },
   chat: {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
@@ -140,7 +144,11 @@ const api: RendererApi = {
     setEnv: (projectId: string, key: string, value: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvSet, projectId, key, value),
     deleteEnv: (projectId: string, key: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvDelete, projectId, key)
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceEnvDelete, projectId, key),
+    openInstructions: (conversationId: string, sourcePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsOpen, conversationId, sourcePath),
+    initInstructions: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsInit, conversationId)
   },
   git: {
     getState: (conversationId: string) =>

@@ -4,9 +4,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
+import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
 import type { WorkspaceMode } from '../shared/workspaceModes';
-import { DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady } from '../shared/workspaceModes';
+import { DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
@@ -40,11 +41,13 @@ import {
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
+import { isMacPlatform } from './lib/platform';
 import { buildThemeOverrides } from './lib/themeOverrides';
 import { runViewTransition } from './lib/viewTransitions';
 import { cn } from './lib/utils';
 import {
   EMPTY_COMPOSER_ATTACHMENTS,
+  hasArchivedConversations,
   selectDiagnosticsSummary,
   selectLoadedConversationMetrics,
   useAppStore,
@@ -54,7 +57,7 @@ import {
 // titlebar needs extra left inset only there, and only when the collapsed rail
 // is too narrow to clear them (Windows/Linux controls sit top-right via
 // titleBarOverlay).
-const isMacLike = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+const isMacLike = isMacPlatform;
 
 function LoadingScreen() {
   return (
@@ -170,6 +173,31 @@ export default function App() {
     edge: 'end',
     axis: 'vertical',
   });
+  /**
+   * "Expand" is a round trip, not a resize: the dragged height is remembered
+   * so restoring puts the dock back exactly where the user had left it.
+   */
+  const terminalRestoreHeightRef = useRef<number | null>(null);
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const toggleTerminalExpanded = useCallback(() => {
+    setTerminalExpanded((current) => {
+      if (current) {
+        terminalResize.setWidth(terminalRestoreHeightRef.current ?? terminalResize.defaultWidth);
+        return false;
+      }
+
+      terminalRestoreHeightRef.current = terminalResize.width;
+      terminalResize.setWidth(terminalResize.maxWidth);
+      return true;
+    });
+  }, [terminalResize]);
+  // Dragging the seam is the user setting the height by hand, which ends the
+  // expanded state rather than fighting it.
+  useEffect(() => {
+    if (terminalResize.isResizing) {
+      setTerminalExpanded(false);
+    }
+  }, [terminalResize.isResizing]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [showConversationJumpHints, setShowConversationJumpHints] = useState(false);
   const [showNewChatShortcutHint, setShowNewChatShortcutHint] = useState(false);
@@ -209,6 +237,10 @@ export default function App() {
     settings,
     models,
     conversations,
+    archivedConversations,
+    isLoadingArchivedConversations,
+    hasLoadedArchivedConversations,
+    loadArchivedConversations,
     conversationDetails,
     isLoadingOlderByConversation,
     isLoadingConversationId,
@@ -262,6 +294,9 @@ export default function App() {
     attachProject,
     detachProject,
     renameProject,
+    setProjectPinned,
+    setConversationPinned,
+    setConversationArchived,
     setConversationWorkspace,
     setConversationToolPermissionMode,
     createConversationInProject,
@@ -284,6 +319,10 @@ export default function App() {
       settings: state.settings,
       models: state.models,
       conversations: state.conversations,
+      archivedConversations: state.archivedConversations,
+      isLoadingArchivedConversations: state.isLoadingArchivedConversations,
+      hasLoadedArchivedConversations: state.hasLoadedArchivedConversations,
+      loadArchivedConversations: state.loadArchivedConversations,
       conversationDetails: state.conversationDetails,
       conversationStats: state.conversationStats,
       diagnostics: state.diagnostics,
@@ -338,6 +377,9 @@ export default function App() {
       createConversationInProject: state.createConversationInProject,
       detachProject: state.detachProject,
       renameProject: state.renameProject,
+      setProjectPinned: state.setProjectPinned,
+      setConversationPinned: state.setConversationPinned,
+      setConversationArchived: state.setConversationArchived,
       setConversationWorkspace: state.setConversationWorkspace,
       setConversationToolPermissionMode: state.setConversationToolPermissionMode,
     }))
@@ -372,6 +414,28 @@ export default function App() {
     ? projects.find((project) => project.id === activeConversationSummary.projectId) ?? null
     : null;
   const workspaceReady = isWorkspaceModeReady(workspaceMode, Boolean(activeProject?.exists));
+  // The conversation's own setting, then the app default, then the shipped one.
+  // Hoisted out of the composer's props because the sidebar heading shows the
+  // same rung, and two triggers reading two chains would eventually disagree.
+  const toolPermissionMode =
+    activeConversationSummary?.toolPermissionMode ??
+    settings?.chat.toolPermissionMode ??
+    DEFAULT_TOOL_PERMISSION_MODE;
+  // One entry point for "this conversation needs a folder now". Every surface
+  // (mode switch, mode menu, context bar, sidebar, command palette) already
+  // funnels through the store's attachProject, which single-flights the native
+  // dialog; this wrapper only adds the analytics envelope.
+  const requestProjectForConversation = useCallback(
+    async (conversationId: string, source: 'mode-switch' | 'mode-menu') => {
+      captureEvent(POSTHOG_EVENTS.PROJECT_ATTACH_PROMPTED, { source });
+      const project = await attachProject({ conversationId });
+      captureEvent(POSTHOG_EVENTS.PROJECT_ATTACH_RESOLVED, {
+        source,
+        outcome: project ? 'attached' : 'cancelled',
+      });
+    },
+    [attachProject]
+  );
   // Lives here rather than in the switcher because the mode is a property of
   // the open conversation, and the switcher itself now renders inside the
   // sidebar, which has no idea which conversation that is.
@@ -385,9 +449,30 @@ export default function App() {
       // still wins afterwards.
       if (mode === 'code') {
         setWorkbenchOpen(true);
+        // The gate becomes a flow: Code with no folder at all asks for one on
+        // the spot, the way Codex's directory picker does. The mode commit
+        // above is not conditional on the answer — cancelling leaves Code
+        // selected with the existing warning, never a silent bounce back to
+        // Work. Re-selecting Code from the menu while unready re-opens the
+        // picker, which is the recovery path after a cancel.
+        if (shouldPromptForProject(mode, activeProject)) {
+          void requestProjectForConversation(selectedConversationId, 'mode-switch');
+        }
       }
     },
-    [selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
+    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
+  );
+  // With no conversation open there is nothing to write the rung onto, so it
+  // becomes the preference every later conversation starts from.
+  const handleToolPermissionModeChange = useCallback(
+    (mode: ToolPermissionMode) => {
+      if (selectedConversationId) {
+        void setConversationToolPermissionMode(selectedConversationId, mode);
+      } else {
+        void updatePreferences({ chat: { toolPermissionMode: mode } });
+      }
+    },
+    [selectedConversationId, setConversationToolPermissionMode, updatePreferences]
   );
   // What the main process detected about that folder — project type, framework,
   // configured env keys. Fetched, not derived: it comes from the filesystem.
@@ -451,6 +536,27 @@ export default function App() {
       }),
     [conversations, draftsByConversation, nowMs]
   );
+  /**
+   * Archived chats get the same row view model as live ones — they are the same
+   * rows with different verbs, and building them a second way would drift.
+   * `draftsByConversation` still applies: an archived chat keeps its in-memory
+   * transcript, so a row can legitimately report the turn it was on.
+   */
+  const archivedSidebarItems = useMemo(
+    () =>
+      buildSidebarConversationItems({
+        conversations: archivedConversations,
+        draftsByConversation,
+        now: nowMs,
+      }),
+    [archivedConversations, draftsByConversation, nowMs]
+  );
+  const hasArchivedChats = hasArchivedConversations({
+    storedConversationCount: conversationStats?.storedConversationCount ?? null,
+    liveConversationCount: conversations.length,
+    archivedConversationCount: archivedConversations.length,
+    hasLoadedArchived: hasLoadedArchivedConversations,
+  });
   const resolvedKeybindings = useMemo(
     () => {
       // An empty array is almost always a stub/test value; fall back to the
@@ -615,6 +721,14 @@ export default function App() {
       void live.setConversationWorkspace(liveSelectedConversationId, { mode: next });
       if (next === 'code') {
         setWorkbenchOpen(true);
+        // The shortcut is the same switch, so it owes the same prompt.
+        const summary = live.conversations.find((conversation) => conversation.id === liveSelectedConversationId) ?? null;
+        const project = summary?.projectId
+          ? live.projects.find((entry) => entry.id === summary.projectId) ?? null
+          : null;
+        if (shouldPromptForProject('code', project)) {
+          void requestProjectForConversation(liveSelectedConversationId, 'mode-switch');
+        }
       }
       return;
     }
@@ -808,8 +922,12 @@ export default function App() {
     appliedOverrideKeysRef.current = Object.keys(overrides);
   }, [appearance]);
 
+  // Vibrancy is a macOS window material. Off macOS the window stays opaque, so
+  // a see-through sidebar would blend into a hardcoded window colour instead of
+  // the desktop — the setting is stored but never stamped there.
   useEffect(() => {
-    document.documentElement.dataset.translucentSidebar = appearance.translucentSidebar ? 'true' : 'false';
+    document.documentElement.dataset.translucentSidebar =
+      appearance.translucentSidebar && isMacLike ? 'true' : 'false';
   }, [appearance.translucentSidebar]);
 
   useEffect(() => {
@@ -1014,9 +1132,12 @@ export default function App() {
         }}
       />
     ) : (
-      <div className="flex h-screen overflow-hidden bg-bg-base">
+      <div className="app-shell flex h-screen overflow-hidden bg-bg-base">
         <Sidebar
           items={sidebarItems}
+          archivedItems={archivedSidebarItems}
+          hasArchivedChats={hasArchivedChats}
+          isLoadingArchivedChats={isLoadingArchivedConversations}
           projects={projects}
           selectedConversationId={selectedConversationId}
           collapsed={sidebarCollapsed}
@@ -1044,6 +1165,11 @@ export default function App() {
           onRevealProject={(projectId) => void window.atlasChat.projects.reveal(projectId)}
           onDetachProject={(projectId) => void detachProject(projectId)}
           onRenameProject={(projectId, title) => void renameProject(projectId, title)}
+          onSetConversationPinned={(id, pinned) => void setConversationPinned(id, pinned)}
+          onArchiveConversation={(id) => void setConversationArchived(id, true)}
+          onRestoreConversation={(id) => void setConversationArchived(id, false)}
+          onLoadArchivedChats={() => void loadArchivedConversations()}
+          onSetProjectPinned={(projectId, pinned) => void setProjectPinned(projectId, pinned)}
           onOpenLanding={() => openLanding()}
           onOpenSites={() => runViewTransition(() => openSites())}
           onOpenSearch={() => {
@@ -1060,7 +1186,17 @@ export default function App() {
               ready={workspaceReady}
               disabled={!selectedConversationId}
               variant="heading"
+              permissionMode={toolPermissionMode}
+              // Mid-stream the rung is already baked into the request in
+              // flight; the composer chip greys out for the same reason.
+              permissionDisabled={activeDraft?.status === 'streaming'}
               onChange={handleWorkspaceModeChange}
+              onPermissionModeChange={handleToolPermissionModeChange}
+              onRequestProject={
+                selectedConversationId
+                  ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
+                  : undefined
+              }
             />
           }
           width={sidebarResize.width}
@@ -1258,19 +1394,17 @@ export default function App() {
             defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
             onManageProviders={() => runViewTransition(() => openSettings('providers'))}
             reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
-            toolPermissionMode={
-              activeConversationSummary?.toolPermissionMode ??
-              settings?.chat.toolPermissionMode ??
-              DEFAULT_TOOL_PERMISSION_MODE
+            toolPermissionMode={toolPermissionMode}
+            workspaceMode={workspaceMode}
+            workspaceReady={workspaceReady}
+            onWorkspaceModeChange={handleWorkspaceModeChange}
+            onRequestProject={
+              selectedConversationId
+                ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
+                : undefined
             }
             onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
-            onToolPermissionModeChange={(toolPermissionMode) => {
-              if (selectedConversationId) {
-                void setConversationToolPermissionMode(selectedConversationId, toolPermissionMode);
-              } else {
-                void updatePreferences({ chat: { toolPermissionMode } });
-              }
-            }}
+            onToolPermissionModeChange={handleToolPermissionModeChange}
             onOpenGallery={() => setGalleryOpen(true)}
           />
 
@@ -1298,6 +1432,12 @@ export default function App() {
                   conversationId={selectedConversationId ?? undefined}
                   workspacePath={activeProject?.exists ? activeProject.root : null}
                   onClose={() => setTerminalOpen(false)}
+                  expanded={terminalExpanded}
+                  onToggleExpanded={toggleTerminalExpanded}
+                  shortcutLabel={shortcutLabelForCommand(resolvedKeybindings, 'terminal.toggle', {
+                    context: keybindingContext,
+                    platform: shortcutPlatform,
+                  })}
                   className="shrink-0"
                   style={{ height: terminalResize.width }}
                 />

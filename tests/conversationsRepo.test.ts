@@ -7,10 +7,14 @@ import test from 'node:test';
 
 import type { SqliteDatabase } from '../src/main/db/client.js';
 import { AttachmentStore, buildAttachmentUrl } from '../src/main/attachments/AttachmentStore.js';
+import { ToolExecutionTracker } from '../src/main/ai/tools/ToolExecutionTracker.js';
+import { ToolStateStore } from '../src/main/ai/tools/ToolStateStore.js';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo.js';
 import { ToolExecutionsRepo } from '../src/main/db/repositories/toolExecutionsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
 import { decodeConversationPageCursor } from '../src/shared/conversationPaging.js';
+import type { ChatToolPart } from '../src/shared/contracts.js';
+import { derivePlanView, type PlanToolInput } from '../src/shared/planTool.js';
 
 function createTimestamp(index: number) {
   return new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString();
@@ -416,4 +420,121 @@ test('per-conversation toolPermissionMode is isolated and persistent', () => {
     raw.close();
     rmSync(tempDir, { force: true, recursive: true });
   }
+});
+
+test('a plan survives the reload that downgrades tool inputs to a preview string', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-conversations-plan-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction:
+      <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) =>
+      (...args: TArgs) => {
+        raw.exec('BEGIN');
+        try {
+          const result = callback(...args);
+          raw.exec('COMMIT');
+          return result;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      },
+  } as unknown as SqliteDatabase;
+  applySchema(database);
+  const toolExecutions = new ToolExecutionsRepo(database);
+  const conversations = new ConversationsRepo(database, undefined, toolExecutions);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+  const persistPlan = (planInput: PlanToolInput, toolCallId: string) => {
+    const messageId = conversations.addMessage({
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: '',
+      status: 'complete',
+      providerId: 'openrouter',
+      modelId: 'openrouter/test-model',
+      parts: [
+        {
+          id: toolCallId,
+          type: 'tool',
+          toolCallId,
+          requestId: 'request-1',
+          toolName: 'update_plan',
+          state: 'output-available',
+          input: planInput,
+          output: { message: 'Plan updated.' },
+        },
+      ],
+    });
+
+    const tracker = new ToolExecutionTracker(
+      { conversationId: conversation.id, messageId, requestId: 'request-1' },
+      new ToolStateStore(toolExecutions),
+    );
+    tracker.handleEvent({
+      type: 'tool-input-available',
+      requestId: 'request-1',
+      toolCallId,
+      toolName: 'update_plan',
+      input: planInput,
+    });
+    tracker.handleEvent({
+      type: 'tool-output-available',
+      requestId: 'request-1',
+      toolCallId,
+      toolName: 'update_plan',
+      output: { message: 'Plan updated.' },
+    });
+
+    return messageId;
+  };
+
+  const plan: PlanToolInput = {
+    explanation: 'starting the fix',
+    plan: [
+      { step: 'Read the code', status: 'completed' },
+      { step: 'Write the fix', status: 'in_progress' },
+      { step: 'Run the tests', status: 'pending' },
+    ],
+  };
+  const messageId = persistPlan(plan, 'plan-call-1');
+  const beforeReload = derivePlanView([
+    {
+      id: 'plan-call-1',
+      type: 'tool',
+      toolCallId: 'plan-call-1',
+      toolName: 'update_plan',
+      state: 'output-available',
+      input: plan,
+    },
+  ]);
+
+  const message = conversations.get(conversation.id).messages.find((entry) => entry.id === messageId);
+  const hydrated = message?.parts.filter((part): part is ChatToolPart => part.type === 'tool') ?? [];
+  assert.equal(typeof hydrated[0]?.input, 'string', 'the merge really does downgrade input to a preview');
+  assert.deepEqual(derivePlanView(hydrated), beforeReload);
+
+  // A plan far past the ordinary 900-char preview budget must come back whole,
+  // or the checklist would vanish from history.
+  const longPlan: PlanToolInput = {
+    plan: Array.from({ length: 40 }, (_, index) => ({
+      step: `Step ${index}: ${'work '.repeat(12).trim()}`,
+      status: 'pending' as const,
+    })),
+  };
+  const longMessageId = persistPlan(longPlan, 'plan-call-2');
+  const longMessage = conversations
+    .get(conversation.id)
+    .messages.find((entry) => entry.id === longMessageId);
+  const longHydrated = longMessage?.parts.filter((part): part is ChatToolPart => part.type === 'tool') ?? [];
+
+  assert.ok((longHydrated[0]?.input as string).length > 900, 'the plan preview outgrows the ordinary budget');
+  assert.equal(derivePlanView(longHydrated)?.total, 40);
 });

@@ -34,8 +34,9 @@ import type {
   ModelSummary,
   ProviderCredentialSummary,
 } from '../../shared/contracts';
-import { ToolPermissionModeControl } from './composer/ComposerParameters';
+import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { ModelSelector } from './ModelSelector';
+import { WorkspaceAccessChip } from './workspace/WorkspaceModeSwitch';
 import {
   Attachment,
   AttachmentHoverCard,
@@ -106,6 +107,16 @@ type ComposerProps = {
   onManageProviders?: () => void;
   reasoningEffort: ReasoningEffort;
   toolPermissionMode: ToolPermissionMode;
+  /**
+   * The other half of the access chip. The composer does not own the mode — the
+   * sidebar heading is its canonical home — but that heading disappears with a
+   * collapsed rail, so both axes have to be reachable from here too.
+   */
+  workspaceMode: WorkspaceMode;
+  workspaceReady: boolean;
+  onWorkspaceModeChange: (mode: WorkspaceMode) => void;
+  /** Opens the folder picker from the chip's menu while Code has no usable folder. */
+  onRequestProject?: () => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onToolPermissionModeChange: (value: ToolPermissionMode) => void;
   onOpenGallery: () => void;
@@ -482,6 +493,10 @@ export function Composer({
   onManageProviders,
   reasoningEffort,
   toolPermissionMode,
+  workspaceMode,
+  workspaceReady,
+  onWorkspaceModeChange,
+  onRequestProject,
   onReasoningEffortChange,
   onToolPermissionModeChange,
   onOpenGallery,
@@ -1076,10 +1091,17 @@ export function Composer({
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <ToolPermissionModeControl
-                value={toolPermissionMode}
+              {/* One chip, one menu — the mode and the permission ladder are
+                  the same decision made twice, so they share a surface with
+                  the sidebar heading rather than each owning a picker. */}
+              <WorkspaceAccessChip
+                mode={workspaceMode}
+                ready={workspaceReady}
+                permissionMode={toolPermissionMode}
                 disabled={isStreaming || selectedModel?.supportsTools === false}
-                onChange={onToolPermissionModeChange}
+                onModeChange={onWorkspaceModeChange}
+                onPermissionModeChange={onToolPermissionModeChange}
+                onRequestProject={onRequestProject}
               />
 
               {showStopHint ? (
@@ -1093,7 +1115,11 @@ export function Composer({
               ) : null}
 
               <div className="ml-auto flex min-w-0 items-center gap-0.5">
-                {contextStats ? (
+                {/* An untouched conversation has nothing to report, and the
+                    ring drew an empty grey circle beside the model name — a
+                    control that looks broken rather than idle. It appears with
+                    the first token spent. */}
+                {contextStats && contextStats.usedTokens > 0 ? (
                   <Context
                     maxTokens={contextStats.maxTokens}
                     usedTokens={contextStats.usedTokens}

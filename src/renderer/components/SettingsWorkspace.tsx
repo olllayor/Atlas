@@ -1,5 +1,4 @@
 import {
-  ArrowLeftIcon,
   DesktopIcon,
   GearIcon,
   KeyboardIcon,
@@ -51,6 +50,8 @@ import {
 } from '../../shared/contracts';
 import { exportTheme, parseThemeImport } from '../lib/themeOverrides';
 import { notify } from '../lib/notify';
+import { isMacPlatform } from '../lib/platform';
+import { RailBackButton } from './railPrimitives';
 import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
@@ -141,22 +142,15 @@ export function SettingsWorkspace({
   }, [activeSection]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      <aside className="relative flex w-sidebar-width shrink-0 flex-col bg-bg-panel">
+    <div className="app-shell flex h-screen overflow-hidden bg-bg-base text-text-primary">
+      <aside className="sidebar-surface relative flex w-sidebar-width shrink-0 flex-col">
         <div
           className="relative h-titlebar-height shrink-0"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         />
 
         <div className="scroll-container relative min-h-0 flex-1 overflow-y-auto px-3 py-4">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-normal text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
-          >
-            <ArrowLeftIcon className="h-4 w-4 shrink-0" />
-            <span>Back to app</span>
-          </button>
+          <RailBackButton label="Back to app" onClick={onBack} />
 
           <nav className="mt-5 space-y-1">
             {activeNavItems.map((item) => {
@@ -168,9 +162,13 @@ export function SettingsWorkspace({
                   key={item.key}
                   type="button"
                   onClick={() => onNavigate(item.key)}
-                  className={`flex h-9 w-full items-center gap-2.5 rounded-md px-3 text-left text-sm font-normal transition ${
+                  // Selected uses --bg-active and hover --bg-hover, the same
+                  // two-step fill the chat list uses; this rail had both on
+                  // --bg-hover, so the current section was indistinguishable
+                  // from whichever row the pointer happened to be over.
+                  className={`flex h-9 w-full items-center gap-2.5 rounded-md px-3 text-left text-md font-normal transition-colors ${
                     isActive
-                      ? 'bg-bg-hover text-text-primary'
+                      ? 'bg-bg-active text-text-primary'
                       : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
                   }`}
                 >
@@ -460,12 +458,17 @@ function AppearancePage({
         </SettingsRow>
         <SettingsRow
           title="Translucent sidebar"
-          description="Let the desktop show through the sidebar. Applies fully after restart. macOS only."
+          description={
+            isMacPlatform
+              ? 'Let the desktop show through the sidebar. Applies fully after restart.'
+              : 'Unavailable on this platform — window vibrancy is macOS-only.'
+          }
         >
           <Switch
-            checked={appearance.translucentSidebar}
+            checked={appearance.translucentSidebar && isMacPlatform}
             onCheckedChange={(value) => onAppearancePatch({ translucentSidebar: value })}
             ariaLabel="Toggle translucent sidebar"
+            disabled={!isMacPlatform}
           />
         </SettingsRow>
         <SettingsRow title="Share theme" description="Copy the current theme as JSON, or import one from the clipboard.">

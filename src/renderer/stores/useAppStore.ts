@@ -98,6 +98,24 @@ type AppState = {
   settings: SettingsSummary | null;
   models: ModelSummary[];
   conversations: ConversationSummary[];
+  /**
+   * Archived chats, kept deliberately out of `conversations`.
+   *
+   * `conversations` is not just the sidebar's data — the command palette and
+   * the jump-by-index shortcuts read the same array, so an archived row landing
+   * there would be reachable from three places that are supposed to have
+   * stopped showing it. This list is a second, on-demand view of the same
+   * table and nothing but the Archived section reads it.
+   */
+  archivedConversations: ConversationSummary[];
+  /** True only while the on-demand archive fetch is in flight. */
+  isLoadingArchivedConversations: boolean;
+  /**
+   * Whether `archivedConversations` has ever been fetched. Distinct from
+   * "the list is empty": before the first fetch an empty array means "unknown",
+   * afterwards it means "there is nothing archived".
+   */
+  hasLoadedArchivedConversations: boolean;
   conversationDetails: Record<string, ConversationPage>;
   conversationStats: ConversationStats | null;
   diagnostics: DiagnosticsSnapshot | null;
@@ -122,6 +140,12 @@ type AppState = {
   /** Re-reads the cached catalog after a main-process change, no network. */
   reloadModels: () => Promise<void>;
   refreshConversationList: () => Promise<void>;
+  /**
+   * Fills `archivedConversations`. Called when the Archived section is first
+   * expanded rather than at boot: `includeArchived` scans the whole table, and
+   * most sessions never open the section at all.
+   */
+  loadArchivedConversations: () => Promise<void>;
   refreshConversationStats: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
@@ -134,6 +158,10 @@ type AppState = {
   attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
   detachProject: (projectId: string) => Promise<void>;
   renameProject: (projectId: string, title: string) => Promise<void>;
+  setProjectPinned: (projectId: string, pinned: boolean) => Promise<void>;
+  setConversationPinned: (conversationId: string, pinned: boolean) => Promise<void>;
+  /** Hides the chat from the sidebar without destroying it. Reversible. */
+  setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
     patch: { mode?: WorkspaceMode; projectId?: string | null }
@@ -317,6 +345,63 @@ export function chooseDefaultModel(
   );
 }
 
+/**
+ * Keeps only the archived rows out of an `includeArchived` listing.
+ *
+ * That call returns live *and* archived rows in one array — convenient for the
+ * main process, useless here, because the live half is already in
+ * `conversations` and a row present in both arrays would render twice.
+ */
+export function selectArchivedConversations(conversations: ConversationSummary[]) {
+  return conversations.filter((conversation) => conversation.archivedAt != null);
+}
+
+function toEpochMs(timestamp: string | null | undefined) {
+  const value = Date.parse(timestamp ?? '');
+  return Number.isNaN(value) ? 0 : value;
+}
+
+/**
+ * Inserts (or replaces) one row in the archived list, in the order the server
+ * would have returned it — most recently updated first, same as
+ * `conversations.list()`.
+ *
+ * Patching rather than refetching is the whole point: a refetch after every
+ * archive would re-pay the full-table scan the section is lazy about in the
+ * first place, and the row we need is already in hand — `setArchived` resolves
+ * to the updated summary.
+ */
+export function mergeArchivedConversation(
+  archived: ConversationSummary[],
+  conversation: ConversationSummary
+) {
+  return [conversation, ...archived.filter((entry) => entry.id !== conversation.id)].sort(
+    (left, right) => toEpochMs(right.updatedAt) - toEpochMs(left.updatedAt)
+  );
+}
+
+/**
+ * Whether the Archived section should exist at all, answered without fetching.
+ *
+ * `storedConversationCount` counts every row in the table; `conversations` is
+ * that same table minus `archived_at IS NOT NULL`. The gap between them *is*
+ * the archive, which is how a section that only loads on demand can still know
+ * to stay hidden for a user who has never archived anything. Once a fetch has
+ * landed its result is authoritative and the arithmetic is dropped.
+ */
+export function hasArchivedConversations(params: {
+  storedConversationCount: number | null;
+  liveConversationCount: number;
+  archivedConversationCount: number;
+  hasLoadedArchived: boolean;
+}) {
+  if (params.hasLoadedArchived) {
+    return params.archivedConversationCount > 0;
+  }
+
+  return (params.storedConversationCount ?? 0) > params.liveConversationCount;
+}
+
 function collectRendererHeapBytes() {
   if (typeof performance === 'undefined') {
     return null;
@@ -365,6 +450,9 @@ function resolveConversationIdForRequest(
 // =============================================================================
 // Store
 // =============================================================================
+/** The OS shows one folder picker; a second request while it is up joins the first. */
+let attachProjectInFlight: Promise<WorkspaceProject | null> | null = null;
+
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
   initialized: false,
@@ -383,6 +471,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   models: [],
   conversations: [],
+  archivedConversations: [],
+  isLoadingArchivedConversations: false,
+  hasLoadedArchivedConversations: false,
   conversationDetails: {},
   conversationStats: null,
   diagnostics: null,
@@ -575,6 +666,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ conversations, conversationStats });
   },
 
+  loadArchivedConversations: async () => {
+    if (get().isLoadingArchivedConversations) {
+      return;
+    }
+
+    set({ isLoadingArchivedConversations: true });
+
+    try {
+      const conversations = await window.atlasChat.conversations.list({ includeArchived: true });
+      set({
+        archivedConversations: selectArchivedConversations(conversations),
+        hasLoadedArchivedConversations: true,
+        isLoadingArchivedConversations: false,
+      });
+    } catch (error) {
+      set({ isLoadingArchivedConversations: false });
+      notifyError('Could not load archived chats', error);
+    }
+  },
+
   refreshConversationStats: async () => {
     const conversationStats = await window.atlasChat.conversations.getStats();
     set({ conversationStats });
@@ -755,21 +866,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   attachProject: async ({ root, conversationId } = {}) => {
-    const project = await window.atlasChat.projects.create(root ? { root } : undefined);
-
-    if (!project) {
-      // The user cancelled the picker. Not an error, and nothing changes.
-      return null;
+    if (attachProjectInFlight) {
+      return attachProjectInFlight;
     }
 
-    await get().refreshProjects();
+    const run = async (): Promise<WorkspaceProject | null> => {
+      const project = await window.atlasChat.projects.create(root ? { root } : undefined);
 
-    const target = conversationId ?? get().selectedConversationId;
-    if (target) {
-      await get().setConversationWorkspace(target, { projectId: project.id });
-    }
+      if (!project) {
+        // The user cancelled the picker. Not an error, and nothing changes.
+        return null;
+      }
 
-    return project;
+      await get().refreshProjects();
+
+      const target = conversationId ?? get().selectedConversationId;
+      if (target) {
+        await get().setConversationWorkspace(target, { projectId: project.id });
+      }
+
+      return project;
+    };
+
+    // Every surface fires this as `void attachProject(...)`, so a rejection
+    // here had nowhere to land but the unhandled-rejection handler.
+    attachProjectInFlight = run()
+      .catch((error) => {
+        notifyError('Could not attach the folder', error);
+        return null;
+      })
+      .finally(() => {
+        attachProjectInFlight = null;
+      });
+
+    return attachProjectInFlight;
   },
 
   renameProject: async (projectId, title) => {
@@ -788,6 +918,150 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     await window.atlasChat.projects.rename(projectId, next);
     await get().refreshProjects();
+  },
+
+  setProjectPinned: async (projectId, pinned) => {
+    const previous = get().projects;
+
+    // Optimistic, and stamped locally: the pinned section orders by this value,
+    // so a row that waits for the round trip to acquire one lands in the wrong
+    // place and then jumps.
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === projectId
+          ? { ...project, pinnedAt: pinned ? new Date().toISOString() : null }
+          : project
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.projects.setPinned(projectId, pinned);
+      set((state) => ({
+        projects: state.projects.map((project) => (project.id === projectId ? updated : project)),
+      }));
+    } catch (error) {
+      set({ projects: previous });
+      notifyError(pinned ? 'Could not pin the project' : 'Could not unpin the project', error);
+    }
+  },
+
+  setConversationPinned: async (conversationId, pinned) => {
+    const previous = get().conversations;
+
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? { ...conversation, pinnedAt: pinned ? new Date().toISOString() : null }
+          : conversation
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.conversations.setPinned({ conversationId, pinned });
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === conversationId ? updated : conversation
+        ),
+      }));
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError(pinned ? 'Could not pin the chat' : 'Could not unpin the chat', error);
+    }
+  },
+
+  setConversationArchived: async (conversationId, archived) => {
+    const previousConversations = get().conversations;
+    const previousSelectedId = get().selectedConversationId;
+    const title = previousConversations.find((conversation) => conversation.id === conversationId)?.title;
+
+    if (!archived) {
+      // Restoring: the row is not in the live list to patch, so there is nothing
+      // to do optimistically — the refresh below is the whole update.
+      try {
+        await window.atlasChat.conversations.setArchived({ conversationId, archived: false });
+        // The Archived section is the one place the row *was* visible, so it is
+        // dropped here rather than by a refetch: the section fetches lazily
+        // precisely to avoid scanning the table, and re-scanning it on every
+        // restore would give that back.
+        set((state) => ({
+          archivedConversations: state.archivedConversations.filter(
+            (conversation) => conversation.id !== conversationId
+          ),
+        }));
+        await get().refreshConversationList();
+        await get().loadConversation(conversationId);
+      } catch (error) {
+        notifyError('Could not restore the chat', error);
+      }
+      return;
+    }
+
+    // Archiving only hides the row. The transcript, its drafts and its terminal
+    // all stay in memory keyed by id, so a restore lands on a warm conversation
+    // rather than a reload — which is the difference between archive and
+    // delete, and the reason none of the per-conversation maps are cleared.
+    set((state) => {
+      const conversations = state.conversations.filter(
+        (conversation) => conversation.id !== conversationId
+      );
+
+      return {
+        conversations,
+        selectedConversationId:
+          state.selectedConversationId === conversationId
+            ? conversations[0]?.id ?? null
+            : state.selectedConversationId,
+      };
+    });
+
+    try {
+      const updated = await window.atlasChat.conversations.setArchived({
+        conversationId,
+        archived: true,
+      });
+
+      // Only patch a list that has actually been fetched. Seeding it with this
+      // one row would leave a section that looks complete while hiding every
+      // chat archived before this session — worse than the empty state, because
+      // nothing about it says "not loaded yet".
+      set((state) =>
+        state.hasLoadedArchivedConversations
+          ? { archivedConversations: mergeArchivedConversation(state.archivedConversations, updated) }
+          : {}
+      );
+    } catch (error) {
+      set({ conversations: previousConversations, selectedConversationId: previousSelectedId });
+      notifyError('Could not archive the chat', error);
+      return;
+    }
+
+    const conversations = await window.atlasChat.conversations.list();
+
+    // Archiving the last chat would leave the app with nothing open, same as
+    // deleting it does.
+    if (conversations.length === 0) {
+      const created = await window.atlasChat.conversations.create();
+      await get().refreshConversationList();
+      await get().loadConversation(created.id);
+    } else {
+      set({ conversations });
+
+      const selectedId = get().selectedConversationId;
+      if (selectedId && !get().conversationDetails[selectedId]) {
+        await get().loadConversation(selectedId);
+      }
+    }
+
+    // An archive you cannot reverse is a delete with a softer name; the undo
+    // has to be reachable from where the archive happened.
+    notify({
+      tone: 'info',
+      title: title ? `Archived “${title}”` : 'Chat archived',
+      actionLabel: 'Undo',
+      onAction: () => {
+        void get().setConversationArchived(conversationId, false);
+      },
+    });
   },
 
   detachProject: async (projectId) => {
@@ -1360,6 +1634,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const previousSequence = state.runtimeSequenceByConversation[conversationId];
     const previousLoadingOlder = state.isLoadingOlderByConversation[conversationId];
     const previousConversations = state.conversations;
+    const previousArchivedConversations = state.archivedConversations;
     const previousSelectedId = state.selectedConversationId;
     const previousRequestMap = state.requestToConversation;
 
@@ -1388,6 +1663,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       return {
         conversations,
+        // Delete is now reachable from the Archived section, and that section
+        // reads its own array — filtering only `conversations` left the deleted
+        // row on screen until the next fetch.
+        archivedConversations: current.archivedConversations.filter(
+          (conversation) => conversation.id !== conversationId
+        ),
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
@@ -1422,6 +1703,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...current.isLoadingOlderByConversation, [conversationId]: previousLoadingOlder }
           : current.isLoadingOlderByConversation,
         conversations: previousConversations,
+        archivedConversations: previousArchivedConversations,
         requestToConversation: previousRequestMap,
         selectedConversationId: previousSelectedId
       }));

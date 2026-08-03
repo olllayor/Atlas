@@ -5,7 +5,7 @@ import {
   type Virtualizer,
   useVirtualizer,
 } from '@tanstack/react-virtual';
-import { AlertCircle, ArrowDown, Check, Copy, Info, RefreshCw, Sparkles, StopCircle } from 'lucide-react';
+import { AlertCircle, ArrowDown, Check, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -41,11 +41,17 @@ import { MessageResponse } from './ai-elements/message';
 import { VisualBlock } from './ai-elements/visual';
 import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles } from '../../shared/toolCellGrammar';
+import { isPlanToolPart } from '../../shared/planTool';
+import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
+import type { AssistantSegment } from './transcript/assistantSegments';
+import { ActivityBlock } from './transcript/ActivityBlock';
 import { ChangedFilesBar } from './transcript/ChangedFilesBar';
+import { PlanCell } from './transcript/PlanCell';
 import { ToolCellList } from './transcript/ToolCell';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
+import { AtlasMark } from './ui/atlas-mark';
 
 type ChatWindowProps = {
   detail: ConversationPage | null;
@@ -304,17 +310,26 @@ function AssistantParts({
   isStreaming = false,
   parts,
   deferRichContent = false,
+  turnId,
+  durationMs,
   onRespondToolApproval,
 }: {
   content: string;
   isStreaming?: boolean;
   parts: ChatMessagePart[];
   deferRichContent?: boolean;
+  /** Keys the turn's `Worked for …` disclosure: the message id, or the draft's request id. */
+  turnId: string;
+  /** The turn's persisted latency, for history that never streamed here. */
+  durationMs?: number | null;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
 }) {
   // Memoised because it used to be recomputed for every visible row on
   // every streamed token.
   const segments = useMemo(() => groupAssistantParts(parts), [parts]);
+  // The work/answer cut, so the reply is not buried under the tool calls that
+  // produced it. See `splitAssistantTurn`.
+  const split = useMemo(() => splitAssistantTurn(segments), [segments]);
 
   if (deferRichContent) {
     return <AssistantTextFallback content={content} />;
@@ -331,74 +346,91 @@ function AssistantParts({
     );
   }
 
+  const renderSegment = (segment: AssistantSegment, options: { isLast: boolean; dim: boolean }) => {
+    if (segment.kind === 'tools') {
+      // Consecutive tool calls are handed to the transcript as one run
+      // so read-only calls can coalesce into a single `Explored` cell.
+      return (
+        <ToolCellGroup
+          key={`tools-${segment.parts[0].toolCallId}`}
+          parts={segment.parts}
+          onRespondToolApproval={onRespondToolApproval}
+        />
+      );
+    }
+
+    if (segment.kind === 'plan') {
+      return (
+        <PlanCell
+          key={`plan-${segment.parts[0].id}`}
+          parts={segment.parts}
+          isStreaming={isStreaming}
+        />
+      );
+    }
+
+    const part = segment.part;
+
+    if (part.type === 'reasoning') {
+      // `partId` keys the reasoning cell's timing and expand state in
+      // the transcript UI store; without it the store falls back to
+      // hashing the text, which only settles after ~96 characters.
+      return <ReasoningCell key={part.id} partId={part.id} text={part.text} isStreaming={isStreaming} />;
+    }
+
+    if (part.type === 'file') {
+      return <AttachmentRow key={part.id} attachments={[part]} />;
+    }
+
+    if (part.type === 'visual') {
+      return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+    }
+
+    return (
+      <MessageResponse
+        key={part.id}
+        // Commentary inside the fold keeps the reply's measure and size — it
+        // is the same voice — but sits a shade back so the answer below the
+        // fold is the thing the eye lands on.
+        className={cn(
+          'text-md leading-relaxed',
+          options.dim ? 'text-text-secondary' : 'text-text-primary'
+        )}
+        isAnimating={isStreaming && options.isLast}
+      >
+        {part.text}
+      </MessageResponse>
+    );
+  };
+
   return (
     <>
-      {segments.map((segment, index) => {
-        if (segment.kind === 'tools') {
-          // Consecutive tool calls are handed to the transcript as one run
-          // so read-only calls can coalesce into a single `Explored` cell.
-          return (
-            <ToolCellGroup
-              key={`tools-${segment.parts[0].toolCallId}`}
-              parts={segment.parts}
-              onRespondToolApproval={onRespondToolApproval}
-            />
-          );
-        }
+      {split.activity.length > 0 ? (
+        <ActivityBlock
+          id={`activity:${turnId}`}
+          isStreaming={isStreaming}
+          fallbackDurationMs={durationMs}
+          // Open while there is no reply under it — the live run of steps, or
+          // a turn that ended without one. It folds as the answer arrives.
+          defaultOpen={split.answer.length === 0}
+          forceOpen={hasPendingApproval(split.activity)}
+        >
+          {split.activity.map((segment, index) =>
+            renderSegment(segment, {
+              isLast: isStreaming && split.answer.length === 0 && index === split.activity.length - 1,
+              dim: true,
+            })
+          )}
+        </ActivityBlock>
+      ) : null}
 
-        const part = segment.part;
+      {split.plan.map((segment) => renderSegment(segment, { isLast: false, dim: false }))}
 
-        if (part.type === 'reasoning') {
-          // `partId` keys the reasoning cell's timing and expand state in
-          // the transcript UI store; without it the store falls back to
-          // hashing the text, which only settles after ~96 characters.
-          return <ReasoningCell key={part.id} partId={part.id} text={part.text} isStreaming={isStreaming} />;
-        }
-
-        if (part.type === 'file') {
-          return <AttachmentRow key={part.id} attachments={[part]} />;
-        }
-
-        if (part.type === 'visual') {
-          return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
-        }
-
-        return (
-          <MessageResponse
-            key={part.id}
-            className="text-md leading-relaxed text-text-primary"
-            isAnimating={isStreaming && index === segments.length - 1}
-          >
-            {part.text}
-          </MessageResponse>
-        );
-      })}
+      {split.answer.map((segment, index) =>
+        renderSegment(segment, { isLast: index === split.answer.length - 1, dim: false })
+      )}
     </>
   );
-}
-
-type AssistantSegment =
-  | { kind: 'tools'; parts: ChatToolPart[] }
-  | { kind: 'part'; part: Exclude<ChatMessagePart, ChatToolPart> };
-
-/** Collect runs of adjacent tool parts so the transcript can group them. */
-function groupAssistantParts(parts: ChatMessagePart[]): AssistantSegment[] {
-  const segments: AssistantSegment[] = [];
-
-  for (const part of parts) {
-    if (part.type === 'tool') {
-      const last = segments[segments.length - 1];
-      if (last?.kind === 'tools') {
-        last.parts.push(part);
-      } else {
-        segments.push({ kind: 'tools', parts: [part] });
-      }
-      continue;
-    }
-    segments.push({ kind: 'part', part });
-  }
-
-  return segments;
 }
 
 /**
@@ -523,6 +555,9 @@ function MessageRow({
           content={message.content}
           parts={message.parts}
           deferRichContent={deferRichContent}
+          turnId={message.id}
+          durationMs={message.latencyMs}
+          isStreaming={message.status === 'streaming'}
           onRespondToolApproval={onRespondToolApproval}
         />
 
@@ -549,6 +584,7 @@ function MessageRow({
 
 function StreamingRow({
   parts,
+  turnId,
   errorMessage,
   notice,
   status,
@@ -556,6 +592,8 @@ function StreamingRow({
   onRetry,
 }: {
   parts: ChatMessagePart[];
+  /** The draft's request id — keys the turn's `Worked for …` disclosure. */
+  turnId: string;
   errorMessage?: string;
   /** Why this turn is taking longer than it looks like it should. */
   notice?: DraftStateLike['notice'];
@@ -593,7 +631,7 @@ function StreamingRow({
         ) : isAborted ? (
           <>
             {hasParts ? (
-              <AssistantParts content="" parts={parts} onRespondToolApproval={onRespondToolApproval} />
+              <AssistantParts content="" parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} />
             ) : null}
             <div
               className={cn(
@@ -609,7 +647,7 @@ function StreamingRow({
           </>
         ) : (
           <>
-            <AssistantParts content="" isStreaming parts={parts} onRespondToolApproval={onRespondToolApproval} />
+            <AssistantParts content="" isStreaming parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} />
             {/*
               A dim line under the shimmer, not a banner: the turn has not
               failed, and a warning-shaped box would say it had. Before this
@@ -706,14 +744,27 @@ function estimateHistoryRowHeight(message: ChatMessage) {
   const cells = toolParts.length ? buildToolCells(toolParts) : [];
   const hasChangedFilesBar =
     message.status === 'complete' && cells.some((cell) => cell.detail.type === 'diff');
+  // `buildToolCells` drops plan parts, and however many of them a turn made
+  // they collapse into one row — so they are counted once, not N times.
+  const hasPlan = toolParts.some(isPlanToolPart);
+  /*
+   * A finished turn folds its whole work phase — every tool cell, every
+   * reasoning row, and the commentary between them — behind one `Worked
+   * for …` line, so the estimate counts one row for the lot. While the turn
+   * is still streaming the fold is open and the rows are all on screen.
+   */
+  const activityIsFolded = message.status !== 'streaming' && cells.length > 0;
+  const activityHeight = activityIsFolded
+    ? ROW_HEIGHT.reasoning
+    : cells.length * ROW_HEIGHT.toolCell + reasoningCount * ROW_HEIGHT.reasoning;
 
   return Math.max(
     44,
     ROW_HEIGHT.assistantBase +
       Math.ceil(message.content.length / 100) * ROW_HEIGHT.textLine +
-      cells.length * ROW_HEIGHT.toolCell +
+      activityHeight +
+      (hasPlan ? ROW_HEIGHT.toolCell : 0) +
       (hasChangedFilesBar ? ROW_HEIGHT.changedFilesBar : 0) +
-      reasoningCount * ROW_HEIGHT.reasoning +
       visualCount * ROW_HEIGHT.visual +
       fileCount * ROW_HEIGHT.file
   );
@@ -744,8 +795,10 @@ function SuggestionsState({
   return (
     <ConversationEmptyState className="p-0">
       <div className="flex w-full max-w-xl flex-col items-center text-center">
-        {/* Ghost logo: an outline mark in the faint text colour. */}
-        <Sparkles aria-hidden className="mb-5 h-10 w-10 text-text-faint" strokeWidth={1.25} />
+        {/* Ghost logo: the Atlas keycap, outlined, in the faint text colour.
+            This was a generic `Sparkles` standing in for a mark we already
+            had. */}
+        <AtlasMark variant="outline" className="mb-5 h-10 w-10 text-text-faint" />
         <h2 className="text-3xl font-normal leading-[1.15] text-text-primary">
           {projectName ? (
             <>
@@ -1257,6 +1310,7 @@ export function ChatWindow({
           <div style={{ marginTop: messages.length > 0 ? HISTORY_GAP_PX : 0 }}>
             <StreamingRow
               parts={draft.parts}
+              turnId={draft.requestId}
               errorMessage={draft.errorMessage}
               notice={draft.notice}
               status={draft.status}

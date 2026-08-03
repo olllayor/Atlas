@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from './client';
+import { countDiffLines } from './repositories/fileChangesRepo';
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -45,7 +46,12 @@ CREATE TABLE IF NOT EXISTS conversations (
   default_model_id TEXT,
   -- 1 while the title is machine-generated and may still be improved on;
   -- a user rename clears it and the app never overwrites the title again.
-  title_auto INTEGER NOT NULL DEFAULT 0
+  title_auto INTEGER NOT NULL DEFAULT 0,
+  -- Timestamps, not flags: the pinned section is ordered by when each chat was
+  -- pinned, and archiving is reversible, so the moment it happened is the fact
+  -- worth keeping. NULL means "not pinned" / "not archived".
+  pinned_at TEXT,
+  archived_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -348,7 +354,10 @@ CREATE TABLE IF NOT EXISTS projects (
   root TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_used_at TEXT
+  last_used_at TEXT,
+  -- Same reasoning as conversations.pinned_at above: a timestamp, so the pinned
+  -- section keeps a stable order of its own, independent of recency.
+  pinned_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_last_used
@@ -374,6 +383,11 @@ CREATE TABLE IF NOT EXISTS file_changes (
   diff_text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   tool_call_id TEXT,
+  -- Counted from diff_text when the row is written. The sidebar wants
+  -- "+240 −18" for every conversation at once, and parsing every stored diff to
+  -- answer that would make an aggregate over text the price of drawing a list.
+  lines_added INTEGER NOT NULL DEFAULT 0,
+  lines_removed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -530,6 +544,44 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!conversationColumns.includes('tool_permission_mode')) {
     database.exec("ALTER TABLE conversations ADD COLUMN tool_permission_mode TEXT NOT NULL DEFAULT 'ask'");
+  }
+
+  // Migration: pin and archive. Both default to NULL, so every existing
+  // conversation reads back as unpinned and unarchived — nothing disappears
+  // from the sidebar on upgrade.
+  if (!conversationColumns.includes('pinned_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN pinned_at TEXT');
+  }
+
+  if (!conversationColumns.includes('archived_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN archived_at TEXT');
+  }
+
+  // Migration: pinned projects. `projects` is younger than the migration block
+  // and had never been probed, so it gets its own column read.
+  const projectColumns = database
+    .prepare<[], { name: string }>('PRAGMA table_info(projects)')
+    .all()
+    .map((column) => column.name);
+
+  if (projectColumns.length > 0 && !projectColumns.includes('pinned_at')) {
+    database.exec('ALTER TABLE projects ADD COLUMN pinned_at TEXT');
+  }
+
+  // Migration: precomputed diff line counts. Both default to 0, so rows written
+  // before this lands read as "changed nothing" until the backfill below runs —
+  // which is why the backfill is not optional.
+  const fileChangeColumns = database
+    .prepare<[], { name: string }>('PRAGMA table_info(file_changes)')
+    .all()
+    .map((column) => column.name);
+
+  if (!fileChangeColumns.includes('lines_added')) {
+    database.exec('ALTER TABLE file_changes ADD COLUMN lines_added INTEGER NOT NULL DEFAULT 0');
+  }
+
+  if (!fileChangeColumns.includes('lines_removed')) {
+    database.exec('ALTER TABLE file_changes ADD COLUMN lines_removed INTEGER NOT NULL DEFAULT 0');
   }
 
   // Migration: Add border_radius to app_settings
@@ -741,5 +793,113 @@ export function applySchema(database: SqliteDatabase) {
     database
       .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
       .run('migrations.toolSupportTriState', 'done');
+  }
+
+  // Migration: backfill the diff line counts for rows written before the two
+  // columns existed. Recomputing from diff_text is deterministic, so running
+  // this against an already-backfilled database changes nothing; the settings
+  // key exists only so a launch does not re-parse every diff ever stored.
+  if (!settingsKeys.includes('migrations.fileChangeLineCounts')) {
+    const rows = database
+      .prepare<[], { id: string; diff_text: string }>('SELECT id, diff_text FROM file_changes')
+      .all();
+
+    const update = database.prepare(
+      'UPDATE file_changes SET lines_added = @linesAdded, lines_removed = @linesRemoved WHERE id = @id'
+    );
+
+    for (const row of rows) {
+      const { linesAdded, linesRemoved } = countDiffLines(row.diff_text);
+      update.run({ id: row.id, linesAdded, linesRemoved });
+    }
+
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run('migrations.fileChangeLineCounts', 'done');
+  }
+
+  applyMessageSearchIndex(database, settingsKeys.includes(MESSAGE_SEARCH_BACKFILL_KEY));
+}
+
+/** The FTS5 index over `messages.content`, and the name search probes for. */
+export const MESSAGE_SEARCH_TABLE = 'messages_fts';
+
+const MESSAGE_SEARCH_BACKFILL_KEY = 'migrations.messageSearchBackfill';
+
+/**
+ * External-content FTS5: the index stores postings, `messages` stays the only
+ * copy of the text. A contentless table would have been smaller still, but it
+ * cannot serve `snippet()` — and a search result without the matching line in
+ * it is just a list of chat titles again, which is what this replaces.
+ *
+ * The triggers are the documented external-content pattern. The update trigger
+ * is deliberately unconditional on *which* columns moved and only skips when
+ * the text is unchanged: the delete side has to be handed exactly the text that
+ * was indexed, so skipping a content write (during streaming, say) and catching
+ * up later would delete tokens that were never inserted and quietly corrupt the
+ * index. Status-only updates — the common case — still cost nothing.
+ */
+const MESSAGE_SEARCH_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS ${MESSAGE_SEARCH_TABLE} USING fts5(
+  content,
+  content='messages',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+  INSERT INTO ${MESSAGE_SEARCH_TABLE}(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+  INSERT INTO ${MESSAGE_SEARCH_TABLE}(${MESSAGE_SEARCH_TABLE}, rowid, content)
+  VALUES ('delete', old.rowid, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+WHEN old.content IS NOT new.content BEGIN
+  INSERT INTO ${MESSAGE_SEARCH_TABLE}(${MESSAGE_SEARCH_TABLE}, rowid, content)
+  VALUES ('delete', old.rowid, old.content);
+  INSERT INTO ${MESSAGE_SEARCH_TABLE}(rowid, content) VALUES (new.rowid, new.content);
+END;
+`;
+
+/**
+ * Build the message search index, or decide the app lives without one.
+ *
+ * FTS5 is a compile-time option. It is present in the better-sqlite3 build this
+ * app ships and in node:sqlite, but a rebuild against a system SQLite that
+ * lacks it would make every statement here fail — and a schema step that throws
+ * on boot is an app that will not start, to add a search box. So the failure is
+ * swallowed and `MessageSearchRepo` falls back to a LIKE scan when it finds no
+ * index. The virtual table is created first on purpose: its failure aborts the
+ * script before any trigger can be left pointing at a table that is not there.
+ */
+function applyMessageSearchIndex(database: SqliteDatabase, alreadyBackfilled: boolean) {
+  const hadIndex = Boolean(
+    database
+      .prepare<[string], { present: number }>(
+        `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`
+      )
+      .get(MESSAGE_SEARCH_TABLE)
+  );
+
+  try {
+    database.exec(MESSAGE_SEARCH_SCHEMA);
+  } catch {
+    return;
+  }
+
+  // 'rebuild' re-derives the whole index from `messages`, which is both the
+  // one-time backfill for existing rows and a repair. It reads every message,
+  // so it is done once and remembered rather than on every launch — except when
+  // the table was not there a moment ago, in which case it was just created
+  // empty and the remembered "already backfilled" would be a promise about an
+  // index that no longer exists.
+  if (!hadIndex || !alreadyBackfilled) {
+    database.exec(`INSERT INTO ${MESSAGE_SEARCH_TABLE}(${MESSAGE_SEARCH_TABLE}) VALUES('rebuild')`);
+    database
+      .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+      .run(MESSAGE_SEARCH_BACKFILL_KEY, 'done');
   }
 }

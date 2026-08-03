@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   ChevronRight,
   Folder,
   FolderOpen,
@@ -6,6 +8,8 @@ import {
   LayoutGrid,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Search,
   SquarePen,
@@ -23,8 +27,14 @@ import type {
 } from '../../shared/contracts';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
+import { RailSectionLabel } from './railPrimitives';
 import { SidebarConversationRow } from './SidebarConversationRow';
 import { SidebarConversationHoverCard, SidebarProjectHoverCard } from './SidebarHoverCard';
+import {
+  SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS,
+  notifySidebarHoverCardOpenChange,
+  useSidebarHoverCardDelay,
+} from './sidebarHoverCardDelay';
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
 import { BrushSpinner } from './ui/brush-spinner';
 import {
@@ -43,6 +53,8 @@ import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import {
   groupSidebarConversationItems,
+  sortProjectsByPin,
+  splitPinnedSidebarItems,
   splitSidebarItemsByProject,
   type SidebarConversationItem,
 } from './sidebarViewModel';
@@ -50,8 +62,26 @@ import {
 /** Chats shown per project before the section collapses behind "Show more". */
 const PROJECT_PREVIEW_COUNT = 5;
 
+/** Stable identity, so "no rows here" does not invalidate a memo every render. */
+const EMPTY_SIDEBAR_ITEMS: SidebarConversationItem[] = [];
+
 type SidebarProps = {
   items: SidebarConversationItem[];
+  /**
+   * Archived chats, same shape as `items` and deliberately a separate list:
+   * `items` is what every other consumer of the conversation list sees, and an
+   * archived chat has to be absent from all of them.
+   *
+   * Empty until the section is first expanded — see `onLoadArchivedChats`.
+   */
+  archivedItems: SidebarConversationItem[];
+  /**
+   * Whether anything is archived at all, known before `archivedItems` is
+   * fetched. False hides the section outright: a user who has never archived
+   * has no reason to carry a permanent empty disclosure.
+   */
+  hasArchivedChats: boolean;
+  isLoadingArchivedChats: boolean;
   projects: WorkspaceProject[];
   selectedConversationId: string | null;
   collapsed: boolean;
@@ -87,6 +117,22 @@ type SidebarProps = {
    * hides "Edit project" rather than offering a rename that goes nowhere.
    */
   onRenameProject?: (projectId: string, title: string) => void;
+  /** Pinning lifts a chat into its own section; archiving hides it, reversibly. */
+  onSetConversationPinned: (conversationId: string, pinned: boolean) => void;
+  onArchiveConversation: (conversationId: string) => void;
+  /**
+   * Un-archives the chat *and* opens it. Archived is a holding area, not a
+   * read-only mode: nothing downstream models an open-but-archived chat, so
+   * restoring is the only way in.
+   */
+  onRestoreConversation: (conversationId: string) => void;
+  /**
+   * Fetches `archivedItems`. Called the first time the section is expanded,
+   * never on mount — the query behind it scans a table with no reason to be
+   * small, and most sessions never look.
+   */
+  onLoadArchivedChats: () => void;
+  onSetProjectPinned: (projectId: string, pinned: boolean) => void;
   onOpenLanding: () => void;
   onOpenSites: () => void;
   onOpenSearch: () => void;
@@ -127,16 +173,8 @@ type NavRowProps = {
   title?: string;
 };
 
-/**
- * Section label above a run of rows ("Projects", "Recents", "Today").
- *
- * Sentence case at 13px in `--text-tertiary`, per the reference spec §3.4 —
- * these used to be 11px uppercase with 0.12em tracking, which reads as a
- * form-field legend and shouted over the row titles it introduces.
- */
-function SidebarSectionLabel({ children }: { children: React.ReactNode }) {
-  return <span className="min-w-0 flex-1 truncate text-sm text-text-tertiary">{children}</span>;
-}
+/** Shared with the Settings and Sites rails — see components/railPrimitives. */
+const SidebarSectionLabel = RailSectionLabel;
 
 /** Primary nav row: icon + 15px label, hover bg only — no borders, no pills. */
 function SidebarNavRow({ icon, label, onClick, trailing, title }: NavRowProps) {
@@ -230,6 +268,9 @@ function RowIconButton({
 
 export function Sidebar({
   items,
+  archivedItems,
+  hasArchivedChats,
+  isLoadingArchivedChats,
   projects,
   selectedConversationId,
   collapsed,
@@ -255,6 +296,11 @@ export function Sidebar({
   onRevealProject,
   onDetachProject,
   onRenameProject,
+  onSetConversationPinned,
+  onArchiveConversation,
+  onRestoreConversation,
+  onLoadArchivedChats,
+  onSetProjectPinned,
   onOpenLanding,
   onOpenSites,
   onOpenSearch,
@@ -277,9 +323,27 @@ export function Sidebar({
   const cancelRenameRef = useRef(false);
   const cancelProjectRenameRef = useRef(false);
 
+  /**
+   * Project and chat cards share one delay, so the wait is paid once per run
+   * down the list instead of once per row. Reading it as state (rather than
+   * from a ref) is deliberate: Radix samples `openDelay` when the pointer
+   * enters, so the number has to be on the prop before that happens.
+   */
+  const hoverCardOpenDelay = useSidebarHoverCardDelay();
+
+  /**
+   * Pinned chats come out of the list before anything else is grouped, so a
+   * pinned chat appears once — in Pinned — rather than once there and once
+   * under its project.
+   */
+  const { pinned: pinnedItems, rest: unpinnedItems } = useMemo(
+    () => splitPinnedSidebarItems(items),
+    [items]
+  );
+  const orderedProjects = useMemo(() => sortProjectsByPin(projects), [projects]);
   const { sections, ungrouped } = useMemo(
-    () => splitSidebarItemsByProject(items, projects),
-    [items, projects]
+    () => splitSidebarItemsByProject(unpinnedItems, orderedProjects),
+    [orderedProjects, unpinnedItems]
   );
   const groups = useMemo(() => groupSidebarConversationItems(ungrouped, Date.now()), [ungrouped]);
 
@@ -302,6 +366,28 @@ export function Sidebar({
   const [recentsOpenPreference, setRecentsOpen] = usePersistentFlag('atlas.sidebar.recents-open', false);
   const hasProjectSections = sections.length > 0 || projects.length > 0;
   const recentsExpanded = recentsOpenPreference || !hasProjectSections;
+
+  /**
+   * Archived is the same kind of disclosure as Recents and remembers the same
+   * way — but it is never force-expanded: it is the bottom of the list and the
+   * one section whose contents you are done with.
+   */
+  const [archivedExpanded, setArchivedExpanded] = usePersistentFlag('atlas.sidebar.archived-open', false);
+
+  /**
+   * The archive loads on expansion, not on mount. Keyed on the expanded flag
+   * rather than the click handler because the flag is persisted: a window that
+   * opens with the section already expanded has to fetch too, and that is not a
+   * click.
+   */
+  const [archivedRequested, setArchivedRequested] = useState(false);
+  useEffect(() => {
+    if (!archivedExpanded || !hasArchivedChats || archivedRequested) {
+      return;
+    }
+    setArchivedRequested(true);
+    onLoadArchivedChats();
+  }, [archivedExpanded, archivedRequested, hasArchivedChats, onLoadArchivedChats]);
 
   // Selecting a chat from a collapsed project used to hide the row you just
   // clicked. Opening one always re-expands its section.
@@ -375,9 +461,23 @@ export function Sidebar({
     [collapsedProjectIds, expandedProjectIds, sections, selectedConversationId]
   );
 
+  /**
+   * The archived rows that are actually on screen. Archived rows are rows: they
+   * take focus and answer the arrow keys like any other, so they have to be
+   * resolved once here and reused by both the markup and `visibleRowIds`.
+   */
+  const visibleArchivedItems = useMemo(
+    () => (hasArchivedChats && archivedExpanded ? archivedItems : EMPTY_SIDEBAR_ITEMS),
+    [archivedExpanded, archivedItems, hasArchivedChats]
+  );
+
   /** Rendered rows, in visual order — collapsed sections contribute nothing. */
   const visibleRowIds = useMemo(() => {
     const ids: string[] = [];
+
+    for (const item of pinnedItems) {
+      ids.push(item.id);
+    }
 
     for (const section of projectVisibility) {
       for (const item of section.visibleItems) {
@@ -395,8 +495,21 @@ export function Sidebar({
       ids.push(selectedUngroupedItem.id);
     }
 
+    // Last, because Archived is the last section: this list is what End and the
+    // arrow keys walk, and an order that disagrees with the markup skips rows.
+    for (const item of visibleArchivedItems) {
+      ids.push(item.id);
+    }
+
     return ids;
-  }, [groups, projectVisibility, recentsExpanded, selectedUngroupedItem]);
+  }, [
+    groups,
+    pinnedItems,
+    projectVisibility,
+    recentsExpanded,
+    selectedUngroupedItem,
+    visibleArchivedItems,
+  ]);
 
   // Exactly one row is tabbable; the arrow keys move focus inside the list.
   // The candidate must be *rendered* — a target inside a collapsed section
@@ -536,13 +649,21 @@ export function Sidebar({
    * One conversation row, in every state it can be in (renaming, armed for
    * delete, ordinary). Extracted because project sections and the Recents
    * date groups render the same row and used to be a copy-paste apart.
+   *
+   * `archived` re-points the row's verbs rather than forking it: the row's
+   * chrome, its hover card, its delete confirm and its place in the roving
+   * tabindex are all identical, and only the click target and the two actions
+   * differ.
    */
   const renderConversationRow = useCallback(
     (
       item: SidebarConversationItem,
-      options: { indented?: boolean; showTimestamp?: boolean } = {}
+      options: { indented?: boolean; showTimestamp?: boolean; archived?: boolean } = {}
     ) => {
-      const isActive = item.id === selectedConversationId;
+      const isArchived = options.archived ?? false;
+      // An archived row is never the open chat: clicking one restores it, which
+      // moves it out of this list before it could be selected here.
+      const isActive = !isArchived && item.id === selectedConversationId;
       const indentClass = options.indented ? 'pl-8' : 'px-2';
       const showTimestamp = options.showTimestamp ?? true;
 
@@ -605,9 +726,15 @@ export function Sidebar({
       const project = item.projectId
         ? (projects.find((candidate) => candidate.id === item.projectId) ?? null)
         : null;
+      const isPinned = Boolean(item.pinnedAt);
 
       return (
-        <HoverCard key={item.id} openDelay={450} closeDelay={120}>
+        <HoverCard
+          key={item.id}
+          openDelay={hoverCardOpenDelay}
+          closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
+          onOpenChange={notifySidebarHoverCardOpenChange}
+        >
           <ContextMenu>
             <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
               <ContextMenuTrigger asChild>
@@ -631,9 +758,16 @@ export function Sidebar({
                     onFocus={() => setRovingId(item.id)}
                     onClick={() => {
                       setPendingDeleteId(null);
+                      if (isArchived) {
+                        onRestoreConversation(item.id);
+                        return;
+                      }
                       onSelect(item.id);
                     }}
-                    onDoubleClick={() => startRename(item)}
+                    // Renaming an archived row would write through to a list
+                    // this row is not in, so the title would not change until
+                    // the next fetch. Restore first, then rename.
+                    onDoubleClick={isArchived ? undefined : () => startRename(item)}
                     className={cn(
                       'relative flex h-8 min-w-0 flex-1 items-center rounded-md pr-2 text-left',
                       indentClass,
@@ -657,30 +791,76 @@ export function Sidebar({
                     them — the two never share the space, so nothing reflows
                     when the pointer arrives.
                   */}
+                  {/*
+                    Pin and archive, exactly the reference's pair — and the
+                    reason delete is not here: a hover slot is one twitch from a
+                    click, and only these two can be taken back. Rename and
+                    delete live in the context menu, where they cost a deliberate
+                    right-click.
+                  */}
                   <div className="pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100">
-                    {onRename ? (
+                    {isArchived ? (
+                      // Restore is spelled out rather than left to the row
+                      // click: clicking a row everywhere else in this list only
+                      // opens a chat, and this one also moves it.
                       <RowIconButton
-                        icon={<Pencil className="size-3.5" strokeWidth={1.75} aria-hidden />}
-                        label="Rename chat"
-                        onClick={() => startRename(item)}
+                        icon={<ArchiveRestore className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                        label="Restore chat"
+                        onClick={() => onRestoreConversation(item.id)}
                       />
-                    ) : null}
-                    <RowIconButton
-                      icon={<Trash2 className="size-3.5" strokeWidth={1.75} aria-hidden />}
-                      label="Delete chat"
-                      onClick={() => setPendingDeleteId(item.id)}
-                    />
+                    ) : (
+                      <>
+                        <RowIconButton
+                          icon={
+                            isPinned ? (
+                              <PinOff className="size-3.5" strokeWidth={1.75} aria-hidden />
+                            ) : (
+                              <Pin className="size-3.5" strokeWidth={1.75} aria-hidden />
+                            )
+                          }
+                          label={isPinned ? 'Unpin chat' : 'Pin chat'}
+                          onClick={() => onSetConversationPinned(item.id, !isPinned)}
+                        />
+                        <RowIconButton
+                          icon={<Archive className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                          label="Archive chat"
+                          onClick={() => onArchiveConversation(item.id)}
+                        />
+                      </>
+                    )}
                   </div>
                 </div>
               </ContextMenuTrigger>
             </HoverCardTrigger>
-            <ContextMenuContent className="w-40">
-              {onRename ? (
-                <ContextMenuItem onSelect={() => startRename(item)}>
-                  <Pencil aria-hidden />
-                  Rename
+            <ContextMenuContent className="w-44">
+              {/*
+                Archived rows get Restore and Delete and nothing else. Pin,
+                Archive and Rename all act on the live list this row has left,
+                so they would either no-op or write a change nothing here shows.
+              */}
+              {isArchived ? (
+                <ContextMenuItem onSelect={() => onRestoreConversation(item.id)}>
+                  <ArchiveRestore aria-hidden />
+                  Restore
                 </ContextMenuItem>
-              ) : null}
+              ) : (
+                <>
+                  <ContextMenuItem onSelect={() => onSetConversationPinned(item.id, !isPinned)}>
+                    {isPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+                    {isPinned ? 'Unpin' : 'Pin'}
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => onArchiveConversation(item.id)}>
+                    <Archive aria-hidden />
+                    Archive
+                  </ContextMenuItem>
+                  {onRename ? (
+                    <ContextMenuItem onSelect={() => startRename(item)}>
+                      <Pencil aria-hidden />
+                      Rename
+                    </ContextMenuItem>
+                  ) : null}
+                </>
+              )}
               <ContextMenuItem
                 variant="destructive"
                 onSelect={() => {
@@ -701,6 +881,9 @@ export function Sidebar({
             project={project}
             isRunning={item.isRunning}
             isFailed={item.isFailed}
+            workspaceMode={item.workspaceMode}
+            modelId={item.modelId}
+            changeStats={item.changeStats}
           />
         </HoverCard>
       );
@@ -708,9 +891,13 @@ export function Sidebar({
     [
       commitRename,
       conversationJumpLabelById,
+      hoverCardOpenDelay,
+      onArchiveConversation,
       onDelete,
       onRename,
+      onRestoreConversation,
       onSelect,
+      onSetConversationPinned,
       pendingDeleteId,
       projects,
       renameValue,
@@ -724,7 +911,7 @@ export function Sidebar({
 
   return (
     <aside
-      className="relative flex shrink-0 flex-col overflow-hidden bg-bg-panel"
+      className="sidebar-surface relative flex shrink-0 flex-col overflow-hidden"
       style={{
         viewTransitionName: 'app-sidebar',
         width: collapsed ? 'var(--sidebar-width-collapsed)' : `${width}px`,
@@ -894,9 +1081,26 @@ export function Sidebar({
               </div>
             ) : null}
 
+            {/*
+              Pinned sits above Projects, as in the reference. It has no
+              disclosure and no "Show more": a section you curated by hand is
+              short by construction, and hiding it behind a chevron would undo
+              the only thing pinning does.
+            */}
+            {pinnedItems.length > 0 ? (
+              <section aria-label="Pinned">
+                <div className="sidebar-section-heading sticky top-0 z-10 flex items-center gap-1 px-2 pb-1.5 pt-5">
+                  <SidebarSectionLabel>Pinned</SidebarSectionLabel>
+                </div>
+                <div className="flex flex-col">
+                  {pinnedItems.map((item) => renderConversationRow(item))}
+                </div>
+              </section>
+            ) : null}
+
             {sections.length > 0 || projects.length > 0 ? (
               <section aria-label="Projects">
-                <div className="sticky top-0 z-10 flex items-center gap-1 bg-bg-panel px-2 pb-1.5 pt-5">
+                <div className="sidebar-section-heading sticky top-0 z-10 flex items-center gap-1 px-2 pb-1.5 pt-5">
                   <SidebarSectionLabel>Projects</SidebarSectionLabel>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -915,6 +1119,7 @@ export function Sidebar({
 
                 {projectVisibility.map(({ project, projectItems, isCollapsed, visibleItems, hiddenCount }) => {
                   const isCurrent = project.id === selectedProjectId;
+                  const isProjectPinned = Boolean(project.pinnedAt);
                   const FolderIcon = isCollapsed ? Folder : FolderOpen;
 
                   return (
@@ -941,7 +1146,11 @@ export function Sidebar({
                           className="h-8 w-full rounded-md bg-bg-hover px-2 text-md text-text-primary ring-1 ring-border-strong outline-none"
                         />
                       ) : (
-                        <HoverCard openDelay={450} closeDelay={120}>
+                        <HoverCard
+                          openDelay={hoverCardOpenDelay}
+                          closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
+                          onOpenChange={notifySidebarHoverCardOpenChange}
+                        >
                           <ContextMenu>
                             <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
                               <ContextMenuTrigger asChild>
@@ -1009,6 +1218,12 @@ export function Sidebar({
                                         </button>
                                       </DropdownMenuTrigger>
                                       <DropdownMenuContent align="start" className="w-52">
+                                        <DropdownMenuItem
+                                          onSelect={() => onSetProjectPinned(project.id, !isProjectPinned)}
+                                        >
+                                          {isProjectPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+                                          {isProjectPinned ? 'Unpin project' : 'Pin project'}
+                                        </DropdownMenuItem>
                                         {onRenameProject ? (
                                           <DropdownMenuItem onSelect={() => startProjectRename(project)}>
                                             <Pencil aria-hidden />
@@ -1046,6 +1261,12 @@ export function Sidebar({
                                 <SquarePen aria-hidden />
                                 New chat here
                               </ContextMenuItem>
+                              <ContextMenuItem
+                                onSelect={() => onSetProjectPinned(project.id, !isProjectPinned)}
+                              >
+                                {isProjectPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+                                {isProjectPinned ? 'Unpin project' : 'Pin project'}
+                              </ContextMenuItem>
                               {onRenameProject ? (
                                 <ContextMenuItem onSelect={() => startProjectRename(project)}>
                                   <Pencil aria-hidden />
@@ -1069,6 +1290,8 @@ export function Sidebar({
                           <SidebarProjectHoverCard
                             project={project}
                             chatCount={projectItems.length}
+                            onTogglePin={() => onSetProjectPinned(project.id, !isProjectPinned)}
+                            onReveal={() => onRevealProject(project.id)}
                             onEdit={
                               onRenameProject
                                 ? () => {
@@ -1086,10 +1309,11 @@ export function Sidebar({
                       {!isCollapsed ? (
                         <div className="flex flex-col">
                           {visibleItems.map((item) =>
-                            // No relative time on nested rows, per the
-                            // reference: the project already dates them, and
-                            // the slot cost 56px of an already-narrow title.
-                            renderConversationRow(item, { indented: true, showTimestamp: false })
+                            // Nested rows keep the relative time: the reference
+                            // frame shows `4h` / `8h` on the chats under both
+                            // Codex and ChatGPT, so dropping it here was the
+                            // one place the list stopped matching.
+                            renderConversationRow(item, { indented: true })
                           )}
 
                           {projectItems.length === 0 ? (
@@ -1144,7 +1368,7 @@ export function Sidebar({
                   onClick={() => setRecentsOpen((current) => !current)}
                   disabled={!hasProjectSections}
                   aria-expanded={recentsExpanded}
-                  className="group sticky top-0 z-10 flex w-full items-center gap-1 bg-bg-panel px-2 pb-1.5 pt-5 text-left disabled:cursor-default"
+                  className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left disabled:cursor-default"
                 >
                   <SidebarSectionLabel>Recents</SidebarSectionLabel>
                   {hasProjectSections ? (
@@ -1170,6 +1394,51 @@ export function Sidebar({
                   ))
                 ) : selectedUngroupedItem ? (
                   <div className="flex flex-col">{renderConversationRow(selectedUngroupedItem)}</div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/*
+              Archived, last and collapsed by default. It exists because
+              archiving was otherwise a one-way door: the toast's Undo expired
+              after six seconds and nothing in the app could reach the chat
+              again. The section renders only when there is something in it, so
+              a user who has never archived never sees it.
+            */}
+            {hasArchivedChats ? (
+              <section aria-label="Archived">
+                <button
+                  type="button"
+                  onClick={() => setArchivedExpanded((current) => !current)}
+                  aria-expanded={archivedExpanded}
+                  className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
+                >
+                  <SidebarSectionLabel>Archived</SidebarSectionLabel>
+                  <ChevronRight
+                    className={cn(
+                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
+                      archivedExpanded && 'rotate-90'
+                    )}
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                </button>
+
+                {archivedExpanded ? (
+                  visibleArchivedItems.length > 0 ? (
+                    <div className="flex flex-col">
+                      {visibleArchivedItems.map((item) =>
+                        renderConversationRow(item, { archived: true })
+                      )}
+                    </div>
+                  ) : (
+                    // The fetch is a table scan, so the wait is real and the
+                    // empty state has to wait for it — showing "Nothing
+                    // archived" first and then filling the list reads as a bug.
+                    <div className="flex h-8 w-full items-center px-2 text-sm text-text-faint">
+                      {isLoadingArchivedChats || !archivedRequested ? 'Loading…' : 'Nothing archived'}
+                    </div>
+                  )
                 ) : null}
               </section>
             ) : null}

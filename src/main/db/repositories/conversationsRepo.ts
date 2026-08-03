@@ -14,8 +14,10 @@ import type {
   ConversationStats,
   ConversationSummary,
   MessageRole,
+  MessageSearchHit,
   MessageStatus,
   ProviderId,
+  SearchMessagesRequest,
   ToolExecutionRecord,
   WorkLogEntry,
   WorkspaceMode
@@ -28,6 +30,7 @@ import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { DEFAULT_TOOL_PERMISSION_MODE, isToolPermissionMode } from '../../../shared/chatParameters';
 import type { SqliteDatabase } from '../client';
+import { MessageSearchRepo } from './messageSearchRepo';
 import type { RuntimeStateRepo } from './runtimeStateRepo';
 import type { ToolExecutionsRepo } from './toolExecutionsRepo';
 
@@ -41,6 +44,8 @@ type ConversationRow = {
   workspace_mode: string | null;
   project_id: string | null;
   tool_permission_mode: string | null;
+  pinned_at: string | null;
+  archived_at: string | null;
 };
 
 type ConversationSummaryRow = {
@@ -61,6 +66,114 @@ type ConversationSummaryRow = {
   lastError: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  pinnedAt: string | null;
+  archivedAt: string | null;
+  /** NULL for a conversation that never changed a file — the LEFT JOIN missed. */
+  changedFileCount: number | null;
+  changedLinesAdded: number | null;
+  changedLinesRemoved: number | null;
+};
+
+/**
+ * The summary projection, shared by the sidebar listing and by the
+ * single-row lookups that write paths return.
+ *
+ * It is one string rather than two so a column added to the list can never be
+ * missing from the row a mutation hands back — the previous single-row path was
+ * `list().find(...)`, which silently returned undefined for any conversation the
+ * listing filtered out.
+ */
+const SUMMARY_SELECT = `
+  SELECT
+    c.id AS id,
+    c.title AS title,
+    c.created_at AS createdAt,
+    c.updated_at AS updatedAt,
+    (
+      SELECT substr(m.content, 1, 160)
+      FROM messages m
+      WHERE m.conversation_id = c.id
+        AND NOT (
+          m.role = 'assistant'
+          AND m.status = 'streaming'
+          AND trim(m.content) = ''
+        )
+      ORDER BY m.created_at DESC
+      LIMIT 1
+    ) AS lastMessagePreview,
+    (
+      SELECT substr(m.content, 1, 160)
+      FROM messages m
+      WHERE m.conversation_id = c.id
+        AND m.role = 'user'
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 1
+    ) AS lastUserMessagePreview,
+    (
+      SELECT substr(m.content, 1, 160)
+      FROM messages m
+      WHERE m.conversation_id = c.id
+        AND m.role = 'assistant'
+        AND NOT (m.status = 'streaming' AND trim(m.content) = '')
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 1
+    ) AS lastAssistantMessagePreview,
+    (
+      SELECT m.created_at
+      FROM messages m
+      WHERE m.conversation_id = c.id
+        AND NOT (
+          m.role = 'assistant'
+          AND m.status = 'streaming'
+          AND trim(m.content) = ''
+        )
+      ORDER BY m.created_at DESC
+      LIMIT 1
+    ) AS lastMessageAt,
+    c.default_provider_id AS defaultProviderId,
+    c.default_model_id AS defaultModelId,
+    c.workspace_mode AS workspaceMode,
+    c.project_id AS projectId,
+    c.tool_permission_mode AS toolPermissionMode,
+    c.status AS status,
+    c.last_error AS lastError,
+    c.started_at AS startedAt,
+    c.completed_at AS completedAt,
+    c.pinned_at AS pinnedAt,
+    c.archived_at AS archivedAt,
+    changes.fileCount AS changedFileCount,
+    changes.linesAdded AS changedLinesAdded,
+    changes.linesRemoved AS changedLinesRemoved
+  FROM conversations c
+  -- One grouped pass over file_changes instead of a query per row: the sidebar
+  -- draws every conversation at once, and a per-conversation stats call would
+  -- turn one listing into N+1 round trips. idx_file_changes_conversation
+  -- already leads on conversation_id, so the grouping has its index and no new
+  -- one is warranted; the line counts are stored, not parsed, so the aggregate
+  -- never touches diff_text.
+  LEFT JOIN (
+    SELECT
+      conversation_id,
+      -- Distinct paths: several edits to one file are one changed file, which
+      -- is what "12 files" is understood to mean.
+      COUNT(DISTINCT file_path) AS fileCount,
+      SUM(lines_added) AS linesAdded,
+      SUM(lines_removed) AS linesRemoved
+    FROM file_changes
+    -- A reverted change left nothing behind, so it is not part of what this
+    -- session did.
+    WHERE status <> 'reverted'
+    GROUP BY conversation_id
+  ) changes ON changes.conversation_id = c.id
+`;
+
+export type ListConversationsOptions = {
+  /**
+   * Include archived chats. Absent or false is the sidebar's view; the archived
+   * view opts in explicitly, so nothing that filters archived rows out has to
+   * remember to.
+   */
+  includeArchived?: boolean;
 };
 
 type MessageRow = {
@@ -490,7 +603,16 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     status: row.status || 'idle',
     lastError: row.lastError,
     startedAt: row.startedAt,
-    completedAt: row.completedAt
+    completedAt: row.completedAt,
+    // Zeros, never null: the hover card reads these unconditionally, so the
+    // absence of changes is a value here rather than a case to handle.
+    changeStats: {
+      fileCount: row.changedFileCount ?? 0,
+      linesAdded: row.changedLinesAdded ?? 0,
+      linesRemoved: row.changedLinesRemoved ?? 0
+    },
+    pinnedAt: row.pinnedAt,
+    archivedAt: row.archivedAt
   };
 }
 
@@ -530,72 +652,58 @@ export class ConversationsRepo {
     private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
   ) {}
 
-  list() {
+  private messageSearchRepo: MessageSearchRepo | null = null;
+
+  /**
+   * The sidebar listing. Archived chats are excluded unless asked for: archive
+   * is the reversible alternative to delete, so the rows still exist and every
+   * surface that shows "your chats" must agree they are out of sight.
+   *
+   * Ordering stays `updated_at DESC` — the pinned split is a rendering
+   * decision, and doing it here would make the one ordering the renderer's
+   * relative timestamps agree with depend on pin state.
+   */
+  list(options: ListConversationsOptions = {}) {
     const rows = this.db
       .prepare<[], ConversationSummaryRow>(
         `
-          SELECT
-            c.id AS id,
-            c.title AS title,
-            c.created_at AS createdAt,
-            c.updated_at AS updatedAt,
-            (
-              SELECT substr(m.content, 1, 160)
-              FROM messages m
-              WHERE m.conversation_id = c.id
-                AND NOT (
-                  m.role = 'assistant'
-                  AND m.status = 'streaming'
-                  AND trim(m.content) = ''
-                )
-              ORDER BY m.created_at DESC
-              LIMIT 1
-            ) AS lastMessagePreview,
-            (
-              SELECT substr(m.content, 1, 160)
-              FROM messages m
-              WHERE m.conversation_id = c.id
-                AND m.role = 'user'
-              ORDER BY m.created_at DESC, m.id DESC
-              LIMIT 1
-            ) AS lastUserMessagePreview,
-            (
-              SELECT substr(m.content, 1, 160)
-              FROM messages m
-              WHERE m.conversation_id = c.id
-                AND m.role = 'assistant'
-                AND NOT (m.status = 'streaming' AND trim(m.content) = '')
-              ORDER BY m.created_at DESC, m.id DESC
-              LIMIT 1
-            ) AS lastAssistantMessagePreview,
-            (
-              SELECT m.created_at
-              FROM messages m
-              WHERE m.conversation_id = c.id
-                AND NOT (
-                  m.role = 'assistant'
-                  AND m.status = 'streaming'
-                  AND trim(m.content) = ''
-                )
-              ORDER BY m.created_at DESC
-              LIMIT 1
-            ) AS lastMessageAt,
-            c.default_provider_id AS defaultProviderId,
-            c.default_model_id AS defaultModelId,
-            c.workspace_mode AS workspaceMode,
-            c.project_id AS projectId,
-            c.tool_permission_mode AS toolPermissionMode,
-            c.status AS status,
-            c.last_error AS lastError,
-            c.started_at AS startedAt,
-            c.completed_at AS completedAt
-          FROM conversations c
+          ${SUMMARY_SELECT}
+          ${options.includeArchived ? '' : 'WHERE c.archived_at IS NULL'}
           ORDER BY c.updated_at DESC
         `
       )
       .all();
 
     return rows.map(mapConversationSummary);
+  }
+
+  /**
+   * Search message bodies, not titles.
+   *
+   * Archived chats stay out of the results unless asked for, exactly as in
+   * `list()` — a hit that opens a chat the user has archived would undo the
+   * archiving from the one surface that is supposed to respect it.
+   *
+   * The index lives behind `MessageSearchRepo`, built lazily so a conversations
+   * repo that never searches never touches it.
+   */
+  searchMessages(request: SearchMessagesRequest): MessageSearchHit[] {
+    this.messageSearchRepo ??= new MessageSearchRepo(this.db);
+    return this.messageSearchRepo.search(request);
+  }
+
+  /** One row in the same shape as `list`, archived or not. */
+  getSummary(conversationId: string): ConversationSummary | null {
+    const row = this.db
+      .prepare<{ conversationId: string }, ConversationSummaryRow>(
+        `
+          ${SUMMARY_SELECT}
+          WHERE c.id = @conversationId
+        `
+      )
+      .get({ conversationId });
+
+    return row ? mapConversationSummary(row) : null;
   }
 
   /**
@@ -648,7 +756,7 @@ export class ConversationsRepo {
         toolPermissionMode
       });
 
-    return this.list().find((conversation: ConversationSummary) => conversation.id === id)!;
+    return this.getSummary(id)!;
   }
 
   delete(conversationId: string) {
@@ -691,7 +799,60 @@ export class ConversationsRepo {
       throw new Error(`Conversation ${conversationId} not found.`);
     }
 
-    return this.list().find((conversation: ConversationSummary) => conversation.id === conversationId)!;
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * Pin or unpin. Like `rename`, this leaves `updated_at` alone: `updated_at`
+   * is what the sidebar shows as "2 hours ago" and orders by, and a pin that
+   * teleported the row to the top of history would be reporting activity that
+   * never happened.
+   *
+   * Pinning an already-pinned conversation keeps the original timestamp, so a
+   * redundant toggle cannot reshuffle the pinned section.
+   */
+  setPinned(conversationId: string, pinned: boolean): ConversationSummary {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET pinned_at = CASE WHEN @pinned = 1 THEN COALESCE(pinned_at, @now) ELSE NULL END
+          WHERE id = @conversationId
+        `
+      )
+      .run({ conversationId, pinned: pinned ? 1 : 0, now: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * Archive or restore. Archiving hides the chat from `list()` without
+   * destroying anything — messages, attachments and file changes are untouched,
+   * which is the whole reason archive exists instead of delete.
+   *
+   * `updated_at` is left alone for the same reason as `setPinned`: a restored
+   * chat must come back where it was, not at the top.
+   */
+  setArchived(conversationId: string, archived: boolean): ConversationSummary {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET archived_at = CASE WHEN @archived = 1 THEN COALESCE(archived_at, @now) ELSE NULL END
+          WHERE id = @conversationId
+        `
+      )
+      .run({ conversationId, archived: archived ? 1 : 0, now: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    return this.getSummary(conversationId)!;
   }
 
   /** The mode and project a turn should run under. Never taken from the renderer. */
@@ -772,7 +933,9 @@ export class ConversationsRepo {
             default_provider_id,
             default_model_id,
             workspace_mode,
-            project_id
+            project_id,
+            pinned_at,
+            archived_at
           FROM conversations
           WHERE id = @conversationId
         `
@@ -822,7 +985,9 @@ export class ConversationsRepo {
         defaultProviderId: conversation.default_provider_id,
         defaultModelId: conversation.default_model_id,
         workspaceMode: normalizeWorkspaceMode(conversation.workspace_mode),
-        projectId: conversation.project_id
+        projectId: conversation.project_id,
+        pinnedAt: conversation.pinned_at,
+        archivedAt: conversation.archived_at
       },
       messages: hydratedMessages
     };
@@ -840,7 +1005,9 @@ export class ConversationsRepo {
             default_provider_id,
             default_model_id,
             workspace_mode,
-            project_id
+            project_id,
+            pinned_at,
+            archived_at
           FROM conversations
           WHERE id = @conversationId
         `
@@ -933,7 +1100,9 @@ export class ConversationsRepo {
         defaultProviderId: conversation.default_provider_id,
         defaultModelId: conversation.default_model_id,
         workspaceMode: normalizeWorkspaceMode(conversation.workspace_mode),
-        projectId: conversation.project_id
+        projectId: conversation.project_id,
+        pinnedAt: conversation.pinned_at,
+        archivedAt: conversation.archived_at
       },
       messages,
       hasOlder,

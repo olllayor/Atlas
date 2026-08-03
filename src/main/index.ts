@@ -16,7 +16,7 @@ import {
   registerAttachmentProtocolHandler,
   registerAttachmentScheme,
 } from './attachments/attachmentProtocol';
-import { createWindow } from './bootstrap/createWindow';
+import { createWindow, syncNativeTheme } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
 import { createAppDatabase } from './db/client';
 import { registerDiagnosticsIpc } from './ipc/diagnostics';
@@ -32,6 +32,7 @@ import { registerGitIpc } from './ipc/git';
 import { registerFileChangesIpc } from './ipc/fileChanges';
 import { registerTerminalIpc } from './ipc/terminal';
 import { ProjectDetector } from './workspace/ProjectDetector';
+import { AgentInstructionsService } from './workspace/AgentInstructions';
 import { EnvStore } from './workspace/EnvStore';
 import { GitStateService } from './workspace/GitStateService';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
@@ -229,6 +230,7 @@ app.whenReady().then(async () => {
   sitePreviewHost.registerProtocolHandler();
 
   const projectDetector = new ProjectDetector();
+  const agentInstructions = new AgentInstructionsService();
   const envStore = new EnvStore(database.raw);
   const gitStateService = new GitStateService();
   const fileChangeTracker = new FileChangeTracker(database.fileChanges);
@@ -275,6 +277,7 @@ app.whenReady().then(async () => {
         resolveConversationWorkspace(database, conversationId, {
           fileChangeTracker,
           envStore,
+          agentInstructions,
           terminalHistory: database.terminalHistory,
           // Display-only echo: the agent's command already ran through the
           // approval ladder in `runCommand`, and nothing here touches stdin.
@@ -304,7 +307,7 @@ app.whenReady().then(async () => {
     onConversationDeleted: (conversationId) => ptyService.kill(conversationId),
   });
   registerProjectsIpc(database.projects);
-  registerWorkspaceIpc(database, projectDetector, envStore);
+  registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
   registerGitIpc(database, gitStateService);
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
@@ -358,6 +361,9 @@ app.whenReady().then(async () => {
     ),
   );
 
+  // Before the first window: the vibrancy material is created with the native
+  // appearance, so setting it afterwards leaves the first paint mismatched.
+  syncNativeTheme(database.settings.getThemeMode());
   const window = createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
   captureFirstLaunchIfNeeded();
   window.once('show', () => {

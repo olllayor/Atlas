@@ -1,7 +1,8 @@
 import { join } from 'node:path';
-import { BrowserWindow, type Event, type HandlerDetails } from 'electron/main';
+import { BrowserWindow, nativeTheme, type Event, type HandlerDetails } from 'electron/main';
 import { shell } from 'electron/common';
 
+import type { ThemeMode } from '../../shared/contracts';
 import { getAppIconPath } from './iconPath';
 
 /**
@@ -18,6 +19,30 @@ import { getAppIconPath } from './iconPath';
  *   tinted to match the panel background.
  */
 const TITLEBAR_HEIGHT = 52;
+
+/**
+ * Window background used whenever vibrancy is off. Exported because the
+ * settings IPC has to restore the same value when the setting is turned back
+ * off mid-session, and the two had drifted apart once already.
+ */
+export const OPAQUE_WINDOW_BACKGROUND = '#060709';
+
+/** Fully transparent, so the vibrancy layer behind the page can be seen. */
+export const VIBRANT_WINDOW_BACKGROUND = '#00000000';
+
+/**
+ * Points the native window appearance at the app's own theme setting.
+ *
+ * This matters for exactly one thing today, and it is not cosmetic: the macOS
+ * vibrancy material follows the *native* appearance, not the page. Left at the
+ * default the material tracked the OS, so running the app in light mode on a
+ * dark desktop put a near-white translucent sidebar over a dark grey material
+ * and the sidebar came out mid-grey. `ThemeMode` and Electron's `themeSource`
+ * share their three values, so this is a straight pass-through.
+ */
+export function syncNativeTheme(mode: ThemeMode) {
+  nativeTheme.themeSource = mode;
+}
 
 function titleBarOptions() {
   if (process.platform === 'darwin') {
@@ -57,8 +82,15 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
     show: false,
     autoHideMenuBar: true,
     ...(withVibrancy
-      ? { vibrancy: 'sidebar' as const, backgroundColor: '#00000000' }
-      : { backgroundColor: '#060709' }),
+      ? {
+          vibrancy: 'sidebar' as const,
+          // Without this the material desaturates to flat grey the moment the
+          // app loses focus, which reads as the sidebar having changed colour
+          // rather than as the window being in the background.
+          visualEffectState: 'active' as const,
+          backgroundColor: VIBRANT_WINDOW_BACKGROUND,
+        }
+      : { backgroundColor: OPAQUE_WINDOW_BACKGROUND }),
     ...titleBarOptions(),
     ...(icon && process.platform !== 'darwin' ? { icon } : {}),
     webPreferences: {

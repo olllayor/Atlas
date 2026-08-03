@@ -175,11 +175,12 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
     when: 'view.chat',
   },
   {
-    // The dock lives at the bottom of the window, so it takes the shortcut
-    // every terminal-in-an-app takes.
+    // `mod+J` is the panel toggle VS Code, Cursor and Zed all use, and unlike
+    // `mod+\`` it survives a non-US keyboard layout, where the backtick is
+    // often a dead key behind a modifier.
     command: 'terminal.toggle',
     shortcut: {
-      key: '`',
+      key: 'j',
       metaKey: false,
       ctrlKey: false,
       shiftKey: false,

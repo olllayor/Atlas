@@ -53,20 +53,20 @@ export function ReasoningCell({
     [partId, trimmed]
   );
 
-  const startReasoning = useTranscriptUiStore((state) => state.startReasoning);
-  const endReasoning = useTranscriptUiStore((state) => state.endReasoning);
-  const timing = useTranscriptUiStore((state) => state.reasoning[cellId]);
+  const startTiming = useTranscriptUiStore((state) => state.startTiming);
+  const endTiming = useTranscriptUiStore((state) => state.endTiming);
+  const timing = useTranscriptUiStore((state) => state.timings[cellId]);
 
   // The hashed fallback id only settles once ~96 characters have streamed
   // in, so the first delta or two can produce a throwaway id. Handing the
-  // previous one to `startReasoning` carries its start time across.
+  // previous one to `startTiming` carries its start time across.
   const previousCellId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isStreaming) startReasoning(cellId, previousCellId.current ?? undefined);
-    else endReasoning(cellId);
+    if (isStreaming) startTiming(cellId, previousCellId.current ?? undefined);
+    else endTiming(cellId);
     previousCellId.current = cellId;
-  }, [cellId, isStreaming, startReasoning, endReasoning]);
+  }, [cellId, isStreaming, startTiming, endTiming]);
 
   // Collapsed by default, streaming or not — the reference app shows only
   // the shimmering `Thinking` label while the model works. `useDisclosure`

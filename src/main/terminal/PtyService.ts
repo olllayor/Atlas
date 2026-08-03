@@ -14,6 +14,10 @@ import type { TerminalHistoryRepo } from '../db/repositories/terminalHistoryRepo
  * writes echo lines into it (never input). Mixing the two would mean an
  * approval-gated command could be smuggled in as terminal input.
  *
+ * Deliberately not sandboxed, for the same reason: the user is not the
+ * adversary the OS sandbox exists to contain. Confining their own login shell
+ * would break it and protect nothing.
+ *
  * Output is ephemeral: the scrollback lives in the renderer's xterm instance
  * and dies with it. Only the command line is persisted, to `terminal_history`.
  */

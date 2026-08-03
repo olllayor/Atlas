@@ -4,6 +4,10 @@ import { IPC_CHANNELS } from '../../shared/ipc';
 import type {
   ConversationPageRequest,
   CreateConversationRequest,
+  ListConversationsRequest,
+  SearchMessagesRequest,
+  SetConversationArchivedRequest,
+  SetConversationPinnedRequest,
   SetConversationWorkspaceRequest
 } from '../../shared/contracts';
 import { isWorkspaceMode } from '../../shared/workspaceModes';
@@ -36,9 +40,10 @@ export function registerConversationsIpc({
 
   ipcMain.handle(
     IPC_CHANNELS.conversationsList,
-    withUserFacingErrors(IPC_CHANNELS.conversationsList, (event) => {
+    withUserFacingErrors(IPC_CHANNELS.conversationsList, (event, request: ListConversationsRequest | undefined) => {
       assertTrustedSender(event);
-      return conversationsRepo.list();
+      // An absent request is the pre-archive behaviour: live chats only.
+      return conversationsRepo.list({ includeArchived: request?.includeArchived === true });
     })
   );
 
@@ -173,5 +178,48 @@ export function registerConversationsIpc({
         return conversationsRepo.setToolPermissionMode(request.conversationId, request.toolPermissionMode);
       }
     )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetPinned,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetPinned, (event, request: SetConversationPinnedRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string' || typeof request?.pinned !== 'boolean') {
+        throw new Error('A conversation id and a pinned flag are required.');
+      }
+
+      return conversationsRepo.setPinned(request.conversationId, request.pinned);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetArchived,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetArchived, (event, request: SetConversationArchivedRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string' || typeof request?.archived !== 'boolean') {
+        throw new Error('A conversation id and an archived flag are required.');
+      }
+
+      // Nothing is torn down the way `delete` does: an archived chat can be
+      // restored, so its shell and attachments have to survive.
+      return conversationsRepo.setArchived(request.conversationId, request.archived);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSearchMessages,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSearchMessages, (event, request: SearchMessagesRequest) => {
+      assertTrustedSender(event);
+
+      // An empty or non-string query is "nothing typed yet", not an error: the
+      // palette calls this on every keystroke, including the one that clears it.
+      if (typeof request?.query !== 'string' || request.query.trim() === '') {
+        return [];
+      }
+
+      return conversationsRepo.searchMessages(request);
+    })
   );
 }

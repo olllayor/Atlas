@@ -68,7 +68,7 @@ export class ToolExecutionTracker {
           requestId: this.context.requestId,
           toolName: event.toolName,
           state: 'running',
-          inputPreview: normalizeToolInputPreview(event.input),
+          inputPreview: normalizeToolInputPreview(event.input, { toolName: event.toolName }),
           inputJson: event.input,
           startedAt: now,
         });

@@ -25,7 +25,7 @@ import { create } from 'zustand';
 /** Bound the map so a very long session cannot grow it without limit. */
 const MAX_ENTRIES = 2000;
 
-export type ReasoningTiming = {
+export type CellTiming = {
   /** Epoch ms when this cell was first observed streaming. */
   startedAt: number;
   /** Filled in once streaming ends; survives remounts. */
@@ -35,8 +35,12 @@ export type ReasoningTiming = {
 type TranscriptUiState = {
   /** id → user's explicit open/closed choice. Absent = never toggled. */
   expanded: Record<string, boolean>;
-  /** reasoning cell id → measured thinking window. */
-  reasoning: Record<string, ReasoningTiming>;
+  /**
+   * cell id → measured working window. Used by the reasoning row and by the
+   * turn's `Worked for …` header, which measure the same kind of thing: how
+   * long something took while it was on screen.
+   */
+  timings: Record<string, CellTiming>;
   setExpanded: (id: string, open: boolean) => void;
   toggleExpanded: (id: string, currentlyOpen: boolean) => void;
   /**
@@ -48,9 +52,9 @@ type TranscriptUiState = {
    * short-lived id. Carrying its start time forward keeps the measured
    * duration honest instead of restarting the clock.
    */
-  startReasoning: (id: string, inheritFrom?: string) => void;
-  /** Close out a reasoning cell's timing window (idempotent). */
-  endReasoning: (id: string) => void;
+  startTiming: (id: string, inheritFrom?: string) => void;
+  /** Close out a cell's timing window (idempotent). */
+  endTiming: (id: string) => void;
 };
 
 function trim<T>(map: Record<string, T>): Record<string, T> {
@@ -65,7 +69,7 @@ function trim<T>(map: Record<string, T>): Record<string, T> {
 
 export const useTranscriptUiStore = create<TranscriptUiState>((set) => ({
   expanded: {},
-  reasoning: {},
+  timings: {},
 
   setExpanded: (id, open) =>
     set((state) => ({ expanded: trim({ ...state.expanded, [id]: open }) })),
@@ -73,25 +77,25 @@ export const useTranscriptUiStore = create<TranscriptUiState>((set) => ({
   toggleExpanded: (id, currentlyOpen) =>
     set((state) => ({ expanded: trim({ ...state.expanded, [id]: !currentlyOpen }) })),
 
-  startReasoning: (id, inheritFrom) =>
+  startTiming: (id, inheritFrom) =>
     set((state) => {
-      if (state.reasoning[id]) return state;
-      const inherited = inheritFrom ? state.reasoning[inheritFrom]?.startedAt : undefined;
+      if (state.timings[id]) return state;
+      const inherited = inheritFrom ? state.timings[inheritFrom]?.startedAt : undefined;
       return {
-        reasoning: trim({
-          ...state.reasoning,
+        timings: trim({
+          ...state.timings,
           [id]: { startedAt: inherited ?? Date.now(), durationMs: null },
         }),
       };
     }),
 
-  endReasoning: (id) =>
+  endTiming: (id) =>
     set((state) => {
-      const existing = state.reasoning[id];
+      const existing = state.timings[id];
       if (!existing || existing.durationMs != null) return state;
       return {
-        reasoning: trim({
-          ...state.reasoning,
+        timings: trim({
+          ...state.timings,
           [id]: { ...existing, durationMs: Date.now() - existing.startedAt },
         }),
       };

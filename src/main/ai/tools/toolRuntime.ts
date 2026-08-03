@@ -5,6 +5,16 @@ import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 
+import type { SandboxPolicy } from './sandbox';
+import {
+  buildSandboxedLaunch,
+  deriveSandboxPolicy,
+  detectSandboxMechanism,
+  isLikelySandboxDenied,
+  isSandboxWrapperFailure,
+  markSandboxMechanismUnavailable,
+  SANDBOX_DENIAL_HINT
+} from './sandbox';
 import type { ToolWorkspace } from './toolWorkspace';
 import { resolveWorkspaceCwd } from './toolWorkspace';
 
@@ -436,6 +446,8 @@ export async function grepToolExecute(input: {
 
   args.push(searchPath);
 
+  // Deliberately unsandboxed: the argv is built here, not by the model, and
+  // ripgrep only reads. Reads are unrestricted under every Atlas sandbox policy.
   const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
@@ -512,6 +524,7 @@ export async function globToolExecute(input: {
   const startedAt = Date.now();
   const searchPath = resolveSearchPath(input.path, workspace);
   const args = ['--files', '--hidden', '--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '-g', input.pattern, searchPath];
+  // Deliberately unsandboxed, for the same reason as grep_search above.
   const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
@@ -807,8 +820,9 @@ export async function bashToolExecute(input: {
   dangerouslyDisableSandbox?: boolean;
 }, workspace?: ToolWorkspace) {
   // Code mode exists so the agent can change a project, so the read-only
-  // command policy is lifted there — the writable boundary is the project root
-  // plus the approval ladder, not a regex list. Work mode keeps the policy.
+  // command policy is lifted there — the writable boundary is the OS sandbox
+  // plus the approval ladder, not a regex list. Work mode keeps the regex as
+  // well, because on a host with no sandbox mechanism it is the only guard.
   if (workspace?.mode !== 'code') {
     validateBashCommand(input.command);
   }
@@ -817,11 +831,22 @@ export async function bashToolExecute(input: {
   await ensureWorkingDirectoryReadable(cwd);
 
   const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh';
+  const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command];
 
-  const combinedEnv = workspace?.env ? { ...process.env, ...workspace.env } : process.env;
+  const mechanism = await detectSandboxMechanism();
+  // The escalation flag only means anything where there is a sandbox to
+  // escalate out of; on an unsandboxed host it is a no-op rather than a
+  // second, pointless approval prompt.
+  const escalated = Boolean(input.dangerouslyDisableSandbox) && mechanism !== 'none';
+  const policy: SandboxPolicy = escalated
+    ? { fs: { kind: 'danger-full-access' }, network: 'allow' }
+    : deriveSandboxPolicy(workspace);
+  const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
+
+  const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
 
   if (input.run_in_background) {
-    const child = spawn(shell, process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command], {
+    const child = spawn(launch.command, launch.args, {
       cwd,
       env: combinedEnv,
       detached: true,
@@ -831,26 +856,46 @@ export async function bashToolExecute(input: {
 
     workspace?.onCommandRun?.({ command: input.command, exitCode: null });
 
+    // No denial detection is possible here: with `stdio: 'ignore'` there is no
+    // output to inspect and no exit code to wait for, so a sandbox denial in a
+    // background command surfaces only as the work never happening.
     return {
       stdout: '',
       stderr: '',
       interrupted: false,
       backgroundTaskId: randomUUID(),
       noOutputExpected: true,
-      dangerouslyDisableSandbox: Boolean(input.dangerouslyDisableSandbox),
+      sandbox: launch.mechanism,
+      sandboxNetwork: policy.network,
+      sandboxEscalated: escalated,
       returnCodeInterpretation: 'backgrounded'
     };
   }
 
-  const result = await runCommand(
-    shell,
-    process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command],
-    {
-      cwd,
-      env: workspace?.env,
-      timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
+  const result = await runCommand(launch.command, launch.args, {
+    cwd,
+    env: { ...(workspace?.env ?? {}), ...launch.env },
+    timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
+  });
+
+  if (isSandboxWrapperFailure(launch.mechanism, result.code, result.stderr)) {
+    if (launch.mechanism === 'bubblewrap') {
+      markSandboxMechanismUnavailable();
     }
-  );
+
+    // The command never ran, so reporting its exit code as the command's own
+    // result would be a lie the model would then try to debug.
+    return {
+      stdout: '',
+      stderr: result.stderr,
+      interrupted: false,
+      sandbox: launch.mechanism,
+      sandboxNetwork: policy.network,
+      sandboxEscalated: escalated,
+      sandboxFailed: true as const,
+      returnCodeInterpretation: 'sandbox_failed'
+    };
+  }
 
   workspace?.onCommandRun?.({ command: input.command, exitCode: result.code ?? null });
 
@@ -863,12 +908,17 @@ export async function bashToolExecute(input: {
   const stdout = isSuccess && !rawStdout.trim() && !rawStderr.trim()
     ? '(Command executed successfully with exit code 0)'
     : rawStdout;
+  const sandboxDenied =
+    !result.interrupted && isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr);
 
   return {
     stdout,
     stderr: rawStderr,
     interrupted: result.interrupted,
-    dangerouslyDisableSandbox: Boolean(input.dangerouslyDisableSandbox),
+    sandbox: launch.mechanism,
+    sandboxNetwork: policy.network,
+    sandboxEscalated: escalated,
+    ...(sandboxDenied ? { sandboxDenied: true as const, sandboxDenialHint: SANDBOX_DENIAL_HINT } : {}),
     returnCodeInterpretation:
       result.interrupted ? 'timed_out' : result.code === 0 ? 'success' : `exit_code_${result.code ?? 'unknown'}`
   };

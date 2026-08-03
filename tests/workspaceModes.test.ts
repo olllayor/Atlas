@@ -21,7 +21,8 @@ import { parseUnifiedDiff } from '../src/shared/toolCellGrammar.js';
 import {
   DEFAULT_WORKSPACE_MODE,
   isWorkspaceMode,
-  isWorkspaceModeReady
+  isWorkspaceModeReady,
+  shouldPromptForProject
 } from '../src/shared/workspaceModes.js';
 
 const modelsRepo = { list: () => [] } as never;
@@ -45,6 +46,22 @@ test('only code mode requires a project to be ready', () => {
   assert.equal(isWorkspaceModeReady('work', false), true);
   assert.equal(isWorkspaceModeReady('code', false), false);
   assert.equal(isWorkspaceModeReady('code', true), true);
+});
+
+test('switching to code with no project at all prompts for a folder', () => {
+  assert.equal(shouldPromptForProject('code', null), true);
+});
+
+test('work mode never prompts for a folder', () => {
+  assert.equal(shouldPromptForProject('work', null), false);
+});
+
+test('a usable project suppresses the prompt', () => {
+  assert.equal(shouldPromptForProject('code', { exists: true }), false);
+});
+
+test('a project missing on disk is a shown gate, not an auto-opened dialog', () => {
+  assert.equal(shouldPromptForProject('code', { exists: false }), false);
 });
 
 test('work mode is offered no file-editing or git tools', () => {

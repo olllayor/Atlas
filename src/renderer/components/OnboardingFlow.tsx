@@ -1,5 +1,6 @@
 import { CheckIcon, PlusIcon } from '@radix-ui/react-icons';
 import type { CSSProperties } from 'react';
+import { AtlasMark } from './ui/atlas-mark';
 
 /**
  * Atlas ships with no providers, so first run points at Model settings rather
@@ -44,6 +45,7 @@ export function OnboardingFlow({ hasCredential, onOpenProviderSettings, onContin
           </Card>
         ) : (
           <Card>
+            <AtlasMark className="mb-3 h-8 w-8 text-text-primary" />
             <h1 className="text-xl font-normal text-text-primary">Welcome to Atlas</h1>
             <p className="mt-2 text-sm leading-relaxed text-text-tertiary">
               A local-first chat client. Add any OpenAI-, Anthropic- or Responses-compatible endpoint and

@@ -77,5 +77,20 @@ export function isWorkspaceModeReady(mode: WorkspaceMode, hasProject: boolean) {
   return hasProject || !describeWorkspaceMode(mode).requiresProject;
 }
 
+/**
+ * Whether switching to `mode` should immediately ask the user for a folder.
+ *
+ * Only the "no project at all" state prompts. A project that is attached but
+ * missing on disk is a broken external fact (unmounted drive, deleted folder)
+ * — that state is shown as a gate the user resolves deliberately, never with
+ * an auto-opened dialog that invites re-pointing the conversation by accident.
+ */
+export function shouldPromptForProject(
+  mode: WorkspaceMode,
+  project: { exists: boolean } | null
+): boolean {
+  return describeWorkspaceMode(mode).requiresProject && project == null;
+}
+
 /** Directory names that stay read-only even inside a writable project root. */
 export const PROTECTED_PROJECT_PATH_NAMES = ['.git', '.atlas', '.hg', '.svn'] as const;

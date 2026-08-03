@@ -83,4 +83,17 @@ export function registerProjectsIpc(projectsRepo: ProjectsRepo) {
       await shell.openPath(project.root);
     })
   );
+
+  ipcMain.handle(
+    IPC_CHANNELS.projectsSetPinned,
+    withUserFacingErrors(IPC_CHANNELS.projectsSetPinned, (event, projectId: string, pinned: boolean) => {
+      assertTrustedSender(event);
+
+      if (typeof projectId !== 'string' || typeof pinned !== 'boolean') {
+        throw new Error('A project id and a pinned flag are required.');
+      }
+
+      return projectsRepo.setPinned(projectId, pinned);
+    })
+  );
 }

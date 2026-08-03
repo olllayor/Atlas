@@ -222,7 +222,7 @@ export function TerminalBlock({
 
       <pre
         className={cn(
-          'app-code-text scrollbar-auto-hide m-0 min-w-0 overflow-x-auto whitespace-pre leading-[1.55] text-text-tertiary',
+          'app-terminal-text scrollbar-auto-hide m-0 min-w-0 overflow-x-auto whitespace-pre text-text-tertiary',
           showingAll && 'max-h-[60vh] overflow-y-auto',
           className
         )}

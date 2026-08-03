@@ -113,6 +113,44 @@ const NOOP_RUNTIME_STATE_REPO: Pick<
   createCheckpoint: () => randomUUID(),
 };
 
+/**
+ * Whether the call awaiting approval asked to run without the OS sandbox.
+ *
+ * Read off the streamed part rather than threaded through the approval record:
+ * the input is already sitting there under the same `toolCallId`, and a
+ * partially-streamed call is still a plain JSON string at this point.
+ */
+function isSandboxEscalatedCall(parts: ChatMessagePart[], toolCallId: string) {
+  const part = parts.find(
+    (candidate): candidate is Extract<ChatMessagePart, { type: 'tool' }> =>
+      candidate.type === 'tool' && candidate.toolCallId === toolCallId,
+  );
+
+  if (!part) {
+    return false;
+  }
+
+  const input = part.input ?? parseJsonObject(part.rawInput);
+
+  return Boolean(
+    input && typeof input === 'object' && (input as { dangerouslyDisableSandbox?: unknown }).dangerouslyDisableSandbox === true,
+  );
+}
+
+function parseJsonObject(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    // A half-streamed argument object is not a signal either way; the caller
+    // treats it as unescalated, and the ladder still gates the call.
+    return null;
+  }
+}
+
 function formatToolNameForDeniedCopy(toolName?: string) {
   if (!toolName) {
     return 'Tool';
@@ -660,7 +698,15 @@ export class ChatEngine {
             ...approval,
             conversationId: request.conversationId,
             toolType,
-            sessionScopeKey: buildApprovalScopeKey(toolType, approval.toolName),
+            // A call asking to run outside the OS sandbox is a different act
+            // from the sandboxed one the user blessed for the session, and the
+            // scope key is only the tool's name — so a standing "always allow
+            // bash" would have waved it through unasked. Escalated calls carry
+            // no scope at all: they cannot match a grant, and accepting one
+            // cannot create a grant for the next.
+            sessionScopeKey: isSandboxEscalatedCall(active.parts, approval.toolCallId)
+              ? null
+              : buildApprovalScopeKey(toolType, approval.toolName),
           };
         });
         this.approvalController.setPendingApprovals(requestId, pendingApprovals);

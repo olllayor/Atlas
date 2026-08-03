@@ -3,6 +3,11 @@ import { BrowserWindow, ipcMain } from 'electron/main';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
+import {
+  OPAQUE_WINDOW_BACKGROUND,
+  VIBRANT_WINDOW_BACKGROUND,
+  syncNativeTheme,
+} from '../bootstrap/createWindow';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
 import type { KeychainStore } from '../secrets/keychain';
 import { withUserFacingErrors } from './errors';
@@ -68,6 +73,8 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
 
       if (appearancePatch?.themeMode) {
         settingsRepo.setThemeMode(appearancePatch.themeMode);
+        // Keeps the vibrancy material on the same appearance as the page.
+        syncNativeTheme(appearancePatch.themeMode);
       }
 
       if (appearancePatch?.designTheme) {
@@ -113,12 +120,16 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       if (typeof appearancePatch?.translucentSidebar === 'boolean') {
         settingsRepo.setTranslucentSidebar(appearancePatch.translucentSidebar);
 
-        // Best-effort live apply; a fresh window (created with the matching
-        // vibrancy + transparent background) renders it more reliably.
+        // Best-effort live apply. A fresh window still renders it better:
+        // `visualEffectState: 'active'` is a construction-time option with no
+        // setter, so a window switched on mid-session desaturates its material
+        // whenever it loses focus until the next launch.
         if (process.platform === 'darwin') {
           for (const window of BrowserWindow.getAllWindows()) {
             window.setVibrancy(appearancePatch.translucentSidebar ? 'sidebar' : null);
-            window.setBackgroundColor(appearancePatch.translucentSidebar ? '#00000000' : '#060709');
+            window.setBackgroundColor(
+              appearancePatch.translucentSidebar ? VIBRANT_WINDOW_BACKGROUND : OPAQUE_WINDOW_BACKGROUND
+            );
           }
         }
       }

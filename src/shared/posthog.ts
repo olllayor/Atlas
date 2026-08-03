@@ -41,6 +41,8 @@ export const POSTHOG_EVENTS = {
   PROVIDER_KEY_SAVED: 'provider key saved',
   PROVIDER_KEY_VALIDATED: 'provider key validated',
   PREFERENCES_UPDATED: 'preferences updated',
+  PROJECT_ATTACH_PROMPTED: 'project attach prompted',
+  PROJECT_ATTACH_RESOLVED: 'project attach resolved',
   MODELS_REFRESHED: 'models refreshed',
   MODEL_SELECTED: 'model selected',
   SETTINGS_OPENED: 'settings opened',

@@ -17,9 +17,8 @@ type SidebarConversationRowProps = {
  *
  * The slot never changes width and its two occupants (time, jump-hint chip)
  * cross-fade in place, so hovering or holding a modifier moves nothing.
- * It is omitted entirely when the row has neither — chats nested under a
- * project drop the time, and 56px of reserved gutter on a row that will never
- * fill it is 56px stolen from the title.
+ * It is omitted entirely when the row has neither: 56px of reserved gutter on
+ * a row that will never fill it is 56px stolen from the title.
  * The parent owns hover/active backgrounds, row height and the context menu.
  */
 export function SidebarConversationRow({

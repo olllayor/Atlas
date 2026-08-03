@@ -1,7 +1,6 @@
 import {
   DotsHorizontalIcon,
   GearIcon,
-  PersonIcon,
   ReloadIcon,
   TimerIcon,
   UpdateIcon,
@@ -19,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { AtlasMark } from './ui/atlas-mark';
 
 type SidebarSettingsMenuProps = {
   collapsed: boolean;
@@ -228,8 +228,10 @@ export function SidebarSettingsMenu({
         >
           <div className="rounded-md bg-bg-elevated px-3 py-3">
             <div className="flex items-start gap-2.5">
+              {/* This row is the app, not a person — it used to wear a generic
+                  person glyph, which read as an account you had signed into. */}
               <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bg-hover text-text-tertiary">
-                <PersonIcon className="h-3.5 w-3.5" />
+                <AtlasMark className="h-3.5 w-3.5" />
               </span>
               <div className="min-w-0">
                 <div className="truncate text-sm font-normal text-[var(--text-secondary)]">

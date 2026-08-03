@@ -173,7 +173,11 @@
 
   --bg-base: #ffffff;
   --bg-panel: #f9f9f9;
-  --bg-composer: #f0f0f0;
+  /* White slab over a white page, separated by the hairline below — the
+     shipped light app puts the *strip* in grey and keeps the input white, so
+     the two stack. Tinting both (the old #f0f0f0) merged them into one blob. */
+  --bg-composer: #ffffff;
+  --border-composer: rgba(26, 28, 31, 0.09);
   --bg-surface: color-mix(in oklab, #1a1c1f 5%, transparent);
   --bg-elevated: color-mix(in oklab, #1a1c1f 8%, transparent);
   --bg-overlay: #ffffff;

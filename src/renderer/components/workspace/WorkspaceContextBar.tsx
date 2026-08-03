@@ -3,6 +3,7 @@ import {
   Check,
   ClipboardCheck,
   Code2,
+  FileText,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -13,6 +14,7 @@ import {
 import { forwardRef, useState } from 'react';
 
 import type {
+  AgentInstructionsSummary,
   GitBranchInfo,
   ProjectContextInfo,
   ProjectTypeInfo,
@@ -52,7 +54,7 @@ const ContextChip = forwardRef<
       ref={ref}
       type="button"
       className={cn(
-        'flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-md font-medium transition-colors duration-150',
+        'flex h-6 min-w-0 items-center gap-1 rounded-md px-1.5 text-sm font-medium transition-colors duration-150',
         'outline-none focus-visible:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50',
         // Near-white at rest, not tertiary: in the reference these labels are
         // among the brightest things on screen, brighter than the composer's
@@ -119,26 +121,30 @@ export function WorkspaceContextBar({
           toolbar. `pb-8` gives it a body; `-mb-8` pulls the composer up over
           all but ~8px of it, so what remains reads as one stacked object —
           a card peeking out from behind the slab, which is what the reference
-          shows. Inset by `mx-2` so the composer's own edges stay outermost.
+          shows. Inset by `mx-5` so the composer's own edges stay outermost,
+          and rounded harder than the chips inside it so the peek reads as a
+          tab rather than a toolbar.
 
           `bg-bg-surface` sits between the page and the composer in the
           elevation scale, so the strip separates from the background without
           competing with the input.
         */}
         <div className="mx-auto max-w-content-max">
-          <div className="-mb-8 mx-2 rounded-t-xl bg-bg-surface px-1 pb-8 pt-1">
+          <div className="-mb-8 mx-5 rounded-t-2xl bg-bg-surface px-1.5 pb-8 pt-0.5">
             {/*
-              `gap-1` on top of each chip's own `px-2`: ~20px between one label
-              and the next icon. No dividers — the reference separates these
-              with air, and a rule plus a surface is two separations doing one
-              job.
+              `gap-0.5` on top of each chip's own `px-1.5`: ~14px between one
+              label and the next icon. No dividers — the reference separates
+              these with air, and a rule plus a surface is two separations
+              doing one job.
             */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5">
               <ProjectMenu
+                conversationId={conversationId}
                 project={project}
                 projects={projects}
                 projectType={projectType}
                 envCount={projectContext?.envKeys.length ?? 0}
+                agentInstructions={projectContext?.agentInstructions ?? null}
                 needsProject={needsProject}
                 isMissing={isMissing}
                 disabled={disabled}
@@ -147,6 +153,7 @@ export function WorkspaceContextBar({
                 onDetach={onDetach}
                 onReveal={onReveal}
                 onOpenEnvironment={() => setEnvironmentOpen(true)}
+                onInstructionsChanged={onProjectContextChanged}
               />
 
               {/*
@@ -164,7 +171,7 @@ export function WorkspaceContextBar({
                       aria-label="Runs on this machine — reveal the folder"
                       onClick={() => onReveal(project.id)}
                     >
-                      <Laptop className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                      <Laptop className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
                       <span>Local</span>
                     </ContextChip>
                   </TooltipTrigger>
@@ -277,12 +284,12 @@ function BranchChip({
             >
               {copied ? (
                 <ClipboardCheck
-                  className="size-4 shrink-0 text-success"
+                  className="size-3.5 shrink-0 text-success"
                   strokeWidth={1.75}
                   aria-hidden="true"
                 />
               ) : (
-                <GitBranch className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <GitBranch className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
               )}
               <span className="min-w-0 truncate">{branch}</span>
             </ContextChip>
@@ -338,10 +345,12 @@ function BranchChip({
 }
 
 function ProjectMenu({
+  conversationId,
   project,
   projects,
   projectType,
   envCount,
+  agentInstructions,
   needsProject,
   isMissing,
   disabled,
@@ -350,11 +359,15 @@ function ProjectMenu({
   onDetach,
   onReveal,
   onOpenEnvironment,
+  onInstructionsChanged,
 }: {
+  conversationId?: string;
   project: WorkspaceProject | null;
   projects: WorkspaceProject[];
   projectType: ProjectTypeInfo | null;
   envCount: number;
+  /** Which AGENTS.md files the main process loaded for this turn, if any. */
+  agentInstructions: AgentInstructionsSummary | null;
   needsProject: boolean;
   isMissing: boolean;
   disabled?: boolean;
@@ -363,8 +376,31 @@ function ProjectMenu({
   onDetach: () => void;
   onReveal: (projectId: string) => void;
   onOpenEnvironment: () => void;
+  onInstructionsChanged?: () => void;
 }) {
   const label = project ? project.title : needsProject ? 'Choose folder' : 'No folder';
+  // A global-scope file is loaded but belongs to no project, so it does not
+  // count as this folder having instructions: the slot offers to create one.
+  const projectInstructions = agentInstructions?.sources.find((source) => source.scope === 'project') ?? null;
+
+  const openInstructions = async () => {
+    if (!conversationId || !projectInstructions) return;
+    try {
+      await window.atlasChat.workspace.openInstructions(conversationId, projectInstructions.path);
+    } catch (err) {
+      notifyError('Could not open AGENTS.md', err);
+    }
+  };
+
+  const createInstructions = async () => {
+    if (!conversationId) return;
+    try {
+      await window.atlasChat.workspace.initInstructions(conversationId);
+      onInstructionsChanged?.();
+    } catch (err) {
+      notifyError('Could not create AGENTS.md', err);
+    }
+  };
 
   return (
     <DropdownMenu>
@@ -377,9 +413,9 @@ function ProjectMenu({
               className="max-w-56"
             >
               {project ? (
-                <Folder className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <Folder className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
               ) : (
-                <FolderPlus className="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
               )}
               <span className="min-w-0 truncate">{label}</span>
             </ContextChip>
@@ -449,6 +485,29 @@ function ProjectMenu({
               strip: neither changes what a send does, and the reference bar
               carries only things that do.
             */}
+            {/*
+              The instructions the model is actually being given, one click from
+              the folder they belong to. Nothing here loads the text into the
+              renderer — the file opens in the user's editor, which is where it
+              would be edited anyway.
+            */}
+            <DropdownMenuItem
+              onSelect={() => void (projectInstructions ? openInstructions() : createInstructions())}
+              disabled={!project.exists}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+            >
+              <FileText className="size-4 shrink-0" strokeWidth={1.75} />
+              {projectInstructions ? 'AGENTS.md' : 'Create AGENTS.md'}
+              {projectInstructions && agentInstructions ? (
+                <span className="ml-auto shrink-0 text-2xs text-text-faint">
+                  {agentInstructions.truncated
+                    ? 'truncated'
+                    : agentInstructions.sources.length > 1
+                      ? `${agentInstructions.sources.length} files`
+                      : 'loaded'}
+                </span>
+              ) : null}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={onOpenEnvironment}
               disabled={!project.exists}

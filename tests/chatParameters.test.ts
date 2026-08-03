@@ -56,8 +56,10 @@ test('full-access keeps every tool but stops pausing for approval', () => {
   const names = toolNames('full-access');
 
   assert.equal(names.includes('bash'), true);
-  assert.equal(needsApproval('full-access', 'bash'), false);
   assert.equal(needsApproval('full-access', 'web_fetch'), false);
+  // bash is the exception: it decides per call, because asking to leave the OS
+  // sandbox is a question full-access never answered. See bashSandboxWiring.
+  assert.equal(typeof needsApproval('full-access', 'bash'), 'function');
 });
 
 test('the default mode is the one that asks before running anything risky', () => {

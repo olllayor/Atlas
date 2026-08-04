@@ -24,6 +24,7 @@ export const IPC_CHANNELS = {
   conversationsGetWorkspace: 'conversations:getWorkspace',
   conversationsSetWorkspace: 'conversations:setWorkspace',
   conversationsSetToolPermissionMode: 'conversations:setToolPermissionMode',
+  conversationsSetDefaultModel: 'conversations:setDefaultModel',
   conversationsSetPinned: 'conversations:setPinned',
   conversationsSetArchived: 'conversations:setArchived',
   conversationsSearchMessages: 'conversations:searchMessages',

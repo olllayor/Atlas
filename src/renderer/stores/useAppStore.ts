@@ -248,7 +248,7 @@ function getModelById(models: ModelSummary[], modelId: string | null) {
   return models.find((model) => model.id === modelId) ?? null;
 }
 
-function resolveSelectedModelId(
+export function resolveSelectedModelId(
   selectedConversationId: string | null,
   selectedModelIdByConversation: Record<string, string>,
   conversationDetails: Record<string, ConversationPage>,
@@ -1277,6 +1277,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setSelectedModel: (conversationId, modelId) => {
+    // The catalog row is the only place the model and its provider are already
+    // paired. `setDefaults` writes both columns, and deriving the provider from
+    // anywhere else is how a model ends up recorded against a provider that
+    // cannot serve it. A model the catalog does not offer is not a selection —
+    // the same rule `resolveSelectedModelId` applies — so it is not written.
+    const model = get().models.find((entry) => entry.id === modelId) ?? null;
+
     set((state) => ({
       selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId },
       settings: state.settings
@@ -1287,6 +1294,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Persisted so the choice survives a restart, not just this session. A
     // failure here only costs the remembered default, so it stays silent.
     void window.atlasChat.settings.updatePreferences({ chat: { lastModelId: modelId } }).catch(() => undefined);
+
+    if (!model) {
+      return;
+    }
+
+    // The conversation's own model. Until this existed the column was written
+    // only when a message was actually sent, so picking a model and not sending
+    // lost the pick on restart, and the chat fell back to whatever was chosen
+    // last in some other chat.
+    //
+    // Unlike the remembered default above, this failure is visible to the user:
+    // the pick works all session and then silently reverts on restart, which is
+    // exactly the bug this call fixes. It is worth a word.
+    void window.atlasChat.conversations
+      .setDefaultModel({ conversationId, providerId: model.providerId, modelId: model.id })
+      .catch((error) => notifyError('Could not remember that model for this chat', error));
   },
 
   setComposerDraft: (conversationId, value) => {

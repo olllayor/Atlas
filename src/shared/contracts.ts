@@ -763,6 +763,20 @@ export type ListConversationsRequest = {
   includeArchived?: boolean;
 };
 
+/**
+ * The model a conversation opens on, pinned to that conversation.
+ *
+ * Provider and model travel together because they are only meaningful as a
+ * pair: a model id recorded against the wrong provider is a send that fails in
+ * the main process. The caller reads both off the same catalog row rather than
+ * assembling them from separate sources.
+ */
+export type SetConversationDefaultModelRequest = {
+  conversationId: string;
+  providerId: ProviderId;
+  modelId: string;
+};
+
 export type SetConversationPinnedRequest = {
   conversationId: string;
   pinned: boolean;
@@ -1440,6 +1454,12 @@ export type RendererApi = {
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
     setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
+    /**
+     * Pins the conversation's own model, so a pick survives a restart even if
+     * nothing was ever sent. Without this the column was written only by the
+     * send path and an unsent pick was lost.
+     */
+    setDefaultModel: (request: SetConversationDefaultModelRequest) => Promise<void>;
     /** Resolves to the updated row so an optimistic sidebar can reconcile. */
     setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
     setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;

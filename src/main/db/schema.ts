@@ -51,7 +51,21 @@ CREATE TABLE IF NOT EXISTS conversations (
   -- pinned, and archiving is reversible, so the moment it happened is the fact
   -- worth keeping. NULL means "not pinned" / "not archived".
   pinned_at TEXT,
-  archived_at TEXT
+  archived_at TEXT,
+  -- Provenance for a forked chat. SET NULL, not CASCADE: a fork is a
+  -- conversation in its own right the moment it exists, and deleting the chat
+  -- it was seeded from must not take it along — it only stops being able to say
+  -- where it came from.
+  fork_of_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  -- The event-log watermark the fork was cut at, for provenance only. NULL on a
+  -- conversation that was never forked, and on a fork of a chat that had no
+  -- event log to cut.
+  fork_point_sequence INTEGER,
+  -- A side conversation is a tangent owned by the chat it hangs off: hidden
+  -- from every "your chats" surface, and CASCADE rather than SET NULL because
+  -- a tangent with nothing left to be tangent to is just an orphan the user
+  -- has no way to find, let alone delete.
+  side_of_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -556,6 +570,39 @@ export function applySchema(database: SqliteDatabase) {
   if (!conversationColumns.includes('archived_at')) {
     database.exec('ALTER TABLE conversations ADD COLUMN archived_at TEXT');
   }
+
+  // Migration: fork and side-conversation provenance. All three default to
+  // NULL, which reads back as "an ordinary chat that was not forked and is
+  // nobody's tangent" — exactly what every existing row is. Nothing changes
+  // visibility on upgrade, because the only surface that filters on these is
+  // the one that hides side conversations, and no row is one yet.
+  //
+  // ADD COLUMN carries the REFERENCES clause the same way `project_id` above
+  // does; SQLite allows it precisely because the added column defaults to NULL,
+  // so no existing row can be in violation the moment the column appears.
+  if (!conversationColumns.includes('fork_of_conversation_id')) {
+    database.exec(
+      'ALTER TABLE conversations ADD COLUMN fork_of_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL'
+    );
+  }
+
+  if (!conversationColumns.includes('fork_point_sequence')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN fork_point_sequence INTEGER');
+  }
+
+  if (!conversationColumns.includes('side_of_conversation_id')) {
+    database.exec(
+      'ALTER TABLE conversations ADD COLUMN side_of_conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE'
+    );
+  }
+
+  // Created here rather than in SCHEMA above: SCHEMA runs before the migration
+  // block, so on an existing database the column this indexes does not exist
+  // yet and the CREATE INDEX would abort the whole script.
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_side_of
+    ON conversations (side_of_conversation_id);
+  `);
 
   // Migration: pinned projects. `projects` is younger than the migration block
   // and had never been probed, so it gets its own column read.

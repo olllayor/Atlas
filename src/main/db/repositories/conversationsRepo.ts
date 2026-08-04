@@ -30,6 +30,8 @@ import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { DEFAULT_TOOL_PERMISSION_MODE, isToolPermissionMode } from '../../../shared/chatParameters';
 import type { SqliteDatabase } from '../client';
+import type { ForkConversationInput } from './conversationFork';
+import { forkConversation } from './conversationFork';
 import { MessageSearchRepo } from './messageSearchRepo';
 import type { RuntimeStateRepo } from './runtimeStateRepo';
 import type { ToolExecutionsRepo } from './toolExecutionsRepo';
@@ -68,6 +70,9 @@ type ConversationSummaryRow = {
   completedAt: string | null;
   pinnedAt: string | null;
   archivedAt: string | null;
+  forkOfConversationId: string | null;
+  forkPointSequence: number | null;
+  sideOfConversationId: string | null;
   /** NULL for a conversation that never changed a file — the LEFT JOIN missed. */
   changedFileCount: number | null;
   changedLinesAdded: number | null;
@@ -141,6 +146,9 @@ const SUMMARY_SELECT = `
     c.completed_at AS completedAt,
     c.pinned_at AS pinnedAt,
     c.archived_at AS archivedAt,
+    c.fork_of_conversation_id AS forkOfConversationId,
+    c.fork_point_sequence AS forkPointSequence,
+    c.side_of_conversation_id AS sideOfConversationId,
     changes.fileCount AS changedFileCount,
     changes.linesAdded AS changedLinesAdded,
     changes.linesRemoved AS changedLinesRemoved
@@ -174,6 +182,13 @@ export type ListConversationsOptions = {
    * remember to.
    */
   includeArchived?: boolean;
+  /**
+   * Include side conversations. Absent or false everywhere the user browses
+   * their chats: a side conversation belongs to the thread it hangs off, not to
+   * history, and the whole point of it is that a tangent leaves no trace in the
+   * list. Only a caller that has a specific parent in hand opts in.
+   */
+  includeSide?: boolean;
 };
 
 type MessageRow = {
@@ -612,7 +627,10 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
       linesRemoved: row.changedLinesRemoved ?? 0
     },
     pinnedAt: row.pinnedAt,
-    archivedAt: row.archivedAt
+    archivedAt: row.archivedAt,
+    forkOfConversationId: row.forkOfConversationId,
+    forkPointSequence: row.forkPointSequence,
+    sideOfConversationId: row.sideOfConversationId
   };
 }
 
@@ -627,10 +645,14 @@ function normalizeWorkspaceMode(value: unknown): WorkspaceMode {
 
 const NOOP_ATTACHMENT_STORE: Pick<
   AttachmentStore,
-  'deleteConversationAttachments' | 'readAttachmentData'
+  'deleteConversationAttachments' | 'readAttachmentData' | 'copyAttachment'
 > = {
   deleteConversationAttachments: () => undefined,
   readAttachmentData: () => null,
+  // A repo with no attachment store forks the rows and leaves the file parts
+  // pointing where they already pointed, which is the same nothing they
+  // resolved to before.
+  copyAttachment: () => null,
 };
 
 const NOOP_TOOL_EXECUTIONS_REPO: Pick<ToolExecutionsRepo, 'listByMessageIds'> = {
@@ -646,7 +668,7 @@ export class ConversationsRepo {
     private readonly db: SqliteDatabase,
     private readonly attachmentStore: Pick<
       AttachmentStore,
-      'deleteConversationAttachments' | 'readAttachmentData'
+      'deleteConversationAttachments' | 'readAttachmentData' | 'copyAttachment'
     > = NOOP_ATTACHMENT_STORE,
     private readonly toolExecutionsRepo: Pick<ToolExecutionsRepo, 'listByMessageIds'> = NOOP_TOOL_EXECUTIONS_REPO,
     private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
@@ -664,17 +686,59 @@ export class ConversationsRepo {
    * relative timestamps agree with depend on pin state.
    */
   list(options: ListConversationsOptions = {}) {
+    const conditions: string[] = [];
+
+    if (!options.includeArchived) {
+      conditions.push('c.archived_at IS NULL');
+    }
+
+    if (!options.includeSide) {
+      conditions.push('c.side_of_conversation_id IS NULL');
+    }
+
     const rows = this.db
       .prepare<[], ConversationSummaryRow>(
         `
           ${SUMMARY_SELECT}
-          ${options.includeArchived ? '' : 'WHERE c.archived_at IS NULL'}
+          ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
           ORDER BY c.updated_at DESC
         `
       )
       .all();
 
     return rows.map(mapConversationSummary);
+  }
+
+  /**
+   * The side conversations hanging off one chat, newest first.
+   *
+   * The only way to reach them: they are absent from `list()` by construction,
+   * so without a parent in hand there is nothing to ask.
+   */
+  listSideConversations(parentConversationId: string) {
+    const rows = this.db
+      .prepare<{ parentConversationId: string }, ConversationSummaryRow>(
+        `
+          ${SUMMARY_SELECT}
+          WHERE c.side_of_conversation_id = @parentConversationId
+          ORDER BY c.updated_at DESC
+        `
+      )
+      .all({ parentConversationId });
+
+    return rows.map(mapConversationSummary);
+  }
+
+  /**
+   * Seed a new conversation with this one's history up to a message.
+   *
+   * The parent is read-only throughout. `kind: 'side'` produces the ephemeral
+   * variant — same copy, but hidden from every listing and deleted with its
+   * parent. See `conversationFork.ts` for what each table does and why.
+   */
+  fork(input: ForkConversationInput): ConversationSummary {
+    const result = forkConversation(this.db, this.attachmentStore, input);
+    return this.getSummary(result.conversationId)!;
   }
 
   /**

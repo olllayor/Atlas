@@ -4,11 +4,13 @@ import { IPC_CHANNELS } from '../../shared/ipc';
 import type {
   ConversationPageRequest,
   CreateConversationRequest,
+  ForkConversationRequest,
   ListConversationsRequest,
   SearchMessagesRequest,
   SetConversationArchivedRequest,
   SetConversationPinnedRequest,
-  SetConversationWorkspaceRequest
+  SetConversationWorkspaceRequest,
+  StartSideConversationRequest
 } from '../../shared/contracts';
 import { isWorkspaceMode } from '../../shared/workspaceModes';
 import type { AppDatabase } from '../db/client';
@@ -220,6 +222,50 @@ export function registerConversationsIpc({
       }
 
       return conversationsRepo.searchMessages(request);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsFork,
+    withUserFacingErrors(IPC_CHANNELS.conversationsFork, (event, request: ForkConversationRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string') {
+        throw new Error('A conversation id is required.');
+      }
+
+      return conversationsRepo.fork({
+        conversationId: request.conversationId,
+        throughMessageId: request.throughMessageId ?? null,
+        title: request.title,
+        kind: 'fork'
+      });
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsStartSide,
+    withUserFacingErrors(IPC_CHANNELS.conversationsStartSide, (event, request: StartSideConversationRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string') {
+        throw new Error('A conversation id is required.');
+      }
+
+      return conversationsRepo.fork({
+        conversationId: request.conversationId,
+        throughMessageId: request.throughMessageId ?? null,
+        title: request.title,
+        kind: 'side'
+      });
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsListSide,
+    withUserFacingErrors(IPC_CHANNELS.conversationsListSide, (event, conversationId: string) => {
+      assertTrustedSender(event);
+      return conversationsRepo.listSideConversations(conversationId);
     })
   );
 }

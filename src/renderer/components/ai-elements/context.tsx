@@ -18,8 +18,10 @@ type ContextContextValue = {
   usedTokens: number;
   usage?: ContextUsage;
   modelId?: string;
-  percentageValue: number;
-  percentageLabel: string;
+  /** Share of the window still free. The headline figure everywhere. */
+  remainingPercentage: number;
+  remainingLabel: string;
+  tone: ContextTone;
   totalCost?: number;
   /** Where the prompt's tokens actually go, when the main process measured it. */
   breakdown?: ContextUsageSnapshot;
@@ -43,16 +45,23 @@ function formatTokenCount(value: number) {
 }
 
 /**
- * A used window is never reported as `0`.
+ * Neither end of the scale is allowed to round into an absolute.
  *
- * The previous rounding sent anything under 0.05% through `toFixed(1)` and then
- * stripped the `.0`, so a real prompt of a few hundred tokens against a 200K
- * window rendered as a flat `0` — the same glyph as an untouched window. Small
- * but nonzero now reads `<1`, which is a fact rather than a rounding artefact.
+ * `0` and `100` are claims about an empty and an untouched window, and rounding
+ * must never manufacture either. The original bug was at the bottom: anything
+ * under 0.05% went through `toFixed(1)`, lost its `.0`, and rendered as a flat
+ * `0` — the same glyph as no prompt at all. Reading the window as *remaining*
+ * moves that hazard to the top as well: 99.6% left is a used window, and
+ * printing it as `100` says nothing has been spent. Both ends therefore keep an
+ * operator — `<1`, `>99` — which is a fact rather than a rounding artefact.
  */
 export function formatContextPercentage(value: number) {
   if (value <= 0) {
     return "0";
+  }
+
+  if (value >= 100) {
+    return "100";
   }
 
   if (value < 1) {
@@ -63,7 +72,62 @@ export function formatContextPercentage(value: number) {
     return value.toFixed(1).replace(/\.0$/, "");
   }
 
-  return Math.round(value).toString();
+  const rounded = Math.round(value);
+  return rounded >= 100 ? ">99" : rounded.toString();
+}
+
+/**
+ * Spoken form of a percentage label.
+ *
+ * The visible figure and the `aria-label` have to be the same claim, so the
+ * label is reused rather than recomputed — but a screen reader may drop a bare
+ * `<` or read it as punctuation, which would announce `<1% left` as `1% left`.
+ * Spelling the operator keeps the two in agreement out loud.
+ */
+export function toSpokenPercentage(label: string) {
+  if (label.startsWith("<")) {
+    return `less than ${label.slice(1)}`;
+  }
+
+  if (label.startsWith(">")) {
+    return `more than ${label.slice(1)}`;
+  }
+
+  return label;
+}
+
+export type ContextTone = "normal" | "warning" | "critical";
+
+/**
+ * The ramp is keyed on what is LEFT, so it escalates as the figure falls.
+ *
+ * The thresholds are the mirror of the consumed ramp they replace (warning at
+ * 70% used, error at 90%), which lands them at the same two points on the
+ * window — only now the direction of travel matches the number beside them.
+ */
+export function contextToneForRemaining(remainingPercentage: number): ContextTone {
+  if (remainingPercentage <= 10) {
+    return "critical";
+  }
+
+  if (remainingPercentage <= 30) {
+    return "warning";
+  }
+
+  return "normal";
+}
+
+const TONE_COLOR: Record<ContextTone, string> = {
+  normal: "var(--accent)",
+  warning: "var(--warning)",
+  critical: "var(--error)",
+};
+
+/** Share of the window still free, given what the main process measured. */
+export function computeRemainingPercentage(usedTokens: number, maxTokens: number) {
+  const safeMax = Math.max(1, maxTokens);
+  const safeUsed = Math.max(0, usedTokens);
+  return Math.min(100, Math.max(0, 100 - (safeUsed / safeMax) * 100));
 }
 
 function formatUsd(value?: number) {
@@ -112,14 +176,15 @@ export const Context = ({
   const value = useMemo<ContextContextValue>(() => {
     const safeMax = Math.max(1, maxTokens);
     const safeUsed = Math.max(0, usedTokens);
-    const percentageValue = Math.min(100, (safeUsed / safeMax) * 100);
+    const remainingPercentage = computeRemainingPercentage(safeUsed, safeMax);
 
     return {
       breakdown,
       maxTokens: safeMax,
       modelId,
-      percentageLabel: formatContextPercentage(percentageValue),
-      percentageValue,
+      remainingLabel: formatContextPercentage(remainingPercentage),
+      remainingPercentage,
+      tone: contextToneForRemaining(remainingPercentage),
       totalCost: getCost(modelId, usage),
       usage,
       usedTokens: safeUsed,
@@ -142,23 +207,24 @@ export const ContextTrigger = ({
   children,
   ...props
 }: ContextTriggerProps) => {
-  const { percentageLabel, percentageValue } = useContextData();
+  const { remainingLabel, remainingPercentage, tone, usedTokens, maxTokens } = useContextData();
+  const color = TONE_COLOR[tone];
   const circumference = 2 * Math.PI * 11;
-  // An untouched window draws no arc at all — with the figure gone from the
-  // face of the ring, a permanent starter stub would be the only mark on it and
-  // would read as usage. Anything above zero keeps the 2% minimum so a real but
-  // tiny conversation is still visible.
-  const ratio = percentageValue / 100;
-  const progress = ratio <= 0 ? 0 : Math.max(0.02, Math.min(1, ratio));
+
+  // The arc is the headroom, so it drains as the window fills — the ring and
+  // the figure it stands for move together, which a consumed arc under a
+  // remaining figure would not. Above zero it keeps a 2% floor so the last
+  // sliver of a nearly-full window is still drawn rather than vanishing at the
+  // one moment it matters most.
+  const exhausted = remainingPercentage <= 0;
+  const progress = exhausted ? 0 : Math.max(0.02, Math.min(1, remainingPercentage / 100));
   const dashOffset = circumference * (1 - progress);
 
-
-  // Color based on usage percentage
-  const getProgressColor = (percentage: number) => {
-    if (percentage >= 90) return "var(--error)";
-    if (percentage >= 70) return "var(--warning)";
-    return "var(--accent)";
-  };
+  // An empty gauge draws no arc, so the state with the least ink would
+  // otherwise be the most urgent one. The track carries the alarm instead: a
+  // solid error-coloured ring, which cannot be mistaken for the full accent
+  // ring of an untouched window.
+  const glow = `drop-shadow(0 0 4px ${color})`;
 
   if (children) {
     return <HoverCardTrigger asChild>{children}</HoverCardTrigger>;
@@ -168,7 +234,9 @@ export const ContextTrigger = ({
     <HoverCardTrigger asChild>
       <button
         type="button"
-        aria-label={`Context used: ${percentageLabel}%`}
+        aria-label={`Context: ${toSpokenPercentage(remainingLabel)}% left, ${formatTokenCount(
+          usedTokens
+        )} of ${formatTokenCount(maxTokens)} used`}
         // Borderless size-9 circle so it reads as one of the row's ghost
         // buttons instead of the only bordered, square, press-animated control.
         // The dial is the whole control: the figure it used to carry was three
@@ -186,30 +254,31 @@ export const ContextTrigger = ({
           className="absolute inset-[3px] -rotate-90"
           viewBox="0 0 32 32"
         >
-          {/* Background track */}
+          {/* Background track — becomes the alarm once nothing is left */}
           <circle
             cx="16"
             cy="16"
             r="11"
             fill="none"
-            stroke="var(--border-default)"
+            stroke={exhausted ? color : "var(--border-default)"}
             strokeWidth="2.5"
-            opacity="0.3"
+            opacity={exhausted ? 1 : 0.3}
+            style={{ filter: exhausted ? glow : "none" }}
           />
-          {/* Progress arc */}
+          {/* Remaining arc */}
           <circle
             cx="16"
             cy="16"
             r="11"
             fill="none"
-            stroke={getProgressColor(percentageValue)}
+            stroke={color}
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             strokeLinecap="round"
             strokeWidth="2.5"
             className="transition-all duration-300"
             style={{
-              filter: percentageValue >= 70 ? `drop-shadow(0 0 4px ${getProgressColor(percentageValue)})` : 'none'
+              filter: tone !== "normal" && !exhausted ? glow : "none"
             }}
           />
         </svg>
@@ -240,7 +309,7 @@ export const ContextContentHeader = ({
   children,
   ...props
 }: ContextContentHeaderProps) => {
-  const { percentageLabel, usedTokens, maxTokens } = useContextData();
+  const { remainingLabel, usedTokens, maxTokens } = useContextData();
 
   return (
     <div className={cn("px-4 pt-3.5", className)} {...props}>
@@ -249,11 +318,13 @@ export const ContextContentHeader = ({
           <div className="text-2xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
             Context Window
           </div>
+          {/* The headline is the headroom; the absolute pair stays beside it so
+              the figure can still be checked against real token counts. */}
           <div className="text-sm font-medium leading-none tracking-tight">
-            <span className="tabular-nums font-semibold text-[var(--text-primary)]">{percentageLabel}%</span>
+            <span className="tabular-nums font-semibold text-[var(--text-primary)]">{remainingLabel}% left</span>
             <span className="px-1.5 text-[var(--text-muted)]">•</span>
             <span className="text-sm font-medium text-[var(--text-primary)]">
-              {formatTokenCount(usedTokens)}/{formatTokenCount(maxTokens)} used by this chat
+              {formatTokenCount(usedTokens)} of {formatTokenCount(maxTokens)} used
             </span>
           </div>
         </div>
@@ -281,7 +352,7 @@ export const ContextContentBody = ({
 /**
  * Where the prompt's tokens go.
  *
- * The percentage counts only what the conversation put in the window. The
+ * The headroom figure counts only what the conversation put in the window. The
  * instructions and tool schemas are a fixed floor charged on every request, and
  * omitting them entirely would misstate what a turn costs — so they are listed
  * here, below the conversation rows and explicitly marked as sitting outside

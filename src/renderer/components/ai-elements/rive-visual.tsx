@@ -2,6 +2,7 @@ import { AlertCircle } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRive, useStateMachineInput, Layout, Fit, Alignment } from '@rive-app/react-webgl2';
 
+import { useReducedMotion } from '../../lib/reducedMotion';
 import { cn } from '../../lib/utils';
 
 type RiveVisualProps = {
@@ -64,6 +65,19 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
   const [error, setError] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
 
+  /**
+   * This is content, not chrome: the model emitted a `<visual>` block and the user is
+   * reading it, so the fix here is *autoplay*, not the animation. Reduce motion means
+   * nothing starts moving without being asked; it does not mean the user is refused
+   * the thing they were shown. The Play control below already exists, so withholding
+   * autoplay costs one click rather than access.
+   *
+   * The hook rather than the imperative read, because a transcript stays mounted for a
+   * long time and a mid-session toggle has to reach an animation that is already looping.
+   */
+  const reducedMotion = useReducedMotion();
+  const [isPlaying, setIsPlaying] = useState(!reducedMotion);
+
   const config = parseRiveConfig(content);
 
   const resolvedSrc = config?.src
@@ -77,7 +91,7 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
       fit: Fit.Contain,
       alignment: Alignment.Center,
     }),
-    autoplay: true,
+    autoplay: !reducedMotion,
     onLoad: () => {
       setIsReady(true);
       setError(null);
@@ -101,12 +115,24 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
     });
   }, [rive, config?.inputs, config?.stateMachines]);
 
+  // `autoplay` is only read when the runtime initialises, so it cannot answer for a
+  // toggle that happens later. Stop what is already looping; do not auto-resume when
+  // the setting goes back off — restarting motion the user never asked for is the same
+  // mistake in the other direction, and Play is right there.
+  useEffect(() => {
+    if (!rive || !reducedMotion) return;
+    rive.pause();
+    setIsPlaying(false);
+  }, [rive, reducedMotion]);
+
   const handlePlay = useCallback(() => {
     rive?.play();
+    setIsPlaying(true);
   }, [rive]);
 
   const handlePause = useCallback(() => {
     rive?.pause();
+    setIsPlaying(false);
   }, [rive]);
 
   if (!resolvedSrc) {
@@ -154,11 +180,25 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
           <div className="truncate text-xs font-semibold tracking-[0.02em] text-text-secondary">
             {title?.trim() || 'Rive animation'}
           </div>
+          {/* Was hardcoded 'Playing', which would now lie whenever autoplay was withheld. */}
           <div className="text-2xs text-text-muted">
-            {isReady ? 'Playing' : 'Loading…'}
+            {isReady ? (isPlaying ? 'Playing' : 'Paused') : 'Loading…'}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        {/*
+          Hover-revealed controls are fine next to something already playing, but if
+          autoplay was withheld then Play is the only way in — and hiding the only way
+          in behind a hover is not a way in at all for keyboard and touch. Under reduced
+          motion the controls stay visible.
+        */}
+        <div
+          className={cn(
+            'flex items-center gap-1.5 transition-opacity',
+            reducedMotion
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+          )}
+        >
           <button
             type="button"
             onClick={handlePause}

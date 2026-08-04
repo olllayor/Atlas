@@ -5,6 +5,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitBranch,
   LayoutGrid,
   MoreHorizontal,
   Pencil,
@@ -117,6 +118,12 @@ type SidebarProps = {
    * hides "Edit project" rather than offering a rename that goes nowhere.
    */
   onRenameProject?: (projectId: string, title: string) => void;
+  /**
+   * Opens a new chat seeded with this one's history, leaving this one alone.
+   * Optional for the same reason as `onRename`: without wiring, the menu entry
+   * hides rather than offering a fork that goes nowhere.
+   */
+  onForkConversation?: (conversationId: string) => void;
   /** Pinning lifts a chat into its own section; archiving hides it, reversibly. */
   onSetConversationPinned: (conversationId: string, pinned: boolean) => void;
   onArchiveConversation: (conversationId: string) => void;
@@ -296,6 +303,7 @@ export function Sidebar({
   onRevealProject,
   onDetachProject,
   onRenameProject,
+  onForkConversation,
   onSetConversationPinned,
   onArchiveConversation,
   onRestoreConversation,
@@ -853,6 +861,15 @@ export function Sidebar({
                     <Archive aria-hidden />
                     Archive
                   </ContextMenuItem>
+                  {onForkConversation ? (
+                    // Not in the hover slot: forking creates a chat, and the
+                    // hover slot is reserved for the two actions that can be
+                    // taken back. This one costs a deliberate right-click.
+                    <ContextMenuItem onSelect={() => onForkConversation(item.id)}>
+                      <GitBranch aria-hidden />
+                      Fork
+                    </ContextMenuItem>
+                  ) : null}
                   {onRename ? (
                     <ContextMenuItem onSelect={() => startRename(item)}>
                       <Pencil aria-hidden />
@@ -894,6 +911,7 @@ export function Sidebar({
       hoverCardOpenDelay,
       onArchiveConversation,
       onDelete,
+      onForkConversation,
       onRename,
       onRestoreConversation,
       onSelect,

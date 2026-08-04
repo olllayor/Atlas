@@ -300,6 +300,7 @@ export default function App() {
     setConversationWorkspace,
     setConversationToolPermissionMode,
     createConversationInProject,
+    forkConversation,
   } = useAppStore(
     useShallow((state) => ({
       bootstrapping: state.bootstrapping,
@@ -375,6 +376,7 @@ export default function App() {
       refreshProjects: state.refreshProjects,
       attachProject: state.attachProject,
       createConversationInProject: state.createConversationInProject,
+      forkConversation: state.forkConversation,
       detachProject: state.detachProject,
       renameProject: state.renameProject,
       setProjectPinned: state.setProjectPinned,
@@ -1165,6 +1167,7 @@ export default function App() {
           onRevealProject={(projectId) => void window.atlasChat.projects.reveal(projectId)}
           onDetachProject={(projectId) => void detachProject(projectId)}
           onRenameProject={(projectId, title) => void renameProject(projectId, title)}
+          onForkConversation={(id) => void forkConversation(id)}
           onSetConversationPinned={(id, pinned) => void setConversationPinned(id, pinned)}
           onArchiveConversation={(id) => void setConversationArchived(id, true)}
           onRestoreConversation={(id) => void setConversationArchived(id, false)}

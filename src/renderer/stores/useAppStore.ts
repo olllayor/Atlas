@@ -153,6 +153,11 @@ type AppState = {
   createConversation: () => Promise<void>;
   /** New conversation already bound to a project and set to Code mode. */
   createConversationInProject: (projectId: string) => Promise<void>;
+  /**
+   * A new conversation seeded with an existing one's history, opened straight
+   * away. The original is untouched.
+   */
+  forkConversation: (conversationId: string) => Promise<void>;
   refreshProjects: () => Promise<void>;
   /** Opens the native folder picker unless a root is supplied. Null when cancelled. */
   attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
@@ -859,6 +864,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refreshConversationList();
     set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
     await get().loadConversation(created.id);
+  },
+
+  forkConversation: async (conversationId) => {
+    try {
+      // No `throughMessageId`: forking from the sidebar has no message in hand,
+      // so it takes the whole thread. Picking a point is the transcript's job
+      // and the IPC already accepts one.
+      const fork = await window.atlasChat.conversations.fork({ conversationId });
+      await get().refreshConversationList();
+      set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+      await get().loadConversation(fork.id);
+    } catch (error) {
+      notifyError('Could not fork the chat', error);
+    }
   },
 
   refreshProjects: async () => {

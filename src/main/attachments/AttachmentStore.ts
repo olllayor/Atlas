@@ -111,6 +111,49 @@ export class AttachmentStore {
     };
   }
 
+  /**
+   * Duplicate a stored blob under another conversation, returning the new key.
+   *
+   * Forking has to copy rather than share, and the reason is two lines down in
+   * this file: storage keys are `<conversationId>/<name>` and
+   * `deleteConversationAttachments` removes that whole directory. A fork that
+   * pointed at its parent's keys would render fine until the day the parent was
+   * deleted, at which point every image in the fork would silently break — with
+   * no row anywhere recording that the fork had a claim on those bytes.
+   * Reference counting would fix that; copying the handful of blobs a forked
+   * prefix actually mentions fixes it without inventing a GC.
+   *
+   * Returns null when the source is gone, so a fork of a conversation whose
+   * attachments were already deleted still succeeds and simply carries the same
+   * broken reference the parent had.
+   */
+  copyAttachment(storageKey: string, targetConversationId: string): string | null {
+    const sourcePath = resolve(this.rootDir, storageKey);
+    if (!sourcePath.startsWith(resolve(this.rootDir))) {
+      return null;
+    }
+
+    // The name is regenerated rather than reused: two conversations holding the
+    // same filename is harmless, but a key minted fresh cannot collide with
+    // whatever the target conversation already stored.
+    const extension = extname(storageKey);
+    const targetKey = join(targetConversationId, `${Date.now()}-${randomUUID()}${extension}`);
+    const targetPath = resolve(this.rootDir, targetKey);
+
+    if (!targetPath.startsWith(resolve(this.rootDir))) {
+      return null;
+    }
+
+    try {
+      const bytes = readFileSync(sourcePath);
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, bytes);
+      return targetKey;
+    } catch {
+      return null;
+    }
+  }
+
   readAttachmentData(storageKey: string) {
     const absolutePath = resolve(this.rootDir, storageKey);
     if (!absolutePath.startsWith(resolve(this.rootDir))) {

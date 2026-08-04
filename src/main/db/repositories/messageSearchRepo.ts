@@ -200,6 +200,13 @@ export class MessageSearchRepo {
           JOIN conversations c ON c.id = m.conversation_id
           WHERE ${MESSAGE_SEARCH_TABLE} MATCH @match
             AND (@includeArchived = 1 OR c.archived_at IS NULL)
+            -- Side conversations are hidden from the listing on purpose, and a
+            -- search that surfaced them would be the one place a tangent leaked
+            -- back into history. Filtered here rather than at index time: the
+            -- FTS table is external-content and its triggers cannot be made
+            -- conditional without the partial index this file's own comment
+            -- warns quietly corrupts.
+            AND c.side_of_conversation_id IS NULL
           ORDER BY rank
           LIMIT @limit
         `
@@ -250,6 +257,13 @@ export class MessageSearchRepo {
           JOIN conversations c ON c.id = m.conversation_id
           WHERE ${conditions}
             AND (@includeArchived = 1 OR c.archived_at IS NULL)
+            -- Side conversations are hidden from the listing on purpose, and a
+            -- search that surfaced them would be the one place a tangent leaked
+            -- back into history. Filtered here rather than at index time: the
+            -- FTS table is external-content and its triggers cannot be made
+            -- conditional without the partial index this file's own comment
+            -- warns quietly corrupts.
+            AND c.side_of_conversation_id IS NULL
           ORDER BY m.created_at DESC, m.id DESC
           LIMIT @limit
         `

@@ -1,5 +1,7 @@
 import { flushSync } from 'react-dom';
 
+import { isReducedMotion } from './reducedMotion';
+
 type ViewTransitionDocument = Document & {
   startViewTransition?: (callback: () => void | Promise<void>) => {
     finished: Promise<void>;
@@ -8,12 +10,11 @@ type ViewTransitionDocument = Document & {
   };
 };
 
-function prefersReducedMotion() {
-  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
 export function runViewTransition(update: () => void) {
-  if (typeof document === 'undefined' || prefersReducedMotion()) {
+  // Read per call rather than caching: this is the only motion decision in the
+  // module, and toggling Reduce motion has to take effect on the next
+  // transition, not the next reload.
+  if (typeof document === 'undefined' || isReducedMotion()) {
     update();
     return;
   }

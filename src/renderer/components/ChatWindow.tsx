@@ -40,7 +40,7 @@ import { ImageLightbox } from './ai-elements/image-lightbox';
 import { MessageResponse } from './ai-elements/message';
 import { VisualBlock } from './ai-elements/visual';
 import { ReasoningCell } from './transcript/ReasoningCell';
-import { buildToolCells, collectChangedFiles } from '../../shared/toolCellGrammar';
+import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
 import { isPlanToolPart } from '../../shared/planTool';
 import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
 import type { AssistantSegment } from './transcript/assistantSegments';
@@ -48,6 +48,7 @@ import { ActivityBlock } from './transcript/ActivityBlock';
 import { ChangedFilesBar } from './transcript/ChangedFilesBar';
 import { PlanCell } from './transcript/PlanCell';
 import { ToolCellList } from './transcript/ToolCell';
+import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
@@ -330,7 +331,14 @@ function AssistantParts({
   // The work/answer cut, so the reply is not buried under the tool calls that
   // produced it. See `splitAssistantTurn`.
   const split = useMemo(() => splitAssistantTurn(segments), [segments]);
+  const rawMode = useRawTranscript();
 
+  // The two drivers of the plain-text path. `deferRichContent` is the
+  // virtualizer's: a row more than ~1.5 viewports away is stripped to a cheap
+  // stub, and that has to stay true in raw mode too — an off-screen row is
+  // not in anyone's selection, so paying to render its tool cells as text buys
+  // nothing. `rawMode` is the reader's, and it applies to every row that is
+  // actually on screen, cell by cell.
   if (deferRichContent) {
     return <AssistantTextFallback content={content} />;
   }
@@ -386,6 +394,25 @@ function AssistantParts({
       return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
     }
 
+    if (rawMode) {
+      // The markdown pipeline is the single largest source of copy artifacts:
+      // a numbered list pastes without its numbers, a table pastes as tabs, a
+      // fenced block pastes with the highlighter's zero-width spans. The
+      // source text has none of those problems.
+      return (
+        <div
+          key={part.id}
+          className={cn(
+            'app-code-text leading-[1.55]',
+            RAW_BLOCK,
+            options.dim ? 'text-text-secondary' : 'text-text-primary'
+          )}
+        >
+          {part.text}
+        </div>
+      );
+    }
+
     return (
       <MessageResponse
         key={part.id}
@@ -403,25 +430,38 @@ function AssistantParts({
     );
   };
 
+  const activityChildren = split.activity.map((segment, index) =>
+    renderSegment(segment, {
+      isLast: isStreaming && split.answer.length === 0 && index === split.activity.length - 1,
+      dim: true,
+    })
+  );
+
   return (
     <>
       {split.activity.length > 0 ? (
-        <ActivityBlock
-          id={`activity:${turnId}`}
-          isStreaming={isStreaming}
-          fallbackDurationMs={durationMs}
-          // Open while there is no reply under it — the live run of steps, or
-          // a turn that ended without one. It folds as the answer arrives.
-          defaultOpen={split.answer.length === 0}
-          forceOpen={hasPendingApproval(split.activity)}
-        >
-          {split.activity.map((segment, index) =>
-            renderSegment(segment, {
-              isLast: isStreaming && split.answer.length === 0 && index === split.activity.length - 1,
-              dim: true,
-            })
-          )}
-        </ActivityBlock>
+        rawMode ? (
+          /*
+            Raw mode unwraps the activity fold entirely rather than passing
+            `forceOpen`. A fold that is permanently open is still a fold — it
+            keeps the `Worked for …` header, the chevron and the indent, and
+            more to the point the collapsed default would hide the tool output
+            that raw mode exists to make selectable.
+          */
+          <div className="flex flex-col gap-1.5">{activityChildren}</div>
+        ) : (
+          <ActivityBlock
+            id={`activity:${turnId}`}
+            isStreaming={isStreaming}
+            fallbackDurationMs={durationMs}
+            // Open while there is no reply under it — the live run of steps, or
+            // a turn that ended without one. It folds as the answer arrives.
+            defaultOpen={split.answer.length === 0}
+            forceOpen={hasPendingApproval(split.activity)}
+          >
+            {activityChildren}
+          </ActivityBlock>
+        )
       ) : null}
 
       {split.plan.map((segment) => renderSegment(segment, { isLast: false, dim: false }))}
@@ -721,9 +761,19 @@ const ROW_HEIGHT = {
   changedFilesBar: 64,
   visual: 320,
   file: 28,
+  /** One line of a raw-mode `<pre>` at `app-code-text` size. */
+  rawLine: 20,
 } as const;
 
-function estimateHistoryRowHeight(message: ChatMessage) {
+/**
+ * @param raw Raw mode expands every cell and removes the activity fold, so the
+ * collapsed-row assumptions above are all wrong under it. The runtime
+ * calibration in `estimateScaleRef` would eventually absorb the error, but it
+ * is a single scalar — it cannot represent "tool-heavy turns are now 20× taller
+ * and prose turns are unchanged", so the estimate has to know about the mode
+ * rather than be corrected after the fact.
+ */
+function estimateHistoryRowHeight(message: ChatMessage, raw: boolean) {
   const fileCount = getMessageFileParts(message.parts).length;
 
   if (message.role === 'user') {
@@ -753,10 +803,34 @@ function estimateHistoryRowHeight(message: ChatMessage) {
    * for …` line, so the estimate counts one row for the lot. While the turn
    * is still streaming the fold is open and the rows are all on screen.
    */
-  const activityIsFolded = message.status !== 'streaming' && cells.length > 0;
+  const activityIsFolded = !raw && message.status !== 'streaming' && cells.length > 0;
+
+  // Line counts per cell, computed once: raw mode needs them for the activity
+  // block *and* for the changed-files bar, which republishes the same patches.
+  const rawCellLines = raw
+    ? cells.map((cell) => ({ cell, lines: toolCellToPlainText(cell).split('\n').length }))
+    : [];
+
   const activityHeight = activityIsFolded
     ? ROW_HEIGHT.reasoning
-    : cells.length * ROW_HEIGHT.toolCell + reasoningCount * ROW_HEIGHT.reasoning;
+    : raw
+      ? // Every cell is fully expanded, so the row is as tall as the text it
+        // renders. Counting the lines is the only honest seed available.
+        rawCellLines.reduce((sum, entry) => sum + entry.lines * ROW_HEIGHT.rawLine, 0) +
+        reasoningCount * ROW_HEIGHT.reasoning
+      : cells.length * ROW_HEIGHT.toolCell + reasoningCount * ROW_HEIGHT.reasoning;
+
+  // In raw mode the bar is not a 48px slab but the full patch text again, so
+  // it costs roughly what the diff cells above it cost, plus a header line.
+  const changedFilesHeight = !hasChangedFilesBar
+    ? 0
+    : raw
+      ? (rawCellLines
+          .filter((entry) => entry.cell.detail.type === 'diff')
+          .reduce((sum, entry) => sum + entry.lines, 0) +
+          2) *
+        ROW_HEIGHT.rawLine
+      : ROW_HEIGHT.changedFilesBar;
 
   return Math.max(
     44,
@@ -764,7 +838,7 @@ function estimateHistoryRowHeight(message: ChatMessage) {
       Math.ceil(message.content.length / 100) * ROW_HEIGHT.textLine +
       activityHeight +
       (hasPlan ? ROW_HEIGHT.toolCell : 0) +
-      (hasChangedFilesBar ? ROW_HEIGHT.changedFilesBar : 0) +
+      changedFilesHeight +
       visualCount * ROW_HEIGHT.visual +
       fileCount * ROW_HEIGHT.file
   );
@@ -911,10 +985,12 @@ export function ChatWindow({
    */
   const [scrollMargin, setScrollMargin] = useState(0);
 
+  const rawTranscript = useRawTranscript();
+
   const estimateSize = useCallback(
     (index: number) => {
       const message = messages[index];
-      const base = message ? estimateHistoryRowHeight(message) : 120;
+      const base = message ? estimateHistoryRowHeight(message, rawTranscript) : 120;
       const { measured, estimated, count } = estimateScaleRef.current;
       if (count < 4 || estimated <= 0) {
         return base;
@@ -922,7 +998,7 @@ export function ChatWindow({
       const scale = Math.min(4, Math.max(0.4, measured / estimated));
       return Math.round(base * scale);
     },
-    [messages]
+    [messages, rawTranscript]
   );
 
   const measureRow = useCallback(
@@ -938,7 +1014,7 @@ export function ChatWindow({
       if (message && size > 0) {
         const stats = estimateScaleRef.current;
         stats.measured += size;
-        stats.estimated += estimateHistoryRowHeight(message);
+        stats.estimated += estimateHistoryRowHeight(message, rawTranscript);
         stats.count += 1;
         // Halve the accumulator periodically so the calibration tracks the
         // conversation's recent shape instead of everything ever measured.
@@ -951,7 +1027,7 @@ export function ChatWindow({
 
       return size;
     },
-    [messages]
+    [messages, rawTranscript]
   );
 
   const rowVirtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
@@ -968,6 +1044,26 @@ export function ChatWindow({
   const virtualItems = rowVirtualizer.getVirtualItems();
   const visibleRange = rowVirtualizer.range;
   const totalSize = rowVirtualizer.getTotalSize();
+
+  /*
+   * Toggling raw mode rewrites the height of every row in the transcript, and
+   * the virtualizer is holding a measurement for each one it has ever
+   * rendered. Without this the cached heights survive the toggle, so the
+   * scrollbar keeps describing the old layout and every scroll into
+   * previously-measured territory snaps. `measure()` drops the cache; the
+   * calibration accumulator has to go with it, since it was calibrated against
+   * estimates for the other mode.
+   *
+   * Skipped on mount — there is nothing cached yet, and re-measuring would
+   * throw away the initial scroll-to-bottom.
+   */
+  const previousRawRef = useRef(rawTranscript);
+  useLayoutEffect(() => {
+    if (previousRawRef.current === rawTranscript) return;
+    previousRawRef.current = rawTranscript;
+    estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
+    rowVirtualizer.measure();
+  }, [rawTranscript, rowVirtualizer]);
 
   // ---------------------------------------------------------------------
   // Scroll lifecycle

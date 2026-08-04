@@ -273,6 +273,14 @@ export class SettingsRepo {
     this.setJsonSetting('appearance.pointerCursors', value);
   }
 
+  getRawTranscript() {
+    return Boolean(this.getJsonSetting('appearance.rawTranscript', DEFAULT_SETTINGS_APPEARANCE.rawTranscript));
+  }
+
+  setRawTranscript(value: boolean) {
+    this.setJsonSetting('appearance.rawTranscript', value);
+  }
+
   getKeybindings(): KeybindingRule[] {
     return decodeKeybindingRules(this.getJsonSetting<unknown>('keybindings', null));
   }

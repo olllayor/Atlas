@@ -494,6 +494,16 @@ function AppearancePage({
             ariaLabel="Toggle pointer cursors"
           />
         </SettingsRow>
+        <SettingsRow
+          title="Raw transcript"
+          description="Render replies, tool output and diffs as plain text, so selections copy without formatting artifacts."
+        >
+          <Switch
+            checked={appearance.rawTranscript}
+            onCheckedChange={(value) => onAppearancePatch({ rawTranscript: value })}
+            ariaLabel="Toggle raw transcript"
+          />
+        </SettingsRow>
         <SettingsRow title="Reduce motion" description="Reduce animations or match your system setting.">
           <div
             role="radiogroup"

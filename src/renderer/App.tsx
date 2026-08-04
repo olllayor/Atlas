@@ -745,6 +745,17 @@ export default function App() {
       return;
     }
 
+    if (command === 'transcript.raw.toggle') {
+      live.setCommandPaletteOpen(false);
+      // Persisted rather than held in component state: a reader who turned the
+      // transcript raw to copy something out of it did not ask for it back
+      // the next time the app starts.
+      const next = !(live.settings?.appearance.rawTranscript ?? false);
+      captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'rawTranscript', value: next });
+      void live.updatePreferences({ appearance: { rawTranscript: next } });
+      return;
+    }
+
     if (command === 'workspace.project.attach') {
       live.setCommandPaletteOpen(false);
       if (liveActiveView !== 'chat') {

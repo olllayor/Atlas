@@ -571,6 +571,15 @@ export type SettingsAppearanceSummary = {
   translucentSidebar: boolean;
   reduceMotion: ReduceMotionMode;
   pointerCursors: boolean;
+  /**
+   * Render every transcript cell as plain text (Codex's `/raw`).
+   *
+   * Selecting rendered markdown, a diff table and a syntax-highlighted
+   * terminal block produces a paste full of layout artifacts — bullet glyphs,
+   * gutter line numbers, the U+2212 display minus. Raw mode is the escape
+   * hatch: same content, rendered as the characters it actually is.
+   */
+  rawTranscript: boolean;
 };
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
@@ -588,6 +597,7 @@ export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   translucentSidebar: false,
   reduceMotion: 'system',
   pointerCursors: false,
+  rawTranscript: false,
 };
 
 export type SettingsKeyboardSummary = {
@@ -1327,6 +1337,7 @@ export type SettingsUpdateRequest = {
     translucentSidebar?: boolean;
     reduceMotion?: ReduceMotionMode;
     pointerCursors?: boolean;
+    rawTranscript?: boolean;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];

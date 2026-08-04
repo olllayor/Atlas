@@ -187,3 +187,24 @@ export function derivePlanView(parts: ChatToolPart[]): PlanView | null {
     anchorId: anchor.id || anchor.toolCallId,
   };
 }
+
+/**
+ * The plan checklist as selectable text.
+ *
+ * Raw mode's rule is that what you see is what you copy, and the rendered
+ * checklist carries status in a glyph plus a strikethrough — neither of which
+ * survives a paste. `[x]` / `[~]` / `[ ]` is the same information in
+ * characters, and is the form a reader can drop straight into an issue.
+ */
+export function planViewToPlainText(view: PlanView): string {
+  const marker: Record<PlanStepStatus, string> = {
+    completed: '[x]',
+    in_progress: '[~]',
+    pending: '[ ]',
+  };
+
+  const lines = [`Plan (${view.completed}/${view.total})`];
+  if (view.explanation) lines.push(view.explanation);
+  for (const item of view.steps) lines.push(`${marker[item.status]} ${item.step}`);
+  return lines.join('\n');
+}

@@ -142,6 +142,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setPointerCursors(appearancePatch.pointerCursors);
       }
 
+      if (typeof appearancePatch?.rawTranscript === 'boolean') {
+        settingsRepo.setRawTranscript(appearancePatch.rawTranscript);
+      }
+
       if (patch?.keyboard?.keybindings) {
         settingsRepo.setKeybindings(patch.keyboard.keybindings);
       }

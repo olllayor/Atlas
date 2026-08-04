@@ -14,8 +14,9 @@ import { Check, ChevronRight, Circle, CircleDot, type LucideIcon } from 'lucide-
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ChatToolPart } from '../../../shared/contracts';
-import { derivePlanView, type PlanStepStatus } from '../../../shared/planTool';
+import { derivePlanView, planViewToPlainText, type PlanStepStatus } from '../../../shared/planTool';
 import { useDisclosure } from '../../stores/useTranscriptUiStore';
+import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { Disclosure } from './ToolCell';
 
@@ -41,12 +42,28 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
   // `update_plan` call rewriting the plan underneath it.
   const [isOpen, toggleOpen] = useDisclosure(`plan-${parts[0]?.id ?? 'none'}`, isStreaming);
   const announcement = usePlanProgressAnnouncement(view?.completed ?? null, view?.total ?? null);
+  const raw = useRawTranscript();
 
   if (!view) {
     return null;
   }
 
   const label = view.updating ? 'Updating plan' : `Updated plan · ${view.completed}/${view.total} done`;
+
+  if (raw) {
+    // Status lives in an icon and a strikethrough here; neither pastes. The
+    // `[x]`/`[~]`/`[ ]` form carries the same three states as characters.
+    return (
+      <div className="my-1.5">
+        <pre className={cn('app-code-text m-0 leading-[1.55] text-text-tertiary', RAW_BLOCK)}>
+          {planViewToPlainText(view)}
+        </pre>
+        <div role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="my-1.5 group/plan">

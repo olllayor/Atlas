@@ -190,6 +190,7 @@ export class ModelRegistry {
         translucentSidebar: this.settingsRepo.getTranslucentSidebar(),
         reduceMotion: this.settingsRepo.getReduceMotion(),
         pointerCursors: this.settingsRepo.getPointerCursors(),
+        rawTranscript: this.settingsRepo.getRawTranscript(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()

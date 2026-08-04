@@ -26,25 +26,22 @@
 import { Check, Copy } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
+import { stripAnsi } from '../../../shared/toolCellGrammar';
 import { useClipboard } from '../../hooks/useClipboard';
 import { cn } from '../../lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
-/**
- * CSI/OSC sequences and stray control characters. Program output reaches
- * the renderer as a raw string, so without this a coloured test runner
- * prints `[32m✔[0m` into the transcript.
+/*
+ * `stripAnsi` and its CSI/OSC pattern live in `shared/toolCellGrammar` since
+ * raw mode needed them: raw mode renders the same output without this
+ * component, and two copies of the escape pattern would mean a sequence this
+ * one learns to strip is still printed as `←[32m✓←[0m` over there.
  */
-// eslint-disable-next-line no-control-regex
-const ANSI_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|[\u0000-\u0008\u000B-\u001F\u007F]/g;
+export { stripAnsi };
 
 /** Just the SGR (`ESC [ ... m`) subset, which is the part that carries colour. */
 // eslint-disable-next-line no-control-regex
 const SGR_PATTERN = /\u001B\[([0-9;]*)m/g;
-
-export function stripAnsi(value: string): string {
-  return value.replace(ANSI_PATTERN, '');
-}
 
 /**
  * A bare `\r` rewinds the cursor to column 0, so a progress bar that

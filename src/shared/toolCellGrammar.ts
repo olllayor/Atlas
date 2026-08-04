@@ -715,6 +715,140 @@ export function buildToolCells(parts: ChatToolPart[]): ToolCell[] {
 }
 
 // ---------------------------------------------------------------------------
+// Plain-text rendering (raw mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * The third rendering of the cell model.
+ *
+ * A `ToolCell` already has exactly one content model with two renderings —
+ * the collapsed summary row and the expanded detail. Raw mode is the third,
+ * and it belongs here rather than in each component for the same reason the
+ * other two do: the moment a component hand-rolls its own plain text, the
+ * raw view and the rendered view start telling different stories about the
+ * same call.
+ *
+ * The contract for every function below: the return value is what a reader
+ * would get by selecting the cell and hitting copy. That rules out anything
+ * that only exists as decoration — no `⋮` gap glyphs, no U+2212 minus (a
+ * copied patch has to survive `git apply`), no `›` chevrons, no box drawing.
+ */
+
+/** Diff lines to include per file before raw mode elides the rest. */
+export const RAW_DIFF_MAX_LINES = 400;
+
+/**
+ * CSI/OSC sequences and stray control characters.
+ *
+ * Program output reaches the renderer as a raw string. The rich terminal block
+ * maps the SGR subset onto theme colours and strips the rest at render time, so
+ * the escape codes never live in the cell model — which means the plain-text
+ * path has to strip them itself or a raw transcript prints `[32m✔[0m`.
+ * "Raw" means the characters the program produced, not the bytes it wrote to a
+ * TTY it thought it had.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN =
+  /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|[\u0000-\u0008\u000B-\u001F\u007F]/g;
+
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_PATTERN, '');
+}
+
+/**
+ * Render one file's hunks as a real unified patch body.
+ *
+ * ASCII `+`/`-`, not the display minus, and `@@ …` in place of the `⋮` the
+ * table draws — the point of the raw view is that the text is the artifact.
+ */
+export function diffFileToPlainText(file: DiffFile, maxLines: number = RAW_DIFF_MAX_LINES): string {
+  const lines: string[] = [];
+  const header = file.previousPath ? `${file.previousPath} → ${file.path}` : file.path;
+  lines.push(`--- ${header} (+${file.added} -${file.removed})`);
+
+  let emitted = 0;
+  let elided = 0;
+
+  for (const hunk of file.hunks) {
+    if (hunk.gapBefore) {
+      if (emitted < maxLines) lines.push('@@');
+    }
+    for (const line of hunk.lines) {
+      if (emitted >= maxLines) {
+        elided += 1;
+        continue;
+      }
+      lines.push(`${line.sign}${line.content}`);
+      emitted += 1;
+    }
+  }
+
+  if (elided > 0) lines.push(`… ${elided} more diff lines`);
+  return lines.join('\n');
+}
+
+/**
+ * Everything a tool cell knows, as one selectable block.
+ *
+ * The summary row's `label` leads, because in raw mode there is no hover, no
+ * chevron and no indent to say what the block underneath belongs to — the
+ * label is the only thing tying output to the call that produced it.
+ */
+export function toolCellToPlainText(cell: ToolCell): string {
+  const blocks: string[] = [cell.label];
+
+  if (cell.continuationAll.length) {
+    // The full continuation, not the two-line preview: a truncated command is
+    // exactly the thing raw mode exists to stop shipping into a paste buffer.
+    blocks.push(cell.continuationAll.join('\n'));
+  }
+
+  const detail = cell.detail;
+
+  switch (detail.type) {
+    case 'none':
+      break;
+
+    case 'text':
+      // `allLines`, not the head/tail slice — the `… +N lines` marker is a
+      // button, and a button contributes nothing to a copied selection.
+      blocks.push(detail.empty ? '(no output)' : stripAnsi(detail.allLines.join('\n')));
+      break;
+
+    case 'error':
+      blocks.push(stripAnsi(detail.text));
+      break;
+
+    case 'explore':
+      blocks.push(
+        detail.entries
+          .map((entry) => {
+            const values = entry.values.join(', ');
+            return entry.scope
+              ? `${entry.label} ${values} in ${entry.scope}`
+              : `${entry.label} ${values}`;
+          })
+          .join('\n')
+      );
+      break;
+
+    case 'diff':
+      blocks.push(detail.files.map((file) => diffFileToPlainText(file)).join('\n\n'));
+      break;
+
+    case 'approval':
+      // Rendered for completeness, but the interactive prompt stays a real
+      // prompt in raw mode — see `ToolCell.tsx`. A decision the user cannot
+      // make is worse than a decision they cannot cleanly copy.
+      if (detail.reason) blocks.push(`Reason: ${detail.reason}`);
+      if (detail.command) blocks.push(`$ ${detail.command}`);
+      break;
+  }
+
+  return blocks.filter((block) => block.length > 0).join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Changed-files summary (the end-of-turn "Changed N files +A −D" bar)
 // ---------------------------------------------------------------------------
 
@@ -763,4 +897,11 @@ export function collectChangedFiles(parts: ChatToolPart[]): ChangedFilesSummary 
     added: files.reduce((sum, file) => sum + file.added, 0),
     removed: files.reduce((sum, file) => sum + file.removed, 0),
   };
+}
+
+/** The end-of-turn changed-files bar as selectable text. */
+export function changedFilesToPlainText(summary: ChangedFilesSummary): string {
+  const count = summary.files.length;
+  const header = `Changed ${count} ${count === 1 ? 'file' : 'files'} +${summary.added} -${summary.removed}`;
+  return [header, ...summary.files.map((file) => diffFileToPlainText(file))].join('\n\n');
 }

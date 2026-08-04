@@ -20,8 +20,10 @@ import {
   type ToolCellStatus,
   buildToolCells,
   formatElapsed,
+  toolCellToPlainText,
 } from '../../../shared/toolCellGrammar';
 import { useDisclosure } from '../../stores/useTranscriptUiStore';
+import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
 import { TerminalBlock } from './TerminalBlock';
@@ -125,14 +127,19 @@ type ToolCellListProps = {
 export function ToolCellList({ parts, approvals }: ToolCellListProps) {
   const cells = useMemo(() => buildToolCells(parts), [parts]);
   const announcement = useTerminalTransitions(cells);
+  const raw = useRawTranscript();
 
   if (!cells.length) return null;
 
   return (
     <div className="flex flex-col gap-1.5" role="list" aria-label="Agent actions">
-      {cells.map((cell) => (
-        <ToolCell key={cell.id} cell={cell} approvals={approvals} />
-      ))}
+      {cells.map((cell) =>
+        raw ? (
+          <RawToolCell key={cell.id} cell={cell} approvals={approvals} />
+        ) : (
+          <ToolCell key={cell.id} cell={cell} approvals={approvals} />
+        )
+      )}
 
       {/*
         One status region for the whole run. Wrapping the list itself in
@@ -189,6 +196,59 @@ function isExpandable(cell: ToolCellModel): boolean {
       // diff, error, approval all carry content worth revealing.
       return true;
   }
+}
+
+/**
+ * A tool cell under raw mode.
+ *
+ * Three deliberate departures from the rich cell:
+ *
+ *  1. **No disclosure.** The whole point of raw mode is that a drag-select
+ *     over the transcript yields the transcript. Output hidden behind a
+ *     chevron is not in the selection, so a raw cell is always open. There is
+ *     no chevron either — an affordance that toggles nothing is a lie.
+ *  2. **The full output**, not the head/tail slice. `… +N lines` is a button;
+ *     buttons do not paste.
+ *  3. **One text node per cell**, so the label, the command continuation and
+ *     the output come out of the clipboard in the order they were rendered
+ *     rather than as a pile of nested flex children with stray newlines.
+ *
+ * An approval prompt is the exception and keeps its buttons: raw mode is a
+ * reading preference, and it must not be able to strand a run waiting on a
+ * decision the user can no longer make.
+ */
+function RawToolCell({
+  cell,
+  approvals,
+}: {
+  cell: ToolCellModel;
+  approvals?: ToolCellApprovalHandlers;
+}) {
+  const text = useMemo(() => toolCellToPlainText(cell), [cell]);
+
+  if (cell.detail.type === 'approval') {
+    return (
+      <div role="listitem" className="text-sm text-text-tertiary">
+        <ApprovalPrompt cell={cell} detail={cell.detail} approvals={approvals} />
+      </div>
+    );
+  }
+
+  return (
+    <div role="listitem">
+      <pre
+        className={cn(
+          'app-code-text m-0 min-w-0 leading-[1.55]',
+          RAW_BLOCK,
+          // Failure still has to be legible at a glance; it is the one thing
+          // a flat wall of text would otherwise bury.
+          STATUS_TINT[cell.status] ?? 'text-text-secondary'
+        )}
+      >
+        {text}
+      </pre>
+    </div>
+  );
 }
 
 function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCellApprovalHandlers }) {

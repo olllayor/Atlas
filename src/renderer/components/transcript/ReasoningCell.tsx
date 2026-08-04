@@ -27,6 +27,7 @@ import {
   useDisclosure,
   useTranscriptUiStore,
 } from '../../stores/useTranscriptUiStore';
+import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { Disclosure } from './ToolCell';
 import { MessageResponse } from '../ai-elements/message';
@@ -73,6 +74,7 @@ export function ReasoningCell({
   // records explicit toggles, so a manual open survives the transition to
   // done.
   const [isOpen, toggleOpen] = useDisclosure(cellId, false);
+  const raw = useRawTranscript();
 
   // Finished with nothing to show → no row. Still streaming with nothing
   // yet → the bare shimmer label, which is exactly the reference's resting
@@ -90,6 +92,18 @@ export function ReasoningCell({
     return (
       <div className="my-1.5 flex min-h-[1.5rem] items-center text-sm font-normal text-text-tertiary">
         <span className="motion-shimmer">{label}</span>
+      </div>
+    );
+  }
+
+  if (raw) {
+    // Label and text in one block, always open. Reasoning is prose, and the
+    // markdown pipeline is exactly what raw mode is asked to skip.
+    return (
+      <div className="my-1.5">
+        <pre className={cn('app-code-text m-0 leading-[1.55] text-text-tertiary', RAW_BLOCK)}>
+          {`${label}\n${trimmed}`}
+        </pre>
       </div>
     );
   }

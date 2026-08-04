@@ -17,8 +17,9 @@ import { ChevronRight, FileDiff } from 'lucide-react';
 import { useMemo } from 'react';
 
 import type { ChangedFilesSummary, DiffFile } from '../../../shared/toolCellGrammar';
-import { basename } from '../../../shared/toolCellGrammar';
+import { basename, changedFilesToPlainText } from '../../../shared/toolCellGrammar';
 import { stableId, useDisclosure } from '../../stores/useTranscriptUiStore';
+import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
 import { Disclosure } from './ToolCell';
@@ -65,8 +66,33 @@ export function ChangedFilesBar({
     [summary.files]
   );
   const [isOpen, toggleOpen] = useDisclosure(barId, false);
+  const raw = useRawTranscript();
 
   const names = useMemo(() => disambiguateNames(summary.files), [summary.files]);
+  const rawText = useMemo(() => changedFilesToPlainText(summary), [summary]);
+
+  if (raw) {
+    // The bar's whole visual identity — the elevated slab, the chevron, the
+    // coloured counts — is chrome. In raw mode the header and every patch
+    // body collapse into one selectable block; "Review" survives as a plain
+    // link because it opens a panel, which is an action, not a rendering.
+    return (
+      <div className="mt-4">
+        <pre className={cn('app-code-text m-0 leading-[1.55] text-text-secondary', RAW_BLOCK)}>
+          {rawText}
+        </pre>
+        {onReview ? (
+          <button
+            type="button"
+            onClick={onReview}
+            className="mt-1 cursor-pointer text-sm text-text-tertiary underline decoration-dotted underline-offset-2 transition-colors hover:text-text-secondary"
+          >
+            Review changes
+          </button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     // `overflow-hidden` so the last expanded diff cannot square off the

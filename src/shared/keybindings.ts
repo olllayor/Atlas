@@ -10,6 +10,7 @@ export const KEYBINDING_COMMANDS = [
   'workspace.mode.toggle',
   'workspace.project.attach',
   'terminal.toggle',
+  'transcript.raw.toggle',
   'conversation.previous',
   'conversation.next',
   'conversation.jump.1',
@@ -184,6 +185,21 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
       metaKey: false,
       ctrlKey: false,
       shiftKey: false,
+      altKey: false,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
+    // Codex spells this `/raw`. `mod+shift+R` is the nearest free binding —
+    // plain `mod+R` is the window reload every Electron app inherits, and the
+    // other `mod+shift` letters in this table (L, M, E) are already taken.
+    command: 'transcript.raw.toggle',
+    shortcut: {
+      key: 'r',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: true,
       altKey: false,
       modKey: true,
     },

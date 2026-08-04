@@ -21,7 +21,9 @@ import { Check, Copy } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import type { DiffFile, DiffLine } from '../../../shared/toolCellGrammar';
+import { diffFileToPlainText } from '../../../shared/toolCellGrammar';
 import { useClipboard } from '../../hooks/useClipboard';
+import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
@@ -37,9 +39,28 @@ export const MINUS = '−';
 
 type DiffRowModel = { kind: 'gap' } | ({ kind: 'line' } & DiffLine);
 
+/**
+ * The diff as a real patch body.
+ *
+ * A `<table>` is the worst possible shape for a copied selection: every
+ * browser joins cells with a tab, so a two-column diff pastes as
+ * `12\t+  const x = 1`, and the sign column is a U+2212 that `git apply`
+ * rejects. Raw mode drops both — ASCII signs, no gutter, one text node.
+ */
+function RawDiffBlock({ file }: { file: DiffFile }) {
+  const text = useMemo(() => diffFileToPlainText(file), [file]);
+
+  return (
+    <pre className={cn('app-code-text m-0 leading-[1.55] text-text-secondary', RAW_BLOCK)}>
+      {text}
+    </pre>
+  );
+}
+
 export function DiffBlock({ file }: { file: DiffFile }) {
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useClipboard();
+  const raw = useRawTranscript();
 
   const { all, gutterWidth } = useMemo(() => {
     const collected: DiffRowModel[] = [];
@@ -69,6 +90,8 @@ export function DiffBlock({ file }: { file: DiffFile }) {
   );
 
   if (!all.length) return null;
+
+  if (raw) return <RawDiffBlock file={file} />;
 
   return (
     <div className="group/diff relative overflow-hidden rounded-sm border border-border-subtle">

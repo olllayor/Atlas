@@ -4,7 +4,9 @@ import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 
+import { BoundedCommandOutput } from './commandOutputCap';
 import type { SandboxPolicy } from './sandbox';
 import {
   buildSandboxedLaunch,
@@ -94,6 +96,9 @@ type CommandResult = {
   stderr: string;
   code: number | null;
   interrupted: boolean;
+  /** Set only when the ingest cap dropped content; the text carries its own marker. */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 };
 
 function expandPath(value: string) {
@@ -294,6 +299,8 @@ export function runCommand(
     cwd?: string;
     timeoutMs?: number;
     env?: Record<string, string>;
+    /** Per-stream ingest budget; defaults to COMMAND_OUTPUT_BYTE_BUDGET. */
+    maxOutputBytes?: number;
   } = {}
 ) {
   return new Promise<CommandResult>((resolvePromise, reject) => {
@@ -304,8 +311,13 @@ export function runCommand(
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    let stdout = '';
-    let stderr = '';
+    // Each stream is budgeted on its own, so a noisy stderr cannot squeeze out
+    // the stdout the model actually asked for. The decoders keep multi-byte
+    // characters intact across chunk boundaries.
+    const stdout = new BoundedCommandOutput(options.maxOutputBytes);
+    const stderr = new BoundedCommandOutput(options.maxOutputBytes);
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let interrupted = false;
     let timeoutId: NodeJS.Timeout | undefined;
 
@@ -317,11 +329,11 @@ export function runCommand(
     }
 
     child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
+      stdout.write(typeof chunk === 'string' ? chunk : stdoutDecoder.write(chunk));
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
+      stderr.write(typeof chunk === 'string' ? chunk : stderrDecoder.write(chunk));
     });
 
     child.on('error', (error) => {
@@ -335,11 +347,17 @@ export function runCommand(
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+
+      stdout.write(stdoutDecoder.end());
+      stderr.write(stderrDecoder.end());
+
       resolvePromise({
-        stdout,
-        stderr,
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
         code,
-        interrupted
+        interrupted,
+        ...(stdout.truncated ? { stdoutTruncated: true as const } : {}),
+        ...(stderr.truncated ? { stderrTruncated: true as const } : {})
       });
     });
   });
@@ -918,6 +936,9 @@ export async function bashToolExecute(input: {
     sandbox: launch.mechanism,
     sandboxNetwork: policy.network,
     sandboxEscalated: escalated,
+    // Additive: the bounded text already carries its own marker, but callers
+    // that summarise a run should not have to parse it back out.
+    ...(result.stdoutTruncated || result.stderrTruncated ? { outputTruncated: true as const } : {}),
     ...(sandboxDenied ? { sandboxDenied: true as const, sandboxDenialHint: SANDBOX_DENIAL_HINT } : {}),
     returnCodeInterpretation:
       result.interrupted ? 'timed_out' : result.code === 0 ? 'success' : `exit_code_${result.code ?? 'unknown'}`

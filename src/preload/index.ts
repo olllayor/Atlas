@@ -49,7 +49,10 @@ const api: RendererApi = {
     setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request),
     setPinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetPinned, request),
     setArchived: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetArchived, request),
-    searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request)
+    searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request),
+    fork: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsFork, request),
+    startSide: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsStartSide, request),
+    listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),

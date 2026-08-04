@@ -667,6 +667,32 @@ export type ConversationSummary = {
    * with `includeArchived`.
    */
   archivedAt: string | null;
+  /** The conversation this one was forked from, or null. Provenance only. */
+  forkOfConversationId: string | null;
+  /** The event-log watermark the fork was cut at. Null when there was none. */
+  forkPointSequence: number | null;
+  /**
+   * Non-null on a side conversation: the chat it is a tangent from. Such a row
+   * is absent from `list()` and from message search, so this is only ever
+   * non-null on a row fetched by id or through `listSideConversations`.
+   */
+  sideOfConversationId: string | null;
+};
+
+export type ForkConversationRequest = {
+  conversationId: string;
+  /**
+   * Inclusive cut, in the transcript's own ordering. Absent forks the whole
+   * conversation.
+   */
+  throughMessageId?: string | null;
+  title?: string;
+};
+
+export type StartSideConversationRequest = {
+  conversationId: string;
+  throughMessageId?: string | null;
+  title?: string;
 };
 
 export type ChatMessage = {
@@ -1406,6 +1432,18 @@ export type RendererApi = {
     /** Resolves to the updated row so an optimistic sidebar can reconcile. */
     setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
     setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;
+    /**
+     * A new conversation seeded with this one's history. The original is not
+     * written to. Resolves to the fork's row.
+     */
+    fork: (request: ForkConversationRequest) => Promise<ConversationSummary>;
+    /**
+     * The same copy with a shorter life: hidden from the listing and from
+     * search, and deleted when the chat it hangs off is.
+     */
+    startSide: (request: StartSideConversationRequest) => Promise<ConversationSummary>;
+    /** The side conversations of one chat. They appear in no other listing. */
+    listSide: (conversationId: string) => Promise<ConversationSummary[]>;
     /**
      * Ranked message-body hits, capped and archived-filtered. Any string is a
      * legal query — it is sanitized in the main process, never parsed here.

@@ -1,6 +1,7 @@
 import { AlertCircle } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRive, useStateMachineInput, Layout, Fit, Alignment } from '@rive-app/react-webgl2';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { StateMachineInput } from '@rive-app/react-webgl2';
+import { useRive, Layout, Fit, Alignment, StateMachineInputType } from '@rive-app/react-webgl2';
 
 import { useReducedMotion } from '../../lib/reducedMotion';
 import { cn } from '../../lib/utils';
@@ -17,6 +18,22 @@ type RiveConfig = {
   inputs?: Record<string, boolean | number | string>;
 };
 
+/**
+ * `stateMachines` reaches Rive as `string | string[]`, and `config.stateMachines[0]`
+ * has to be a name we can hand to `rive.stateMachineInputs()`. The old expression
+ * was `a || b ? [a || b] : undefined`, and `||` binds tighter than `?:` — so a JSON
+ * config that already spelled `"stateMachines": ["Machine"]` (the documented shape)
+ * got wrapped a second time into `[["Machine"]]`, and every downstream lookup was
+ * handed an array where a name belonged.
+ */
+function normalizeStateMachines(value: unknown): string[] | undefined {
+  const candidates = Array.isArray(value) ? value : [value];
+  const names = candidates.filter(
+    (name): name is string => typeof name === 'string' && name.trim().length > 0,
+  );
+  return names.length > 0 ? names : undefined;
+}
+
 function parseRiveConfig(content: string): RiveConfig | null {
   const trimmed = content.trim();
 
@@ -25,7 +42,7 @@ function parseRiveConfig(content: string): RiveConfig | null {
     if (parsed.src || parsed.url || parsed.animation) {
       return {
         src: parsed.src || parsed.url || parsed.animation,
-        stateMachines: parsed.stateMachines || parsed.stateMachine ? [parsed.stateMachines || parsed.stateMachine] : undefined,
+        stateMachines: normalizeStateMachines(parsed.stateMachines ?? parsed.stateMachine),
         inputs: parsed.inputs,
       };
     }
@@ -54,6 +71,38 @@ export function detectRiveContent(content: string): boolean {
   return false;
 }
 
+/**
+ * Rive has exactly three input types — Number, Boolean and Trigger (see
+ * `StateMachineInputType`). There is no string input, so a string in the config
+ * has nothing on the runtime side to be assigned to and is dropped.
+ *
+ * That drop was already happening: the old code computed
+ * `defaultValue = typeof value === 'string' ? 0 : value` and then had no branch
+ * that assigned a string. The `0` was dead — worse than dead, because it made the
+ * string look handled while quietly seeding the input with zero. The behaviour is
+ * right; only the pretence is gone.
+ *
+ * Matching on the input's declared type also stops the config from writing a
+ * boolean into a Number input, and gives Trigger inputs the one thing they
+ * understand: `fire()`. A trigger carries no value, so `true` is the only way this
+ * config shape can ask for one, and `input.value = true` would have been a no-op.
+ */
+function applyRiveInput(input: StateMachineInput, value: boolean | number | string): void {
+  switch (input.type) {
+    case StateMachineInputType.Trigger:
+      if (value === true) input.fire();
+      return;
+    case StateMachineInputType.Boolean:
+      if (typeof value === 'boolean') input.value = value;
+      return;
+    case StateMachineInputType.Number:
+      if (typeof value === 'number' && Number.isFinite(value)) input.value = value;
+      return;
+    default:
+      return;
+  }
+}
+
 const BUILT_IN_ANIMATIONS: Record<string, string> = {
   loading: 'https://public.rive.app/community/runtime-files/1350-2748-loading-animation.riv',
   check: 'https://public.rive.app/community/runtime-files/1424-2857-success-check.riv',
@@ -78,7 +127,14 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
   const reducedMotion = useReducedMotion();
   const [isPlaying, setIsPlaying] = useState(!reducedMotion);
 
-  const config = parseRiveConfig(content);
+  /**
+   * Memoised because `parseRiveConfig` builds a fresh object every call, and the
+   * input effect below depends on `config`. Parsing on each render handed that
+   * effect a new `inputs` reference every render, so its dependency array never
+   * held it still and the effect re-ran on every single render — including the
+   * renders caused by hovering the controls.
+   */
+  const config = useMemo(() => parseRiveConfig(content), [content]);
 
   const resolvedSrc = config?.src
     ? BUILT_IN_ANIMATIONS[config.src] || config.src
@@ -102,18 +158,42 @@ export function RiveVisual({ content, title, className }: RiveVisualProps) {
     },
   });
 
+  /**
+   * `useStateMachineInput` used to be called from inside this effect, inside a
+   * `forEach` over `config.inputs` — a map whose size comes from model-emitted
+   * content. That breaks the rules of hooks twice over: a hook cannot run from a
+   * callback at all, and the number of hook calls per render cannot depend on
+   * data. React indexes hooks positionally, so a config that grew or shrank
+   * between renders would slide every later hook in this component onto the wrong
+   * slot.
+   *
+   * A map of unknown size cannot be expressed as a fixed list of hook calls, so
+   * the fix is to stop using a hook. The loaded Rive instance exposes the same
+   * inputs imperatively via `stateMachineInputs(name)` — which is in fact all
+   * `useStateMachineInput` does internally, wrapped in state we do not need here.
+   * It is happy inside an effect and happy with any number of inputs.
+   *
+   * `useRive` only publishes `rive` from its `Load` handler, so by the time this
+   * runs the state machine is instanced and its inputs exist.
+   */
   useEffect(() => {
-    if (!rive || !config?.inputs) return;
+    const requested = config?.inputs;
+    if (!rive || !requested) return;
 
-    Object.entries(config.inputs).forEach(([name, value]) => {
-      const defaultValue = typeof value === 'string' ? 0 : value;
-      const input = useStateMachineInput(rive, config.stateMachines?.[0] || '', name, defaultValue);
-      if (input) {
-        if (typeof value === 'boolean') input.value = value;
-        else if (typeof value === 'number') input.value = value;
-      }
-    });
-  }, [rive, config?.inputs, config?.stateMachines]);
+    // `|| ''` here used to guarantee a miss whenever the config named no state
+    // machine; the artboard's own first machine is the thing the config meant.
+    const stateMachineName = config.stateMachines?.[0] ?? rive.stateMachineNames[0];
+    if (!stateMachineName) return;
+
+    const available = new Map(
+      rive.stateMachineInputs(stateMachineName).map((input) => [input.name, input]),
+    );
+
+    for (const [name, value] of Object.entries(requested)) {
+      const input = available.get(name);
+      if (input) applyRiveInput(input, value);
+    }
+  }, [rive, config]);
 
   // `autoplay` is only read when the runtime initialises, so it cannot answer for a
   // toggle that happens later. Stop what is already looping; do not auto-resume when

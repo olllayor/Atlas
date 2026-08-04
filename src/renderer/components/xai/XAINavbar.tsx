@@ -1,6 +1,8 @@
 
 import { useState } from 'react';
 
+import { isReducedMotion } from '../../lib/reducedMotion';
+
 interface NavProps {
   onBackToApp?: () => void;
 }
@@ -15,7 +17,10 @@ export function XAINavbar({ onBackToApp }: NavProps) {
           <button
             type="button"
             onClick={() => {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
+              // An explicit `behavior` beats the root's `scroll-behavior: auto !important`,
+              // so Reduce motion only reaches this jump if JS asks. Still scroll to the
+              // top either way — reduced motion removes the travel, not the destination.
+              window.scrollTo({ top: 0, behavior: isReducedMotion() ? 'auto' : 'smooth' });
             }}
             className="xai-mono text-sm uppercase tracking-[1.4px] text-text-primary hover:text-[var(--text-tertiary)] transition-colors"
           >

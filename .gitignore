@@ -24,3 +24,6 @@ npx
 skills-lock.json
 skills/
 .pnpm-store/
+
+# Claude Code agent worktrees
+.claude/worktrees/

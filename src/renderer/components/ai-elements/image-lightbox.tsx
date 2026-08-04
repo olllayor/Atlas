@@ -141,6 +141,11 @@ export function ImageLightbox({ open, onOpenChange, src, filename }: ImageLightb
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
+        {/* A media lightbox wants a near-opaque scrim in every theme so the
+            image is judged against neutral dark, not against app chrome.
+            `--overlay` is a dialog scrim (40% dark / 25% light) and is far
+            too weak here, so this stays literal rather than tokenised.
+            design-tokens-allow: media scrim is theme-independent by design */}
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/90 duration-normal data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           onKeyDown={onKeyDown}

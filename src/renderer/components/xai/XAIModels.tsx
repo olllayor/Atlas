@@ -29,7 +29,7 @@ export function XAIModels({
         </div>
 
         <div className="border border-[var(--border-default)]">
-          <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-white/10">
+          <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-[var(--border-default)]">
             {specs.map((spec, index) => (
               <div
                 key={index}
@@ -40,7 +40,7 @@ export function XAIModels({
                 } md:odd:border-b md:odd:border-[var(--border-default)]`}
               >
                 <div className="xai-meta mb-2">{spec.label}</div>
-                <div className="xai-mono text-2xl font-light text-white">{spec.value}</div>
+                <div className="xai-mono text-2xl font-light text-text-primary">{spec.value}</div>
               </div>
             ))}
           </div>

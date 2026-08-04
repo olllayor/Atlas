@@ -34,7 +34,7 @@ export function XAIDocsSection({
             <span className="xai-mono text-xs uppercase tracking-[1px] text-[var(--text-tertiary)] block mb-6">
               {title}
             </span>
-            <h2 className="xai-section-heading text-white mb-6">
+            <h2 className="xai-section-heading text-text-primary mb-6">
               {description}
             </h2>
             <div className="flex flex-col sm:flex-row gap-4">
@@ -49,9 +49,9 @@ export function XAIDocsSection({
 
           <div className="xai-card p-0 overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border-default)]">
-              <div className="w-3 h-3 rounded-full bg-white/20" />
-              <div className="w-3 h-3 rounded-full bg-white/20" />
-              <div className="w-3 h-3 rounded-full bg-white/20" />
+              <div className="w-3 h-3 rounded-full bg-text-primary/20" />
+              <div className="w-3 h-3 rounded-full bg-text-primary/20" />
+              <div className="w-3 h-3 rounded-full bg-text-primary/20" />
               <span className="xai-meta ml-2">terminal</span>
             </div>
             <pre className="p-6 text-sm xai-mono text-[var(--text-secondary)] overflow-x-auto">

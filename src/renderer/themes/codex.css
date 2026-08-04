@@ -12,8 +12,21 @@
    Two things are load-bearing and easy to undo by accident:
    1. Elevation is expressed as a *tint* (5% foreground over background)
       plus 8% hairline borders — not as shadows.
-   2. Every rounded surface uses `corner-shape: superellipse(1.5)`
-      (squircle). That is the system's most distinctive visual signature.
+   2. The radius ramp mirrors OpenAI's published `--radius-*` scale
+      (see the Radii block below for provenance). Rounding is the one
+      place this theme is a faithful transcription rather than an
+      interpretation, so re-tuning values by eye undoes that.
+
+   NOT part of OpenAI's design system: `corner-shape: superellipse(1.5)`.
+   `corner-shape` and `superellipse` appear ZERO times across all three
+   published token files (primitive.css, semantic.css, components.css) of
+   `@openai/apps-sdk-ui`. The property was taken from one narrow, unrelated
+   surface — the Codex TUI's `inline_visualization/assets/visualize.css`,
+   which styles inline chart output, not app chrome — and generalised here
+   to every rounded box. It is an Atlas embellishment, not a parity claim.
+   It is also Chromium-only: `corner-shape` has no support outside Blink
+   and silently no-ops elsewhere, so the squircle is invisible to anyone
+   viewing this renderer in a non-Chromium engine.
    ============================================ */
 
 [data-design-theme='codex'] {
@@ -139,13 +152,24 @@
      of this system. */
   --tracking-label: 0em;
 
-  /* --- Radii --------------------------------------------------------- */
-  --radius-sm: 7.5px;
-  --radius-md: 10px;
-  --radius-lg: 12.5px;
-  --radius-xl: 12.5px;
-  --radius-2xl: 20px;
-  --radius-subtle: 7.5px;
+  /* --- Radii ---------------------------------------------------------
+     Transcribed from OpenAI's published `@openai/apps-sdk-ui` semantic
+     token layer (`semantic.css`, the `--radius-*` block). The previous
+     ramp here (7.5 / 10 / 12.5 / 12.5 / 20) was reverse-engineered from
+     screenshots and matched no step of the real scale; these are the
+     shipped values, in rem-equivalent pixels. */
+  --radius-2xs: 2px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-4xl: 24px;
+  /* Atlas-only alias with no counterpart in the OpenAI scale; pinned to
+     the smallest real step so it cannot drift off-ramp again. */
+  --radius-subtle: var(--radius-xs);
   --radius-full: 9999px;
   --corner-shape: superellipse(1.5);
 

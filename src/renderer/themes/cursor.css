@@ -111,11 +111,15 @@
   --font-code-mono: var(--font-mono-system);
 
   /* Border radius - 8px standard with pill option */
+  --radius-2xs: 0.125rem; /* 2px */
+  --radius-xs: 0.1875rem; /* 3px */
   --radius-sm: 0.25rem; /* 4px - compact */
   --radius-md: 0.5rem; /* 8px - standard */
   --radius-lg: 0.625rem; /* 10px - featured */
   --radius-xl: 0.75rem; /* 12px */
   --radius-2xl: 1rem; /* 16px */
+  --radius-3xl: 1.25rem; /* 20px */
+  --radius-4xl: 1.5rem; /* 24px */
   --radius-subtle: 0.25rem; /* 4px */
   --radius-full: 9999px; /* Full pill */
 

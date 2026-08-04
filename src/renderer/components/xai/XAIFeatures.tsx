@@ -61,7 +61,7 @@ export function XAIFeatures({
                   <span className="xai-tag">{feature.tag}</span>
                 </div>
               )}
-              <h3 className="xai-section-heading text-white mb-3">
+              <h3 className="xai-section-heading text-text-primary mb-3">
                 {feature.title}
               </h3>
               <p className="xai-body">

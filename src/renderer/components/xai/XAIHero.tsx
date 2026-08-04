@@ -18,7 +18,7 @@ export function XAIHero({
   return (
     <section className="min-h-screen flex flex-col items-center justify-center px-6 pt-16">
       <div className="max-w-[1200px] w-full flex flex-col items-center text-center">
-        <h1 className="xai-display text-white mb-8">
+        <h1 className="xai-display text-text-primary mb-8">
           {headline}
         </h1>
         <p className="xai-body max-w-[600px] mb-12">

@@ -20,7 +20,7 @@ export function XAIFooter({
     <footer className="py-24 px-6 border-t border-[var(--border-default)]">
       <div className="max-w-[1200px] mx-auto">
         <div className="flex flex-col items-center text-center mb-16">
-          <h2 className="xai-mono text-4xl md:text-6xl font-light text-white mb-6">
+          <h2 className="xai-mono text-4xl md:text-6xl font-light text-text-primary mb-6">
             READY TO BUILD?
           </h2>
           <p className="xai-body max-w-[500px] mb-8">
@@ -34,7 +34,7 @@ export function XAIFooter({
         <hr className="border-[var(--border-default)] mb-12" />
 
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-          <span className="xai-mono text-sm uppercase tracking-[1.4px] text-white">
+          <span className="xai-mono text-sm uppercase tracking-[1.4px] text-text-primary">
             {brand}
           </span>
 
@@ -43,7 +43,7 @@ export function XAIFooter({
               <a
                 key={link.label}
                 href={link.href}
-                className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors"
+                className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors"
               >
                 {link.label}
               </a>

@@ -933,7 +933,8 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
                     // Popups stay denied so the frame cannot reach shell.openExternal.
                     sandbox="allow-scripts allow-same-origin allow-forms"
                     /* White is correct here: this iframe renders the user's own
-                       site, so it must not inherit app chrome colours. */
+                       site, so it must not inherit app chrome colours.
+                       design-tokens-allow: user-content surface, not app chrome */
                     className="min-h-0 flex-1 border-0 bg-white"
                   />
                 ) : (

@@ -87,12 +87,18 @@
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
 
-  /* Border radius */
+  /* Border radius — this theme is deliberately square, so every step of
+     the ramp is zeroed. New steps must be added here too, or they fall
+     back to the rounded contract defaults and break the flat look. */
+  --radius-2xs: 0px;
+  --radius-xs: 0px;
   --radius-sm: 0px;
   --radius-md: 0px;
   --radius-lg: 0px;
   --radius-xl: 0px;
   --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
   --radius-subtle: 4px;
   --radius-full: 9999px;
 

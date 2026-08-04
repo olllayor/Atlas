@@ -246,12 +246,23 @@
   /* Shared titlebar height used by both the sidebar header and the main panel. */
   --titlebar-height: 3.25rem; /* 52px at default font size */
 
-  /* Border radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
+  /*
+   * Border radius.
+   *
+   * The contract carries the full 2xs…4xl ramp so a theme can transcribe a
+   * complete external scale (codex.css does, from OpenAI's published
+   * `--radius-*` tokens) without inventing steps. Themes that only care
+   * about the middle of the ramp inherit these defaults for the ends.
+   */
+  --radius-2xs: 0.125rem; /* 2px */
+  --radius-xs: 0.25rem; /* 4px */
+  --radius-sm: 0.375rem; /* 6px */
+  --radius-md: 0.5rem; /* 8px */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-xl: 1rem; /* 16px */
+  --radius-2xl: 1.25rem; /* 20px */
+  --radius-3xl: 1.5rem; /* 24px */
+  --radius-4xl: 2rem; /* 32px */
   --radius-subtle: 4px;
   --radius-full: 9999px;
   /*
@@ -285,11 +296,15 @@
  */
 html[data-border-radius='none'],
 html[data-border-radius='none'][data-design-theme] {
+  --radius-2xs: 0px;
+  --radius-xs: 0px;
   --radius-sm: 0px;
   --radius-md: 0px;
   --radius-lg: 0px;
   --radius-xl: 0px;
   --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
   --radius-subtle: 0px;
   --radius-composer: 0px;
   /* Keep --radius-full for avatars and truly circular elements */
@@ -424,11 +439,15 @@ html[data-border-radius='none'][data-design-theme] {
   /* `max-h-composer-max-height` for the composer textarea. */
   --spacing-composer-max-height: var(--composer-max-height);
 
+  --radius-2xs: var(--radius-2xs);
+  --radius-xs: var(--radius-xs);
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
   --radius-2xl: var(--radius-2xl);
+  --radius-3xl: var(--radius-3xl);
+  --radius-4xl: var(--radius-4xl);
   --radius-full: var(--radius-full);
   /* `rounded-composer` — the composer slab's own radius. */
   --radius-composer: var(--radius-composer);
@@ -463,13 +482,23 @@ body {
 }
 
 /*
- * Squircle corners. Codex declares `corner-shape: superellipse(1.5)` on
- * every rounded surface; it is the system's most distinctive purely
- * visual detail. Supported from Chromium 139 (this app ships Electron 41
- * ⇒ Chromium 140+); older engines ignore the declaration and fall back
- * to circular arcs, which is a clean degradation.
+ * Squircle corners — an Atlas embellishment, NOT an OpenAI design-system
+ * rule. `corner-shape` / `superellipse` appear zero times in OpenAI's
+ * published token files (`@openai/apps-sdk-ui`: primitive.css,
+ * semantic.css, components.css). The property was picked up from the
+ * Codex TUI's `inline_visualization/assets/visualize.css`, which styles
+ * inline chart output rather than app chrome.
  *
- * Themes that want plain arcs leave `--corner-shape: round`.
+ * This is the only rule in the app that sets it, but it is a universal
+ * selector, so opting a theme in is one variable and affects every
+ * rounded box at once. Only `codex.css` opts in; the rest leave
+ * `--corner-shape: round` and get plain circular arcs.
+ *
+ * Chromium-only: supported from Chromium 139 (this app ships Electron 41
+ * ⇒ Chromium 140+). Every other engine silently ignores the declaration
+ * and falls back to circular arcs — a clean degradation, but it means the
+ * effect is invisible when this renderer is opened in a non-Blink browser
+ * during development.
  */
 :where(*) {
   corner-shape: var(--corner-shape);

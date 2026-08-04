@@ -17,20 +17,20 @@ export function XAINavbar({ onBackToApp }: NavProps) {
             onClick={() => {
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className="xai-mono text-sm uppercase tracking-[1.4px] text-white hover:text-[var(--text-tertiary)] transition-colors"
+            className="xai-mono text-sm uppercase tracking-[1.4px] text-text-primary hover:text-[var(--text-tertiary)] transition-colors"
           >
             ATLAS
           </button>
           <div className="hidden md:flex items-center gap-6">
-            <a href="#features" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">Features</a>
-            <a href="#models" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">Models</a>
-            <a href="#docs" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">Docs</a>
+            <a href="#features" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors">Features</a>
+            <a href="#models" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors">Models</a>
+            <a href="#docs" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors">Docs</a>
           </div>
         </div>
 
         <div className="hidden md:flex items-center gap-4">
           {onBackToApp && (
-            <button onClick={onBackToApp} className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors">
+            <button onClick={onBackToApp} className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors">
               APP
             </button>
           )}
@@ -40,7 +40,7 @@ export function XAINavbar({ onBackToApp }: NavProps) {
         </div>
 
         <button
-          className="md:hidden text-white p-2"
+          className="md:hidden text-text-primary p-2"
           onClick={() => setMobileOpen(!mobileOpen)}
           aria-label="Toggle menu"
         >
@@ -56,12 +56,12 @@ export function XAINavbar({ onBackToApp }: NavProps) {
 
       {mobileOpen && (
         <div className="md:hidden bg-[var(--bg-base)] border-t border-[var(--border-default)] px-6 py-4 flex flex-col gap-4">
-          <a href="#features" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors py-2">Features</a>
-          <a href="#models" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors py-2">Models</a>
-          <a href="#docs" className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors py-2">Docs</a>
+          <a href="#features" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors py-2">Features</a>
+          <a href="#models" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors py-2">Models</a>
+          <a href="#docs" className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors py-2">Docs</a>
           <hr className="border-[var(--border-default)]" />
           {onBackToApp && (
-            <button onClick={onBackToApp} className="xai-sans text-sm text-white hover:text-[var(--text-tertiary)] transition-colors py-2 text-left">
+            <button onClick={onBackToApp} className="xai-sans text-sm text-text-primary hover:text-[var(--text-tertiary)] transition-colors py-2 text-left">
               APP
             </button>
           )}

@@ -8,6 +8,7 @@ import type {
   ListConversationsRequest,
   SearchMessagesRequest,
   SetConversationArchivedRequest,
+  SetConversationDefaultModelRequest,
   SetConversationPinnedRequest,
   SetConversationWorkspaceRequest,
   StartSideConversationRequest
@@ -178,6 +179,30 @@ export function registerConversationsIpc({
       (event, request: { conversationId: string; toolPermissionMode: import('../../shared/chatParameters').ToolPermissionMode }) => {
         assertTrustedSender(event);
         return conversationsRepo.setToolPermissionMode(request.conversationId, request.toolPermissionMode);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetDefaultModel,
+    withUserFacingErrors(
+      IPC_CHANNELS.conversationsSetDefaultModel,
+      (event, request: SetConversationDefaultModelRequest) => {
+        assertTrustedSender(event);
+
+        // Both ids or neither. `setDefaults` writes the two columns together,
+        // and a half-filled pair is the failure this guard exists to stop: a
+        // model recorded against the wrong provider only shows up later, as a
+        // send the main process cannot route.
+        if (
+          typeof request?.conversationId !== 'string' ||
+          typeof request?.providerId !== 'string' ||
+          typeof request?.modelId !== 'string'
+        ) {
+          throw new Error('A conversation id, a provider id and a model id are required.');
+        }
+
+        conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
       }
     )
   );

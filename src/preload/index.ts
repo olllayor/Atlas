@@ -47,6 +47,7 @@ const api: RendererApi = {
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
     setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
     setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request),
+    setDefaultModel: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetDefaultModel, request),
     setPinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetPinned, request),
     setArchived: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetArchived, request),
     searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request),

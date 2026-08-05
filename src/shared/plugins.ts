@@ -530,6 +530,110 @@ export function parseSkillMarkdown(text: string): PluginSkillResult {
 }
 
 /**
+ * The `agents/openai.yaml` sidecar that may sit beside a `SKILL.md`.
+ *
+ * Only two of its keys change behaviour, and both are read here:
+ * `policy.allow_implicit_invocation` (the sidecar spelling of the frontmatter's
+ * `disable-model-invocation`, and the one 20 real skills actually use), and
+ * `dependencies.tools`, where a skill names the MCP servers it needs.
+ *
+ * Parsed with an indentation scanner rather than a YAML library, for the same
+ * reason `parseSkillMarkdown` is: the two values wanted are a boolean and a
+ * list of strings, and a parser that can evaluate arbitrary YAML would be a far
+ * larger surface than that. Anything it does not recognise is ignored.
+ */
+export type SkillSidecar = {
+  /** `null` when the file does not say, so the frontmatter keeps its answer. */
+  implicitInvocation: boolean | null;
+  /** Server keys this skill declares a need for. */
+  requiredServers: string[];
+};
+
+export const EMPTY_SKILL_SIDECAR: SkillSidecar = { implicitInvocation: null, requiredServers: [] };
+
+export function parseSkillSidecar(text: string): SkillSidecar {
+  let implicitInvocation: boolean | null = null;
+  const requiredServers: string[] = [];
+
+  let section: 'policy' | 'dependencies' | null = null;
+  let inTools = false;
+  // A list item's fields are only trusted once `type: mcp` is seen, so an
+  // entry describing some other kind of dependency cannot contribute a server.
+  let itemIsMcp = false;
+  let itemValue: string | null = null;
+
+  const flush = () => {
+    if (itemIsMcp && itemValue) {
+      requiredServers.push(itemValue);
+    }
+    itemIsMcp = false;
+    itemValue = null;
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trimEnd();
+
+    if (!line.trim()) {
+      continue;
+    }
+
+    if (!/^\s/.test(line)) {
+      flush();
+      const key = line.split(':')[0]?.trim();
+      section = key === 'policy' ? 'policy' : key === 'dependencies' ? 'dependencies' : null;
+      inTools = false;
+      continue;
+    }
+
+    const trimmed = line.trim();
+
+    if (section === 'policy') {
+      const match = /^allow_implicit_invocation\s*:\s*(\S+)/.exec(trimmed);
+      if (match) {
+        implicitInvocation = match[1] === 'true';
+      }
+      continue;
+    }
+
+    if (section !== 'dependencies') {
+      continue;
+    }
+
+    if (/^tools\s*:/.test(trimmed)) {
+      inTools = true;
+      continue;
+    }
+
+    if (!inTools) {
+      continue;
+    }
+
+    if (trimmed.startsWith('-')) {
+      flush();
+    }
+
+    const field = trimmed.replace(/^-\s*/, '');
+    const match = /^(type|value)\s*:\s*(.+)$/.exec(field);
+
+    if (!match) {
+      continue;
+    }
+
+    const value = unquote(match[2].trim());
+
+    if (match[1] === 'type') {
+      itemIsMcp = value === 'mcp';
+    } else {
+      itemValue = value;
+    }
+  }
+
+  flush();
+
+  return { implicitInvocation, requiredServers: [...new Set(requiredServers)] };
+}
+
+/**
  * Skill text as the model should see it.
  *
  * A skill body is Markdown written by a third party, phrased as instructions,

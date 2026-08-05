@@ -15,12 +15,20 @@ import { createMcpTools } from './mcpTools';
  */
 export function createMcpToolsProvider(
   manager: Pick<McpClientManager, 'listTools' | 'callTool'>,
-  listServers: () => McpServerConfig[]
+  listServers: () => McpServerConfig[],
+  /**
+   * Which servers this conversation may use.
+   *
+   * A gated plugin's servers are neither connected nor described here, so the
+   * saving is both the process and the tool schema. Absent means everything is
+   * allowed, which is what the tests and any caller without a conversation get.
+   */
+  serverFilter?: (conversationId: string) => (serverId: string) => boolean
 ): McpToolsProvider {
   let cached: ToolSet = {};
 
   return {
-    loadTools: async () => {
+    loadTools: async (conversationId?: string) => {
       const servers = listServers();
 
       if (!servers.some((server) => server.enabled)) {
@@ -28,7 +36,8 @@ export function createMcpToolsProvider(
         return cached;
       }
 
-      const definitions = await manager.listTools();
+      const filter = serverFilter && conversationId ? serverFilter(conversationId) : undefined;
+      const definitions = await manager.listTools(filter);
       cached = createMcpTools(manager, definitions, servers);
       return cached;
     },

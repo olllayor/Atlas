@@ -4,11 +4,13 @@ import { join, resolve, sep } from 'node:path';
 import { isValidMcpCommand } from '../../shared/mcp';
 import type { PluginManifest, PluginMcpServerDecl } from '../../shared/plugins';
 import {
+  EMPTY_SKILL_SIDECAR,
   PLUGIN_MANIFEST_DIRS,
   PLUGIN_MANIFEST_FILENAME,
   parsePluginManifest,
   parsePluginMcpServers,
   parseSkillMarkdown,
+  parseSkillSidecar,
   pluginComponentPaths
 } from '../../shared/plugins';
 
@@ -41,6 +43,14 @@ export type LoadedSkill = {
   name: string;
   description: string;
   implicitInvocation: boolean;
+  /**
+   * MCP servers this skill declares a need for, by server key.
+   *
+   * Rare — two of 147 sidecars on the surveyed machine use it — but it is the
+   * only way a skill can reach a server in a different plugin, so it is the
+   * cross-plugin half of activation.
+   */
+  requiredServers: string[];
   /** Absolute path of the `SKILL.md`. The body is read from here on demand. */
   path: string;
 };
@@ -285,6 +295,11 @@ function discoverSkills(
       }
 
       const path = join(dir, entry.name, 'SKILL.md');
+      // The sidecar sits beside the skill and is the spelling 20 real skills
+      // use to opt out of implicit invocation; the frontmatter flag is the
+      // other. Read together so neither is silently ignored.
+      const sidecarText = readCapped(join(dir, entry.name, 'agents', 'openai.yaml'), 64 * 1024);
+      const sidecar = sidecarText ? parseSkillSidecar(sidecarText) : EMPTY_SKILL_SIDECAR;
 
       // A bounded prefix, not the file: the frontmatter is at the top, and the
       // body is what this phase exists to avoid reading.
@@ -312,7 +327,10 @@ function discoverSkills(
         pluginName: manifest.name,
         name: parsed.skill.name,
         description: parsed.skill.description,
-        implicitInvocation: parsed.skill.implicitInvocation,
+        // The sidecar wins when it speaks, because it is the more specific
+        // file; silence there leaves the frontmatter's answer standing.
+        implicitInvocation: sidecar.implicitInvocation ?? parsed.skill.implicitInvocation,
+        requiredServers: sidecar.requiredServers,
         path
       });
     }

@@ -41,6 +41,8 @@ import { GitStateService } from './workspace/GitStateService';
 import { getSharedGitHubService } from './workspace/GitHubCli';
 import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
+import type { ActivationRecord } from './plugins/PluginActivation';
+import { PluginActivationStore } from './plugins/PluginActivation';
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
 import { PluginInstaller } from './plugins/PluginInstaller';
@@ -303,7 +305,17 @@ app.whenReady().then(async () => {
   const mcpManager = new McpClientManager(listPluginServers, (serverId) =>
     mcpSecrets.getEnv(serverId)
   );
-  const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers);
+  // Gating: a bundle's servers stay unconnected and out of the request until a
+  // skill from that plugin is opened. Twenty installed plugins therefore cost
+  // no tool schemas until the conversation is about one of them.
+  const pluginActivations = new PluginActivationStore(
+    pluginRegistry,
+    () => database.settings.getPluginActivations<ActivationRecord>(),
+    (value) => database.settings.setPluginActivations(value),
+  );
+  const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers, (conversationId) =>
+    pluginActivations.serverFilter(conversationId),
+  );
   const skillsService = new SkillsService(pluginRegistry);
 
   app.on('will-quit', () => {
@@ -354,6 +366,8 @@ app.whenReady().then(async () => {
       () => database.settings.getVisualMode(),
       mcpToolsProvider,
       skillsService,
+      (conversationId, pluginName, requiredServers) =>
+        pluginActivations.activateForSkill(conversationId, pluginName, requiredServers),
     ),
     database.runtimeState,
     toolStateStore,
@@ -456,7 +470,9 @@ app.whenReady().then(async () => {
     // renderer is still loading would trade the first turn's latency for the
     // first paint's. By the time the user has typed anything, the servers are
     // connected and their tools already listed.
-    void mcpManager.prewarm().catch(() => undefined);
+    // Gated servers are deliberately not warmed: warming one would spawn the
+    // process the gate exists to avoid.
+    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(() => undefined);
   });
 
   app.on('activate', () => {

@@ -63,7 +63,7 @@ export type SiteToolContext = {
  * from cache for the synchronous context meter.
  */
 export type McpToolsProvider = {
-  loadTools: () => Promise<ToolSet>;
+  loadTools: (conversationId?: string) => Promise<ToolSet>;
   peekTools: () => ToolSet;
 };
 
@@ -399,6 +399,15 @@ export class ChatSessionRuntime {
      * counts must be the same set, or the ring drifts from the request.
      */
     private readonly skillsService: SkillsService | null = null,
+    /**
+     * Turns on a plugin's servers when one of its skills is opened.
+     *
+     * Only wired on the send path. The context meter builds the same tool set
+     * to measure it, and measuring must not activate anything.
+     */
+    private readonly onSkillLoaded:
+      | ((conversationId: string, pluginName: string, requiredServers: string[]) => boolean)
+      | null = null,
   ) {}
 
   /**
@@ -556,6 +565,7 @@ export class ChatSessionRuntime {
       ? {
           ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
           ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          // Deliberately no activation hook here — see the constructor.
           // Last known catalog: this path cannot await a connection, and an
           // estimate is what it exists to produce.
           ...(this.mcpToolsProvider?.peekTools() ?? {}),
@@ -762,12 +772,20 @@ export class ChatSessionRuntime {
     // must not change what this turn was offered. A provider that throws is
     // treated as contributing nothing rather than failing the send.
     const mcpTools = request.enableTools
-      ? await (this.mcpToolsProvider?.loadTools() ?? Promise.resolve({})).catch(() => ({}))
+      ? await (
+          this.mcpToolsProvider?.loadTools(request.conversationId) ?? Promise.resolve({})
+        ).catch(() => ({}))
       : {};
     const tools = request.enableTools
       ? {
           ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
-          ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          ...(this.skillsService
+            ? createSkillTools(
+                this.skillsService,
+                (pluginName, requiredServers) =>
+                  this.onSkillLoaded?.(request.conversationId, pluginName, requiredServers) ?? false,
+              )
+            : {}),
           ...mcpTools,
         }
       : undefined;

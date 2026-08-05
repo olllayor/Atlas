@@ -70,8 +70,10 @@ export class McpClientManager {
    * `allSettled` is the point: one server timing out must not decide whether
    * the others' tools reach the model.
    */
-  async listTools(): Promise<McpToolDefinition[]> {
-    const servers = this.listServers().filter((server) => server.enabled);
+  async listTools(filter?: (serverId: string) => boolean): Promise<McpToolDefinition[]> {
+    const servers = this.listServers().filter(
+      (server) => server.enabled && (!filter || filter(server.id))
+    );
 
     const results = await Promise.allSettled(
       servers.map((server) => this.toolsFor(server))
@@ -93,15 +95,17 @@ export class McpClientManager {
    * logged warning, and a prewarm that failed looks the same as one that never
    * ran — the next use reconnects either way.
    */
-  async prewarm(): Promise<void> {
-    const enabled = this.listServers().filter((server) => server.enabled);
+  async prewarm(filter?: (serverId: string) => boolean): Promise<void> {
+    const enabled = this.listServers().filter(
+      (server) => server.enabled && (!filter || filter(server.id))
+    );
 
     if (enabled.length === 0) {
       return;
     }
 
     const startedAt = this.now();
-    const tools = await this.listTools();
+    const tools = await this.listTools(filter);
 
     logger.info('mcp.prewarmed', {
       servers: enabled.length,

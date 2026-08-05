@@ -16,7 +16,16 @@ import type { SkillsService } from './SkillsService';
  * plugins directory is not paying for a tool definition describing a feature
  * they have not used.
  */
-export function createSkillTools(skills: Pick<SkillsService, 'snapshot' | 'read'>): ToolSet {
+export function createSkillTools(
+  skills: Pick<SkillsService, 'snapshot' | 'read' | 'find'>,
+  /**
+   * Called when a skill is opened, so its plugin's servers can come up.
+   *
+   * Absent on the context-measuring path: that runs to produce an estimate and
+   * must not change what the next turn is allowed to do.
+   */
+  onLoaded?: (pluginName: string, requiredServers: string[]) => boolean
+): ToolSet {
   if (skills.snapshot().skills.length === 0) {
     return {};
   }
@@ -31,7 +40,23 @@ export function createSkillTools(skills: Pick<SkillsService, 'snapshot' | 'read'
       // Never throws: a wrong name is a thing the model can recover from by
       // reading the list again, and turning it into a failed turn would be a
       // worse answer than saying so.
-      execute: async ({ name }) => skills.read(name)
+      execute: async ({ name }) => {
+        const skill = skills.find(name);
+
+        // Activation takes effect on the next turn, not this one. A turn's tool
+        // set is resolved once before the stream starts — deliberately, so a
+        // server coming up mid-stream cannot change what the turn was offered —
+        // and that invariant is worth more than saving a round trip.
+        const activated = skill && onLoaded ? onLoaded(skill.pluginName, skill.requiredServers) : false;
+
+        const body = skills.read(name);
+
+        // Said only when something actually came up, so an ordinary skill with
+        // no tools behind it does not carry a sentence about tools.
+        return activated
+          ? `${body}\n\nThe tools this skill needs are connecting now and will be available on the next message.`
+          : body;
+      }
     })
   };
 }

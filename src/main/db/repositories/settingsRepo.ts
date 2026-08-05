@@ -128,6 +128,23 @@ export class SettingsRepo {
     this.setJsonSetting('plugins.marketplaces', records);
   }
 
+  /**
+   * Which plugins each conversation has activated.
+   *
+   * Persisted rather than held in memory: a user who loaded a skill, got its
+   * tools, and restarted Atlas should not find them gone.
+   */
+  getPluginActivations<T>(): Record<string, T> {
+    const value = this.getJsonSetting<unknown>('plugins.activations', {});
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, T>)
+      : {};
+  }
+
+  setPluginActivations<T>(value: Record<string, T>) {
+    this.setJsonSetting('plugins.activations', value);
+  }
+
   getShowFreeOnlyByDefault() {
     return Boolean(this.getJsonSetting('showFreeOnlyByDefault', true));
   }

@@ -1,13 +1,15 @@
 import { AlertCircle, Check, Copy } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
   Background,
   BackgroundVariant,
   Controls,
   type Edge,
+  type FitViewOptions,
   type Node,
   ReactFlow,
+  type ReactFlowInstance,
   useNodesState,
   useEdgesState,
   MarkerType,
@@ -16,28 +18,17 @@ import {
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 
+import {
+  NODE_LINE_HEIGHT,
+  NODE_MIN_HEIGHT,
+  NODE_PADDING_Y,
+  NODE_WIDTH,
+  estimateNodeHeight,
+} from '../../../shared/diagramLayout';
+import type { DiagramEdge, DiagramNode, DiagramSpec } from '../../../shared/diagramSpec';
+import { parseDiagramSpec } from '../../../shared/diagramSpec';
 import { useClipboard } from '../../hooks/useClipboard';
 import { cn } from '../../lib/utils';
-
-type DiagramNode = {
-  id: string;
-  label: string;
-  type?: string;
-  style?: Record<string, string>;
-};
-
-type DiagramEdge = {
-  id: string;
-  source: string;
-  target: string;
-  label?: string;
-  animated?: boolean;
-};
-
-type DiagramSpec = {
-  nodes: DiagramNode[];
-  edges: DiagramEdge[];
-};
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -141,28 +132,10 @@ function useDiagramTheme(): DiagramTheme {
 // Layout
 // ---------------------------------------------------------------------------
 
-const NODE_WIDTH = 200;
-const NODE_MIN_HEIGHT = 56;
-const NODE_PADDING_Y = 12;
-const NODE_LINE_HEIGHT = 18;
-/** 200px wide minus 32px horizontal padding at 13px ≈ 22 characters. */
-const NODE_CHARS_PER_LINE = 22;
-
-/**
- * Estimate a node's rendered height and *commit to it*.
- *
- * dagre was told every node is 200×56 while the DOM gave nodes an
- * unconstrained height, so any label that wrapped to two or three lines
- * overflowed its lane and overlapped the rank below it. Deriving the height
- * from the label and then pinning it in the node's style keeps the layout
- * engine and the renderer describing the same box.
- */
-function estimateNodeHeight(label: string): number {
-  const lines = label
-    .split('\n')
-    .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / NODE_CHARS_PER_LINE)), 0);
-  return Math.max(NODE_MIN_HEIGHT, lines * NODE_LINE_HEIGHT + NODE_PADDING_Y * 2);
-}
+/** 11px label text, plus the padding of its background chip. */
+const EDGE_LABEL_CHAR_WIDTH = 6;
+const EDGE_LABEL_HEIGHT = 20;
+const EDGE_LABEL_MAX_WIDTH = 180;
 
 function getLayoutedElements(
   nodes: Node[],
@@ -173,10 +146,17 @@ function getLayoutedElements(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: direction,
-    nodesep: 80,
-    ranksep: 100,
-    marginx: 40,
-    marginy: 40,
+    /*
+      Tighter than the old 80/100. Those gaps were chosen when nothing was
+      reserved for edge labels, so the slack had to absorb them; now that
+      labels get their own box below, the extra air only pushed the graph
+      past the viewport and forced the zoom down until node text was
+      unreadable.
+    */
+    nodesep: 56,
+    ranksep: 80,
+    marginx: 24,
+    marginy: 24,
   });
 
   const heights = new Map<string, number>();
@@ -188,7 +168,26 @@ function getLayoutedElements(
   });
 
   edges.forEach((edge) => {
-    g.setEdge(edge.source, edge.target);
+    /*
+      Reserve the label's box in the rank gap.
+
+      Labelled edges were added with no dimensions at all, so dagre routed
+      them as if the text did not exist and the renderer then painted it at
+      the midpoint of the spline — on top of whatever node happened to be
+      there. Giving dagre the label's size makes it widen the gap instead.
+    */
+    const label = typeof edge.label === 'string' ? edge.label.trim() : '';
+    g.setEdge(
+      edge.source,
+      edge.target,
+      label
+        ? {
+            width: Math.min(EDGE_LABEL_MAX_WIDTH, label.length * EDGE_LABEL_CHAR_WIDTH + 16),
+            height: EDGE_LABEL_HEIGHT,
+            labelpos: 'c',
+          }
+        : {}
+    );
   });
 
   dagre.layout(g);
@@ -239,6 +238,11 @@ function toReactFlowNodes(specNodes: DiagramNode[], theme: DiagramTheme): Node[]
         alignItems: 'center',
         justifyContent: 'center',
         textAlign: 'center' as const,
+        // The height above is an estimate, so the label has to wrap the way
+        // the estimate assumed: at word boundaries, breaking only words that
+        // are wider than the node on their own.
+        whiteSpace: 'normal' as const,
+        overflowWrap: 'anywhere' as const,
         ...node.style,
       },
     };
@@ -274,49 +278,26 @@ function toReactFlowEdges(specEdges: DiagramEdge[], theme: DiagramTheme): Edge[]
   }));
 }
 
+/**
+ * How the graph is framed on load, on relayout, and on resize.
+ *
+ * `padding: 0.25` threw away a quarter of the box before the graph was even
+ * placed, and with no `minZoom` floor a tall graph was scaled down until the
+ * 13px node labels were a few pixels tall — legible as shapes, not as text.
+ * The floor says: fill the frame if the graph fits, otherwise show it at a
+ * readable size and let the reader pan. `maxZoom: 1` stops a two-node graph
+ * from ballooning to fill 560px.
+ */
+const FIT_VIEW_OPTIONS: FitViewOptions = {
+  padding: 0.12,
+  minZoom: 0.6,
+  maxZoom: 1,
+  duration: 0,
+};
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
-
-function parseDiagramSpec(content: string): DiagramSpec | null {
-  const trimmed = content.trim();
-
-  const jsonMatch = trimmed.match(/^\s*\{\s*"nodes"\s*:/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed.nodes && Array.isArray(parsed.nodes)) {
-        return {
-          nodes: parsed.nodes,
-          edges: parsed.edges || [],
-        };
-      }
-    } catch {
-      // not valid JSON
-    }
-  }
-
-  const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-  if (codeBlockMatch) {
-    try {
-      const parsed = JSON.parse(codeBlockMatch[1]);
-      if (parsed.nodes && Array.isArray(parsed.nodes)) {
-        return {
-          nodes: parsed.nodes,
-          edges: parsed.edges || [],
-        };
-      }
-    } catch {
-      // not valid JSON
-    }
-  }
-
-  return null;
-}
-
-export function detectDiagramSpec(content: string): boolean {
-  return parseDiagramSpec(content) !== null;
-}
 
 type ParseOutcome = { spec: DiagramSpec; error: null } | { spec: null; error: string };
 
@@ -330,8 +311,7 @@ type ParseOutcome = { spec: DiagramSpec; error: null } | { spec: null; error: st
  */
 function parseOutcome(content: string): ParseOutcome {
   const parsed = parseDiagramSpec(content);
-  if (!parsed) return { spec: null, error: 'Could not parse diagram specification.' };
-  if (parsed.nodes.length === 0) return { spec: null, error: 'Diagram has no nodes.' };
+  if (!parsed) return { spec: null, error: 'Could not read the diagram specification.' };
   return { spec: parsed, error: null };
 }
 
@@ -374,10 +354,55 @@ export function InteractiveDiagram({
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
+  const flowRef = useRef<ReactFlowInstance | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  /*
+    Once the reader has panned or zoomed, the frame is theirs. Auto-fitting on
+    every container resize would otherwise yank the view back the moment the
+    transcript reflowed underneath them.
+  */
+  const userMovedRef = useRef(false);
+
+  const fitDiagram = useCallback(() => {
+    void flowRef.current?.fitView(FIT_VIEW_OPTIONS);
+  }, []);
+
   useEffect(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
-  }, [initialNodes, initialEdges, setNodes, setEdges]);
+    userMovedRef.current = false;
+
+    /*
+      Refit after the new graph commits.
+
+      `fitView` as a prop only frames the graph React Flow had at mount. Every
+      relayout after that — a theme change re-deriving node styles, a spec
+      swapped in as the message streams — left the viewport framing the *old*
+      graph, which is how a diagram ended up parked off to one side with dead
+      space beside it.
+    */
+    const frame = requestAnimationFrame(fitDiagram);
+    return () => cancelAnimationFrame(frame);
+  }, [initialNodes, initialEdges, setNodes, setEdges, fitDiagram]);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+
+    // Width only: the height is ours (`viewportHeight` below), and reacting
+    // to it would make a fit that changes the height loop against itself.
+    let lastWidth = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = element.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      if (userMovedRef.current) return;
+      fitDiagram();
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [fitDiagram]);
 
   const copySource = useCallback(async () => {
     await copy(content.trim());
@@ -452,14 +477,25 @@ export function InteractiveDiagram({
         </div>
       )}
 
-      <div className="w-full" style={{ height: viewportHeight, ...flowStyle }}>
+      <div className="w-full" ref={viewportRef} style={{ height: viewportHeight, ...flowStyle }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onInit={(instance) => {
+            flowRef.current = instance;
+          }}
+          // A move with an event behind it came from the reader; one without
+          // is our own `fitView` and must not count as an interaction.
+          onMoveStart={(event) => {
+            if (event) userMovedRef.current = true;
+          }}
+          onNodeDragStart={() => {
+            userMovedRef.current = true;
+          }}
           fitView
-          fitViewOptions={{ padding: 0.25 }}
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.2}
           maxZoom={2}
           nodesDraggable
@@ -478,6 +514,10 @@ export function InteractiveDiagram({
           preventScrolling={false}
           zoomActivationKeyCode="Meta"
           zoomOnPinch
+          // The "React Flow" badge is a link out of the app in the middle of a
+          // transcript. React Flow is MIT-licensed so removing it is allowed;
+          // xyflow asks that projects that do subscribe instead.
+          proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{ style: { stroke: theme.edge, strokeWidth: 1.5 } }}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color={theme.dots} />

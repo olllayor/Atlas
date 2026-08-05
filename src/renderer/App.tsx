@@ -12,7 +12,7 @@ import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
-import { Composer, type ComposerAttachment } from './components/Composer';
+import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
@@ -252,8 +252,6 @@ export default function App() {
     isLoadingConversationId,
     selectedConversationId,
     selectedModelIdByConversation,
-    composerDraftsByConversation,
-    composerAttachmentsByConversation,
     draftsByConversation,
     conversationStats,
     diagnostics,
@@ -280,7 +278,6 @@ export default function App() {
     performUpdatePrimaryAction,
     setSelectedModel,
     setComposerDraft,
-    setComposerAttachments,
     clearComposerDraft,
     selectAdjacentConversation,
     selectConversationByIndex,
@@ -337,8 +334,10 @@ export default function App() {
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
-      composerDraftsByConversation: state.composerDraftsByConversation,
-      composerAttachmentsByConversation: state.composerAttachmentsByConversation,
+      // `composerDraftsByConversation` / `composerAttachmentsByConversation` are
+      // deliberately absent: they change on every keystroke, and this selector
+      // is shallow-compared, so subscribing to them here re-rendered the whole
+      // window per character. `ChatComposerSlot` reads them instead.
       draftsByConversation: state.draftsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
@@ -363,7 +362,6 @@ export default function App() {
       performUpdatePrimaryAction: state.performUpdatePrimaryAction,
       setSelectedModel: state.setSelectedModel,
       setComposerDraft: state.setComposerDraft,
-      setComposerAttachments: state.setComposerAttachments,
       clearComposerDraft: state.clearComposerDraft,
       selectAdjacentConversation: state.selectAdjacentConversation,
       selectConversationByIndex: state.selectConversationByIndex,
@@ -538,29 +536,14 @@ export default function App() {
     activeProject?.id ?? null,
   );
 
-  // Composer state is per-conversation: a single global string used to carry a
-  // half-typed message (and its staged files) into whichever thread you opened.
-  const composerValue = selectedConversationId ? composerDraftsByConversation[selectedConversationId] ?? '' : '';
-  const composerAttachments = selectedConversationId
-    ? composerAttachmentsByConversation[selectedConversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
-    : EMPTY_COMPOSER_ATTACHMENTS;
-  const setComposerValue = useCallback(
-    (next: string) => {
-      if (selectedConversationId) {
-        setComposerDraft(selectedConversationId, next);
-      }
-    },
-    [selectedConversationId, setComposerDraft]
-  );
-  const updateComposerAttachments = useCallback(
-    (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => {
-      if (selectedConversationId) {
-        setComposerAttachments(selectedConversationId, updater);
-      }
-    },
-    [selectedConversationId, setComposerAttachments]
-  );
-  /** Suggestions and gallery inserts append; they never discard typed text. */
+  /**
+   * Suggestions and gallery inserts append; they never discard typed text.
+   *
+   * Reads the draft through `getState()` rather than a subscription on purpose:
+   * this component does not otherwise track the half-typed message (see the
+   * note on the selector above, and `ChatComposerSlot`), and re-subscribing here
+   * to serve an occasional insert would undo that.
+   */
   const appendToComposer = useCallback(
     (text: string) => {
       if (!selectedConversationId) return;
@@ -1456,8 +1439,8 @@ export default function App() {
                 />
               ) : null}
 
-              <Composer
-                value={composerValue}
+              <ChatComposerSlot
+                conversationId={selectedConversationId}
                 disabled={!selectedConversationId}
                 isStreaming={activeDraft?.status === 'streaming'}
                 models={models}
@@ -1466,9 +1449,6 @@ export default function App() {
                 composerFocusNonce={composerFocusNonce}
                 detail={activeConversation}
                 draft={activeDraft}
-                attachments={composerAttachments}
-                onAttachmentsChange={updateComposerAttachments}
-                onChange={setComposerValue}
                 onSend={(message) => {
                   const conversationId = selectedConversationId;
                   captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {

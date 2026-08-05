@@ -14,6 +14,8 @@ import {
   normalizeThemeColor,
 } from '../../../shared/contracts';
 import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
+import type { VisualMode } from '../../../shared/visualIntent';
+import { DEFAULT_VISUAL_MODE, isVisualMode } from '../../../shared/visualIntent';
 import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspaceModes';
 import {
@@ -109,6 +111,21 @@ export class SettingsRepo {
     this.setJsonSetting('chat.lastModelId', value);
   }
 
+  /**
+   * When the assistant may answer with an inline visual.
+   *
+   * `auto` — the default — attaches the visual instructions only to turns that
+   * asked for something drawn; see `resolveVisualGate`.
+   */
+  getVisualMode(): VisualMode {
+    const value = this.getJsonSetting<unknown>('chat.visualMode', DEFAULT_VISUAL_MODE);
+    return isVisualMode(value) ? value : DEFAULT_VISUAL_MODE;
+  }
+
+  setVisualMode(value: VisualMode) {
+    this.setJsonSetting('chat.visualMode', value);
+  }
+
   getReasoningEffort(): ReasoningEffort {
     const value = this.getJsonSetting<ReasoningEffort>('chat.reasoningEffort', DEFAULT_REASONING_EFFORT);
     return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT;
@@ -151,6 +168,20 @@ export class SettingsRepo {
 
   setLastProjectId(value: string | null) {
     this.setJsonSetting('chat.lastProjectId', value);
+  }
+
+  /**
+   * The editor "Open in …" uses. Stored as a catalog id, so an editor the user
+   * has since uninstalled falls back to whatever is installed rather than to a
+   * path that no longer launches.
+   */
+  getPreferredIdeId(): string | null {
+    const value = this.getJsonSetting<string | null>('workspace.preferredIde', null);
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  setPreferredIdeId(value: string | null) {
+    this.setJsonSetting('workspace.preferredIde', value);
   }
 
   getThemeMode(): ThemeMode {

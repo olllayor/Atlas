@@ -58,6 +58,8 @@ import { ChatSessionRuntime } from './ChatSessionRuntime';
 import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
 import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
+import type { TurnCheckpointHooks } from '../../workspace/CheckpointCoordinator';
+import { NOOP_TURN_CHECKPOINTS } from '../../workspace/CheckpointCoordinator';
 
 type ActiveRequest = {
   requestId: string;
@@ -233,6 +235,12 @@ export class ChatEngine {
       modelId: string;
       capability: RejectedCapability;
     }) => void | Promise<void>,
+    /**
+     * Snapshots the project folder on either side of a turn. Failures here are
+     * swallowed by the coordinator — a repository that cannot be snapshotted is
+     * still one the user is allowed to send from.
+     */
+    private readonly checkpoints: TurnCheckpointHooks = NOOP_TURN_CHECKPOINTS,
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -349,6 +357,11 @@ export class ChatEngine {
         modelId: request.modelId,
       },
     });
+
+    // Awaited, not fired off: the baseline has to be on disk before the first
+    // tool can touch a file, or the turn's own edits end up inside its own
+    // "before" snapshot and the diff comes out empty.
+    await this.checkpoints.captureTurnStart(request.conversationId, turnId);
 
     this.activeRequests.set(requestId, {
       requestId,
@@ -792,6 +805,9 @@ export class ChatEngine {
       });
       this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(active.request.conversationId), 'aborted');
       this.runtimeStateRepo.updateProviderSession(requestId, { status: 'aborted' });
+      // An aborted turn can still have written files before it stopped, so it
+      // gets the same closing snapshot a completed one does.
+      await this.checkpoints.captureTurnEnd(active.request.conversationId, active.turnId);
       // An abort is the user's own decision, not a failure of the task.
       this.markConversationStatus(
         active.request.conversationId,
@@ -910,6 +926,10 @@ export class ChatEngine {
         sequence: lastSequence,
         pendingApprovals: this.runtimeStateRepo.listPendingApprovals(active.request.conversationId),
       });
+      // Not awaited: this method is synchronous and the turn is already over.
+      // The coordinator serializes per conversation, so the next turn's
+      // baseline still lands after this snapshot.
+      void this.checkpoints.captureTurnEnd(active.request.conversationId, active.turnId);
     }
 
     this.sendEvent(window, {

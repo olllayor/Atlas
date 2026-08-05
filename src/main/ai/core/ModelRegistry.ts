@@ -202,7 +202,8 @@ export class ModelRegistry {
         lastProjectId: this.settingsRepo.getLastProjectId(),
         // Validated here rather than in the renderer: a stored id whose provider
         // has since been removed or disabled must not be offered as a default.
-        lastModelId: this.resolveLastModelId()
+        lastModelId: this.resolveLastModelId(),
+        visualMode: this.settingsRepo.getVisualMode()
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,

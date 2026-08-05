@@ -856,16 +856,25 @@ export type ChangedFilesSummary = {
   files: DiffFile[];
   added: number;
   removed: number;
+  /**
+   * The edit calls this summary was built from, newest last.
+   *
+   * The bar's Undo needs to name exactly the stored file changes this turn
+   * produced. Path is not enough of a key: a file edited in three turns has
+   * three records, and undoing the last turn must not roll back the other two.
+   */
+  toolCallIds: string[];
 };
 
 /**
  * Aggregate every successful file edit in a turn into one per-file
- * summary, for the "Changed N files +A −D · Review" bar the app renders
+ * summary, for the "Edited N files +A −D · Review" bar the app renders
  * at the end of an editing turn. Repeated edits to the same file merge:
  * counts sum and hunks concatenate (with a gap marker between runs).
  */
 export function collectChangedFiles(parts: ChatToolPart[]): ChangedFilesSummary | null {
   const byPath = new Map<string, DiffFile>();
+  const toolCallIds: string[] = [];
 
   for (const part of parts) {
     if (toolCellKind(part) !== 'edit') continue;
@@ -873,6 +882,8 @@ export function collectChangedFiles(parts: ChatToolPart[]): ChangedFilesSummary 
 
     const diff = parseUnifiedDiff(outputText(part));
     if (!diff) continue;
+
+    if (part.toolCallId) toolCallIds.push(part.toolCallId);
 
     for (const file of diff) {
       const existing = byPath.get(file.path);
@@ -896,12 +907,13 @@ export function collectChangedFiles(parts: ChatToolPart[]): ChangedFilesSummary 
     files,
     added: files.reduce((sum, file) => sum + file.added, 0),
     removed: files.reduce((sum, file) => sum + file.removed, 0),
+    toolCallIds,
   };
 }
 
 /** The end-of-turn changed-files bar as selectable text. */
 export function changedFilesToPlainText(summary: ChangedFilesSummary): string {
   const count = summary.files.length;
-  const header = `Changed ${count} ${count === 1 ? 'file' : 'files'} +${summary.added} -${summary.removed}`;
+  const header = `Edited ${count} ${count === 1 ? 'file' : 'files'} +${summary.added} -${summary.removed}`;
   return [header, ...summary.files.map((file) => diffFileToPlainText(file))].join('\n\n');
 }

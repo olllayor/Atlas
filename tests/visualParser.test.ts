@@ -116,6 +116,86 @@ test('VisualStreamParser flushes incomplete visuals as completed visual payloads
   ]);
 });
 
+test('a disabled parser passes the stream through untouched', () => {
+  const parser = new VisualStreamParser({ enabled: false });
+
+  assert.deepEqual(parser.feed('Here is the markup: <svg viewBox="0 0 4 4">', 'request-off'), [
+    { type: 'text', content: 'Here is the markup: <svg viewBox="0 0 4 4">' },
+  ]);
+  assert.deepEqual(parser.feed('<circle r="1"/></svg> done', 'request-off'), [
+    { type: 'text', content: '<circle r="1"/></svg> done' },
+  ]);
+  assert.deepEqual(parser.flush('request-off'), []);
+});
+
+test('markup inside a code fence stays a code sample', () => {
+  const parser = new VisualStreamParser();
+  const reply = 'Try this:\n\n```html\n<div style="color:red">hi</div>\n```\n\nThat is all.';
+
+  const parsed = parser.feed(reply, 'request-fence');
+  assert.deepEqual([...parsed, ...parser.flush('request-fence')], [
+    { type: 'text', content: 'Try this:\n\n' },
+    { type: 'text', content: '```' },
+    { type: 'text', content: 'html\n<div style="color:red">hi</div>\n```' },
+    { type: 'text', content: '\n\nThat is all.' },
+  ]);
+});
+
+test('a fence wrapped around a visual is removed on both sides', () => {
+  const parser = new VisualStreamParser();
+  const reply = 'Here:\n\n```html\n<visual title="Flow"><svg xmlns="http://www.w3.org/2000/svg"></svg></visual>\n```\n\nDone.';
+
+  const parsed = [...parser.feed(reply, 'request-wrap'), ...parser.flush('request-wrap')];
+
+  assert.deepEqual(parsed, [
+    { type: 'text', content: 'Here:\n\n' },
+    { type: 'visual_start', content: '', title: 'Flow', visualId: 'visual-request-wrap-0' },
+    {
+      type: 'visual_complete',
+      content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      title: 'Flow',
+      visualId: 'visual-request-wrap-0',
+    },
+    { type: 'text', content: '\nDone.' },
+  ]);
+});
+
+test('a fence split across chunks still resolves to a visual', () => {
+  const parser = new VisualStreamParser();
+
+  assert.deepEqual(parser.feed('Here:\n```html\n', 'request-split'), [
+    { type: 'text', content: 'Here:\n' },
+  ]);
+
+  assert.deepEqual(parser.feed('<visual><svg></svg></visual>', 'request-split'), [
+    { type: 'visual_start', content: '', title: undefined, visualId: 'visual-request-split-0' },
+    {
+      type: 'visual_complete',
+      content: '<svg></svg>',
+      title: undefined,
+      visualId: 'visual-request-split-0',
+    },
+  ]);
+});
+
+test('the raw fallback can be turned off without disabling <visual> blocks', () => {
+  const parser = new VisualStreamParser({ allowRawFallback: false });
+
+  assert.deepEqual(parser.feed('<svg viewBox="0 0 4 4"></svg>', 'request-raw'), [
+    { type: 'text', content: '<svg viewBox="0 0 4 4"></svg>' },
+  ]);
+
+  assert.deepEqual(parser.feed('<visual><b>ok</b></visual>', 'request-raw'), [
+    { type: 'visual_start', content: '', title: undefined, visualId: 'visual-request-raw-0' },
+    {
+      type: 'visual_complete',
+      content: '<b>ok</b>',
+      title: undefined,
+      visualId: 'visual-request-raw-0',
+    },
+  ]);
+});
+
 test('visual-complete creates a finished visual part even if visual-start was missed', () => {
   const parts = applyStreamEventToParts([], {
     type: 'visual-complete',

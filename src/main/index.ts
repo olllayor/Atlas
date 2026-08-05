@@ -41,6 +41,7 @@ import { GitStateService } from './workspace/GitStateService';
 import { getSharedGitHubService } from './workspace/GitHubCli';
 import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
+import { SkillsService } from './plugins/SkillsService';
 import type { McpServerConfig } from '../shared/mcp';
 import { McpSecretStore } from './secrets/mcpSecrets';
 import { createMcpToolsProvider } from './ai/mcp/mcpToolsProvider';
@@ -273,6 +274,9 @@ app.whenReady().then(async () => {
     mcpSecrets.getEnv(serverId)
   );
   const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers);
+  // Scans ~/.atlas/plugins on a short interval. Nothing installed is the
+  // ordinary state and costs one failed readdir per five seconds.
+  const skillsService = new SkillsService();
 
   app.on('will-quit', () => {
     ptyService.disposeAll();
@@ -321,6 +325,7 @@ app.whenReady().then(async () => {
         }),
       () => database.settings.getVisualMode(),
       mcpToolsProvider,
+      skillsService,
     ),
     database.runtimeState,
     toolStateStore,

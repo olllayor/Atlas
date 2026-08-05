@@ -257,7 +257,7 @@ export function SidebarSettingsMenu({
           {collapsed ? (
             <DropdownMenuItem
               onSelect={() => onOpenSettings('general')}
-              className="px-3 text-sm text-[var(--text-secondary)] focus:bg-[var(--bg-hover)] focus:text-text-primary"
+              className="px-3 text-sm"
             >
               <GearIcon className="h-4 w-4 text-[var(--text-muted)]" />
               <span>Open settings</span>
@@ -270,7 +270,7 @@ export function SidebarSettingsMenu({
           ) : null}
           <DropdownMenuItem
             onSelect={() => onOpenSettings('usage')}
-            className="px-3 text-sm text-[var(--text-secondary)] focus:bg-[var(--bg-hover)] focus:text-text-primary"
+            className="px-3 text-sm"
           >
             <TimerIcon className="h-4 w-4 text-[var(--text-muted)]" />
             <span>Usage & limits</span>
@@ -280,7 +280,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={onOpenLanding}
-            className="px-3 text-sm text-[var(--text-secondary)] focus:bg-[var(--bg-hover)] focus:text-text-primary"
+            className="px-3 text-sm"
           >
             <span className="flex h-4 w-4 shrink-0 items-center justify-center font-mono text-2xs text-[var(--text-muted)]">
               {'>_'}
@@ -295,7 +295,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuLabel>
           <DropdownMenuItem
             onSelect={onRefreshModels}
-            className="px-3 text-sm text-[var(--text-secondary)] focus:bg-[var(--bg-hover)] focus:text-text-primary"
+            className="px-3 text-sm"
           >
             <ReloadIcon
               className={`h-4 w-4 text-[var(--text-muted)] ${isRefreshingModels ? 'animate-spin' : ''}`}
@@ -309,7 +309,7 @@ export function SidebarSettingsMenu({
               // toast is two notifications for one click.
               onCheckForUpdates();
             }}
-            className="px-3 text-sm text-[var(--text-secondary)] focus:bg-[var(--bg-hover)] focus:text-text-primary"
+            className="px-3 text-sm"
           >
             <UpdateIcon
               className={`h-4 w-4 text-[var(--text-muted)] ${

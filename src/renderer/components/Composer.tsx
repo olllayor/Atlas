@@ -80,7 +80,7 @@ export type ComposerMessage = {
   files: ComposerAttachment[];
 };
 
-type ComposerProps = {
+export type ComposerProps = {
   value: string;
   disabled: boolean;
   isStreaming: boolean;
@@ -908,14 +908,23 @@ export function Composer({
 
   return (
     /*
-      The composer sits *outside* the transcript's scroller, which permanently
+      The composer floats over the transcript's scroller, which permanently
       reserves a 6px scrollbar rail (`scrollbar-gutter: stable` on
       `.scrollbar-auto-hide`). Matching that rail here keeps the two centred
       columns on the same axis; without it they land 3px apart, which reads as
       a wobble between the last message and the input.
     */
     <div className="pr-[6px]">
-      <div className="px-5 py-3 lg:px-6">
+      {/*
+        No padding above the slab.
+
+        The transcript reserves this dock's *whole* height, so anything above
+        the slab becomes clear space between the last message and the input —
+        the gap this layout exists to remove. With none, the slab's own top
+        edge is where the transcript stops, and a message scrolling past it
+        goes behind the slab rather than halting short of it.
+      */}
+      <div className="px-5 pb-3 lg:px-6">
         <div className="mx-auto max-w-content-max">
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
@@ -1075,14 +1084,14 @@ export function Composer({
                   className="w-[220px] rounded-lg border border-border-default bg-bg-overlay p-1"
                 >
                   <DropdownMenuItem
-                    className="cursor-pointer gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+                    className="cursor-pointer gap-2 px-2.5 py-2 text-sm"
                     onSelect={attachments.openFileDialog}
                   >
                     <Paperclip className="size-4" strokeWidth={1.75} />
                     Attach files
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    className="cursor-pointer gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+                    className="cursor-pointer gap-2 px-2.5 py-2 text-sm"
                     onSelect={onOpenGallery}
                   >
                     <ImagePlus className="size-4" strokeWidth={1.75} />

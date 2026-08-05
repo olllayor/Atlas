@@ -35,6 +35,15 @@ export type ToolWorkspace = {
     beforeContent: string | null;
     afterContent: string;
     diffText: string;
+    /**
+     * The tool call that made the edit.
+     *
+     * It is what ties a stored change back to the turn that produced it, which
+     * is the whole basis of the transcript's per-turn Undo: without it the only
+     * key is the path, and a file edited in three consecutive turns has three
+     * indistinguishable records.
+     */
+    toolCallId?: string | null;
   }) => void;
 };
 

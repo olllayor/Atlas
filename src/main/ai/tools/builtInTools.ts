@@ -25,6 +25,11 @@ import {
   gitLogToolExecute,
   gitStashToolExecute
 } from './gitTools';
+import {
+  gitPushToolExecute,
+  githubPrCreateToolExecute,
+  githubPrStatusToolExecute
+} from './githubTools';
 import { detectSandboxMechanism } from './sandbox';
 import {
   bashToolExecute,
@@ -44,7 +49,11 @@ export const TOOL_USE_SYSTEM_PROMPT = [
   'Use web_search for current information and web_fetch to inspect specific pages.',
   'When answering from web results, cite the relevant source URLs in your response.',
   'Never invent tool results.',
-  'After a tool finishes, explain the result clearly and concisely.'
+  'After a tool finishes, explain the result clearly and concisely.',
+  // The transcript renders these as file chips (`shared/fileRef.ts`), so the
+  // filename is findable in a paragraph instead of buried in a path.
+  'When you name a file, write it as a markdown link to its project-relative path, with a line number when you have one:',
+  '[ChatWindow.tsx](src/renderer/components/ChatWindow.tsx) or [ChatWindow.tsx](src/renderer/components/ChatWindow.tsx:42).'
 ].join(' ');
 
 /**
@@ -380,7 +389,7 @@ function describeBashTool(workspace: ToolWorkspace) {
     return [
       'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, and linters.',
       'Commands run inside an OS sandbox: writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.',
-      'Shell git commands can read the repository but not write it — use the git_ tools to commit, branch, or stash.',
+      'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.',
       'Each result reports the sandbox that was applied.'
     ].join(' ');
   }
@@ -412,7 +421,10 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
         content: z.string().describe('Full file contents to write')
       }),
       strict: true,
-      execute: (input: { file_path: string; content: string }) => writeFileToolExecute(input, workspace)
+      // The call id rides along so the stored file change can be traced back to
+      // the turn that made it, which is what the transcript's Undo reverts.
+      execute: (input: { file_path: string; content: string }, options: { toolCallId: string }) =>
+        writeFileToolExecute(input, workspace, options.toolCallId)
     }),
     edit_file: tool({
       description:
@@ -425,8 +437,10 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
         replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match')
       }),
       strict: true,
-      execute: (input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }) =>
-        editFileToolExecute(input, workspace)
+      execute: (
+        input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean },
+        options: { toolCallId: string }
+      ) => editFileToolExecute(input, workspace, options.toolCallId)
     }),
     git_status: tool({
       description: 'Show the project working tree status (porcelain) and current branch.',
@@ -485,6 +499,41 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
       strict: true,
       execute: (input: { action: 'push' | 'pop' | 'list' | 'drop'; message?: string }) =>
         gitStashToolExecute(input, workspace)
+    }),
+    git_push: tool({
+      description:
+        'Push a branch to the origin remote, setting its upstream. Defaults to the current branch. Unlike shell commands, this reaches the network.',
+      needsApproval: true,
+      inputSchema: z.object({
+        branch: z.string().trim().optional().describe('Branch to push (default: the current branch)'),
+        force: z
+          .boolean()
+          .optional()
+          .describe('Force-push with --force-with-lease, which still refuses to discard unseen commits')
+      }),
+      strict: true,
+      execute: (input: { branch?: string; force?: boolean }) => gitPushToolExecute(input, workspace)
+    }),
+    github_pr_status: tool({
+      description:
+        'Report whether GitHub pull requests are available here (gh installed and signed in, GitHub origin remote) and whether the current branch already has an open one.',
+      inputSchema: z.object({}),
+      strict: true,
+      execute: () => githubPrStatusToolExecute({}, workspace)
+    }),
+    github_pr_create: tool({
+      description:
+        'Push the current branch and open a GitHub pull request for it. Write the title and body yourself from git_log and git_diff. Returns the existing pull request if the branch already has one.',
+      needsApproval: true,
+      inputSchema: z.object({
+        title: z.string().trim().min(1).describe('Pull request title'),
+        body: z.string().optional().describe('Pull request body, in Markdown'),
+        base: z.string().trim().optional().describe('Base branch to merge into (default: the repository default)'),
+        draft: z.boolean().optional().describe('Open the pull request as a draft')
+      }),
+      strict: true,
+      execute: (input: { title: string; body?: string; base?: string; draft?: boolean }) =>
+        githubPrCreateToolExecute(input, workspace)
     })
   };
 }

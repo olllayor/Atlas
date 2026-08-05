@@ -171,7 +171,8 @@ function displayPathFor(target: string, workspace: ToolWorkspace | undefined) {
 
 export async function writeFileToolExecute(
   input: { file_path: string; content: string },
-  workspace?: ToolWorkspace
+  workspace?: ToolWorkspace,
+  toolCallId?: string | null
 ) {
   const target = resolveWritablePath(input.file_path, workspace);
   const previous = await readIfExists(target);
@@ -192,7 +193,8 @@ export async function writeFileToolExecute(
         filePath: displayPath,
         beforeContent: previous,
         afterContent: input.content,
-        diffText: diff
+        diffText: diff,
+        toolCallId
       });
     }
     return diff;
@@ -205,7 +207,8 @@ export async function writeFileToolExecute(
 
 export async function editFileToolExecute(
   input: { file_path: string; old_string: string; new_string: string; replace_all?: boolean },
-  workspace?: ToolWorkspace
+  workspace?: ToolWorkspace,
+  toolCallId?: string | null
 ) {
   const target = resolveWritablePath(input.file_path, workspace);
   const previous = await readIfExists(target);
@@ -248,7 +251,8 @@ export async function editFileToolExecute(
       filePath: displayPath,
       beforeContent: previous,
       afterContent: next,
-      diffText: diff
+      diffText: diff,
+      toolCallId
     });
   }
 

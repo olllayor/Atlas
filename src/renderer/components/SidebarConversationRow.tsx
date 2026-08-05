@@ -1,4 +1,4 @@
-import { BrushSpinner } from '@/components/ui/brush-spinner';
+import { StatusDot } from '@/components/ui/status-dot';
 
 import { cn } from '../lib/utils';
 
@@ -33,22 +33,16 @@ export function SidebarConversationRow({
 
   return (
     <>
-      {isRunning ? (
-        <BrushSpinner size={12} strokeWidth={1.5} speed={1.5} className="mr-2 shrink-0" />
-      ) : null}
-
       {/*
-        A failed turn keeps a dot rather than a word: the row is one line, and
-        the reason is one click away in the transcript. Same 12px slot as the
-        spinner it replaces, so rows never shift as a task ends.
+        Running and failed are the same mark in two tones, so they share one
+        12px slot by construction and the title never shifts as a task ends.
+        A failed turn stays a dot rather than a word: the row is one line, and
+        the reason is one click away in the transcript.
       */}
+      {isRunning ? <StatusDot tone="running" label="Generating" className="mr-2" /> : null}
+
       {!isRunning && isFailed ? (
-        <span
-          role="img"
-          aria-label="Last turn failed"
-          title="Last turn failed"
-          className="mr-2 size-1.5 shrink-0 rounded-full bg-error"
-        />
+        <StatusDot tone="failed" label="Last turn failed" className="mr-2" />
       ) : null}
 
       {/* The raw title, un-clipped, so the native tooltip is worth reading. */}

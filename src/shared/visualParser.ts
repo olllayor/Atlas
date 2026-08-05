@@ -1,9 +1,29 @@
 const VISUAL_START = '<visual';
 const VISUAL_END = '</visual>';
-const POTENTIAL_START_TOKENS = [VISUAL_START, '<svg', '<html', '<style', '<div style'];
+const FENCE = '```';
+const POTENTIAL_START_TOKENS = [VISUAL_START, '<svg', '<html', '<style', '<div style', FENCE];
 
 /** Holds possible split of `</visual>` and long opening tags (e.g. `<div ... style=`). */
 export const SAFETY_BUFFER = 32;
+
+/**
+ * A fence that immediately wraps a `<visual>` block.
+ *
+ * Models are told not to fence visuals and do it anyway, so the wrapper is
+ * removed — but only this one. The previous version stripped *every* fence
+ * marker out of the stream, which silently deleted the fences around ordinary
+ * ```html code samples and then let the raw-markup fallback below render the
+ * sample as a live visual.
+ */
+const FENCE_WRAPPING_VISUAL = /```[A-Za-z0-9+#-]*[ \t]*(?:\r?\n)?(?=[ \t]*<visual)/gi;
+
+/** A fence at the very end of the buffer: what follows decides what it means. */
+const TRAILING_FENCE = /```[A-Za-z0-9+#-]*[ \t]*\r?\n?$/;
+
+function getTrailingFenceLength(buffer: string): number {
+  const match = buffer.match(TRAILING_FENCE);
+  return match ? match[0].length : 0;
+}
 
 export function detectRequiredLibraries(html: string): string[] {
   const libs: string[] = [];
@@ -166,6 +186,23 @@ export interface ParsedChunk {
   visualId?: string;
 }
 
+export type VisualStreamParserOptions = {
+  /**
+   * Whether this turn may contain visuals at all.
+   *
+   * Off, the parser is a pass-through: nothing is buffered and no markup is
+   * captured. A turn that was never given the visual instructions has no
+   * business having its `<svg>` code sample lifted out of the transcript and
+   * rendered in a sandbox.
+   */
+  enabled?: boolean;
+  /**
+   * Whether bare `<svg>` / `<div style=…>` outside a `<visual>` wrapper is
+   * captured as a visual. Recovers from models that drop the wrapper.
+   */
+  allowRawFallback?: boolean;
+};
+
 export class VisualStreamParser {
   private buffer = '';
   private inVisual = false;
@@ -178,6 +215,19 @@ export class VisualStreamParser {
   private rawKind: RawKind | undefined;
   private rawBuffer = '';
 
+  private readonly enabled: boolean;
+  private readonly allowRawFallback: boolean;
+
+  /** Inside a markdown code fence: markup here is a sample, not a visual. */
+  private fenceOpen = false;
+  /** Opening fences removed from around a `<visual>`, whose closer is still to come. */
+  private pendingFenceCloses = 0;
+
+  constructor({ enabled = true, allowRawFallback = true }: VisualStreamParserOptions = {}) {
+    this.enabled = enabled;
+    this.allowRawFallback = allowRawFallback;
+  }
+
   private nextVisualId(requestId: string): string {
     return `visual-${requestId}-${this.visualCounter++}`;
   }
@@ -188,6 +238,26 @@ export class VisualStreamParser {
 
   private rawCombined(): string {
     return this.rawBuffer + this.buffer;
+  }
+
+  /**
+   * Drop the closer of a fence whose opener was removed for wrapping a visual.
+   *
+   * Without this the stray ``` survives into the transcript and opens a code
+   * block that swallows the rest of the reply.
+   */
+  private consumeClosingFence() {
+    if (this.pendingFenceCloses === 0) {
+      return;
+    }
+
+    const match = this.buffer.match(/^[ \t]*\r?\n?[ \t]*```[A-Za-z0-9+#-]*[ \t]*(?:\r?\n|$)/);
+    if (!match) {
+      return;
+    }
+
+    this.buffer = this.buffer.slice(match[0].length);
+    this.pendingFenceCloses -= 1;
   }
 
   private findRawEndPosition(combined: string): number | null {
@@ -206,13 +276,20 @@ export class VisualStreamParser {
   }
 
   feed(chunk: string, requestId: string): ParsedChunk[] {
-    const results: ParsedChunk[] = [];
     this.lastRequestId = requestId;
-    // Strip code block markers that wrap <visual> tags (models sometimes wrap visuals in ```html ... ```)
-    const cleanedChunk = chunk
-      .replace(/```(?:html|xml|js|javascript)?\s*\n/g, '')
-      .replace(/\n\s*```/g, '');
-    this.buffer += cleanedChunk;
+
+    // A turn without the visual instructions cannot produce a visual, so
+    // nothing in it is worth holding back a frame for.
+    if (!this.enabled) {
+      return chunk.length > 0 ? [{ type: 'text', content: chunk }] : [];
+    }
+
+    const results: ParsedChunk[] = [];
+    this.buffer += chunk;
+    this.buffer = this.buffer.replace(FENCE_WRAPPING_VISUAL, () => {
+      this.pendingFenceCloses += 1;
+      return '';
+    });
 
     while (true) {
       if (this.inRaw && this.rawKind) {
@@ -242,11 +319,58 @@ export class VisualStreamParser {
       }
 
       if (!this.inVisual) {
+        // Inside a fenced code block nothing is a visual — walk to the closer
+        // and emit everything between as plain text.
+        if (this.fenceOpen) {
+          const closeIdx = this.buffer.indexOf(FENCE);
+          if (closeIdx === -1) {
+            const safeLen = Math.max(
+              0,
+              this.buffer.length - getTrailingPartialTokenLength(this.buffer, [FENCE])
+            );
+            if (safeLen > 0) {
+              results.push({ type: 'text', content: this.buffer.slice(0, safeLen) });
+            }
+            this.buffer = this.buffer.slice(safeLen);
+            break;
+          }
+
+          results.push({ type: 'text', content: this.buffer.slice(0, closeIdx + FENCE.length) });
+          this.buffer = this.buffer.slice(closeIdx + FENCE.length);
+          this.fenceOpen = false;
+          continue;
+        }
+
         const visualIdx = this.buffer.indexOf(VISUAL_START);
-        const raw = findEarliestRawKind(this.buffer);
+        const raw = this.allowRawFallback ? findEarliestRawKind(this.buffer) : null;
 
         const useVisual = visualIdx !== -1 && (raw === null || visualIdx <= raw.index);
         const useRaw = raw !== null && !useVisual;
+
+        // A fence that opens before the next candidate turns that candidate
+        // into sample code. Unless the fence is the last thing in the buffer,
+        // in which case the next chunk decides whether it wrapped a visual.
+        const fenceIdx = this.buffer.indexOf(FENCE);
+        const nextCandidate = useVisual ? visualIdx : useRaw && raw ? raw.index : Number.POSITIVE_INFINITY;
+        if (fenceIdx !== -1 && fenceIdx < nextCandidate) {
+          const trailingFenceLength = getTrailingFenceLength(this.buffer);
+          const isTrailing =
+            trailingFenceLength > 0 && fenceIdx >= this.buffer.length - trailingFenceLength;
+
+          if (fenceIdx > 0) {
+            results.push({ type: 'text', content: this.buffer.slice(0, fenceIdx) });
+          }
+          this.buffer = this.buffer.slice(fenceIdx);
+
+          if (isTrailing) {
+            break;
+          }
+
+          results.push({ type: 'text', content: this.buffer.slice(0, FENCE.length) });
+          this.buffer = this.buffer.slice(FENCE.length);
+          this.fenceOpen = true;
+          continue;
+        }
 
         if (!useVisual && !useRaw) {
           const safeLen = Math.max(0, this.buffer.length - getTrailingPartialTokenLength(this.buffer, POTENTIAL_START_TOKENS));
@@ -323,6 +447,7 @@ export class VisualStreamParser {
         this.visualBuffer += this.buffer.slice(0, endIdx);
         this.buffer = this.buffer.slice(endIdx + VISUAL_END.length);
         this.inVisual = false;
+        this.consumeClosingFence();
 
         results.push({
           type: 'visual_complete',
@@ -341,10 +466,11 @@ export class VisualStreamParser {
 
   flush(requestId: string): ParsedChunk[] {
     this.lastRequestId = requestId;
-    // Strip code block markers from remaining buffer
-    this.buffer = this.buffer
-      .replace(/```(?:html|xml|js|javascript)?\s*\n/g, '')
-      .replace(/\n\s*```/g, '');
+
+    if (!this.enabled) {
+      return [];
+    }
+
     const results: ParsedChunk[] = [];
 
     if (this.inRaw && this.rawKind) {
@@ -392,5 +518,7 @@ export class VisualStreamParser {
     this.inRaw = false;
     this.rawKind = undefined;
     this.rawBuffer = '';
+    this.fenceOpen = false;
+    this.pendingFenceCloses = 0;
   }
 }

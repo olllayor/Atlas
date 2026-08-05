@@ -28,9 +28,14 @@ export type * from './customProviders';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';
+export type * from './visualIntent';
+export type * from './mcp';
+export type * from './review';
 
+import type { ReviewDiff, ReviewScope } from './review';
 import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
 import type { WorkspaceMode } from './workspaceModes';
+import type { VisualMode } from './visualIntent';
 
 /**
  * A folder the user has attached to Atlas. `root` is the only capability that
@@ -58,6 +63,27 @@ export type CreateWorkspaceProjectRequest = {
   /** Absolute path. Omit to open the native folder picker instead. */
   root?: string;
   title?: string;
+};
+
+/**
+ * An editor Atlas found installed on this machine. The launch target stays in
+ * the main process — the renderer picks by id, so nothing it sends can become
+ * the path of a process.
+ */
+export type DetectedIde = {
+  id: string;
+  name: string;
+  /** True for the one a plain click will use: the saved choice, else the first found. */
+  preferred: boolean;
+  /**
+   * The application's own icon, as a `data:` URL the OS rendered.
+   *
+   * Sent rather than bundled because these are the user's applications, not
+   * ours: shipping a sprite sheet would mean a stale Cursor mark the day they
+   * rebrand, and nothing at all for the editor we never thought to include.
+   * Null when the platform has no icon to give.
+   */
+  iconDataUrl: string | null;
 };
 
 export type ProjectType = 'node' | 'python' | 'rust' | 'go' | 'unknown';
@@ -123,6 +149,57 @@ export type GitStateSummary = {
   /** Commits this branch is ahead of / behind its upstream; null with no upstream. */
   ahead: number | null;
   behind: number | null;
+};
+
+/** What the review pane asks for. `commit` carries the revision it wants. */
+export type GitReviewRequest = {
+  conversationId: string;
+  scope: ReviewScope;
+  commit?: string | null;
+};
+
+/**
+ * A hunk-level stage / unstage / revert.
+ *
+ * The patch is sent back rather than re-derived from a hunk index: the working
+ * tree may have moved since the diff was read, and applying "hunk 3" of a diff
+ * that no longer has three hunks is how the wrong lines get staged. A patch
+ * that no longer applies fails loudly instead.
+ */
+export type GitApplyHunkRequest = {
+  conversationId: string;
+  patch: string;
+  /** Into the index rather than the working tree. */
+  cached: boolean;
+  reverse: boolean;
+};
+
+export type GitHubPrInfo = {
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+};
+
+/**
+ * Whether this conversation can open a pull request, and whether it already has.
+ *
+ * Every precondition is reported separately rather than collapsed into one
+ * boolean, because each has a different fix and the toolbar says which.
+ */
+export type GitHubPrStatus = {
+  /** A `gh` launcher was found on disk. */
+  cliInstalled: boolean;
+  /** `gh auth status` succeeded. */
+  authenticated: boolean;
+  /** The `origin` remote points at github.com. */
+  isGitHubRemote: boolean;
+  /** `owner/repo`, when the remote is a GitHub one. */
+  slug: string | null;
+  branch: string | null;
+  pr: GitHubPrInfo | null;
 };
 
 export type GitCommitRequest = {
@@ -614,6 +691,8 @@ export type SettingsChatSummary = {
   lastProjectId: string | null;
   /** Last model the user selected; null when it is no longer in the catalog. */
   lastModelId: string | null;
+  /** When the assistant is allowed to answer with an inline visual. */
+  visualMode: VisualMode;
 };
 
 export type SettingsSummary = {
@@ -1364,6 +1443,7 @@ export type SettingsUpdateRequest = {
     /** Project new conversations attach to; `null` clears it. */
     lastProjectId?: string | null;
     lastModelId?: string;
+    visualMode?: VisualMode;
   };
 };
 
@@ -1489,6 +1569,10 @@ export type RendererApi = {
     delete: (projectId: string) => Promise<void>;
     reveal: (projectId: string) => Promise<void>;
     setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
+    /** Editors installed on this machine, in preference order. Empty when none were found. */
+    listIdes: () => Promise<DetectedIde[]>;
+    /** Opens the project folder in `ideId`, or in the preferred editor when omitted. */
+    openInIde: (projectId: string, ideId?: string) => Promise<void>;
   };
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
@@ -1559,6 +1643,15 @@ export type RendererApi = {
     switchBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     commit: (request: GitCommitRequest) => Promise<string>;
+    review: (request: GitReviewRequest) => Promise<ReviewDiff>;
+    stage: (conversationId: string, paths: string[]) => Promise<void>;
+    unstage: (conversationId: string, paths: string[]) => Promise<void>;
+    revert: (conversationId: string, paths: string[]) => Promise<void>;
+    applyHunk: (request: GitApplyHunkRequest) => Promise<void>;
+  };
+  github: {
+    getPrStatus: (conversationId: string) => Promise<GitHubPrStatus>;
+    openPr: (url: string) => Promise<void>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;

@@ -14,6 +14,7 @@ import { SitesRepo } from './repositories/sitesRepo';
 import { ToolExecutionsRepo } from './repositories/toolExecutionsRepo';
 import { VisualsRepo } from './repositories/visualsRepo';
 import { FileChangesRepo } from './repositories/fileChangesRepo';
+import { WorkspaceCheckpointsRepo } from './repositories/workspaceCheckpointsRepo';
 import { TerminalHistoryRepo } from './repositories/terminalHistoryRepo';
 import { applySchema } from './schema';
 
@@ -25,6 +26,7 @@ export type AppDatabase = {
   runtimeState: RuntimeStateRepo;
   toolExecutions: ToolExecutionsRepo;
   fileChanges: FileChangesRepo;
+  workspaceCheckpoints: WorkspaceCheckpointsRepo;
   terminalHistory: TerminalHistoryRepo;
   models: ModelsRepo;
   projects: ProjectsRepo;
@@ -49,6 +51,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     runtimeState,
     toolExecutions,
     fileChanges: new FileChangesRepo(raw),
+    workspaceCheckpoints: new WorkspaceCheckpointsRepo(raw),
     terminalHistory: new TerminalHistoryRepo(raw),
     models: new ModelsRepo(raw),
     projects: new ProjectsRepo(raw),

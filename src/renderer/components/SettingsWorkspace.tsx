@@ -37,6 +37,7 @@ import type {
   ThemeMode,
   UsageProviderSummary,
   UsageSummary,
+  VisualMode,
 } from '../../shared/contracts';
 import {
   CODE_FONT_SIZE_MAX,
@@ -88,6 +89,7 @@ type SettingsWorkspaceProps = {
   onAppearancePatch: (patch: AppearancePatch) => void;
   onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
   telemetryEnabled: boolean;
@@ -128,6 +130,7 @@ export function SettingsWorkspace({
   onAppearancePatch,
   onUpdateKeybindings,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
   telemetryEnabled,
@@ -212,6 +215,7 @@ export function SettingsWorkspace({
                   isRefreshingModels={isRefreshingModels}
                   onOpenProviders={() => onNavigate('providers')}
                   onToggleFreeModels={onToggleFreeModels}
+                  onVisualModeChange={onVisualModeChange}
                   onUpdateAction={onUpdateAction}
                   onRefreshModels={onRefreshModels}
                 />
@@ -287,6 +291,7 @@ function GeneralPage({
   isRefreshingModels,
   onOpenProviders,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
 }: {
@@ -295,6 +300,7 @@ function GeneralPage({
   isRefreshingModels: boolean;
   onOpenProviders: () => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
@@ -323,6 +329,18 @@ function GeneralPage({
             ariaLabel="Toggle free models by default"
           />
         </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Chat">
+        <SettingsStackedRow
+          title="Inline visuals"
+          description="Diagrams, charts and interactive blocks rendered inside a reply. On automatic, the assistant only draws one when you ask for something visual."
+        >
+          <VisualModePicker
+            current={settings?.chat.visualMode ?? 'auto'}
+            onChange={onVisualModeChange}
+          />
+        </SettingsStackedRow>
       </SettingsGroup>
 
       <SettingsGroup title="Catalog and updates">
@@ -1147,6 +1165,45 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
             className={`${SEGMENT_BASE} gap-2 ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
           >
             <Icon className="h-4 w-4" />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function VisualModePicker({
+  current,
+  onChange,
+}: {
+  current: VisualMode;
+  onChange: (mode: VisualMode) => void;
+}) {
+  const items: Array<{ mode: VisualMode; label: string }> = [
+    { mode: 'auto', label: 'Automatic' },
+    { mode: 'always', label: 'Always' },
+    { mode: 'off', label: 'Never' },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Inline visuals"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
+      {items.map((item) => {
+        const isActive = item.mode === current;
+
+        return (
+          <button
+            key={item.mode}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            onClick={() => onChange(item.mode)}
+            className={`${SEGMENT_BASE} ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
+          >
             <span>{item.label}</span>
           </button>
         );

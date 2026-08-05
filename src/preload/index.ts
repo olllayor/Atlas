@@ -182,6 +182,21 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.githubPrStatus, conversationId),
     openPr: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.githubOpenPr, url)
   },
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsList),
+    install: (sourceDir: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstall, sourceDir),
+    uninstall: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsUninstall, name),
+    setEnabled: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetEnabled, name, enabled),
+    installFromPicker: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromPicker),
+    revealRoot: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsRevealRoot),
+    marketplaces: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsMarketplaces),
+    addMarketplace: (input) => ipcRenderer.invoke(IPC_CHANNELS.pluginsAddMarketplace, input),
+    removeMarketplace: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsRemoveMarketplace, name),
+    installFromMarketplace: (marketplace: string, plugin: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromMarketplace, marketplace, plugin)
+  },
   fileChanges: {
     list: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.fileChangesList, conversationId),

@@ -151,6 +151,80 @@ export type GitStateSummary = {
   behind: number | null;
 };
 
+/** One MCP server a bundle will run, described from resolved values only. */
+export type PluginServerSummary = {
+  name: string;
+  transport: 'stdio' | 'http';
+  /** The literal command that will run, or the literal endpoint reached. */
+  detail: string;
+  /** Environment variable names forwarded from Atlas to the server. */
+  envVars: string[];
+  /** Names of literal values the bundle sets. Values are not shown. */
+  envKeys: string[];
+  bearerTokenEnvVar: string | null;
+};
+
+export type PluginSkillSummary = {
+  name: string;
+  description: string;
+  /** False when the bundle asked that the model not choose this on its own. */
+  implicitInvocation: boolean;
+};
+
+export type PluginSummary = {
+  name: string;
+  version: string;
+  description: string;
+  displayName: string | null;
+  author: string | null;
+  homepage: string | null;
+  root: string;
+  enabled: boolean;
+  skills: PluginSkillSummary[];
+  servers: PluginServerSummary[];
+  /** Atlas parses hooks and refuses to run them; this only says one is present. */
+  hooksDeclared: boolean;
+  /** Non-fatal problems found while loading, e.g. a skill that was skipped. */
+  warnings: string[];
+};
+
+export type MarketplaceEntryView = {
+  name: string;
+  description: string | null;
+  category: string | null;
+  version: string | null;
+  /** Where the bundle comes from, and whether it is pinned to a commit. */
+  origin: string;
+  installed: boolean;
+  /** Non-null when Atlas refuses to install it, and why. */
+  blocked: string | null;
+  authOnInstall: boolean;
+};
+
+export type MarketplaceView = {
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  owner: string | null;
+  /** The URL or folder the catalogue was read from. */
+  sourceLabel: string;
+  entries: MarketplaceEntryView[];
+  error: string | null;
+};
+
+export type MarketplacesView = { marketplaces: MarketplaceView[] };
+
+export type MarketplaceInput =
+  | { kind: 'path'; name: string; path: string }
+  | { kind: 'git'; name: string; url: string; ref: string | null };
+
+export type PluginsView = {
+  /** Where bundles are installed from. Shown so the user can open it. */
+  root: string;
+  plugins: PluginSummary[];
+  failures: Array<{ root: string; error: string }>;
+};
+
 /** What the review pane asks for. `commit` carries the revision it wants. */
 export type GitReviewRequest = {
   conversationId: string;
@@ -583,6 +657,40 @@ export const DESIGN_THEMES: readonly DesignTheme[] = ['codex', 'default', 'xai',
 export function isDesignTheme(value: unknown): value is DesignTheme {
   return typeof value === 'string' && (DESIGN_THEMES as readonly string[]).includes(value);
 }
+
+/**
+ * Design themes that actually ship a light palette.
+ *
+ * `themes/codex.css` carries a `[data-theme='light']` block and `cursor.css` is
+ * authored light-first with a dark override; `default.css` and `xai.css` define
+ * one dark palette and nothing else. Light mode used to be offered for all four
+ * regardless, so picking it under those two set `color-scheme: light` — which
+ * repaints native form controls, scrollbars and autofill white — while every
+ * app surface stayed dark. The result was white-on-white text in inputs.
+ *
+ * The list is the single source of truth for both halves of the fix: the
+ * settings picker refuses to offer Light for a theme that has none, and
+ * `resolveAppliedThemeMode` clamps anything already stored (or arriving from
+ * `system`) back to dark.
+ */
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor'];
+
+export function designThemeSupportsLight(theme: DesignTheme): boolean {
+  return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
+}
+
+/**
+ * The mode actually painted: the stored preference resolved against the OS and
+ * then clamped to what the design theme can render.
+ */
+export function resolveAppliedThemeMode(
+  mode: ThemeMode,
+  designTheme: DesignTheme,
+  prefersDark: boolean
+): 'light' | 'dark' {
+  const resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+  return resolved === 'light' && !designThemeSupportsLight(designTheme) ? 'dark' : resolved;
+}
 export type FontFamilyOverride = string | null;
 export type BorderRadiusMode = 'theme-default' | 'none';
 
@@ -630,7 +738,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'providers' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -1652,6 +1760,19 @@ export type RendererApi = {
   github: {
     getPrStatus: (conversationId: string) => Promise<GitHubPrStatus>;
     openPr: (url: string) => Promise<void>;
+  };
+  plugins: {
+    list: () => Promise<PluginsView>;
+    install: (sourceDir: string) => Promise<PluginsView>;
+    uninstall: (name: string) => Promise<PluginsView>;
+    setEnabled: (name: string, enabled: boolean) => Promise<PluginsView>;
+    /** Opens a directory picker and installs the chosen bundle. */
+    installFromPicker: () => Promise<PluginsView | null>;
+    revealRoot: () => Promise<void>;
+    marketplaces: () => Promise<MarketplacesView>;
+    addMarketplace: (input: MarketplaceInput) => Promise<MarketplacesView>;
+    removeMarketplace: (name: string) => Promise<MarketplacesView>;
+    installFromMarketplace: (marketplace: string, plugin: string) => Promise<PluginsView>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;

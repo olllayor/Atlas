@@ -41,8 +41,14 @@ import { GitStateService } from './workspace/GitStateService';
 import { getSharedGitHubService } from './workspace/GitHubCli';
 import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
+import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
+import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
+import { PluginInstaller } from './plugins/PluginInstaller';
+import { PluginMarketplaceService } from './plugins/PluginMarketplaceService';
+import { PluginRegistry } from './plugins/PluginRegistry';
+import { registerPluginsIpc } from './ipc/plugins';
+import { createPluginMcpSource } from './plugins/PluginMcpSource';
 import { SkillsService } from './plugins/SkillsService';
-import type { McpServerConfig } from '../shared/mcp';
 import { McpSecretStore } from './secrets/mcpSecrets';
 import { createMcpToolsProvider } from './ai/mcp/mcpToolsProvider';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
@@ -264,19 +270,41 @@ app.whenReady().then(async () => {
     }
   }, database.terminalHistory);
 
+  // One scan of ~/.atlas/plugins feeds every component type, so the prompt and
+  // the tool set cannot disagree about what is installed.
+  const pluginRegistry = new PluginRegistry({
+    isEnabled: (name) => !database.settings.getDisabledPlugins().includes(name),
+  });
+  const pluginInstaller = new PluginInstaller(pluginRegistry);
+  // Interrupted installs leave staging directories behind. Upstream documents
+  // sweeping them and does not; a machine surveyed for this work still had
+  // three from a month earlier.
+  pluginInstaller.sweepStaging();
+  // Checkouts live beside the bundles but outside them: a dot-directory is
+  // skipped by the registry scan, so a cloned marketplace is never mistaken
+  // for an installed plugin.
+  const marketplaceRegistry = new MarketplaceRegistry(
+    () => database.settings.getMarketplaces<MarketplaceRecord>(),
+    join(app.getPath('userData'), 'marketplaces'),
+  );
+  const pluginMarketplaces = new PluginMarketplaceService(
+    marketplaceRegistry,
+    pluginRegistry,
+    pluginInstaller,
+    () => database.settings.getMarketplaces<MarketplaceRecord>(),
+    (records) => database.settings.setMarketplaces(records),
+  );
+
   // MCP is no longer a feature with a configuration surface: servers arrive
   // only inside installed plugins, and this manager is the loader internal that
-  // runs them. Until `PluginMcpSource` lands the list is empty, so nothing is
-  // spawned and no MCP tools reach a turn.
+  // runs them.
   const mcpSecrets = new McpSecretStore();
-  const listPluginServers = (): McpServerConfig[] => [];
+  const listPluginServers = createPluginMcpSource(pluginRegistry);
   const mcpManager = new McpClientManager(listPluginServers, (serverId) =>
     mcpSecrets.getEnv(serverId)
   );
   const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers);
-  // Scans ~/.atlas/plugins on a short interval. Nothing installed is the
-  // ordinary state and costs one failed readdir per five seconds.
-  const skillsService = new SkillsService();
+  const skillsService = new SkillsService(pluginRegistry);
 
   app.on('will-quit', () => {
     ptyService.disposeAll();
@@ -357,6 +385,12 @@ app.whenReady().then(async () => {
   registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
   registerGitIpc(database, gitStateService, gitReviewService);
   registerGitHubIpc(database, githubService);
+  registerPluginsIpc({
+    registry: pluginRegistry,
+    installer: pluginInstaller,
+    marketplaces: pluginMarketplaces,
+    setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
+  });
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
   registerChatIpc(chatEngine);

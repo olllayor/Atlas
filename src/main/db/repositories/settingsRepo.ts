@@ -88,6 +88,46 @@ export class SettingsRepo {
       });
   }
 
+  /**
+   * Plugin names the user switched off.
+   *
+   * Stored as the disabled set rather than the enabled one so a newly installed
+   * plugin is on by default: a user who just chose to install something has
+   * already said yes, and making them say it twice is friction with no safety
+   * value.
+   */
+  getDisabledPlugins(): string[] {
+    const value = this.getJsonSetting<unknown>('plugins.disabled', []);
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  }
+
+  setPluginEnabled(name: string, enabled: boolean) {
+    const disabled = new Set(this.getDisabledPlugins());
+
+    if (enabled) {
+      disabled.delete(name);
+    } else {
+      disabled.add(name);
+    }
+
+    this.setJsonSetting('plugins.disabled', [...disabled]);
+  }
+
+  /**
+   * Marketplaces the user has added.
+   *
+   * Stored as opaque records rather than parsed here: the registry owns what a
+   * source means, and this repository's job is only to survive a restart.
+   */
+  getMarketplaces<T>(): T[] {
+    const value = this.getJsonSetting<unknown>('plugins.marketplaces', []);
+    return Array.isArray(value) ? (value as T[]) : [];
+  }
+
+  setMarketplaces<T>(records: T[]) {
+    this.setJsonSetting('plugins.marketplaces', records);
+  }
+
   getShowFreeOnlyByDefault() {
     return Boolean(this.getJsonSetting('showFreeOnlyByDefault', true));
   }

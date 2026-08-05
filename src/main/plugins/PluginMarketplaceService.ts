@@ -3,8 +3,8 @@ import { join } from 'node:path';
 
 import type { MarketplaceEntryView, MarketplaceView, MarketplacesView } from '../../shared/contracts';
 import type { MarketplaceEntry } from '../../shared/marketplace';
-import { marketplaceEntryBlocker } from '../../shared/marketplace';
-import { readPluginIconPath } from './PluginLoader';
+import { BUNDLED_MARKETPLACE_NAME, marketplaceEntryBlocker } from '../../shared/marketplace';
+import { readPluginCapability, readPluginIconPath } from './PluginLoader';
 import { pluginIconUrl } from './pluginIconUrl';
 import type { PluginInstaller } from './PluginInstaller';
 import type { MarketplaceRecord, MarketplaceRegistry, ResolvedMarketplace } from './MarketplaceRegistry';
@@ -40,6 +40,12 @@ export class PluginMarketplaceService {
       throw new Error('A marketplace name may only contain letters, digits, and separators.');
     }
 
+    if (name.toLowerCase() === BUNDLED_MARKETPLACE_NAME) {
+      // Reserved: a user marketplace under this name would shadow the one the
+      // app ships, and its plugins would quietly vanish.
+      throw new Error(`"${BUNDLED_MARKETPLACE_NAME}" is reserved for the plugins Atlas ships with.`);
+    }
+
     const existing = this.readRecords();
 
     if (existing.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) {
@@ -70,6 +76,10 @@ export class PluginMarketplaceService {
   }
 
   remove(name: string): void {
+    if (name === BUNDLED_MARKETPLACE_NAME) {
+      throw new Error('The plugins Atlas ships with cannot be removed.');
+    }
+
     this.writeRecords(this.readRecords().filter((entry) => entry.name !== name));
   }
 
@@ -140,6 +150,7 @@ export class PluginMarketplaceService {
 function toView(resolved: ResolvedMarketplace, installed: Set<string>): MarketplaceView {
   return {
     name: resolved.record.name,
+    builtIn: resolved.record.builtIn === true,
     displayName: resolved.catalog?.displayName ?? null,
     description: resolved.catalog?.description ?? null,
     owner: resolved.catalog?.owner ?? null,
@@ -176,9 +187,26 @@ function toEntryView(
     installed: installed.has(entry.name),
     // Non-null means Atlas refuses it. Shown rather than filtered out, so a
     // catalogue is not silently shorter than the one the publisher wrote.
-    blocked: marketplaceEntryBlocker(entry),
+    blocked: marketplaceEntryBlocker(entry) ?? unusableReason(entry, marketplaceRoot),
     authOnInstall: entry.authPolicy === 'ON_INSTALL'
   };
+}
+
+/**
+ * Why an otherwise-valid entry would do nothing if installed.
+ *
+ * Only answerable for a `local` entry, whose bundle is already on disk. A git
+ * entry is not fetched until install, so it is listed without this judgement
+ * rather than guessed at.
+ */
+function unusableReason(entry: MarketplaceEntry, marketplaceRoot: string | null): string | null {
+  if (entry.source.kind !== 'local' || !marketplaceRoot) {
+    return null;
+  }
+
+  return readPluginCapability(join(marketplaceRoot, entry.source.path)).usable
+    ? null
+    : 'This plugin provides no skills or tools that Atlas can run.';
 }
 
 function describeOrigin(entry: MarketplaceEntry): string {

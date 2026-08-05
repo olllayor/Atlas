@@ -31,6 +31,8 @@ export type MarketplaceRecord = {
   /** Stable id, and the `@marketplace` suffix on every install from it. */
   name: string;
   source: MarketplaceSourceConfig;
+  /** Shipped with the app. Present without being added, and not removable. */
+  builtIn?: boolean;
 };
 
 export type ResolvedMarketplace = {

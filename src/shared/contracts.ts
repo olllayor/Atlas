@@ -206,6 +206,8 @@ export type MarketplaceEntryView = {
 
 export type MarketplaceView = {
   name: string;
+  /** Ships with Atlas. Always present, and the UI offers no way to remove it. */
+  builtIn: boolean;
   displayName: string | null;
   description: string | null;
   owner: string | null;
@@ -753,7 +755,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'providers' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;

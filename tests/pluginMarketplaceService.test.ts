@@ -9,6 +9,7 @@ import { MarketplaceRegistry } from '../src/main/plugins/MarketplaceRegistry.js'
 import { PluginInstaller } from '../src/main/plugins/PluginInstaller.js';
 import { PluginMarketplaceService } from '../src/main/plugins/PluginMarketplaceService.js';
 import { PluginRegistry } from '../src/main/plugins/PluginRegistry.js';
+import { BUNDLED_MARKETPLACE_NAME } from '../src/shared/marketplace.js';
 
 type Ctx = { after: (fn: () => void) => void };
 
@@ -208,4 +209,93 @@ test('an entry says whether the code it installs is pinned', (t) => {
   assert.match(entries.find((e) => e.name === 'pinned')?.origin ?? '', /github\.com, pinned/);
   assert.match(entries.find((e) => e.name === 'floating')?.origin ?? '', /github\.com, unpinned/);
   assert.equal(entries.find((e) => e.name === 'alpha')?.origin, 'this marketplace');
+});
+
+test('the marketplace Atlas ships with cannot be removed or shadowed', (t) => {
+  const { dir, service } = setup(t);
+  const root = marketplaceDir(dir, BUNDLED_MARKETPLACE_NAME, ['alpha']);
+
+  // Reserved even before anything is registered under it: a user marketplace
+  // taking the name would make the app's own plugins disappear.
+  assert.throws(
+    () => service.add({ name: BUNDLED_MARKETPLACE_NAME, source: { kind: 'path', path: root } }),
+    /reserved/
+  );
+
+  assert.throws(() => service.remove(BUNDLED_MARKETPLACE_NAME), /cannot be removed/);
+});
+
+test('a built-in record is marked as such in the view', (t) => {
+  const { dir, service, records } = setup(t);
+  const root = marketplaceDir(dir, 'demo-market', ['alpha']);
+
+  service.add({ name: 'demo-market', source: { kind: 'path', path: root } });
+  // Prepended by the caller in production; simulated here by marking the record.
+  records()[0]!.builtIn = true;
+
+  assert.equal(service.view().marketplaces[0]?.builtIn, true);
+});
+
+test('the plugins shipped with Atlas parse and install like any other bundle', (t) => {
+  // Reads the real resources/plugins directory, so a broken bundled manifest
+  // fails here rather than at somebody's first launch.
+  const { service, plugins } = setup(t);
+  const shipped = join(import.meta.dirname, '..', 'resources', 'plugins');
+
+  service.add({ name: 'shipped', source: { kind: 'path', path: shipped } });
+
+  const view = service.view().marketplaces[0]!;
+  assert.equal(view.error, null, 'the bundled catalogue must be readable');
+  assert.ok(view.entries.length > 0, 'and must list something');
+  assert.deepEqual(
+    view.entries.filter((entry) => entry.blocked),
+    [],
+    'nothing Atlas ships may be something Atlas refuses'
+  );
+
+  for (const entry of view.entries) {
+    service.install('shipped', entry.name);
+  }
+
+  const installed = plugins.snapshot().plugins;
+  assert.equal(installed.length, view.entries.length);
+  assert.ok(
+    installed.every((plugin) => plugin.warnings.length === 0),
+    `bundled plugins must load cleanly: ${installed.flatMap((p) => p.warnings).join('; ')}`
+  );
+});
+
+test('an entry that would install and do nothing says so instead', (t) => {
+  const { dir, service } = setup(t);
+  const root = marketplaceDir(dir, 'demo-market', ['alpha']);
+
+  // A connector-only bundle: a valid manifest, no skills, no servers. Atlas has
+  // no connector broker, so installing it would be a no-op the user pays for.
+  write(
+    join(root, 'plugins', 'connector-only', '.plugin', 'plugin.json'),
+    JSON.stringify({ name: 'connector-only', version: '1.0.0', description: 'Connector' })
+  );
+  write(join(root, 'plugins', 'connector-only', '.app.json'), JSON.stringify({ apps: {} }));
+  write(
+    join(root, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'demo-market',
+      plugins: [
+        { name: 'alpha', source: { source: 'local', path: './plugins/alpha' } },
+        { name: 'connector-only', source: { source: 'local', path: './plugins/connector-only' } },
+        // Not fetched yet, so not judged: guessing would be worse than waiting.
+        { name: 'remote', source: { source: 'git', url: 'https://example.com/r.git' } }
+      ]
+    })
+  );
+
+  service.add({ name: 'demo-market', source: { kind: 'path', path: root } });
+  const entries = service.view().marketplaces[0]?.entries ?? [];
+
+  assert.equal(entries.find((e) => e.name === 'alpha')?.blocked, null);
+  assert.match(
+    entries.find((e) => e.name === 'connector-only')?.blocked ?? '',
+    /no skills or tools/
+  );
+  assert.equal(entries.find((e) => e.name === 'remote')?.blocked, null, 'unfetched is not judged');
 });

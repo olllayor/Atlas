@@ -289,7 +289,6 @@ export default function App() {
     closeLanding,
     openSites,
     openPlugins,
-    closePlugins,
     closeSites,
     projects,
     refreshProjects,
@@ -375,7 +374,6 @@ export default function App() {
       closeLanding: state.closeLanding,
       openSites: state.openSites,
       openPlugins: state.openPlugins,
-      closePlugins: state.closePlugins,
       closeSites: state.closeSites,
       projects: state.projects,
       refreshProjects: state.refreshProjects,
@@ -1116,8 +1114,6 @@ export default function App() {
       <XAILandingPage onBackToApp={() => closeLanding()} />
     ) : activeView === 'sites' ? (
       <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
-    ) : activeView === 'plugins' ? (
-      <PluginsWorkspace onBack={() => runViewTransition(() => closePlugins())} />
     ) : activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
@@ -1308,6 +1304,21 @@ export default function App() {
           className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-base`}
           style={{ viewTransitionName: 'app-main-panel' }}
         >
+          {/*
+            Plugins takes the content pane rather than the window. Browsing a
+            catalogue is not a modal errand — you look something up and go back
+            to what you were doing — and the sidebar is how you get back, so
+            covering it would strand the user with no way out but a button.
+
+            The chat is swapped out rather than covered. An overlay left the
+            composer mounted underneath at the same z-index, so it painted over
+            the catalogue and stayed focusable behind it; stacking order is the
+            wrong tool for "this view is not the chat".
+          */}
+          {activeView === 'plugins' ? (
+            <PluginsWorkspace />
+          ) : (
+            <>
           {/*
             Draggable title bar — matches the sidebar title bar height and is
             borderless per the Codex reference: thread title on the left, panel
@@ -1572,6 +1583,8 @@ export default function App() {
                   style={{ height: terminalResize.width }}
                 />
               </RendererErrorBoundary>
+            </>
+          )}
             </>
           )}
         </div>

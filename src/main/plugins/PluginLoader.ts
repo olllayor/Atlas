@@ -340,6 +340,47 @@ function discoverSkills(
 }
 
 /**
+ * Whether a bundle offers anything Atlas can actually run.
+ *
+ * A catalogue entry can be perfectly valid and still do nothing here: a bundle
+ * whose only component is an `.app.json` connector installs cleanly and then
+ * sits there, because Atlas has no connector broker. 108 of the 180 plugins in
+ * one public catalogue are exactly that shape, so this is the difference
+ * between a useful listing and one where most rows are dead.
+ *
+ * Probes rather than loads: a full read per entry would mean scanning several
+ * hundred bundles' skills to draw a list.
+ */
+export function readPluginCapability(bundleRoot: string): { usable: boolean } {
+  let root: string;
+
+  try {
+    root = realpathSync(resolve(bundleRoot));
+  } catch {
+    return { usable: false };
+  }
+
+  const found = findManifest(root);
+  const manifest = found ? parsePluginManifest(found.text) : null;
+
+  if (!manifest?.ok) {
+    // Not usable, but not this function's business to say why — the manifest
+    // parser already reports that properly when the entry is installed.
+    return { usable: false };
+  }
+
+  for (const kind of ['skills', 'mcpServers'] as const) {
+    for (const declared of pluginComponentPaths(manifest.manifest, kind)) {
+      if (containedPath(root, declared)) {
+        return { usable: true };
+      }
+    }
+  }
+
+  return { usable: false };
+}
+
+/**
  * A bundle's icon file, without loading the whole bundle.
  *
  * Used for catalogue rows, where doing a full `loadPlugin` per entry would mean

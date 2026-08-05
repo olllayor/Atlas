@@ -48,6 +48,7 @@ import {
   registerPluginIconScheme,
 } from './plugins/pluginIconProtocol';
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
+import { withBundledMarketplace } from './plugins/bundledMarketplace';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
 import { PluginInstaller } from './plugins/PluginInstaller';
 import { PluginMarketplaceService } from './plugins/PluginMarketplaceService';
@@ -295,7 +296,9 @@ app.whenReady().then(async () => {
   // skipped by the registry scan, so a cloned marketplace is never mistaken
   // for an installed plugin.
   const marketplaceRegistry = new MarketplaceRegistry(
-    () => database.settings.getMarketplaces<MarketplaceRecord>(),
+    // The bundled marketplace is prepended rather than stored: it is not a
+    // choice the user made, so it cannot drift from what the build contains.
+    () => withBundledMarketplace(database.settings.getMarketplaces<MarketplaceRecord>()),
     marketplaceCheckoutRoot,
   );
   const pluginMarketplaces = new PluginMarketplaceService(

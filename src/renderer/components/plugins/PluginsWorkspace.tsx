@@ -11,7 +11,6 @@ import type {
 } from '../../../shared/contracts';
 import { notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
-import { RailBackButton } from '../railPrimitives';
 import { PluginIcon } from './PluginIcon';
 import { PluginDetailPanel } from './PluginDetailPanel';
 import { MarketplaceManager } from './MarketplaceManager';
@@ -31,7 +30,7 @@ type Tab = 'plugins' | 'skills';
  * what something does, and decide. Settings is where you adjust things you have
  * already chosen, and burying a catalogue there makes finding anything a chore.
  */
-export function PluginsWorkspace({ onBack }: { onBack: () => void }) {
+export function PluginsWorkspace() {
   const [tab, setTab] = useState<Tab>('plugins');
   const [plugins, setPlugins] = useState<PluginsView>(EMPTY_PLUGINS);
   const [markets, setMarkets] = useState<MarketplacesView>(EMPTY_MARKETS);
@@ -78,13 +77,14 @@ export function PluginsWorkspace({ onBack }: { onBack: () => void }) {
   const detail = plugins.plugins.find((plugin) => plugin.name === selected) ?? null;
 
   return (
-    <div className="app-shell flex h-screen flex-col overflow-hidden bg-bg-base text-text-primary">
+    <div className="flex h-full flex-col overflow-hidden bg-bg-base text-text-primary">
       <header
         className="relative flex h-titlebar-height shrink-0 items-center justify-between px-5"
         style={{ WebkitAppRegion: 'drag' } as CSSProperties}
       >
         <div className="flex items-center gap-3" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
-          <RailBackButton label="Back to app" onClick={onBack} />
+          {/* No back control: selecting any chat in the sidebar already leaves
+              this view, and a second way out would be one too many. */}
           <nav className="flex gap-1">
             {(['plugins', 'skills'] as const).map((option) => (
               <button

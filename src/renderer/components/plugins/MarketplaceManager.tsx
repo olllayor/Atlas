@@ -81,15 +81,22 @@ export function MarketplaceManager({
                     {marketplace.sourceLabel}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onRemove(marketplace.name)}
-                  disabled={busy}
-                  aria-label={`Remove ${marketplace.name}`}
-                  className="shrink-0 rounded-md p-1 text-text-faint hover:bg-bg-hover hover:text-error-text"
-                >
-                  <TrashIcon className="size-3.5" aria-hidden />
-                </button>
+                {/* No remove control for what ships with the app: the next
+                    launch would put it back, so offering the button would only
+                    promise something Atlas cannot keep. */}
+                {marketplace.builtIn ? (
+                  <span className="shrink-0 text-2xs text-text-faint">built in</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onRemove(marketplace.name)}
+                    disabled={busy}
+                    aria-label={`Remove ${marketplace.name}`}
+                    className="shrink-0 rounded-md p-1 text-text-faint hover:bg-bg-hover hover:text-error-text"
+                  >
+                    <TrashIcon className="size-3.5" aria-hidden />
+                  </button>
+                )}
               </div>
               {marketplace.error ? (
                 <p className="mt-1.5 flex items-start gap-1.5 text-2xs text-error-text">

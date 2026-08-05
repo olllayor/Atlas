@@ -24,6 +24,16 @@ export const MARKETPLACE_CATALOG_PATHS = [
   '.claude-plugin/marketplace.json'
 ] as const;
 
+/**
+ * The marketplace Atlas ships with.
+ *
+ * The name lives here rather than beside the loader because that module needs
+ * Electron's `app` to find the packaged directory, and anything importing it
+ * becomes unloadable outside an Electron process — including the services the
+ * tests construct directly.
+ */
+export const BUNDLED_MARKETPLACE_NAME = 'atlas-bundled';
+
 /** Observed values. Anything else is treated as unavailable rather than guessed at. */
 export type MarketplaceInstallPolicy = 'NOT_AVAILABLE' | 'AVAILABLE' | 'INSTALLED_BY_DEFAULT';
 

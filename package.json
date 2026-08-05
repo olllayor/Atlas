@@ -142,6 +142,10 @@
       {
         "from": "build/icon.icns",
         "to": "assets/icon.icns"
+      },
+      {
+        "from": "resources/plugins",
+        "to": "plugins"
       }
     ],
     "mac": {

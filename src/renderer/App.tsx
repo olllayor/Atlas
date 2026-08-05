@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
+import {
+  DEFAULT_SETTINGS_APPEARANCE,
+  designThemeSupportsLight,
+  resolveAppliedThemeMode,
+} from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
@@ -92,14 +96,6 @@ function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => voi
       </div>
     </div>
   );
-}
-
-function resolveThemeMode(mode: ThemeMode, prefersDark: boolean) {
-  if (mode === 'system') {
-    return prefersDark ? 'dark' : 'light';
-  }
-
-  return mode;
 }
 
 function toCssFontFamilyList(value: string) {
@@ -911,6 +907,13 @@ export default function App() {
    * from the latter used to drop the user on a stale "You're all set" screen,
    * because `showOnboarding` was never cleared. Only the onboarding-initiated
    * visit still owns that screen.
+   *
+   * That visit has to *restore* onboarding to show it: opening Settings from
+   * the "Add a provider" button unmounts the flow. Without this, the completion
+   * screen was unreachable by any path — the user configured a provider and was
+   * dropped straight into an empty chat with no confirmation that the thing
+   * they had just been asked to do had worked, and `ONBOARDING_COMPLETED` never
+   * fired for the only route that actually completes onboarding.
    */
   useEffect(() => {
     const isSettings = activeView === 'settings';
@@ -924,7 +927,16 @@ export default function App() {
     const requestedByOnboarding = onboardingRequestedSettingsRef.current;
     onboardingRequestedSettingsRef.current = false;
 
-    if (!requestedByOnboarding && hasCredential) {
+    if (requestedByOnboarding) {
+      // Only on success: leaving Settings without a credential means the user
+      // backed out, and re-showing the flow they just left would trap them.
+      if (hasCredential) {
+        setShowOnboarding(true);
+      }
+      return;
+    }
+
+    if (hasCredential) {
       setShowOnboarding(false);
     }
   }, [activeView, hasCredential]);
@@ -932,7 +944,10 @@ export default function App() {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
-      const resolved = resolveThemeMode(themeMode, mediaQuery.matches);
+      // Clamped against the design theme: `default` and `xai` have no light
+      // palette, and `color-scheme: light` under them turned native controls
+      // white while every app surface stayed dark.
+      const resolved = resolveAppliedThemeMode(themeMode, appearance.designTheme, mediaQuery.matches);
       document.documentElement.dataset.theme = resolved;
       document.documentElement.style.colorScheme = resolved;
     };
@@ -943,7 +958,7 @@ export default function App() {
     return () => {
       mediaQuery.removeEventListener('change', applyTheme);
     };
-  }, [themeMode]);
+  }, [themeMode, appearance.designTheme]);
 
   useEffect(() => {
     document.documentElement.dataset.designTheme = appearance.designTheme;
@@ -1118,7 +1133,15 @@ export default function App() {
         }}
         onDesignThemeChange={(theme) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'designTheme', value: theme });
-          void updatePreferences({ appearance: { designTheme: theme } });
+          // Switching to a theme with no light palette while Light is selected
+          // would leave the picker claiming a mode the app cannot paint, so the
+          // stored preference moves with it rather than being silently ignored.
+          const clampsLight = themeMode === 'light' && !designThemeSupportsLight(theme);
+          void updatePreferences({
+            appearance: clampsLight
+              ? { designTheme: theme, themeMode: 'dark' }
+              : { designTheme: theme },
+          });
         }}
         onBorderRadiusChange={(mode) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'borderRadius', value: mode });

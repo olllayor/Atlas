@@ -226,6 +226,17 @@ function PluginDetail({
         </Section>
       ) : null}
 
+      {plugin.servers.length > 0 && plugin.skills.length > 0 ? (
+        <Section
+          title="Tools load on demand"
+          note="This plugin's tools stay disconnected until you use one of its skills, so an unused plugin costs nothing. Use the plug icon above a chat to turn them on for that chat, or always."
+        >
+          <p className="text-2xs text-text-faint">
+            Plugins with tools but no skills are always available, because nothing would ever wake them.
+          </p>
+        </Section>
+      ) : null}
+
       {plugin.hooksDeclared ? (
         <Section title="Hooks">
           <p className="text-2xs text-text-tertiary">

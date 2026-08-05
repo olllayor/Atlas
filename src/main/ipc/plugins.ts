@@ -2,9 +2,15 @@ import { dialog, ipcMain } from 'electron/main';
 import { shell } from 'electron/common';
 import { mkdirSync } from 'node:fs';
 
-import type { MarketplaceInput, MarketplacesView, PluginsView } from '../../shared/contracts';
+import type {
+  MarketplaceInput,
+  MarketplacesView,
+  PluginActivationEntry,
+  PluginsView
+} from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { PluginInstaller } from '../plugins/PluginInstaller';
+import type { PluginActivationStore } from '../plugins/PluginActivation';
 import type { PluginMarketplaceService } from '../plugins/PluginMarketplaceService';
 import type { PluginRegistry } from '../plugins/PluginRegistry';
 import { buildPluginsView } from '../plugins/pluginViews';
@@ -24,7 +30,9 @@ export function registerPluginsIpc(deps: {
   registry: PluginRegistry;
   installer: PluginInstaller;
   marketplaces: PluginMarketplaceService;
+  activations: PluginActivationStore;
   setEnabled: (name: string, enabled: boolean) => void;
+  setAlwaysOn: (name: string, alwaysOn: boolean) => void;
 }) {
   const view = (): PluginsView => buildPluginsView(deps.registry);
 
@@ -169,6 +177,57 @@ export function registerPluginsIpc(deps: {
         assertTrustedSender(event);
         deps.marketplaces.install(marketplace, plugin);
         return view();
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.pluginsActivation,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsActivation,
+      async (event, conversationId: string): Promise<PluginActivationEntry[]> => {
+        assertTrustedSender(event);
+        return deps.activations.status(conversationId);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.pluginsSetActivated,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsSetActivated,
+      async (
+        event,
+        conversationId: string,
+        plugin: string,
+        active: boolean
+      ): Promise<PluginActivationEntry[]> => {
+        assertTrustedSender(event);
+
+        if (active) {
+          deps.activations.activate(conversationId, [plugin]);
+        } else {
+          deps.activations.deactivate(conversationId, plugin);
+        }
+
+        return deps.activations.status(conversationId);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.pluginsSetAlwaysOn,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsSetAlwaysOn,
+      async (
+        event,
+        conversationId: string,
+        plugin: string,
+        alwaysOn: boolean
+      ): Promise<PluginActivationEntry[]> => {
+        assertTrustedSender(event);
+        deps.setAlwaysOn(plugin, alwaysOn);
+        return deps.activations.status(conversationId);
       }
     )
   );

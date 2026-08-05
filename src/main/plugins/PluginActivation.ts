@@ -36,9 +36,32 @@ export class PluginActivationStore {
     private readonly registry: PluginRegistry,
     private readonly read: () => Record<string, ActivationRecord>,
     private readonly write: (value: Record<string, ActivationRecord>) => void,
+    /**
+     * Plugins the user wants available everywhere.
+     *
+     * The escape hatch from gating: someone who always wants their GitHub tools
+     * should not have to open a skill first in every new conversation. A plugin
+     * listed here behaves as though it were never gated.
+     */
+    private readonly alwaysOn: () => Set<string> = () => new Set(),
     /** Conversations kept before the oldest are pruned. */
     private readonly maxConversations = 200
   ) {}
+
+  /** Gated plugins and whether this conversation has woken each one. */
+  status(conversationId: string): Array<{ name: string; active: boolean; alwaysOn: boolean }> {
+    const active = this.activated(conversationId);
+    const always = this.alwaysOn();
+
+    return this.registry
+      .snapshot()
+      .plugins.filter((plugin) => plugin.mcpServers.length > 0)
+      .map((plugin) => ({
+        name: plugin.manifest.name,
+        active: always.has(plugin.manifest.name) || !isGated(plugin) || active.has(plugin.manifest.name),
+        alwaysOn: always.has(plugin.manifest.name)
+      }));
+  }
 
   /**
    * Turns on the servers a skill implies.
@@ -108,10 +131,11 @@ export class PluginActivationStore {
    */
   serverFilter(conversationId: string): (serverId: string) => boolean {
     const active = this.activated(conversationId);
+    const always = this.alwaysOn();
     const gatedServerIds = new Set<string>();
 
     for (const plugin of this.registry.snapshot().plugins) {
-      if (isGated(plugin) && !active.has(plugin.manifest.name)) {
+      if (isGated(plugin) && !always.has(plugin.manifest.name) && !active.has(plugin.manifest.name)) {
         for (const server of plugin.mcpServers) {
           gatedServerIds.add(`plugin:${plugin.manifest.name}:${server.key}`);
         }
@@ -123,10 +147,11 @@ export class PluginActivationStore {
 
   /** The filter used outside a conversation — prewarm, health. Gated servers never warm. */
   eagerOnlyFilter(): (serverId: string) => boolean {
+    const always = this.alwaysOn();
     const gated = new Set<string>();
 
     for (const plugin of this.registry.snapshot().plugins) {
-      if (isGated(plugin)) {
+      if (isGated(plugin) && !always.has(plugin.manifest.name)) {
         for (const server of plugin.mcpServers) {
           gated.add(`plugin:${plugin.manifest.name}:${server.key}`);
         }

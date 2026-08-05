@@ -312,6 +312,7 @@ app.whenReady().then(async () => {
     pluginRegistry,
     () => database.settings.getPluginActivations<ActivationRecord>(),
     (value) => database.settings.setPluginActivations(value),
+    () => new Set(database.settings.getAlwaysOnPlugins()),
   );
   const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers, (conversationId) =>
     pluginActivations.serverFilter(conversationId),
@@ -403,6 +404,8 @@ app.whenReady().then(async () => {
     registry: pluginRegistry,
     installer: pluginInstaller,
     marketplaces: pluginMarketplaces,
+    activations: pluginActivations,
+    setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
     setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
   });
   registerFileChangesIpc(database, fileChangeTracker);

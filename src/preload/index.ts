@@ -195,7 +195,13 @@ const api: RendererApi = {
     removeMarketplace: (name: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsRemoveMarketplace, name),
     installFromMarketplace: (marketplace: string, plugin: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromMarketplace, marketplace, plugin)
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromMarketplace, marketplace, plugin),
+    activation: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsActivation, conversationId),
+    setActivated: (conversationId: string, plugin: string, active: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetActivated, conversationId, plugin, active),
+    setAlwaysOn: (conversationId: string, plugin: string, alwaysOn: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetAlwaysOn, conversationId, plugin, alwaysOn)
   },
   fileChanges: {
     list: (conversationId: string) =>

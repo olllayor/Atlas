@@ -152,12 +152,56 @@ test('the prewarm filter never warms a gated server', (t) => {
   assert.equal(filter('plugin:eager:api'), true);
 });
 
+test('a plugin marked always-on behaves as though it were never gated', (t) => {
+  const { root, registry } = setup(t);
+  installPlugin(root, 'demo', { skills: ['go'], servers: ['api'] });
+
+  let stored: Record<string, ActivationRecord> = {};
+  const always = new Set<string>();
+  const store = new PluginActivationStore(registry, () => stored, (v) => { stored = v; }, () => always);
+
+  assert.equal(store.serverFilter('conv-1')('plugin:demo:api'), false);
+
+  always.add('demo');
+
+  assert.equal(store.serverFilter('conv-1')('plugin:demo:api'), true, 'in every conversation');
+  assert.equal(store.serverFilter('conv-2')('plugin:demo:api'), true);
+  assert.equal(store.eagerOnlyFilter()('plugin:demo:api'), true, 'and it may be prewarmed');
+});
+
+test('the status view says why each plugin is or is not reachable', (t) => {
+  const { root, registry } = setup(t);
+  installPlugin(root, 'gated', { skills: ['go'], servers: ['api'] });
+  installPlugin(root, 'pinned', { skills: ['go'], servers: ['api'] });
+  installPlugin(root, 'no-route', { servers: ['api'] });
+  installPlugin(root, 'no-tools', { skills: ['go'] });
+
+  let stored: Record<string, ActivationRecord> = {};
+  const store = new PluginActivationStore(
+    registry,
+    () => stored,
+    (v) => { stored = v; },
+    () => new Set(['pinned'])
+  );
+
+  const byName = new Map(store.status('conv-1').map((entry) => [entry.name, entry]));
+
+  // A plugin with no tools at all is not something the chip should offer.
+  assert.equal(byName.has('no-tools'), false);
+  assert.deepEqual(byName.get('gated'), { name: 'gated', active: false, alwaysOn: false });
+  assert.deepEqual(byName.get('pinned'), { name: 'pinned', active: true, alwaysOn: true });
+  assert.deepEqual(byName.get('no-route'), { name: 'no-route', active: true, alwaysOn: false });
+
+  store.activate('conv-1', ['gated']);
+  assert.equal(store.status('conv-1').find((e) => e.name === 'gated')?.active, true);
+});
+
 test('stored activations stay bounded', (t) => {
   const { root, registry } = setup(t);
   installPlugin(root, 'demo', { skills: ['go'], servers: ['api'] });
 
   let stored: Record<string, ActivationRecord> = {};
-  const store = new PluginActivationStore(registry, () => stored, (value) => { stored = value; }, 3);
+  const store = new PluginActivationStore(registry, () => stored, (value) => { stored = value; }, () => new Set(), 3);
 
   for (let index = 0; index < 10; index += 1) {
     store.activate(`conv-${index}`, ['demo']);

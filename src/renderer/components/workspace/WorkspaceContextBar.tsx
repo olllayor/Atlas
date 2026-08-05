@@ -26,6 +26,7 @@ import type {
 import { describeWorkspaceMode } from '../../../shared/workspaceModes';
 import { notify, notifyError } from '../../lib/notify';
 import { EnvironmentDialog } from './EnvironmentDialog';
+import { PluginToolsChip } from './PluginToolsChip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -192,6 +193,10 @@ export function WorkspaceContextBar({
               ) : null}
 
               {project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
+
+              {/* Renders nothing unless an installed plugin carries tools, so a
+                  user with no plugins sees no extra chrome. */}
+              <PluginToolsChip conversationId={conversationId} />
 
               {needsProject ? (
                 <span className="flex min-w-0 items-center gap-1.5 text-2xs text-text-faint">

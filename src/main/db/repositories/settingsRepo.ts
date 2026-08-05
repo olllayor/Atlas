@@ -145,6 +145,24 @@ export class SettingsRepo {
     this.setJsonSetting('plugins.activations', value);
   }
 
+  /** Plugins whose tools should be available without loading a skill first. */
+  getAlwaysOnPlugins(): string[] {
+    const value = this.getJsonSetting<unknown>('plugins.alwaysOn', []);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  }
+
+  setPluginAlwaysOn(name: string, alwaysOn: boolean) {
+    const current = new Set(this.getAlwaysOnPlugins());
+
+    if (alwaysOn) {
+      current.add(name);
+    } else {
+      current.delete(name);
+    }
+
+    this.setJsonSetting('plugins.alwaysOn', [...current]);
+  }
+
   getShowFreeOnlyByDefault() {
     return Boolean(this.getJsonSetting('showFreeOnlyByDefault', true));
   }

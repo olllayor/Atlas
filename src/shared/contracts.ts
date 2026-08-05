@@ -218,6 +218,18 @@ export type MarketplaceInput =
   | { kind: 'path'; name: string; path: string }
   | { kind: 'git'; name: string; url: string; ref: string | null };
 
+/**
+ * A plugin whose tools are gated, and whether this conversation has woken it.
+ *
+ * `alwaysOn` is the global escape hatch; `active` is true when the tools are
+ * usable right now, whatever the reason.
+ */
+export type PluginActivationEntry = {
+  name: string;
+  active: boolean;
+  alwaysOn: boolean;
+};
+
 export type PluginsView = {
   /** Where bundles are installed from. Shown so the user can open it. */
   root: string;
@@ -1773,6 +1785,17 @@ export type RendererApi = {
     addMarketplace: (input: MarketplaceInput) => Promise<MarketplacesView>;
     removeMarketplace: (name: string) => Promise<MarketplacesView>;
     installFromMarketplace: (marketplace: string, plugin: string) => Promise<PluginsView>;
+    activation: (conversationId: string) => Promise<PluginActivationEntry[]>;
+    setActivated: (
+      conversationId: string,
+      plugin: string,
+      active: boolean
+    ) => Promise<PluginActivationEntry[]>;
+    setAlwaysOn: (
+      conversationId: string,
+      plugin: string,
+      alwaysOn: boolean
+    ) => Promise<PluginActivationEntry[]>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;

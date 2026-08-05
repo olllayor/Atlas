@@ -19,6 +19,7 @@ function serverThatCannotStart(overrides: Partial<McpServerConfig> = {}): McpSer
     envVars: [],
     cwd: null,
     url: null,
+    bearerTokenEnvVar: null,
     enabled: true,
     startupTimeoutMs: 5_000,
     toolTimeoutMs: 5_000,

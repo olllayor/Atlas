@@ -1,11 +1,13 @@
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
-import type { PluginManifest, PluginSkill } from '../../shared/plugins';
+import { isValidMcpCommand } from '../../shared/mcp';
+import type { PluginManifest, PluginMcpServerDecl } from '../../shared/plugins';
 import {
   PLUGIN_MANIFEST_DIRS,
   PLUGIN_MANIFEST_FILENAME,
   parsePluginManifest,
+  parsePluginMcpServers,
   parseSkillMarkdown,
   pluginComponentPaths
 } from '../../shared/plugins';
@@ -43,11 +45,25 @@ export type LoadedSkill = {
   path: string;
 };
 
+/**
+ * A bundle-declared MCP server with its paths made real.
+ *
+ * `command` and `cwd` are absolute here. A bundle may ship its own executable
+ * and name it `./bin/server`, which means nothing until it is resolved against
+ * the bundle root and proven to still be inside it.
+ */
+export type LoadedMcpServer = PluginMcpServerDecl & {
+  /** Absolute when the bundle shipped the binary, unchanged when it names one on PATH. */
+  command: string | null;
+  cwd: string | null;
+};
+
 export type LoadedPlugin = {
   /** Absolute, realpath-resolved bundle root. */
   root: string;
   manifest: PluginManifest;
   skills: LoadedSkill[];
+  mcpServers: LoadedMcpServer[];
   /**
    * Non-fatal problems found while loading.
    *
@@ -100,8 +116,112 @@ export function loadPlugin(bundleRoot: string): PluginLoadResult {
 
   const warnings: string[] = [];
   const skills = discoverSkills(root, parsed.manifest, warnings);
+  const mcpServers = discoverMcpServers(root, parsed.manifest, warnings);
 
-  return { ok: true, plugin: { root, manifest: parsed.manifest, skills, warnings } };
+  return { ok: true, plugin: { root, manifest: parsed.manifest, skills, mcpServers, warnings } };
+}
+
+/**
+ * The bundle's MCP servers, with bundle-relative paths resolved.
+ *
+ * A malformed `.mcp.json` costs the bundle its servers and nothing else: a
+ * plugin is usually mostly skills, and refusing to load 40 working skills
+ * because one server entry is wrong would be the wrong trade.
+ */
+function discoverMcpServers(
+  root: string,
+  manifest: PluginManifest,
+  warnings: string[]
+): LoadedMcpServer[] {
+  const servers: LoadedMcpServer[] = [];
+  const seen = new Set<string>();
+
+  for (const declared of pluginComponentPaths(manifest, 'mcpServers')) {
+    const file = containedPath(root, declared);
+
+    if (!file) {
+      if (manifest.paths.mcpServers === declared) {
+        warnings.push(`The MCP configuration "${declared}" is missing or points outside the plugin.`);
+      }
+      continue;
+    }
+
+    const text = readCapped(file, 256 * 1024);
+
+    if (text == null) {
+      continue;
+    }
+
+    const parsed = parsePluginMcpServers(text);
+
+    if (!parsed.ok) {
+      warnings.push(`Ignored ${declared}: ${parsed.error}`);
+      continue;
+    }
+
+    for (const decl of parsed.servers) {
+      if (seen.has(decl.key)) {
+        continue;
+      }
+
+      const resolved = resolveServerPaths(root, decl, warnings);
+
+      if (resolved) {
+        seen.add(decl.key);
+        servers.push(resolved);
+      }
+    }
+  }
+
+  return servers;
+}
+
+function resolveServerPaths(
+  root: string,
+  decl: PluginMcpServerDecl,
+  warnings: string[]
+): LoadedMcpServer | null {
+  const declaredCwd = decl.cwd ? containedPath(root, decl.cwd) : null;
+
+  if (decl.cwd && !declaredCwd) {
+    warnings.push(`Skipped the MCP server "${decl.key}": its working directory is not inside the plugin.`);
+    return null;
+  }
+
+  // A bundle that declares no working directory still means its own. Real
+  // bundles ship entries like `node ./cli/mcp-server-wrapper.js` with no `cwd`,
+  // and those relative arguments are written against the bundle root — resolved
+  // against Atlas's own working directory they name nothing. A server that
+  // needs to see the user's project takes a path as an argument; none of them
+  // rely on inheriting our cwd.
+  const cwd = declaredCwd ?? root;
+
+  if (decl.transport === 'http' || !decl.command) {
+    // Nothing is spawned for HTTP, so a working directory would be a fiction.
+    return { ...decl, command: null, cwd: declaredCwd };
+  }
+
+  // A command with a separator names a file the bundle ships; a bare name is
+  // resolved through PATH by the OS and is not this function's business.
+  if (!/[/\\]/.test(decl.command)) {
+    if (!isValidMcpCommand(decl.command)) {
+      warnings.push(`Skipped the MCP server "${decl.key}": "${decl.command}" is not a usable command.`);
+      return null;
+    }
+
+    return { ...decl, cwd };
+  }
+
+  const command = containedPath(root, decl.command);
+
+  if (!command) {
+    // The lexical check in `shared/plugins.ts` already rejected `../`. Landing
+    // here means a symlink pointed out of the bundle, or the file is absent.
+    warnings.push(`Skipped the MCP server "${decl.key}": "${decl.command}" is missing or outside the plugin.`);
+    return null;
+  }
+
+  return { ...decl, command, cwd };
 }
 
 /** The first manifest among the vendor conventions, in precedence order. */

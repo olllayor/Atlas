@@ -300,7 +300,23 @@ export class McpClientManager {
         throw new Error(`The MCP server "${server.name}" has no URL.`);
       }
 
-      return new StreamableHTTPClientTransport(new URL(server.url));
+      // Read at connect time from the environment the bundle named, never
+      // stored: the configuration carries the variable's name so that the
+      // token itself never has to live anywhere Atlas writes.
+      const token = server.bearerTokenEnvVar ? process.env[server.bearerTokenEnvVar] : undefined;
+
+      if (server.bearerTokenEnvVar && !token) {
+        throw new Error(
+          `The MCP server "${server.name}" needs ${server.bearerTokenEnvVar} set in the environment.`
+        );
+      }
+
+      return new StreamableHTTPClientTransport(
+        new URL(server.url),
+        token
+          ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } }
+          : undefined
+      );
     }
 
     if (!server.command || !isValidMcpCommand(server.command)) {

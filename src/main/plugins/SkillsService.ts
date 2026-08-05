@@ -1,29 +1,22 @@
-import { readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
 import { formatSkillBody } from '../../shared/plugins';
-import { logger } from '../observability/logger';
-import type { LoadedPlugin, LoadedSkill } from './PluginLoader';
-import { loadPlugin, readSkillBody } from './PluginLoader';
+import type { LoadedSkill } from './PluginLoader';
+import { readSkillBody } from './PluginLoader';
+import type { PluginRegistry, PluginSnapshot } from './PluginRegistry';
 
 /**
  * The skills every installed plugin offers.
  *
- * Shaped like `AgentInstructionsService` — synchronous, cached, constructed
- * once — because it is read on the same turn-setup path, and again inside
- * `measureContextUsage`, and those two must agree about what the model was
- * told or the context ring drifts from the request.
+ * A view over `PluginRegistry` rather than its own scanner: skills are one of
+ * several component types a bundle carries, and reading the directory once per
+ * consumer would mean the prompt and the tool set could disagree about what is
+ * installed.
  *
  * The two-phase split is the point. Only a name and a one-line description
  * reach the prompt; the body is read when `load_skill` asks for it. On a
- * machine with 35 bundles installed that is ~59k characters of index against
- * ~2030k characters of bodies — the standing cost is 35× smaller than
- * preloading would be, for the same skills.
+ * machine with 34 bundles installed that is ~25 KiB of index against ~2 MB of
+ * bodies — the standing cost is roughly 80x smaller than preloading would be,
+ * for the same 208 skills.
  */
-
-/** How long a scan is trusted. A newly dropped bundle appears within this. */
-const SCAN_TTL_MS = 5_000;
 
 /** Ceiling on the whole index, so a machine full of bundles cannot flood the prompt. */
 const MAX_INDEX_BYTES = 24 * 1024;
@@ -31,50 +24,18 @@ const MAX_INDEX_BYTES = 24 * 1024;
 /** Per-entry description cap. The parse limit is far too generous for an index. */
 const MAX_INDEX_DESCRIPTION_CHARS = 200;
 
-export type SkillsSnapshot = {
-  plugins: LoadedPlugin[];
+export type SkillsSnapshot = PluginSnapshot & {
   /** Everything loadable, including skills withheld from the index. */
   skills: LoadedSkill[];
-  /** Bundles that could not be loaded, for the settings UI. */
-  failures: Array<{ root: string; error: string }>;
 };
 
 export class SkillsService {
-  private readonly root: string;
-  private cache: { at: number; snapshot: SkillsSnapshot } | null = null;
+  constructor(private readonly registry: PluginRegistry) {}
 
-  constructor(options?: { root?: string }) {
-    // `~/.atlas`, not `~/.codex` or `~/.claude`. The same reasoning
-    // `AgentInstructionsService` gives for instructions applies harder here:
-    // those directories hold executable bundles installed for a different
-    // agent, and adopting them silently would be running code the user
-    // authorised somewhere else.
-    this.root = options?.root ?? join(homedir(), '.atlas', 'plugins');
-  }
-
-  /**
-   * Every bundle under the plugins directory.
-   *
-   * Rescans on a short interval rather than watching. A watcher would be a
-   * second source of truth about what is installed, and the scan is cheap:
-   * one bounded manifest read per bundle and one bounded 8 KiB prefix per
-   * skill, with no body read at all.
-   */
+  /** The registry's view, plus every skill flattened across bundles. */
   snapshot(): SkillsSnapshot {
-    const now = Date.now();
-
-    if (this.cache && now - this.cache.at < SCAN_TTL_MS) {
-      return this.cache.snapshot;
-    }
-
-    const snapshot = this.scan();
-    this.cache = { at: now, snapshot };
-    return snapshot;
-  }
-
-  /** Drops the cache. Used after an install and by tests. */
-  invalidate() {
-    this.cache = null;
+    const snapshot = this.registry.snapshot();
+    return { ...snapshot, skills: snapshot.plugins.flatMap((plugin) => plugin.skills) };
   }
 
   /**
@@ -163,55 +124,6 @@ export class SkillsService {
     ].join('\n');
   }
 
-  private scan(): SkillsSnapshot {
-    let entries;
-
-    try {
-      entries = readdirSync(this.root, { withFileTypes: true });
-    } catch {
-      // No plugins directory is the ordinary state, not an error.
-      return { plugins: [], skills: [], failures: [] };
-    }
-
-    const plugins: LoadedPlugin[] = [];
-    const failures: Array<{ root: string; error: string }> = [];
-    const claimed = new Set<string>();
-
-    for (const entry of entries) {
-      // A symlinked bundle is not followed: the directory is a trust boundary,
-      // and a link is how something outside it would get in.
-      if (!entry.isDirectory() || entry.name.startsWith('.')) {
-        continue;
-      }
-
-      const result = loadPlugin(join(this.root, entry.name));
-
-      if (!result.ok) {
-        failures.push({ root: result.root, error: result.error });
-        continue;
-      }
-
-      // Two bundles claiming one name would produce colliding qualified skill
-      // names. First wins, and the loser is reported rather than dropped
-      // silently — a skill that never loads is the hardest kind to debug.
-      if (claimed.has(result.plugin.manifest.name)) {
-        failures.push({
-          root: result.plugin.root,
-          error: `Another installed plugin is already called "${result.plugin.manifest.name}".`
-        });
-        continue;
-      }
-
-      claimed.add(result.plugin.manifest.name);
-      plugins.push(result.plugin);
-    }
-
-    if (failures.length > 0) {
-      logger.warn('plugins.load_failed', { count: failures.length, first: failures[0]?.error });
-    }
-
-    return { plugins, skills: plugins.flatMap((plugin) => plugin.skills), failures };
-  }
 }
 
 /** Descriptions are prose and may wrap; the index is one skill per line. */

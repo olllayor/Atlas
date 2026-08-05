@@ -61,7 +61,7 @@ type RefreshModelsOptions = {
   silent?: boolean;
 };
 
-type AppView = 'chat' | 'settings' | 'landing' | 'sites';
+type AppView = 'chat' | 'settings' | 'landing' | 'sites' | 'plugins';
 
 /**
  * A composer attachment staged but not yet sent. Structurally identical to
@@ -179,6 +179,8 @@ type AppState = {
   closeSettings: () => void;
   openLanding: () => void;
   closeLanding: () => void;
+  openPlugins: () => void;
+  closePlugins: () => void;
   openSites: () => void;
   closeSites: () => void;
   setSettingsSection: (section: SettingsSection) => void;
@@ -1160,6 +1162,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
   openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, modelPickerOpen: false }),
+  openPlugins: () =>
+    set({ activeView: 'plugins', commandPaletteOpen: false, modelPickerOpen: false }),
+  closePlugins: () => set({ activeView: 'chat' }),
   closeSites: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),

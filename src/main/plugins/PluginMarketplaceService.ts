@@ -1,8 +1,11 @@
 import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { MarketplaceEntryView, MarketplaceView, MarketplacesView } from '../../shared/contracts';
 import type { MarketplaceEntry } from '../../shared/marketplace';
 import { marketplaceEntryBlocker } from '../../shared/marketplace';
+import { readPluginIconPath } from './PluginLoader';
+import { pluginIconUrl } from './pluginIconUrl';
 import type { PluginInstaller } from './PluginInstaller';
 import type { MarketplaceRecord, MarketplaceRegistry, ResolvedMarketplace } from './MarketplaceRegistry';
 import type { PluginRegistry } from './PluginRegistry';
@@ -145,14 +148,26 @@ function toView(resolved: ResolvedMarketplace, installed: Set<string>): Marketpl
         ? resolved.record.source.url
         : resolved.record.source.path,
     error: resolved.error,
-    entries: (resolved.catalog?.entries ?? []).map((entry) => toEntryView(entry, installed))
+    entries: (resolved.catalog?.entries ?? []).map((entry) =>
+      toEntryView(entry, installed, resolved.root)
+    )
   };
 }
 
-function toEntryView(entry: MarketplaceEntry, installed: Set<string>): MarketplaceEntryView {
+function toEntryView(
+  entry: MarketplaceEntry,
+  installed: Set<string>,
+  marketplaceRoot: string | null
+): MarketplaceEntryView {
   return {
     name: entry.name,
     description: entry.description,
+    // Only a `local` entry has artwork on disk before it is installed: a git
+    // entry's bundle has not been fetched yet, so the grid draws a monogram.
+    iconUrl:
+      entry.source.kind === 'local' && marketplaceRoot
+        ? pluginIconUrl(readPluginIconPath(join(marketplaceRoot, entry.source.path)))
+        : null,
     category: entry.category,
     version: entry.version,
     // Said plainly rather than as a source kind: "from GitHub" is what the

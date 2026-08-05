@@ -1,6 +1,8 @@
 import type { PluginServerSummary, PluginSummary, PluginsView } from '../../shared/contracts';
 import { pluginServerName } from '../../shared/plugins';
+import { pluginIconPath } from './PluginLoader';
 import type { LoadedMcpServer, LoadedPlugin } from './PluginLoader';
+import { pluginIconUrl } from './pluginIconUrl';
 import type { PluginRegistry } from './PluginRegistry';
 
 /**
@@ -32,6 +34,7 @@ function toSummary(plugin: LoadedPlugin, enabled: boolean): PluginSummary {
     description: plugin.manifest.description,
     // Display metadata is presentation only and never decides anything.
     displayName: plugin.manifest.interface?.displayName ?? null,
+    iconUrl: pluginIconUrl(pluginIconPath(plugin.root, plugin.manifest)),
     author: plugin.manifest.author?.name ?? null,
     homepage: plugin.manifest.homepage,
     root: plugin.root,

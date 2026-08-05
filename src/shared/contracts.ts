@@ -176,6 +176,8 @@ export type PluginSummary = {
   version: string;
   description: string;
   displayName: string | null;
+  /** An opaque URL for the bundle's artwork, or null when it ships none. */
+  iconUrl: string | null;
   author: string | null;
   homepage: string | null;
   root: string;
@@ -191,6 +193,7 @@ export type PluginSummary = {
 export type MarketplaceEntryView = {
   name: string;
   description: string | null;
+  iconUrl: string | null;
   category: string | null;
   version: string | null;
   /** Where the bundle comes from, and whether it is pinned to a commit. */
@@ -750,7 +753,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;

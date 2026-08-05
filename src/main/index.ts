@@ -43,6 +43,10 @@ import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
 import type { ActivationRecord } from './plugins/PluginActivation';
 import { PluginActivationStore } from './plugins/PluginActivation';
+import {
+  registerPluginIconProtocolHandler,
+  registerPluginIconScheme,
+} from './plugins/pluginIconProtocol';
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
 import { PluginInstaller } from './plugins/PluginInstaller';
@@ -91,6 +95,7 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 // load over file:// either.
 registerSitePreviewScheme();
 registerAttachmentScheme();
+registerPluginIconScheme();
 
 async function pathExists(path: string) {
   try {
@@ -278,6 +283,10 @@ app.whenReady().then(async () => {
     isEnabled: (name) => !database.settings.getDisabledPlugins().includes(name),
   });
   const pluginInstaller = new PluginInstaller(pluginRegistry);
+  const marketplaceCheckoutRoot = join(app.getPath('userData'), 'marketplaces');
+  // Artwork is served from these two roots and nowhere else, whatever a
+  // manifest asks for.
+  registerPluginIconProtocolHandler(() => [pluginRegistry.root, marketplaceCheckoutRoot]);
   // Interrupted installs leave staging directories behind. Upstream documents
   // sweeping them and does not; a machine surveyed for this work still had
   // three from a month earlier.
@@ -287,7 +296,7 @@ app.whenReady().then(async () => {
   // for an installed plugin.
   const marketplaceRegistry = new MarketplaceRegistry(
     () => database.settings.getMarketplaces<MarketplaceRecord>(),
-    join(app.getPath('userData'), 'marketplaces'),
+    marketplaceCheckoutRoot,
   );
   const pluginMarketplaces = new PluginMarketplaceService(
     marketplaceRegistry,

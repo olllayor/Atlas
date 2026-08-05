@@ -21,6 +21,7 @@ import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { SitesWorkspace } from './components/sites/SitesWorkspace';
+import { PluginsWorkspace } from './components/plugins/PluginsWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
@@ -287,6 +288,8 @@ export default function App() {
     openLanding,
     closeLanding,
     openSites,
+    openPlugins,
+    closePlugins,
     closeSites,
     projects,
     refreshProjects,
@@ -371,6 +374,8 @@ export default function App() {
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
       openSites: state.openSites,
+      openPlugins: state.openPlugins,
+      closePlugins: state.closePlugins,
       closeSites: state.closeSites,
       projects: state.projects,
       refreshProjects: state.refreshProjects,
@@ -1111,6 +1116,8 @@ export default function App() {
       <XAILandingPage onBackToApp={() => closeLanding()} />
     ) : activeView === 'sites' ? (
       <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
+    ) : activeView === 'plugins' ? (
+      <PluginsWorkspace onBack={() => runViewTransition(() => closePlugins())} />
     ) : activeView === 'settings' ? (
       <SettingsWorkspace
         settings={settings}
@@ -1252,6 +1259,7 @@ export default function App() {
           onOpenLanding={() => openLanding()}
           workspaceMode={workspaceMode}
           onOpenSites={() => runViewTransition(() => openSites())}
+          onOpenPlugins={() => runViewTransition(() => openPlugins())}
           onOpenSearch={() => {
             setModelPickerOpen(false);
             captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);

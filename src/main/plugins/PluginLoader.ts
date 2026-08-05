@@ -340,6 +340,51 @@ function discoverSkills(
 }
 
 /**
+ * A bundle's icon file, without loading the whole bundle.
+ *
+ * Used for catalogue rows, where doing a full `loadPlugin` per entry would mean
+ * scanning several hundred bundles' skills to draw a grid. Reads one manifest
+ * and resolves the artwork it names, with the same containment check every
+ * other declared path gets.
+ */
+export function readPluginIconPath(bundleRoot: string): string | null {
+  let root: string;
+
+  try {
+    root = realpathSync(resolve(bundleRoot));
+  } catch {
+    return null;
+  }
+
+  const found = findManifest(root);
+
+  if (!found) {
+    return null;
+  }
+
+  const parsed = parsePluginManifest(found.text);
+
+  if (!parsed.ok) {
+    return null;
+  }
+
+  return pluginIconPath(root, parsed.manifest);
+}
+
+/** The artwork a manifest names, resolved and proven to be inside the bundle. */
+export function pluginIconPath(root: string, manifest: PluginManifest): string | null {
+  for (const declared of [manifest.interface?.logo, manifest.interface?.composerIcon]) {
+    const path = declared ? containedPath(root, declared) : null;
+
+    if (path) {
+      return path;
+    }
+  }
+
+  return null;
+}
+
+/**
  * A skill's body, read when the model actually asks for it.
  *
  * Re-parsed rather than trusted from the index: the file may have changed since

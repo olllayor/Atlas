@@ -7,6 +7,7 @@ import {
   FolderPlus,
   GitBranch,
   LayoutGrid,
+  Plug,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -143,6 +144,7 @@ type SidebarProps = {
   onSetProjectPinned: (projectId: string, pinned: boolean) => void;
   onOpenLanding: () => void;
   onOpenSites: () => void;
+  onOpenPlugins: () => void;
   onOpenSearch: () => void;
   /**
    * The open conversation's mode, which decides what the primary nav offers.
@@ -321,6 +323,7 @@ export function Sidebar({
   onSetProjectPinned,
   onOpenLanding,
   onOpenSites,
+  onOpenPlugins,
   onOpenSearch,
   workspaceMode = 'work',
   onRefreshModels,
@@ -1060,6 +1063,12 @@ export function Sidebar({
             />
           ) : null}
 
+          <RailButton
+            icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+            label="Plugins"
+            onClick={onOpenPlugins}
+          />
+
           {runningItem ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1110,6 +1119,14 @@ export function Sidebar({
                 onClick={onOpenSites}
               />
             ) : null}
+
+            {/* Not mode-specific: a plugin's skills apply to any conversation,
+                so hiding this in one mode would hide half the feature. */}
+            <SidebarNavRow
+              icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+              label="Plugins"
+              onClick={onOpenPlugins}
+            />
           </div>
 
           <nav

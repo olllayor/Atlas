@@ -5,7 +5,6 @@ import {
   LockClosedIcon,
   MinusIcon,
   MixerHorizontalIcon,
-  CubeIcon,
   MoonIcon,
   PlusIcon,
   ReloadIcon,
@@ -59,7 +58,6 @@ import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
 import { ModelSettingsPage } from './providers/ModelSettingsPage';
-import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
 import { SlotLabel } from './ui/slot-label';
 import { Switch as UiSwitch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -108,7 +106,6 @@ type NavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
-  { key: 'plugins', label: 'Plugins', icon: CubeIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
@@ -227,8 +224,6 @@ export function SettingsWorkspace({
 
               {activeSection === 'providers' ? <ModelSettingsPage /> : null}
 
-              {activeSection === 'plugins' ? <PluginsSettingsPage /> : null}
-
               {activeSection === 'appearance' ? (
                 <AppearancePage
                   settings={settings}
@@ -270,10 +265,6 @@ export function SettingsWorkspace({
 function sectionTitle(section: SettingsSection) {
   if (section === 'providers') {
     return 'Model settings';
-  }
-
-  if (section === 'plugins') {
-    return 'Plugins';
   }
 
   if (section === 'appearance') {

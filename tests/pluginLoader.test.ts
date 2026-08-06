@@ -62,7 +62,7 @@ test('a bundle loads with its manifest and skill index', (t) => {
 });
 
 test('every vendor manifest convention loads', (t) => {
-  for (const convention of ['.plugin', '.codex-plugin', '.claude-plugin', '.cursor-plugin', '.kimi-plugin']) {
+  for (const convention of ['.atlas-plugin', '.plugin', '.codex-plugin', '.claude-plugin', '.cursor-plugin', '.kimi-plugin']) {
     const root = bundle(join(workspace(t), convention.slice(1)), { convention });
     assert.equal(loadPlugin(root).ok, true, convention);
   }

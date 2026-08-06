@@ -152,6 +152,8 @@ export type GitStateSummary = {
 };
 
 /** One MCP server a bundle will run, described from resolved values only. */
+import type { AtlasPluginOptions } from './plugins';
+
 export type PluginServerSummary = {
   name: string;
   transport: 'stdio' | 'http';
@@ -186,6 +188,8 @@ export type PluginSummary = {
   servers: PluginServerSummary[];
   /** Atlas parses hooks and refuses to run them; this only says one is present. */
   hooksDeclared: boolean;
+  /** What the bundle declared in its Atlas-specific block. */
+  atlas: AtlasPluginOptions;
   /** Non-fatal problems found while loading, e.g. a skill that was skipped. */
   warnings: string[];
 };
@@ -194,6 +198,8 @@ export type MarketplaceEntryView = {
   name: string;
   description: string | null;
   iconUrl: string | null;
+  /** Shipped with the app rather than fetched from anywhere. */
+  builtIn: boolean;
   category: string | null;
   version: string | null;
   /** Where the bundle comes from, and whether it is pinned to a commit. */

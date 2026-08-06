@@ -79,6 +79,25 @@ export function PluginDetailPanel({
           </Section>
         ) : null}
 
+        {plugin.atlas.workspaceModes.length > 0 ||
+        plugin.atlas.requiresProject ||
+        plugin.atlas.minAppVersion ? (
+          <Section title="Where this applies">
+            <ul className="space-y-1 text-2xs text-text-tertiary">
+              {plugin.atlas.workspaceModes.length > 0 ? (
+                <li>
+                  Only in {plugin.atlas.workspaceModes.join(' and ')} mode — elsewhere its skills are
+                  not offered, so they cost nothing.
+                </li>
+              ) : null}
+              {plugin.atlas.requiresProject ? <li>Needs a project folder attached.</li> : null}
+              {plugin.atlas.minAppVersion ? (
+                <li>Needs Atlas {plugin.atlas.minAppVersion} or newer.</li>
+              ) : null}
+            </ul>
+          </Section>
+        ) : null}
+
         {plugin.hooksDeclared ? (
           <Section title="Hooks">
             <p className="text-2xs text-text-tertiary">

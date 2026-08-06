@@ -11,7 +11,8 @@ import {
   parsePluginMcpServers,
   parseSkillMarkdown,
   parseSkillSidecar,
-  pluginComponentPaths
+  pluginComponentPaths,
+  satisfiesMinVersion
 } from '../../shared/plugins';
 
 /**
@@ -96,7 +97,7 @@ export type PluginLoadResult =
  * fifty bounded prefix reads here and nothing in the model's context until one
  * is actually chosen.
  */
-export function loadPlugin(bundleRoot: string): PluginLoadResult {
+export function loadPlugin(bundleRoot: string, appVersion?: string): PluginLoadResult {
   let root: string;
 
   try {
@@ -122,6 +123,19 @@ export function loadPlugin(bundleRoot: string): PluginLoadResult {
 
   if (!parsed.ok) {
     return { ok: false, root, error: parsed.error };
+  }
+
+  const required = parsed.manifest.atlas.minAppVersion;
+
+  if (appVersion && !satisfiesMinVersion(appVersion, required)) {
+    // Refused rather than half-loaded: a bundle written against a newer
+    // manifest would otherwise lose exactly the parts its author cared about,
+    // without anything saying so.
+    return {
+      ok: false,
+      root,
+      error: `"${parsed.manifest.name}" needs Atlas ${required} or newer. This is ${appVersion}.`
+    };
   }
 
   const warnings: string[] = [];

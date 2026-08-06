@@ -694,7 +694,11 @@ export class ChatSessionRuntime {
     // that was withheld from its tool set.
     // Listed only when the tools are, because `load_skill` is the only way to
     // act on the list and it ships with the rest of the tool set.
-    const skillsPrompt = this.skillsService?.describeForPrompt() ?? null;
+    const skillsPrompt =
+      this.skillsService?.describeForPrompt({
+        mode: workspace.mode,
+        hasProject: workspace.root != null
+      }) ?? null;
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,

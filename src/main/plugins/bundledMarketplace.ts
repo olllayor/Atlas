@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { app } from 'electron/main';
 
@@ -22,6 +23,23 @@ export { BUNDLED_MARKETPLACE_NAME } from '../../shared/marketplace';
  * repository otherwise, with `process.cwd()` as the fallback for a dev run
  * launched from somewhere unexpected.
  */
+/**
+ * Where Atlas keeps everything a user could reasonably want to look at.
+ *
+ * Installed bundles and marketplace checkouts live together under one visible
+ * directory rather than split between here and Electron's `userData`. A plugin
+ * is a folder someone may want to open, edit, or copy; burying half of that
+ * under Application Support makes it findable only by someone who already knows
+ * where to look.
+ */
+export function atlasHome(): string {
+  return join(homedir(), '.atlas');
+}
+
+export function marketplaceCheckoutRoot(): string {
+  return join(atlasHome(), 'marketplaces');
+}
+
 export function bundledMarketplacePath(): string | null {
   const candidates = app.isPackaged
     ? [join(process.resourcesPath, 'plugins')]

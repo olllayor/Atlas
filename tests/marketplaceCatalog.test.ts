@@ -17,10 +17,14 @@ function sourceOf(source: unknown) {
   return catalog([{ name: 'p', source }]).entries[0]?.source;
 }
 
-test('both catalogue conventions are probed, vendor-neutral first', () => {
+test('Atlas’s catalogue location is probed first, then the shared ones', () => {
   assert.deepEqual(
     [...MARKETPLACE_CATALOG_PATHS],
-    ['.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']
+    [
+      '.atlas/plugins/marketplace.json',
+      '.agents/plugins/marketplace.json',
+      '.claude-plugin/marketplace.json'
+    ]
   );
 });
 

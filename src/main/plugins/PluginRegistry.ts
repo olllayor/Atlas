@@ -47,6 +47,8 @@ export class PluginRegistry {
     now?: () => number;
     /** Consulted on every scan, so a toggle applies without a restart. */
     isEnabled?: (name: string) => boolean;
+    /** Checked against a bundle's `atlas.minAppVersion`. */
+    appVersion?: string;
   }) {
     // `~/.atlas`, not `~/.codex` or `~/.claude`. The same reasoning
     // `AgentInstructionsService` gives for instructions applies harder here:
@@ -56,10 +58,12 @@ export class PluginRegistry {
     this.root = options?.root ?? join(homedir(), '.atlas', 'plugins');
     this.now = options?.now ?? (() => Date.now());
     this.isEnabled = options?.isEnabled ?? (() => true);
+    this.appVersion = options?.appVersion;
   }
 
   private readonly now: () => number;
   private readonly isEnabled: (name: string) => boolean;
+  private readonly appVersion: string | undefined;
 
   /**
    * Rescans on a short interval rather than watching.
@@ -109,7 +113,7 @@ export class PluginRegistry {
         continue;
       }
 
-      const result = loadPlugin(join(this.root, entry.name));
+      const result = loadPlugin(join(this.root, entry.name), this.appVersion);
 
       if (!result.ok) {
         failures.push({ root: result.root, error: result.error });

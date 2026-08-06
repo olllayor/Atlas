@@ -50,6 +50,7 @@ function toSummary(plugin: LoadedPlugin, enabled: boolean): PluginSummary {
     // events with no model and no approval in the loop, which is the largest
     // privilege in the format and the one with the least visibility.
     hooksDeclared: plugin.manifest.paths.hooks != null || 'hooks' in plugin.manifest.unknown,
+    atlas: plugin.manifest.atlas,
     warnings: plugin.warnings
   };
 }

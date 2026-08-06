@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { MarketplaceEntryView, MarketplaceView, MarketplacesView } from '../../shared/contracts';
 import type { MarketplaceEntry } from '../../shared/marketplace';
 import { BUNDLED_MARKETPLACE_NAME, marketplaceEntryBlocker } from '../../shared/marketplace';
+import { logger } from '../observability/logger';
 import { readPluginCapability, readPluginIconPath } from './PluginLoader';
 import { pluginIconUrl } from './pluginIconUrl';
 import type { PluginInstaller } from './PluginInstaller';
@@ -97,6 +98,48 @@ export class PluginMarketplaceService {
   }
 
   /**
+   * Installs anything the app ships that asks to be present, once.
+   *
+   * Only built-in marketplaces are honoured here. `INSTALLED_BY_DEFAULT` in a
+   * third-party catalogue is a request from a stranger to run their code
+   * without being asked, and no catalogue gets to decide that — for those it
+   * stays an ordinary listing the user installs deliberately.
+   *
+   * Idempotent: an entry already installed is skipped, so a plugin the user
+   * removed on purpose stays removed rather than coming back every launch.
+   */
+  installDefaults(): void {
+    for (const resolved of this.marketplaces.resolveAll()) {
+      if (!resolved.record.builtIn || !resolved.catalog || !resolved.root) {
+        continue;
+      }
+
+      const installed = new Set(
+        this.plugins.snapshot().plugins.concat(this.plugins.snapshot().disabled).map(
+          (plugin) => plugin.manifest.name
+        )
+      );
+
+      for (const entry of resolved.catalog.entries) {
+        if (entry.installPolicy !== 'INSTALLED_BY_DEFAULT' || installed.has(entry.name)) {
+          continue;
+        }
+
+        try {
+          this.install(resolved.record.name, entry.name);
+        } catch (error) {
+          // A bundled plugin that will not install is a packaging fault, not
+          // something to fail startup over.
+          logger.warn('plugins.default_install_failed', {
+            plugin: entry.name,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    }
+  }
+
+  /**
    * Fetches one catalogue entry and installs it.
    *
    * The bundle is materialised into a directory and then handed to the same
@@ -160,7 +203,7 @@ function toView(resolved: ResolvedMarketplace, installed: Set<string>): Marketpl
         : resolved.record.source.path,
     error: resolved.error,
     entries: (resolved.catalog?.entries ?? []).map((entry) =>
-      toEntryView(entry, installed, resolved.root)
+      toEntryView(entry, installed, resolved.root, resolved.record.builtIn === true)
     )
   };
 }
@@ -168,7 +211,8 @@ function toView(resolved: ResolvedMarketplace, installed: Set<string>): Marketpl
 function toEntryView(
   entry: MarketplaceEntry,
   installed: Set<string>,
-  marketplaceRoot: string | null
+  marketplaceRoot: string | null,
+  builtIn: boolean
 ): MarketplaceEntryView {
   return {
     name: entry.name,
@@ -183,7 +227,8 @@ function toEntryView(
     version: entry.version,
     // Said plainly rather than as a source kind: "from GitHub" is what the
     // decision actually turns on.
-    origin: describeOrigin(entry),
+    origin: builtIn ? 'Atlas' : describeOrigin(entry),
+    builtIn,
     installed: installed.has(entry.name),
     // Non-null means Atlas refuses it. Shown rather than filtered out, so a
     // catalogue is not silently shorter than the one the publisher wrote.

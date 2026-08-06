@@ -1,4 +1,6 @@
 import type { McpToolApprovalMode, McpTransportKind } from './mcp';
+import type { WorkspaceMode } from './workspaceModes';
+import { isWorkspaceMode } from './workspaceModes';
 
 /**
  * Plugin bundle parsing.
@@ -16,15 +18,18 @@ import type { McpToolApprovalMode, McpTransportKind } from './mcp';
 /**
  * Manifest directories, in the order they are probed.
  *
- * The bundle format is not Codex's alone — a survey of 45 installed plugins
- * found manifests under five different vendor directories, and roughly a
- * quarter of real plugins ship a manifest written for some other agent. Probing
- * all five is what makes the existing ecosystem installable rather than just
- * the plugins written for us. Order is precedence: a bundle carrying two
- * manifests is read as its author's primary target, and `.plugin` — the
- * vendor-neutral spelling — is preferred over any single vendor's.
+ * `.atlas-plugin` is ours and leads: a bundle that ships one is saying it
+ * targets Atlas specifically, and that intent outranks a manifest written for
+ * something else in the same directory. `.plugin` is the vendor-neutral
+ * spelling and is what to use for a bundle meant to work anywhere.
+ *
+ * The rest are read for compatibility, not dependency. A survey of 45 installed
+ * plugins found manifests under five vendor directories, and roughly a quarter
+ * of real bundles ship a manifest written for some other agent — probing them
+ * is what makes that ecosystem installable here. Nothing requires them.
  */
 export const PLUGIN_MANIFEST_DIRS = [
+  '.atlas-plugin',
   '.plugin',
   '.codex-plugin',
   '.claude-plugin',
@@ -102,6 +107,52 @@ export type PluginInterface = {
 export const MAX_DEFAULT_PROMPTS = 3;
 export const MAX_DEFAULT_PROMPT_LENGTH = 128;
 
+/**
+ * Declarations only Atlas can act on.
+ *
+ * The rest of the manifest is a format several agents share, and it has no
+ * vocabulary for the things that make a plugin fit *here*: whether its skills
+ * belong in a code session or a work one, whether they mean anything without a
+ * project attached, which build understands them. Those are not gaps in the
+ * shared format — no other agent has workspace modes — so they live in a block
+ * of Atlas's own rather than being bent into keys that mean something else
+ * elsewhere.
+ *
+ * A bundle carrying none of this behaves exactly as before. The block is how a
+ * plugin says something more precise, never a requirement for saying anything.
+ */
+export type AtlasPluginOptions = {
+  /**
+   * Workspace modes this plugin's skills apply to.
+   *
+   * Empty means every mode. A code-only plugin listed in a work session is not
+   * just noise in the picker — it is tokens spent every turn on instructions
+   * that cannot apply, and a model occasionally choosing one.
+   */
+  workspaceModes: WorkspaceMode[];
+  /**
+   * Whether the plugin is meaningless without a project folder.
+   *
+   * A skill about the current repository has nothing to act on in a chat with
+   * no project attached, so it is withheld rather than offered and then failed.
+   */
+  requiresProject: boolean;
+  /**
+   * The oldest Atlas that understands this bundle.
+   *
+   * Refusing to load is kinder than half-loading: a plugin written against a
+   * newer manifest would otherwise lose exactly the parts the author cared
+   * about, silently.
+   */
+  minAppVersion: string | null;
+};
+
+export const EMPTY_ATLAS_OPTIONS: AtlasPluginOptions = {
+  workspaceModes: [],
+  requiresProject: false,
+  minAppVersion: null
+};
+
 export type PluginManifest = {
   /** Stable identity. Used as the tool-name and skill-name qualifier. */
   name: string;
@@ -113,6 +164,8 @@ export type PluginManifest = {
   license: string | null;
   keywords: string[];
   interface: PluginInterface | null;
+  /** Atlas-specific declarations. Empty when the bundle makes none. */
+  atlas: AtlasPluginOptions;
   /**
    * Declared component paths. A `null` means "not declared", which is not the
    * same as "absent" — the loader still probes the default location.
@@ -225,6 +278,7 @@ export function parsePluginManifest(text: string): PluginManifestResult {
     'license',
     'keywords',
     'interface',
+    'atlas',
     ...Object.keys(DEFAULT_PLUGIN_COMPONENT_PATHS)
   ]);
 
@@ -249,6 +303,7 @@ export function parsePluginManifest(text: string): PluginManifestResult {
         ? raw.keywords.filter((entry): entry is string => typeof entry === 'string')
         : [],
       interface: parseInterface(raw.interface),
+      atlas: parseAtlasOptions(raw.atlas),
       paths,
       unknown
     }
@@ -686,6 +741,55 @@ function parseAuthor(value: unknown): PluginManifest['author'] {
     email: stringOrNull(value.email) ?? undefined,
     url: stringOrNull(value.url) ?? undefined
   };
+}
+
+function parseAtlasOptions(value: unknown): AtlasPluginOptions {
+  if (!isRecord(value)) {
+    return EMPTY_ATLAS_OPTIONS;
+  }
+
+  return {
+    workspaceModes: parseStringArray(value.workspaceModes).filter(isWorkspaceMode),
+    requiresProject: value.requiresProject === true,
+    minAppVersion: stringOrNull(value.minAppVersion)
+  };
+}
+
+/**
+ * Whether a version satisfies a floor, by numeric segment.
+ *
+ * Deliberately not semver-complete: this compares release ordering, which is
+ * all `minAppVersion` expresses. A value that is not a version at all is
+ * treated as satisfied rather than as a reason to refuse a working bundle.
+ */
+export function satisfiesMinVersion(appVersion: string, minimum: string | null): boolean {
+  if (!minimum) {
+    return true;
+  }
+
+  const parse = (value: string) =>
+    value
+      .split('-')[0]!
+      .split('.')
+      .map((part) => Number.parseInt(part, 10));
+
+  const required = parse(minimum);
+  const actual = parse(appVersion);
+
+  if (required.some(Number.isNaN) || actual.some(Number.isNaN)) {
+    return true;
+  }
+
+  for (let index = 0; index < Math.max(required.length, actual.length); index += 1) {
+    const want = required[index] ?? 0;
+    const have = actual[index] ?? 0;
+
+    if (have !== want) {
+      return have > want;
+    }
+  }
+
+  return true;
 }
 
 function parseInterface(value: unknown): PluginInterface | null {

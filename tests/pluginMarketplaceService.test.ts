@@ -299,3 +299,86 @@ test('an entry that would install and do nothing says so instead', (t) => {
   );
   assert.equal(entries.find((e) => e.name === 'remote')?.blocked, null, 'unfetched is not judged');
 });
+
+test('what the app ships installs itself, once, and only from a built-in source', (t) => {
+  const { dir, service, plugins, records } = setup(t);
+
+  const shipped = marketplaceDir(dir, 'shipped', ['bundled']);
+  write(
+    join(shipped, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'shipped',
+      plugins: [
+        {
+          name: 'bundled',
+          source: { source: 'local', path: './plugins/bundled' },
+          policy: { installation: 'INSTALLED_BY_DEFAULT' }
+        }
+      ]
+    })
+  );
+
+  const pushy = marketplaceDir(dir, 'pushy-market', ['pushy']);
+  write(
+    join(pushy, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'pushy-market',
+      plugins: [
+        {
+          name: 'pushy',
+          source: { source: 'local', path: './plugins/pushy' },
+          policy: { installation: 'INSTALLED_BY_DEFAULT' }
+        }
+      ]
+    })
+  );
+
+  service.add({ name: 'shipped', source: { kind: 'path', path: shipped } });
+  service.add({ name: 'pushy-market', source: { kind: 'path', path: pushy } });
+  // Only the first is something Atlas ships.
+  records()[0]!.builtIn = true;
+
+  service.installDefaults();
+  plugins.invalidate();
+
+  assert.deepEqual(
+    plugins.snapshot().plugins.map((plugin) => plugin.manifest.name),
+    ['bundled'],
+    'a third-party catalogue cannot ask to be installed without being asked'
+  );
+
+  // A second launch must not reinstall, and must not resurrect a removal.
+  service.installDefaults();
+  plugins.invalidate();
+  assert.equal(plugins.snapshot().plugins.length, 1);
+});
+
+test('a catalogue at Atlas\u2019s own location wins over one written for another agent', (t) => {
+  const { dir, service } = setup(t);
+  const root = marketplaceDir(dir, 'demo-market', ['alpha']);
+
+  // The same repository carrying two catalogues is real — one surveyed checkout
+  // ships both. Atlas reads its own first so a bundle can tailor what it offers
+  // here without changing what it offers elsewhere.
+  write(
+    join(root, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({
+      name: 'demo-market',
+      plugins: [{ name: 'for-someone-else', source: { source: 'local', path: './plugins/alpha' } }]
+    })
+  );
+  write(
+    join(root, '.atlas', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'demo-market',
+      plugins: [{ name: 'for-atlas', source: { source: 'local', path: './plugins/alpha' } }]
+    })
+  );
+
+  service.add({ name: 'demo-market', source: { kind: 'path', path: root } });
+
+  assert.deepEqual(
+    service.view().marketplaces[0]?.entries.map((entry) => entry.name),
+    ['for-atlas']
+  );
+});

@@ -352,7 +352,14 @@ function EntryCard({
     >
       <PluginIcon name={entry.name} iconUrl={entry.iconUrl} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm text-text-primary">{entry.name}</p>
+        <p className="flex items-baseline gap-2 truncate text-sm text-text-primary">
+          <span className="truncate">{entry.name}</span>
+          {entry.builtIn ? (
+            <span className="shrink-0 rounded bg-bg-hover px-1 text-2xs text-text-faint">
+              built in
+            </span>
+          ) : null}
+        </p>
         <p className="truncate text-xs text-text-tertiary">
           {entry.description ?? entry.origin}
         </p>
@@ -516,10 +523,22 @@ function groupByCategory(marketplaces: MarketplaceView[], needle: string): Group
     return [{ title: `${matching.length} results`, entries: matching }];
   }
 
-  const groups: Group[] = [{ title: 'Featured', entries: matching.slice(0, CATEGORY_PREVIEW) }];
+  // What the app ships leads, ahead of any publisher's ordering: it is the one
+  // group the user did not choose to add and the one guaranteed to work here.
+  // It is also removed from everything below — a plugin listed twice reads as
+  // two plugins.
+  const bundled = matching.filter((entry) => entry.builtIn);
+  const rest = matching.filter((entry) => !entry.builtIn);
+
+  const groups: Group[] = bundled.length > 0 ? [{ title: 'Included with Atlas', entries: bundled }] : [];
+
+  if (rest.length > 0) {
+    groups.push({ title: 'Featured', entries: rest.slice(0, CATEGORY_PREVIEW) });
+  }
+
   const byCategory = new Map<string, Group['entries']>();
 
-  for (const entry of matching) {
+  for (const entry of rest) {
     const key = entry.category?.trim() || 'Everything else';
     const bucket = byCategory.get(key);
 
@@ -536,10 +555,10 @@ function groupByCategory(marketplaces: MarketplaceView[], needle: string): Group
     }
   }
 
-  const rest = byCategory.get('Everything else');
+  const uncategorised = byCategory.get('Everything else');
 
-  if (rest) {
-    groups.push({ title: 'Everything else', entries: rest });
+  if (uncategorised) {
+    groups.push({ title: 'Everything else', entries: uncategorised });
   }
 
   return groups;

@@ -1,6 +1,8 @@
 import { formatSkillBody } from '../../shared/plugins';
 import type { LoadedSkill } from './PluginLoader';
 import { readSkillBody } from './PluginLoader';
+import type { WorkspaceMode } from '../../shared/workspaceModes';
+import type { LoadedPlugin } from './PluginLoader';
 import type { PluginRegistry, PluginSnapshot } from './PluginRegistry';
 
 /**
@@ -24,6 +26,12 @@ const MAX_INDEX_BYTES = 24 * 1024;
 /** Per-entry description cap. The parse limit is far too generous for an index. */
 const MAX_INDEX_DESCRIPTION_CHARS = 200;
 
+/** What a session is, for deciding which plugins belong in it. */
+export type SkillContext = {
+  mode: WorkspaceMode;
+  hasProject: boolean;
+};
+
 export type SkillsSnapshot = PluginSnapshot & {
   /** Everything loadable, including skills withheld from the index. */
   skills: LoadedSkill[];
@@ -36,6 +44,25 @@ export class SkillsService {
   snapshot(): SkillsSnapshot {
     const snapshot = this.registry.snapshot();
     return { ...snapshot, skills: snapshot.plugins.flatMap((plugin) => plugin.skills) };
+  }
+
+  /**
+   * Skills whose plugin fits the session it would be offered in.
+   *
+   * A code-only plugin has nothing to say in a work session, and a plugin that
+   * needs a project has nothing to act on without one. Filtering here rather
+   * than at selection time means those skills cost no tokens at all, instead of
+   * costing an index line and an occasional wrong choice.
+   *
+   * Absent context means no filtering: the context meter and any caller without
+   * a session should see the whole set rather than a guess.
+   */
+  applicableSkills(context?: SkillContext): LoadedSkill[] {
+    const snapshot = this.registry.snapshot();
+
+    return snapshot.plugins
+      .filter((plugin) => !context || pluginApplies(plugin, context))
+      .flatMap((plugin) => plugin.skills);
   }
 
   /**
@@ -85,8 +112,8 @@ export class SkillsService {
    * are reachable by name when the user asks for one, and listing them would
    * charge every turn for a skill the model was told not to choose.
    */
-  describeForPrompt(): string | null {
-    const listed = this.snapshot().skills.filter((skill) => skill.implicitInvocation);
+  describeForPrompt(context?: SkillContext): string | null {
+    const listed = this.applicableSkills(context).filter((skill) => skill.implicitInvocation);
 
     if (listed.length === 0) {
       return null;
@@ -124,6 +151,17 @@ export class SkillsService {
     ].join('\n');
   }
 
+}
+
+function pluginApplies(plugin: LoadedPlugin, context: SkillContext): boolean {
+  const { workspaceModes, requiresProject } = plugin.manifest.atlas;
+
+  // An empty list means every mode, so a bundle that says nothing is unchanged.
+  if (workspaceModes.length > 0 && !workspaceModes.includes(context.mode)) {
+    return false;
+  }
+
+  return !requiresProject || context.hasProject;
 }
 
 /** Descriptions are prose and may wrap; the index is one skill per line. */

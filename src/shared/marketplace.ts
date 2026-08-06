@@ -15,11 +15,14 @@ import { isContainedPluginPath } from './plugins';
 /**
  * Where a catalogue lives inside a marketplace, in probe order.
  *
- * Both conventions are live and a repository may carry both — the
- * `superpowers-dev` checkout does. `.agents` is preferred for the same reason
- * `.plugin` leads the manifest conventions: it is the vendor-neutral spelling.
+ * `.atlas/` is ours and leads, for the same reason `.atlas-plugin` leads the
+ * manifest conventions. `.agents/` is the vendor-neutral spelling; a repository
+ * may carry both, and the `superpowers-dev` checkout carries two of these at
+ * once. The last is read so catalogues written for another agent resolve here
+ * unchanged.
  */
 export const MARKETPLACE_CATALOG_PATHS = [
+  '.atlas/plugins/marketplace.json',
   '.agents/plugins/marketplace.json',
   '.claude-plugin/marketplace.json'
 ] as const;

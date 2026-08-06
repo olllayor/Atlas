@@ -26,9 +26,11 @@ function parsedManifest(overrides: Record<string, unknown> = {}) {
 test('every vendor manifest directory the ecosystem uses is probed', () => {
   // A survey of 45 installed plugins found manifests under all five. Dropping
   // one silently makes that vendor's bundles look like they are not plugins.
+  // Atlas's own spelling leads, then the vendor-neutral one, then the agents
+  // whose bundles Atlas can install without modification.
   assert.deepEqual(
     [...PLUGIN_MANIFEST_DIRS],
-    ['.plugin', '.codex-plugin', '.claude-plugin', '.cursor-plugin', '.kimi-plugin']
+    ['.atlas-plugin', '.plugin', '.codex-plugin', '.claude-plugin', '.cursor-plugin', '.kimi-plugin']
   );
 });
 

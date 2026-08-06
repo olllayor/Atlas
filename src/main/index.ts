@@ -48,7 +48,7 @@ import {
   registerPluginIconScheme,
 } from './plugins/pluginIconProtocol';
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
-import { withBundledMarketplace } from './plugins/bundledMarketplace';
+import { marketplaceCheckoutRoot, withBundledMarketplace } from './plugins/bundledMarketplace';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
 import { PluginInstaller } from './plugins/PluginInstaller';
 import { PluginMarketplaceService } from './plugins/PluginMarketplaceService';
@@ -282,12 +282,15 @@ app.whenReady().then(async () => {
   // the tool set cannot disagree about what is installed.
   const pluginRegistry = new PluginRegistry({
     isEnabled: (name) => !database.settings.getDisabledPlugins().includes(name),
+    // A bundle may declare the oldest Atlas that understands it; refusing to
+    // load beats loading it without the parts its author relied on.
+    appVersion: app.getVersion(),
   });
   const pluginInstaller = new PluginInstaller(pluginRegistry);
-  const marketplaceCheckoutRoot = join(app.getPath('userData'), 'marketplaces');
+  const checkoutRoot = marketplaceCheckoutRoot();
   // Artwork is served from these two roots and nowhere else, whatever a
   // manifest asks for.
-  registerPluginIconProtocolHandler(() => [pluginRegistry.root, marketplaceCheckoutRoot]);
+  registerPluginIconProtocolHandler(() => [pluginRegistry.root, checkoutRoot]);
   // Interrupted installs leave staging directories behind. Upstream documents
   // sweeping them and does not; a machine surveyed for this work still had
   // three from a month earlier.
@@ -299,7 +302,7 @@ app.whenReady().then(async () => {
     // The bundled marketplace is prepended rather than stored: it is not a
     // choice the user made, so it cannot drift from what the build contains.
     () => withBundledMarketplace(database.settings.getMarketplaces<MarketplaceRecord>()),
-    marketplaceCheckoutRoot,
+    checkoutRoot,
   );
   const pluginMarketplaces = new PluginMarketplaceService(
     marketplaceRegistry,
@@ -412,6 +415,10 @@ app.whenReady().then(async () => {
   registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
   registerGitIpc(database, gitStateService, gitReviewService);
   registerGitHubIpc(database, githubService);
+  // Plugins Atlas ships with are present without being asked for. Runs after
+  // the staging sweep so a half-finished copy is never mistaken for installed.
+  pluginMarketplaces.installDefaults();
+
   registerPluginsIpc({
     registry: pluginRegistry,
     installer: pluginInstaller,

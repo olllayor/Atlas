@@ -45,7 +45,7 @@ import { isPlanToolPart } from '../../shared/planTool';
 import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
 import type { AssistantSegment } from './transcript/assistantSegments';
 import { ActivityBlock } from './transcript/ActivityBlock';
-import { ChangedFilesBar } from './transcript/ChangedFilesBar';
+import { CHANGED_FILES_VISIBLE_ROWS, ChangedFilesBar } from './transcript/ChangedFilesBar';
 import { PlanCell } from './transcript/PlanCell';
 import { ToolCellList } from './transcript/ToolCell';
 import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
@@ -66,6 +66,11 @@ type ChatWindowProps = {
   onRespondToolApproval: (request: { requestId: string; approvalId: string; decision: ApprovalDecision; reason?: string }) => Promise<void>;
   /** Opens the workbench Changes tab from a turn's changed-files bar. */
   onReviewChanges?: () => void;
+  /**
+   * Rolls back the edits a turn made, named by the tool calls that made them.
+   * Absent, the card's Undo is not offered.
+   */
+  onUndoChanges?: (toolCallIds: string[]) => Promise<void>;
   onRetryLastMessage?: () => void;
   hasTools?: boolean;
   /** Attached project, so the opening question names what you are working in. */
@@ -95,15 +100,16 @@ const HISTORY_GAP_PX = 40;
 const COLUMN_PADDING = 'px-5 lg:px-6';
 
 /**
- * The single text measure.
+ * The single text measure — the column itself.
  *
- * Assistant content and user bubbles share one right rail: both live in a
- * `76ch` box pinned to the left of the column, and the user's bubble is
- * right-aligned *inside* that box. Previously assistant text was capped at
- * 76ch while user bubbles were 75% of the full column and flush to its
- * right edge, so the two sides of the conversation had different margins.
+ * Assistant content and user bubbles share one right rail, and that rail is
+ * now the composer's. This used to cap at `76ch` inside a `max-w-content-max`
+ * column, so on a wide window the text stopped ~170px short of the composer
+ * slab below it and left a dead vertical strip down the right of every
+ * conversation. `content-max` is already a readable measure (860px at its
+ * widest); capping it twice only broke the alignment.
  */
-const MEASURE = 'w-full max-w-[min(100%,76ch)]';
+const MEASURE = 'w-full';
 
 /** Jump-to-latest hysteresis: show past this, hide inside the other. */
 const JUMP_SHOW_PX = 120;
@@ -540,22 +546,31 @@ function MessageRow({
   onRegenerate,
   onRespondToolApproval,
   onReviewChanges,
+  onUndoChanges,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
   onRegenerate?: () => void;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onReviewChanges?: ChatWindowProps['onReviewChanges'];
+  onUndoChanges?: ChatWindowProps['onUndoChanges'];
 }) {
   const isAssistant = message.role === 'assistant';
   const fileParts = getMessageFileParts(message.parts);
-  // The end-of-turn "Changed N files" bar — only for finished assistant
+  // The end-of-turn "Edited N files" card — only for finished assistant
   // turns that actually produced file edits.
   const changedFiles = useMemo(() => {
     if (message.role !== 'assistant' || message.status !== 'complete') return null;
     const toolParts = message.parts.filter((part): part is ChatToolPart => part.type === 'tool');
     return toolParts.length ? collectChangedFiles(toolParts) : null;
   }, [message.role, message.status, message.parts]);
+  // Undo is only offered for a turn whose edits can actually be named. A
+  // history row replayed from a database written before the call ids were
+  // recorded has none, and reverting "whatever touched these paths" would
+  // reach into turns the reader did not ask about.
+  const undoIds = changedFiles?.toolCallIds ?? [];
+  const handleUndo =
+    onUndoChanges && undoIds.length ? () => onUndoChanges(undoIds) : undefined;
   const userText =
     message.parts
       .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
@@ -601,7 +616,13 @@ function MessageRow({
           onRespondToolApproval={onRespondToolApproval}
         />
 
-        {changedFiles ? <ChangedFilesBar summary={changedFiles} onReview={onReviewChanges} /> : null}
+        {changedFiles ? (
+          <ChangedFilesBar
+            summary={changedFiles}
+            onReview={onReviewChanges}
+            onUndo={handleUndo}
+          />
+        ) : null}
 
         <div className={ACTION_ROW}>
           <CopyAction text={message.content} label="Copy response" />
@@ -757,8 +778,10 @@ const ROW_HEIGHT = {
   toolCell: 24,
   /** Reasoning collapses to a single activity row. */
   reasoning: 28,
-  /** The end-of-turn "Changed N files" bar (48px + margin). */
-  changedFilesBar: 64,
+  /** The "Edited N files" card's header and its top margin. */
+  changedFilesHeader: 76,
+  /** One file row inside that card, and the "Show N more files" row. */
+  changedFilesRow: 36,
   visual: 320,
   file: 28,
   /** One line of a raw-mode `<pre>` at `app-code-text` size. */
@@ -792,8 +815,23 @@ function estimateHistoryRowHeight(message: ChatMessage, raw: boolean) {
   // diverge sharply on read-heavy turns. Details stay collapsed by
   // default, so only the summary rows count.
   const cells = toolParts.length ? buildToolCells(toolParts) : [];
-  const hasChangedFilesBar =
-    message.status === 'complete' && cells.some((cell) => cell.detail.type === 'diff');
+  const diffCells = cells.filter((cell) => cell.detail.type === 'diff');
+  const hasChangedFilesBar = message.status === 'complete' && diffCells.length > 0;
+  /*
+   * How many rows the card shows without being expanded. The card lists its
+   * files inline now, so the estimate has to count them; over-counting a
+   * twenty-file turn would leave a hole the size of seventeen rows.
+   */
+  const changedFileRows = hasChangedFilesBar
+    ? Math.min(
+        CHANGED_FILES_VISIBLE_ROWS,
+        new Set(
+          diffCells.flatMap((cell) =>
+            cell.detail.type === 'diff' ? cell.detail.files.map((file) => file.path) : []
+          )
+        ).size
+      )
+    : 0;
   // `buildToolCells` drops plan parts, and however many of them a turn made
   // they collapse into one row — so they are counted once, not N times.
   const hasPlan = toolParts.some(isPlanToolPart);
@@ -820,8 +858,9 @@ function estimateHistoryRowHeight(message: ChatMessage, raw: boolean) {
         reasoningCount * ROW_HEIGHT.reasoning
       : cells.length * ROW_HEIGHT.toolCell + reasoningCount * ROW_HEIGHT.reasoning;
 
-  // In raw mode the bar is not a 48px slab but the full patch text again, so
-  // it costs roughly what the diff cells above it cost, plus a header line.
+  // In raw mode the card is not a header and a few rows but the full patch
+  // text again, so it costs roughly what the diff cells above it cost, plus a
+  // header line.
   const changedFilesHeight = !hasChangedFilesBar
     ? 0
     : raw
@@ -830,7 +869,7 @@ function estimateHistoryRowHeight(message: ChatMessage, raw: boolean) {
           .reduce((sum, entry) => sum + entry.lines, 0) +
           2) *
         ROW_HEIGHT.rawLine
-      : ROW_HEIGHT.changedFilesBar;
+      : ROW_HEIGHT.changedFilesHeader + changedFileRows * ROW_HEIGHT.changedFilesRow;
 
   return Math.max(
     44,
@@ -919,6 +958,7 @@ export function ChatWindow({
   onRespondToolApproval,
   onRetryLastMessage,
   onReviewChanges,
+  onUndoChanges,
   hasTools = false,
   projectName = null,
 }: ChatWindowProps) {
@@ -1396,6 +1436,7 @@ export function ChatWindow({
                   }
                   onRespondToolApproval={onRespondToolApproval}
                   onReviewChanges={onReviewChanges}
+                  onUndoChanges={onUndoChanges}
                 />
               </div>
             );
@@ -1435,7 +1476,20 @@ export function ChatWindow({
         <div
           ref={contentRef}
           className={cn(
-            'flex w-full flex-col py-8',
+            /*
+              The bottom pad is exactly the composer's height, published by
+              `App.tsx` as `--composer-dock-height` (the fallback covers the
+              frame before the dock is measured).
+
+              Exactly, not plus a margin: the composer floats over this
+              scroller, so the pad is only there to stop the last message
+              being stranded underneath it. Any extra — here, or as padding
+              above the slab in `Composer.tsx` — reopens the band of empty
+              background this layout exists to remove. The transcript stops
+              at the slab's own top edge, and anything scrolled past it goes
+              behind the slab.
+            */
+            'flex w-full flex-col pt-8 pb-[var(--composer-dock-height,7rem)]',
             COLUMN_PADDING,
             emptyKind && 'min-h-full justify-center'
           )}
@@ -1454,7 +1508,8 @@ export function ChatWindow({
         tabIndex={isDetached ? 0 : -1}
         aria-hidden={!isDetached}
         className={cn(
-          'absolute bottom-3 right-4 z-10 inline-flex h-7 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-overlay px-2.5 text-2xs text-text-secondary shadow-elevated transition-[opacity,transform] duration-150 ease-out hover:text-text-primary motion-reduce:transition-none',
+          // Rides above the floating composer rather than behind it.
+          'absolute bottom-[calc(var(--composer-dock-height,7rem)+0.75rem)] right-4 z-10 inline-flex h-7 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-overlay px-2.5 text-2xs text-text-secondary shadow-elevated transition-[opacity,transform] duration-150 ease-out hover:text-text-primary motion-reduce:transition-none',
           isDetached ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0'
         )}
       >

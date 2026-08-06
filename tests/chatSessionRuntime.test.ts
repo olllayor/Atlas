@@ -148,7 +148,9 @@ test('ChatSessionRuntime preserves current history and omits tools when disabled
 
   assert.equal(result.messageId, 'assistant-message-1');
   assert.deepEqual(capturedMessages, history);
-  assert.equal(capturedSystem, VISUAL_PROMPT);
+  // No tools, and nothing in "Hello" asks for a picture: there is nothing left
+  // for Atlas to say, so no system prompt is sent at all.
+  assert.equal(capturedSystem, undefined);
   assert.equal(capturedTools, undefined);
   assert.equal(events.length, 0);
   assert.equal(addMessageCalls.length, 1);
@@ -193,10 +195,44 @@ test('ChatSessionRuntime includes tool prompt and persists provider response mes
   });
 
   assert.ok(capturedSystem?.includes(TOOL_USE_SYSTEM_PROMPT));
-  assert.ok(capturedSystem?.includes(VISUAL_PROMPT));
+  // The visual spec is gated on the turn, not on the tool set.
+  assert.equal(capturedSystem?.includes(VISUAL_PROMPT), false);
   assert.ok(capturedTools && typeof capturedTools === 'object');
   assert.equal(capturedToolChoice, undefined);
   assert.deepEqual(addMessageCalls[0]?.responseMessages, [{ role: 'assistant', content: 'Tools enabled answer' }]);
+});
+
+test('ChatSessionRuntime attaches the visual spec only when the turn asks for a visual', async () => {
+  let capturedSystem: string | undefined;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedSystem = request.system;
+      return {
+        content: 'ok',
+        responseMessages: [{ role: 'assistant', content: 'ok' }],
+        latencyMs: 3,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider });
+
+  await runtime.executeTurn({
+    requestId: 'request-visual-gate',
+    request: createRequest({
+      messages: [{ role: 'user', content: 'draw me a diagram of the retry loop' }],
+    }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.ok(capturedSystem?.includes(VISUAL_PROMPT));
 });
 
 test('ChatSessionRuntime forces bash tool choice for explicit shell execution requests', async () => {
@@ -283,7 +319,12 @@ test('ChatSessionRuntime normalizes streamed text, reasoning, tool, and visual e
 
   await runtime.executeTurn({
     requestId: 'request-3',
-    request: createRequest({ enableTools: true }),
+    // The gate is on the user's words: a turn that never asked for a visual
+    // does not get one parsed out of its reply.
+    request: createRequest({
+      enableTools: true,
+      messages: [{ role: 'user', content: 'Draw me a diagram of the flow' }],
+    }),
     signal: new AbortController().signal,
     emitEvent: (event) => emitted.push(event),
   });
@@ -936,7 +977,7 @@ test('ChatSessionRuntime omits AGENTS.md instructions on a turn without tools', 
     emitEvent: () => undefined,
   });
 
-  assert.equal(capturedSystem?.includes('=== PROJECT INSTRUCTIONS'), false);
+  assert.equal((capturedSystem ?? '').includes('=== PROJECT INSTRUCTIONS'), false);
 });
 
 test('the context meter counts the AGENTS.md instructions the turn will send', async () => {

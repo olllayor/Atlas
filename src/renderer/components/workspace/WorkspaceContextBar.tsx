@@ -8,14 +8,16 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
+  GitPullRequest,
   Laptop,
   Unlink,
 } from 'lucide-react';
-import { forwardRef, useState } from 'react';
+import { forwardRef, useEffect, useState } from 'react';
 
 import type {
   AgentInstructionsSummary,
   GitBranchInfo,
+  GitHubPrInfo,
   ProjectContextInfo,
   ProjectTypeInfo,
   WorkspaceMode,
@@ -24,6 +26,7 @@ import type {
 import { describeWorkspaceMode } from '../../../shared/workspaceModes';
 import { notify, notifyError } from '../../lib/notify';
 import { EnvironmentDialog } from './EnvironmentDialog';
+import { PluginToolsChip } from './PluginToolsChip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -189,6 +192,12 @@ export function WorkspaceContextBar({
                 />
               ) : null}
 
+              {project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
+
+              {/* Renders nothing unless an installed plugin carries tools, so a
+                  user with no plugins sees no extra chrome. */}
+              <PluginToolsChip conversationId={conversationId} />
+
               {needsProject ? (
                 <span className="flex min-w-0 items-center gap-1.5 text-2xs text-text-faint">
                   <AlertTriangle
@@ -220,6 +229,75 @@ export function WorkspaceContextBar({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The open pull request for this branch, when there is one.
+ *
+ * Shows nothing at all otherwise — including when `gh` is missing or signed
+ * out. A chip that exists only to say a feature is unavailable is noise on a
+ * strip this dense; the model reports those states through `github_pr_status`
+ * when the user actually asks for a pull request.
+ *
+ * Creating one deliberately does not live here: it goes through the agent tool,
+ * so every pull request this app opens passes the same approval prompt and
+ * lands in the transcript.
+ */
+function PullRequestChip({ conversationId }: { conversationId?: string }) {
+  const [pr, setPr] = useState<GitHubPrInfo | null>(null);
+
+  useEffect(() => {
+    if (!conversationId || !window.atlasChat?.github?.getPrStatus) {
+      setPr(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    void window.atlasChat.github
+      .getPrStatus(conversationId)
+      .then((status) => {
+        if (!cancelled) {
+          setPr(status.pr);
+        }
+      })
+      .catch(() => {
+        // A repository without GitHub configured is the common case, not a
+        // fault worth surfacing on the strip.
+        if (!cancelled) {
+          setPr(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  if (!pr) {
+    return null;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <ContextChip
+          className="max-w-48"
+          aria-label={`Pull request #${pr.number} — open on GitHub`}
+          onClick={() => void window.atlasChat.github.openPr(pr.url).catch(() => undefined)}
+        >
+          <GitPullRequest className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          <span className="min-w-0 truncate">
+            #{pr.number}
+            {pr.isDraft ? ' (draft)' : ''}
+          </span>
+        </ContextChip>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {pr.title} → {pr.baseRefName}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -440,7 +518,7 @@ function ProjectMenu({
           <DropdownMenuItem
             key={entry.id}
             onSelect={() => onSelect(entry.id)}
-            className="flex cursor-pointer items-start gap-2 rounded-md px-2.5 py-2 focus:bg-bg-hover"
+            className="flex cursor-pointer items-start gap-2 px-2.5 py-2"
           >
             <span className="mt-0.5 w-3.5 shrink-0">
               {entry.id === project?.id ? <Check className="size-3.5 text-text-secondary" /> : null}
@@ -471,7 +549,7 @@ function ProjectMenu({
 
         <DropdownMenuItem
           onSelect={onAttach}
-          className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+          className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"
         >
           <FolderPlus className="size-4 shrink-0" strokeWidth={1.75} />
           Choose folder…
@@ -494,7 +572,7 @@ function ProjectMenu({
             <DropdownMenuItem
               onSelect={() => void (projectInstructions ? openInstructions() : createInstructions())}
               disabled={!project.exists}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+              className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"
             >
               <FileText className="size-4 shrink-0" strokeWidth={1.75} />
               {projectInstructions ? 'AGENTS.md' : 'Create AGENTS.md'}
@@ -511,7 +589,7 @@ function ProjectMenu({
             <DropdownMenuItem
               onSelect={onOpenEnvironment}
               disabled={!project.exists}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+              className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"
             >
               <Code2 className="size-4 shrink-0" strokeWidth={1.75} />
               Environment
@@ -529,14 +607,14 @@ function ProjectMenu({
             <DropdownMenuItem
               onSelect={() => onReveal(project.id)}
               disabled={!project.exists}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+              className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"
             >
               <FolderOpen className="size-4 shrink-0" strokeWidth={1.75} />
               Reveal in file manager
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={onDetach}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-text-secondary focus:bg-bg-hover focus:text-text-primary"
+              className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"
             >
               <Unlink className="size-4 shrink-0" strokeWidth={1.75} />
               Detach from this conversation

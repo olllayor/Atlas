@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from 'electron/main';
 
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
+import { isVisualMode } from '../../shared/visualIntent';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
 import {
   OPAQUE_WINDOW_BACKGROUND,
@@ -168,6 +169,11 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
 
       if (patch?.chat?.lastModelId) {
         settingsRepo.setLastModelId(patch.chat.lastModelId);
+      }
+
+      // Validated here rather than trusted: the renderer supplies this value.
+      if (isVisualMode(patch?.chat?.visualMode)) {
+        settingsRepo.setVisualMode(patch.chat.visualMode);
       }
 
       return modelRegistry.getSettingsSummary();

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { DEFAULT_SETTINGS_APPEARANCE } from '../shared/contracts';
+import {
+  DEFAULT_SETTINGS_APPEARANCE,
+  designThemeSupportsLight,
+  resolveAppliedThemeMode,
+} from '../shared/contracts';
 import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
@@ -12,17 +16,20 @@ import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
-import { Composer, type ComposerAttachment } from './components/Composer';
+import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { SitesWorkspace } from './components/sites/SitesWorkspace';
+import { PluginsWorkspace } from './components/plugins/PluginsWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
 import { TerminalDock } from './components/workbench/TerminalDock';
+import { OpenInIdeButton } from './components/workspace/OpenInIdeButton';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
+import { useMeasuredHeight } from './hooks/useMeasuredHeight';
 import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
@@ -41,6 +48,7 @@ import {
 import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
+import { notify, notifyError } from './lib/notify';
 import { isMacPlatform } from './lib/platform';
 import { buildThemeOverrides } from './lib/themeOverrides';
 import { runViewTransition } from './lib/viewTransitions';
@@ -89,14 +97,6 @@ function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => voi
       </div>
     </div>
   );
-}
-
-function resolveThemeMode(mode: ThemeMode, prefersDark: boolean) {
-  if (mode === 'system') {
-    return prefersDark ? 'dark' : 'light';
-  }
-
-  return mode;
 }
 
 function toCssFontFamilyList(value: string) {
@@ -153,8 +153,11 @@ export default function App() {
     maxWidth: 460,
     edge: 'start',
   });
+  // The composer floats over the transcript; this is how the transcript
+  // learns how much room to leave for it.
+  const composerDock = useMeasuredHeight<HTMLDivElement>();
   const [workbenchOpen, setWorkbenchOpen] = usePersistentFlag('atlas.workbench.open', false);
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('changes');
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('review');
   const workbenchResize = useResizablePanel({
     storageKey: 'atlas.workbench.width',
     defaultWidth: 420,
@@ -246,8 +249,6 @@ export default function App() {
     isLoadingConversationId,
     selectedConversationId,
     selectedModelIdByConversation,
-    composerDraftsByConversation,
-    composerAttachmentsByConversation,
     draftsByConversation,
     conversationStats,
     diagnostics,
@@ -274,7 +275,6 @@ export default function App() {
     performUpdatePrimaryAction,
     setSelectedModel,
     setComposerDraft,
-    setComposerAttachments,
     clearComposerDraft,
     selectAdjacentConversation,
     selectConversationByIndex,
@@ -288,6 +288,7 @@ export default function App() {
     openLanding,
     closeLanding,
     openSites,
+    openPlugins,
     closeSites,
     projects,
     refreshProjects,
@@ -331,8 +332,10 @@ export default function App() {
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
-      composerDraftsByConversation: state.composerDraftsByConversation,
-      composerAttachmentsByConversation: state.composerAttachmentsByConversation,
+      // `composerDraftsByConversation` / `composerAttachmentsByConversation` are
+      // deliberately absent: they change on every keystroke, and this selector
+      // is shallow-compared, so subscribing to them here re-rendered the whole
+      // window per character. `ChatComposerSlot` reads them instead.
       draftsByConversation: state.draftsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
@@ -357,7 +360,6 @@ export default function App() {
       performUpdatePrimaryAction: state.performUpdatePrimaryAction,
       setSelectedModel: state.setSelectedModel,
       setComposerDraft: state.setComposerDraft,
-      setComposerAttachments: state.setComposerAttachments,
       clearComposerDraft: state.clearComposerDraft,
       selectAdjacentConversation: state.selectAdjacentConversation,
       selectConversationByIndex: state.selectConversationByIndex,
@@ -371,6 +373,7 @@ export default function App() {
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
       openSites: state.openSites,
+      openPlugins: state.openPlugins,
       closeSites: state.closeSites,
       projects: state.projects,
       refreshProjects: state.refreshProjects,
@@ -464,6 +467,55 @@ export default function App() {
     },
     [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
   );
+  /**
+   * Put the files a turn edited back the way they were.
+   *
+   * Stored changes are matched by the tool call that wrote them rather than by
+   * path: a file edited across three turns has three records, and undoing the
+   * last of them must leave the other two standing. Reverting newest-first
+   * means a file this turn touched twice lands on the content it had before
+   * the turn began.
+   *
+   * The card owns the "Undone" state, so success is silent here — only the
+   * outcomes the user cannot see from the transcript get a toast.
+   */
+  const handleUndoTurnEdits = useCallback(
+    async (toolCallIds: string[]) => {
+      const conversationId = selectedConversationId;
+      const fileChanges = window.atlasChat?.fileChanges;
+
+      if (!conversationId || !fileChanges) {
+        throw new Error('This conversation has no recorded file changes.');
+      }
+
+      const wanted = new Set(toolCallIds);
+
+      try {
+        const records = await fileChanges.list(conversationId);
+        const targets = records.filter(
+          (record) =>
+            record.status === 'pending' && record.toolCallId && wanted.has(record.toolCallId)
+        );
+
+        if (!targets.length) {
+          notify({
+            tone: 'info',
+            title: 'Nothing to undo',
+            description: 'These edits were already reverted, accepted, or made outside Atlas',
+          });
+          return;
+        }
+
+        for (const record of [...targets].reverse()) {
+          await fileChanges.revert(conversationId, record.id);
+        }
+      } catch (error) {
+        notifyError('Could not undo these edits', error);
+        throw error;
+      }
+    },
+    [selectedConversationId]
+  );
   // With no conversation open there is nothing to write the rung onto, so it
   // becomes the preference every later conversation starts from.
   const handleToolPermissionModeChange = useCallback(
@@ -483,29 +535,14 @@ export default function App() {
     activeProject?.id ?? null,
   );
 
-  // Composer state is per-conversation: a single global string used to carry a
-  // half-typed message (and its staged files) into whichever thread you opened.
-  const composerValue = selectedConversationId ? composerDraftsByConversation[selectedConversationId] ?? '' : '';
-  const composerAttachments = selectedConversationId
-    ? composerAttachmentsByConversation[selectedConversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
-    : EMPTY_COMPOSER_ATTACHMENTS;
-  const setComposerValue = useCallback(
-    (next: string) => {
-      if (selectedConversationId) {
-        setComposerDraft(selectedConversationId, next);
-      }
-    },
-    [selectedConversationId, setComposerDraft]
-  );
-  const updateComposerAttachments = useCallback(
-    (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => {
-      if (selectedConversationId) {
-        setComposerAttachments(selectedConversationId, updater);
-      }
-    },
-    [selectedConversationId, setComposerAttachments]
-  );
-  /** Suggestions and gallery inserts append; they never discard typed text. */
+  /**
+   * Suggestions and gallery inserts append; they never discard typed text.
+   *
+   * Reads the draft through `getState()` rather than a subscription on purpose:
+   * this component does not otherwise track the half-typed message (see the
+   * note on the selector above, and `ChatComposerSlot`), and re-subscribing here
+   * to serve an occasional insert would undo that.
+   */
   const appendToComposer = useCallback(
     (text: string) => {
       if (!selectedConversationId) return;
@@ -873,6 +910,13 @@ export default function App() {
    * from the latter used to drop the user on a stale "You're all set" screen,
    * because `showOnboarding` was never cleared. Only the onboarding-initiated
    * visit still owns that screen.
+   *
+   * That visit has to *restore* onboarding to show it: opening Settings from
+   * the "Add a provider" button unmounts the flow. Without this, the completion
+   * screen was unreachable by any path — the user configured a provider and was
+   * dropped straight into an empty chat with no confirmation that the thing
+   * they had just been asked to do had worked, and `ONBOARDING_COMPLETED` never
+   * fired for the only route that actually completes onboarding.
    */
   useEffect(() => {
     const isSettings = activeView === 'settings';
@@ -886,7 +930,16 @@ export default function App() {
     const requestedByOnboarding = onboardingRequestedSettingsRef.current;
     onboardingRequestedSettingsRef.current = false;
 
-    if (!requestedByOnboarding && hasCredential) {
+    if (requestedByOnboarding) {
+      // Only on success: leaving Settings without a credential means the user
+      // backed out, and re-showing the flow they just left would trap them.
+      if (hasCredential) {
+        setShowOnboarding(true);
+      }
+      return;
+    }
+
+    if (hasCredential) {
       setShowOnboarding(false);
     }
   }, [activeView, hasCredential]);
@@ -894,7 +947,10 @@ export default function App() {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
-      const resolved = resolveThemeMode(themeMode, mediaQuery.matches);
+      // Clamped against the design theme: `default` and `xai` have no light
+      // palette, and `color-scheme: light` under them turned native controls
+      // white while every app surface stayed dark.
+      const resolved = resolveAppliedThemeMode(themeMode, appearance.designTheme, mediaQuery.matches);
       document.documentElement.dataset.theme = resolved;
       document.documentElement.style.colorScheme = resolved;
     };
@@ -905,7 +961,7 @@ export default function App() {
     return () => {
       mediaQuery.removeEventListener('change', applyTheme);
     };
-  }, [themeMode]);
+  }, [themeMode, appearance.designTheme]);
 
   useEffect(() => {
     document.documentElement.dataset.designTheme = appearance.designTheme;
@@ -1080,7 +1136,15 @@ export default function App() {
         }}
         onDesignThemeChange={(theme) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'designTheme', value: theme });
-          void updatePreferences({ appearance: { designTheme: theme } });
+          // Switching to a theme with no light palette while Light is selected
+          // would leave the picker claiming a mode the app cannot paint, so the
+          // stored preference moves with it rather than being silently ignored.
+          const clampsLight = themeMode === 'light' && !designThemeSupportsLight(theme);
+          void updatePreferences({
+            appearance: clampsLight
+              ? { designTheme: theme, themeMode: 'dark' }
+              : { designTheme: theme },
+          });
         }}
         onBorderRadiusChange={(mode) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'borderRadius', value: mode });
@@ -1113,6 +1177,10 @@ export default function App() {
         onToggleFreeModels={(value) => {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'showFreeOnlyByDefault', value });
           void updatePreferences({ showFreeOnlyByDefault: value });
+        }}
+        onVisualModeChange={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'visualMode', value });
+          void updatePreferences({ chat: { visualMode: value } });
         }}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {
@@ -1185,7 +1253,9 @@ export default function App() {
           onLoadArchivedChats={() => void loadArchivedConversations()}
           onSetProjectPinned={(projectId, pinned) => void setProjectPinned(projectId, pinned)}
           onOpenLanding={() => openLanding()}
+          workspaceMode={workspaceMode}
           onOpenSites={() => runViewTransition(() => openSites())}
+          onOpenPlugins={() => runViewTransition(() => openPlugins())}
           onOpenSearch={() => {
             setModelPickerOpen(false);
             captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
@@ -1235,6 +1305,21 @@ export default function App() {
           style={{ viewTransitionName: 'app-main-panel' }}
         >
           {/*
+            Plugins takes the content pane rather than the window. Browsing a
+            catalogue is not a modal errand — you look something up and go back
+            to what you were doing — and the sidebar is how you get back, so
+            covering it would strand the user with no way out but a button.
+
+            The chat is swapped out rather than covered. An overlay left the
+            composer mounted underneath at the same z-index, so it painted over
+            the catalogue and stayed focusable behind it; stacking order is the
+            wrong tool for "this view is not the chat".
+          */}
+          {activeView === 'plugins' ? (
+            <PluginsWorkspace />
+          ) : (
+            <>
+          {/*
             Draggable title bar — matches the sidebar title bar height and is
             borderless per the Codex reference: thread title on the left, panel
             toggles on the right. The mode switcher used to sit centred here;
@@ -1268,7 +1353,12 @@ export default function App() {
                   aria-live="polite"
                 >
                   <span className="relative flex h-1.5 w-1.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-text-muted opacity-60" />
+                    {/* `animate-status-ping`, not `animate-ping`: the latter
+                        interpolates continuously and so presents a frame every
+                        vsync for the whole streaming turn. Its starting opacity
+                        lives in the keyframe, which is why no `opacity-*`
+                        utility rides along here — it would be overridden. */}
+                    <span className="absolute inline-flex h-full w-full animate-status-ping rounded-full bg-text-muted" />
                     <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-text-secondary" />
                   </span>
                   Streaming
@@ -1279,6 +1369,11 @@ export default function App() {
             {/* The cell is `1fr` wide but its contents are not: each control
                 carries its own `no-drag`, so the empty run beside them drags. */}
             <div className="flex shrink-0 items-center justify-end gap-1">
+              {/*
+                Leftmost of the three: it acts on the conversation's folder,
+                while the two beside it act on this window's panels.
+              */}
+              <OpenInIdeButton mode={workspaceMode} project={activeProject} />
               <TerminalToggle
                 open={terminalOpen}
                 onToggle={setTerminalOpen}
@@ -1292,138 +1387,170 @@ export default function App() {
           </div>
 
           {/*
-            The boundary wraps the transcript only. It used to enclose the
-            composer too, so one bad message part took the input box down with
-            it and left no way to type your way out — including no way to
-            start a new chat, since the transcript is what crashed.
-          */}
-          <RendererErrorBoundary resetKey={selectedConversationId}>
-            <ChatWindow
-              detail={activeConversation}
-              draft={activeDraft}
-              hasCredential={hasCredential}
-              isLoadingConversation={isLoadingConversation}
-              isLoadingOlder={isLoadingOlder}
-              onOpenSettings={() => runViewTransition(() => openSettings())}
-              onSuggestionClick={appendToComposer}
-              onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
-              onRespondToolApproval={(request) => respondToolApproval(request)}
-              onRetryLastMessage={() => void resendLastUserMessage()}
-              onReviewChanges={() => {
-                setWorkbenchOpen(true);
-                setWorkbenchTab('changes');
-              }}
-              hasTools={hasModelTools}
-              projectName={activeProject?.exists ? activeProject.title : null}
-            />
-          </RendererErrorBoundary>
+            Transcript and composer share one box, and the composer floats at
+            the bottom of it.
 
-          {/*
-            Chips only on an untouched session. Once the conversation has a
-            turn in it the folder, runner and branch are settled facts that the
-            transcript itself evidences — leaving the strip up spends a row of
-            the composer's column restating them above every reply.
+            They used to be stacked siblings, which meant the transcript's
+            bottom padding and the composer's top padding met as a permanent
+            band of empty background between the last message and the input —
+            visible dead space that grew nothing and separated two things that
+            read as one surface. Now the scroller runs the full height, the
+            composer sits over it on an opaque backdrop, and the transcript
+            reserves exactly the composer's height (`--composer-dock-height`)
+            so nothing is ever stranded underneath it.
           */}
-          {isUntouchedSession ? (
-            <WorkspaceContextBar
-              conversationId={selectedConversationId ?? undefined}
-              mode={workspaceMode}
-              project={activeProject}
-              projects={projects}
-              projectContext={projectContext}
-              disabled={!selectedConversationId}
-              onProjectContextChanged={() => {
-                void refreshProjectContext();
-                void refreshProjects();
-              }}
-              onAttach={() => {
-                void attachProject({ conversationId: selectedConversationId ?? undefined });
-              }}
-              onSelect={(projectId) => {
-                if (!selectedConversationId) return;
-                void setConversationWorkspace(selectedConversationId, { projectId });
-              }}
-              onDetach={() => {
-                if (!selectedConversationId) return;
-                void setConversationWorkspace(selectedConversationId, { projectId: null });
-              }}
-              onReveal={(projectId) => {
-                void window.atlasChat.projects.reveal(projectId);
-              }}
-            />
-          ) : null}
-
-          <Composer
-            value={composerValue}
-            disabled={!selectedConversationId}
-            isStreaming={activeDraft?.status === 'streaming'}
-            models={models}
-            selectedModelId={selectedModelId}
-            modelPickerOpen={modelPickerOpen}
-            composerFocusNonce={composerFocusNonce}
-            detail={activeConversation}
-            draft={activeDraft}
-            attachments={composerAttachments}
-            onAttachmentsChange={updateComposerAttachments}
-            onChange={setComposerValue}
-            onSend={(message) => {
-              const conversationId = selectedConversationId;
-              captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
-                hasFiles: message.files && message.files.length > 0,
-                fileCount: message.files?.length ?? 0,
-              });
-              const sentAttachmentIds = message.files.map((file) => file.id);
-              return sendMessage({
-                text: message.text,
-                files: message.files,
-                // Pin the thread: the composer awaits a blob→dataURL pass
-                // before calling us, so the selection may have moved on.
-                conversationId: conversationId ?? undefined,
-              }).then(() => {
-                // Only a successful send clears the thread's draft; a failure
-                // leaves the text (and files) in place to retry.
-                if (conversationId) {
-                  clearComposerDraft(conversationId, sentAttachmentIds);
-                }
-              });
-            }}
-            onAbort={() => {
-              if (selectedConversationId) {
-                captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
-                void abortConversation(selectedConversationId);
-              }
-            }}
-            onSelectModel={(modelId) => {
-              if (selectedConversationId) {
-                captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
-                setSelectedModel(selectedConversationId, modelId);
-              }
-            }}
-            onModelPickerOpenChange={setModelPickerOpen}
-            onComposerFocusChange={setComposerFocused}
-            onRefreshModels={() => void refreshModels()}
-            isRefreshingModels={isRefreshingModels}
-            customProviders={settings?.customProviders}
-            credentials={settings?.providers}
-            defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
-            onManageProviders={() => runViewTransition(() => openSettings('providers'))}
-            reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
-            toolPermissionMode={toolPermissionMode}
-            workspaceMode={workspaceMode}
-            workspaceReady={workspaceReady}
-            onWorkspaceModeChange={handleWorkspaceModeChange}
-            onRequestProject={
-              selectedConversationId
-                ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
+          <div
+            className="relative flex min-h-0 flex-1 flex-col"
+            // Unset until measured, so the first frame uses the CSS fallback
+            // rather than briefly reserving 0px and jumping.
+            style={
+              composerDock.height > 0
+                ? ({ '--composer-dock-height': `${composerDock.height}px` } as React.CSSProperties)
                 : undefined
             }
-            onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
-            onToolPermissionModeChange={handleToolPermissionModeChange}
-            onOpenGallery={() => setGalleryOpen(true)}
-          />
+          >
+            {/*
+              The boundary wraps the transcript only. It used to enclose the
+              composer too, so one bad message part took the input box down
+              with it and left no way to type your way out — including no way
+              to start a new chat, since the transcript is what crashed.
+            */}
+            <RendererErrorBoundary resetKey={selectedConversationId}>
+              <ChatWindow
+                detail={activeConversation}
+                draft={activeDraft}
+                hasCredential={hasCredential}
+                isLoadingConversation={isLoadingConversation}
+                isLoadingOlder={isLoadingOlder}
+                onOpenSettings={() => runViewTransition(() => openSettings())}
+                onSuggestionClick={appendToComposer}
+                onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
+                onRespondToolApproval={(request) => respondToolApproval(request)}
+                onRetryLastMessage={() => void resendLastUserMessage()}
+                onReviewChanges={() => {
+                  setWorkbenchOpen(true);
+                  setWorkbenchTab('review');
+                }}
+                onUndoChanges={handleUndoTurnEdits}
+                hasTools={hasModelTools}
+                projectName={activeProject?.exists ? activeProject.title : null}
+              />
+            </RendererErrorBoundary>
+
+            {/*
+              The dock. Opaque, so the transcript passing beneath it is cut
+              cleanly at its top edge rather than showing through, and
+              measured, so the transcript knows to stop there.
+            */}
+            <div
+              className="absolute inset-x-0 bottom-0 z-20 bg-bg-base"
+              ref={composerDock.ref}
+            >
+              {/*
+                Chips only on an untouched session. Once the conversation has a
+                turn in it the folder, runner and branch are settled facts that the
+                transcript itself evidences — leaving the strip up spends a row of
+                the composer's column restating them above every reply.
+              */}
+              {isUntouchedSession ? (
+                <WorkspaceContextBar
+                  conversationId={selectedConversationId ?? undefined}
+                  mode={workspaceMode}
+                  project={activeProject}
+                  projects={projects}
+                  projectContext={projectContext}
+                  disabled={!selectedConversationId}
+                  onProjectContextChanged={() => {
+                    void refreshProjectContext();
+                    void refreshProjects();
+                  }}
+                  onAttach={() => {
+                    void attachProject({ conversationId: selectedConversationId ?? undefined });
+                  }}
+                  onSelect={(projectId) => {
+                    if (!selectedConversationId) return;
+                    void setConversationWorkspace(selectedConversationId, { projectId });
+                  }}
+                  onDetach={() => {
+                    if (!selectedConversationId) return;
+                    void setConversationWorkspace(selectedConversationId, { projectId: null });
+                  }}
+                  onReveal={(projectId) => {
+                    void window.atlasChat.projects.reveal(projectId);
+                  }}
+                />
+              ) : null}
+
+              <ChatComposerSlot
+                conversationId={selectedConversationId}
+                disabled={!selectedConversationId}
+                isStreaming={activeDraft?.status === 'streaming'}
+                models={models}
+                selectedModelId={selectedModelId}
+                modelPickerOpen={modelPickerOpen}
+                composerFocusNonce={composerFocusNonce}
+                detail={activeConversation}
+                draft={activeDraft}
+                onSend={(message) => {
+                  const conversationId = selectedConversationId;
+                  captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
+                    hasFiles: message.files && message.files.length > 0,
+                    fileCount: message.files?.length ?? 0,
+                  });
+                  const sentAttachmentIds = message.files.map((file) => file.id);
+                  return sendMessage({
+                    text: message.text,
+                    files: message.files,
+                    // Pin the thread: the composer awaits a blob→dataURL pass
+                    // before calling us, so the selection may have moved on.
+                    conversationId: conversationId ?? undefined,
+                  }).then(() => {
+                    // Only a successful send clears the thread's draft; a failure
+                    // leaves the text (and files) in place to retry.
+                    if (conversationId) {
+                      clearComposerDraft(conversationId, sentAttachmentIds);
+                    }
+                  });
+                }}
+                onAbort={() => {
+                  if (selectedConversationId) {
+                    captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+                    void abortConversation(selectedConversationId);
+                  }
+                }}
+                onSelectModel={(modelId) => {
+                  if (selectedConversationId) {
+                    captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
+                    setSelectedModel(selectedConversationId, modelId);
+                  }
+                }}
+                onModelPickerOpenChange={setModelPickerOpen}
+                onComposerFocusChange={setComposerFocused}
+                onRefreshModels={() => void refreshModels()}
+                isRefreshingModels={isRefreshingModels}
+                customProviders={settings?.customProviders}
+                credentials={settings?.providers}
+                defaultFreeOnly={settings?.showFreeOnlyByDefault ?? true}
+                onManageProviders={() => runViewTransition(() => openSettings('providers'))}
+                reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
+                toolPermissionMode={toolPermissionMode}
+                workspaceMode={workspaceMode}
+                workspaceReady={workspaceReady}
+                onWorkspaceModeChange={handleWorkspaceModeChange}
+                onRequestProject={
+                  selectedConversationId
+                    ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
+                    : undefined
+                }
+                onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
+                onToolPermissionModeChange={handleToolPermissionModeChange}
+                onOpenGallery={() => setGalleryOpen(true)}
+              />
+            </div>
+          </div>
 
           {/*
-            The dock sits under the composer and inside the conversation
+            The terminal sits under the composer and inside the conversation
             column, so the workbench keeps its full height beside it — the
             same division Codex draws between its bottom terminal and its
             right-hand panel.
@@ -1458,6 +1585,8 @@ export default function App() {
               </RendererErrorBoundary>
             </>
           )}
+            </>
+          )}
         </div>
 
         {workbenchOpen && (
@@ -1485,6 +1614,7 @@ export default function App() {
                   activeTab={workbenchTab}
                   onTabChange={setWorkbenchTab}
                   onClose={() => setWorkbenchOpen(false)}
+                  onSendComments={appendToComposer}
                 />
               </RendererErrorBoundary>
             </aside>

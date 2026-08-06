@@ -28,9 +28,14 @@ export type * from './customProviders';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';
+export type * from './visualIntent';
+export type * from './mcp';
+export type * from './review';
 
+import type { ReviewDiff, ReviewScope } from './review';
 import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
 import type { WorkspaceMode } from './workspaceModes';
+import type { VisualMode } from './visualIntent';
 
 /**
  * A folder the user has attached to Atlas. `root` is the only capability that
@@ -58,6 +63,27 @@ export type CreateWorkspaceProjectRequest = {
   /** Absolute path. Omit to open the native folder picker instead. */
   root?: string;
   title?: string;
+};
+
+/**
+ * An editor Atlas found installed on this machine. The launch target stays in
+ * the main process — the renderer picks by id, so nothing it sends can become
+ * the path of a process.
+ */
+export type DetectedIde = {
+  id: string;
+  name: string;
+  /** True for the one a plain click will use: the saved choice, else the first found. */
+  preferred: boolean;
+  /**
+   * The application's own icon, as a `data:` URL the OS rendered.
+   *
+   * Sent rather than bundled because these are the user's applications, not
+   * ours: shipping a sprite sheet would mean a stale Cursor mark the day they
+   * rebrand, and nothing at all for the editor we never thought to include.
+   * Null when the platform has no icon to give.
+   */
+  iconDataUrl: string | null;
 };
 
 export type ProjectType = 'node' | 'python' | 'rust' | 'go' | 'unknown';
@@ -123,6 +149,154 @@ export type GitStateSummary = {
   /** Commits this branch is ahead of / behind its upstream; null with no upstream. */
   ahead: number | null;
   behind: number | null;
+};
+
+/** One MCP server a bundle will run, described from resolved values only. */
+import type { AtlasPluginOptions } from './plugins';
+
+export type PluginServerSummary = {
+  name: string;
+  transport: 'stdio' | 'http';
+  /** The literal command that will run, or the literal endpoint reached. */
+  detail: string;
+  /** Environment variable names forwarded from Atlas to the server. */
+  envVars: string[];
+  /** Names of literal values the bundle sets. Values are not shown. */
+  envKeys: string[];
+  bearerTokenEnvVar: string | null;
+};
+
+export type PluginSkillSummary = {
+  name: string;
+  description: string;
+  /** False when the bundle asked that the model not choose this on its own. */
+  implicitInvocation: boolean;
+};
+
+export type PluginSummary = {
+  name: string;
+  version: string;
+  description: string;
+  displayName: string | null;
+  /** An opaque URL for the bundle's artwork, or null when it ships none. */
+  iconUrl: string | null;
+  author: string | null;
+  homepage: string | null;
+  root: string;
+  enabled: boolean;
+  skills: PluginSkillSummary[];
+  servers: PluginServerSummary[];
+  /** Atlas parses hooks and refuses to run them; this only says one is present. */
+  hooksDeclared: boolean;
+  /** What the bundle declared in its Atlas-specific block. */
+  atlas: AtlasPluginOptions;
+  /** Non-fatal problems found while loading, e.g. a skill that was skipped. */
+  warnings: string[];
+};
+
+export type MarketplaceEntryView = {
+  name: string;
+  description: string | null;
+  iconUrl: string | null;
+  /** Shipped with the app rather than fetched from anywhere. */
+  builtIn: boolean;
+  category: string | null;
+  version: string | null;
+  /** Where the bundle comes from, and whether it is pinned to a commit. */
+  origin: string;
+  installed: boolean;
+  /** Non-null when Atlas refuses to install it, and why. */
+  blocked: string | null;
+  authOnInstall: boolean;
+};
+
+export type MarketplaceView = {
+  name: string;
+  /** Ships with Atlas. Always present, and the UI offers no way to remove it. */
+  builtIn: boolean;
+  displayName: string | null;
+  description: string | null;
+  owner: string | null;
+  /** The URL or folder the catalogue was read from. */
+  sourceLabel: string;
+  entries: MarketplaceEntryView[];
+  error: string | null;
+};
+
+export type MarketplacesView = { marketplaces: MarketplaceView[] };
+
+export type MarketplaceInput =
+  | { kind: 'path'; name: string; path: string }
+  | { kind: 'git'; name: string; url: string; ref: string | null };
+
+/**
+ * A plugin whose tools are gated, and whether this conversation has woken it.
+ *
+ * `alwaysOn` is the global escape hatch; `active` is true when the tools are
+ * usable right now, whatever the reason.
+ */
+export type PluginActivationEntry = {
+  name: string;
+  active: boolean;
+  alwaysOn: boolean;
+};
+
+export type PluginsView = {
+  /** Where bundles are installed from. Shown so the user can open it. */
+  root: string;
+  plugins: PluginSummary[];
+  failures: Array<{ root: string; error: string }>;
+};
+
+/** What the review pane asks for. `commit` carries the revision it wants. */
+export type GitReviewRequest = {
+  conversationId: string;
+  scope: ReviewScope;
+  commit?: string | null;
+};
+
+/**
+ * A hunk-level stage / unstage / revert.
+ *
+ * The patch is sent back rather than re-derived from a hunk index: the working
+ * tree may have moved since the diff was read, and applying "hunk 3" of a diff
+ * that no longer has three hunks is how the wrong lines get staged. A patch
+ * that no longer applies fails loudly instead.
+ */
+export type GitApplyHunkRequest = {
+  conversationId: string;
+  patch: string;
+  /** Into the index rather than the working tree. */
+  cached: boolean;
+  reverse: boolean;
+};
+
+export type GitHubPrInfo = {
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+};
+
+/**
+ * Whether this conversation can open a pull request, and whether it already has.
+ *
+ * Every precondition is reported separately rather than collapsed into one
+ * boolean, because each has a different fix and the toolbar says which.
+ */
+export type GitHubPrStatus = {
+  /** A `gh` launcher was found on disk. */
+  cliInstalled: boolean;
+  /** `gh auth status` succeeded. */
+  authenticated: boolean;
+  /** The `origin` remote points at github.com. */
+  isGitHubRemote: boolean;
+  /** `owner/repo`, when the remote is a GitHub one. */
+  slug: string | null;
+  branch: string | null;
+  pr: GitHubPrInfo | null;
 };
 
 export type GitCommitRequest = {
@@ -506,6 +680,40 @@ export const DESIGN_THEMES: readonly DesignTheme[] = ['codex', 'default', 'xai',
 export function isDesignTheme(value: unknown): value is DesignTheme {
   return typeof value === 'string' && (DESIGN_THEMES as readonly string[]).includes(value);
 }
+
+/**
+ * Design themes that actually ship a light palette.
+ *
+ * `themes/codex.css` carries a `[data-theme='light']` block and `cursor.css` is
+ * authored light-first with a dark override; `default.css` and `xai.css` define
+ * one dark palette and nothing else. Light mode used to be offered for all four
+ * regardless, so picking it under those two set `color-scheme: light` — which
+ * repaints native form controls, scrollbars and autofill white — while every
+ * app surface stayed dark. The result was white-on-white text in inputs.
+ *
+ * The list is the single source of truth for both halves of the fix: the
+ * settings picker refuses to offer Light for a theme that has none, and
+ * `resolveAppliedThemeMode` clamps anything already stored (or arriving from
+ * `system`) back to dark.
+ */
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor'];
+
+export function designThemeSupportsLight(theme: DesignTheme): boolean {
+  return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
+}
+
+/**
+ * The mode actually painted: the stored preference resolved against the OS and
+ * then clamped to what the design theme can render.
+ */
+export function resolveAppliedThemeMode(
+  mode: ThemeMode,
+  designTheme: DesignTheme,
+  prefersDark: boolean
+): 'light' | 'dark' {
+  const resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+  return resolved === 'light' && !designThemeSupportsLight(designTheme) ? 'dark' : resolved;
+}
 export type FontFamilyOverride = string | null;
 export type BorderRadiusMode = 'theme-default' | 'none';
 
@@ -553,7 +761,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'providers' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -614,6 +822,8 @@ export type SettingsChatSummary = {
   lastProjectId: string | null;
   /** Last model the user selected; null when it is no longer in the catalog. */
   lastModelId: string | null;
+  /** When the assistant is allowed to answer with an inline visual. */
+  visualMode: VisualMode;
 };
 
 export type SettingsSummary = {
@@ -1364,6 +1574,7 @@ export type SettingsUpdateRequest = {
     /** Project new conversations attach to; `null` clears it. */
     lastProjectId?: string | null;
     lastModelId?: string;
+    visualMode?: VisualMode;
   };
 };
 
@@ -1489,6 +1700,10 @@ export type RendererApi = {
     delete: (projectId: string) => Promise<void>;
     reveal: (projectId: string) => Promise<void>;
     setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
+    /** Editors installed on this machine, in preference order. Empty when none were found. */
+    listIdes: () => Promise<DetectedIde[]>;
+    /** Opens the project folder in `ideId`, or in the preferred editor when omitted. */
+    openInIde: (projectId: string, ideId?: string) => Promise<void>;
   };
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
@@ -1559,6 +1774,39 @@ export type RendererApi = {
     switchBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     commit: (request: GitCommitRequest) => Promise<string>;
+    review: (request: GitReviewRequest) => Promise<ReviewDiff>;
+    stage: (conversationId: string, paths: string[]) => Promise<void>;
+    unstage: (conversationId: string, paths: string[]) => Promise<void>;
+    revert: (conversationId: string, paths: string[]) => Promise<void>;
+    applyHunk: (request: GitApplyHunkRequest) => Promise<void>;
+  };
+  github: {
+    getPrStatus: (conversationId: string) => Promise<GitHubPrStatus>;
+    openPr: (url: string) => Promise<void>;
+  };
+  plugins: {
+    list: () => Promise<PluginsView>;
+    install: (sourceDir: string) => Promise<PluginsView>;
+    uninstall: (name: string) => Promise<PluginsView>;
+    setEnabled: (name: string, enabled: boolean) => Promise<PluginsView>;
+    /** Opens a directory picker and installs the chosen bundle. */
+    installFromPicker: () => Promise<PluginsView | null>;
+    revealRoot: () => Promise<void>;
+    marketplaces: () => Promise<MarketplacesView>;
+    addMarketplace: (input: MarketplaceInput) => Promise<MarketplacesView>;
+    removeMarketplace: (name: string) => Promise<MarketplacesView>;
+    installFromMarketplace: (marketplace: string, plugin: string) => Promise<PluginsView>;
+    activation: (conversationId: string) => Promise<PluginActivationEntry[]>;
+    setActivated: (
+      conversationId: string,
+      plugin: string,
+      active: boolean
+    ) => Promise<PluginActivationEntry[]>;
+    setAlwaysOn: (
+      conversationId: string,
+      plugin: string,
+      alwaysOn: boolean
+    ) => Promise<PluginActivationEntry[]>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;

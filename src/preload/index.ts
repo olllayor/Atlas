@@ -61,7 +61,9 @@ const api: RendererApi = {
     rename: (projectId, title) => ipcRenderer.invoke(IPC_CHANNELS.projectsRename, projectId, title),
     delete: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsDelete, projectId),
     reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId),
-    setPinned: (projectId, pinned) => ipcRenderer.invoke(IPC_CHANNELS.projectsSetPinned, projectId, pinned)
+    setPinned: (projectId, pinned) => ipcRenderer.invoke(IPC_CHANNELS.projectsSetPinned, projectId, pinned),
+    listIdes: () => ipcRenderer.invoke(IPC_CHANNELS.projectsListIdes),
+    openInIde: (projectId, ideId) => ipcRenderer.invoke(IPC_CHANNELS.projectsOpenInIde, projectId, ideId)
   },
   chat: {
     start: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatStart, request),
@@ -165,7 +167,41 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.gitSwitchBranch, conversationId, name),
     createBranch: (conversationId: string, name: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.gitCreateBranch, conversationId, name),
-    commit: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitCommit, request)
+    commit: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitCommit, request),
+    review: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitReview, request),
+    stage: (conversationId: string, paths: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitStage, conversationId, paths),
+    unstage: (conversationId: string, paths: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitUnstage, conversationId, paths),
+    revert: (conversationId: string, paths: string[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitRevert, conversationId, paths),
+    applyHunk: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitApplyHunk, request)
+  },
+  github: {
+    getPrStatus: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.githubPrStatus, conversationId),
+    openPr: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.githubOpenPr, url)
+  },
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsList),
+    install: (sourceDir: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstall, sourceDir),
+    uninstall: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsUninstall, name),
+    setEnabled: (name: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetEnabled, name, enabled),
+    installFromPicker: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromPicker),
+    revealRoot: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsRevealRoot),
+    marketplaces: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsMarketplaces),
+    addMarketplace: (input) => ipcRenderer.invoke(IPC_CHANNELS.pluginsAddMarketplace, input),
+    removeMarketplace: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsRemoveMarketplace, name),
+    installFromMarketplace: (marketplace: string, plugin: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromMarketplace, marketplace, plugin),
+    activation: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsActivation, conversationId),
+    setActivated: (conversationId: string, plugin: string, active: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetActivated, conversationId, plugin, active),
+    setAlwaysOn: (conversationId: string, plugin: string, alwaysOn: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetAlwaysOn, conversationId, plugin, alwaysOn)
   },
   fileChanges: {
     list: (conversationId: string) =>

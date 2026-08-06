@@ -5,7 +5,8 @@ import type { ChatPartState, VisualThemeTokens } from '../../../shared/contracts
 import { detectRequiredLibraries } from '../../../shared/visualParser';
 import { buildVisualSrcDoc } from '../../../shared/visualDocument';
 import { chartJs, d3Js } from '../../visual/bundles';
-import { detectDiagramSpec, InteractiveDiagram } from './interactive-diagram';
+import { detectDiagramSpec } from '../../../shared/diagramSpec';
+import { InteractiveDiagram } from './interactive-diagram';
 import { detectRiveContent, RiveVisual } from './rive-visual';
 import { useClipboard } from '../../hooks/useClipboard';
 import { SlotLabel } from '../ui/slot-label';
@@ -256,7 +257,21 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
 
   return (
     <VisualUiErrorBoundary key={visualId}>
-      <div className={cn('group relative -mx-6 my-4 w-[calc(100%+3rem)] sm:-mx-7 sm:w-[calc(100%+3.5rem)] lg:-mx-7 lg:w-[calc(100%+3.5rem)] xl:-mx-8 xl:w-[calc(100%+4rem)]', className)}>
+      {/*
+        A visual sits in the message column, not outside it.
+
+        This used to bleed sideways with `-mx-6 … xl:-mx-8` plus a matching
+        `w-[calc(100% + …)]`, which was written to cancel the transcript's
+        *inner* padding back when the transcript had any (`px-6 lg:px-7
+        xl:px-8` inside its max width). That padding now lives outside the
+        max width (`ChatWindow.COLUMN_PADDING`), so the negative margins
+        cancelled nothing: they dragged every visual 24–32px left of the
+        message text and the composer slab, while the right edge stopped
+        short of both. Three elements in one column, three different left
+        edges. Full width of the measure, no bleed, is the whole fix —
+        anything wider than the column has the expand button.
+      */}
+      <div className={cn('group relative my-4 w-full', className)}>
         {!isStreaming && !errorMessage && !isEmptyComplete && (
           <div
             className={cn(
@@ -349,12 +364,11 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
           // `hideChrome` — this block already floats its own save/copy/expand
           // toolbar, and the diagram's header used to sit underneath it with
           // a second copy button.
-          <InteractiveDiagram
-            content={trimmedContent}
-            title={title}
-            hideChrome
-            className="my-0 border-0 bg-transparent"
-          />
+          // `bg-transparent` used to ride along here and did nothing — the
+          // diagram paints its surface as an inline style, which a class
+          // cannot override — so the card lost only its border and read as a
+          // borderless slab floating in the transcript.
+          <InteractiveDiagram content={trimmedContent} title={title} hideChrome className="my-0" />
         ) : isRive ? (
           <RiveVisual
             content={trimmedContent}

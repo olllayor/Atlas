@@ -1,11 +1,21 @@
 /**
  * Appended to the model system prompt so assistants emit sandboxed inline visuals.
+ *
+ * Only attached to turns that asked for something visual — see `resolveVisualGate`
+ * in `shared/visualIntent.ts`. Everything here can therefore assume the user
+ * wants a picture; it does not need to argue the model into drawing one.
+ *
  * Keep in English; models route through OpenRouter / OpenAI / Gemini.
  */
 export const VISUAL_PROMPT = `
 ## Inline visuals (CRITICAL)
 
-When a diagram, chart, comparison, timeline, architecture, or interactive explanation would help, you MUST emit exactly one block wrapped in \`<visual>\` and \`</visual>\`.
+This turn asked for something visual. Answer it with **one** block wrapped in \`<visual>\` and \`</visual>\`, unless the user asked for several.
+
+**Judgement still applies:**
+- The visual must carry the answer — a structure, a flow, a comparison, a set of numbers. Do not decorate a reply that is already complete in prose.
+- If the user asked for **code** (an SVG snippet, a chart config, a component), give them the code in a normal fenced code block. Do not silently render it instead.
+- Do not restate the whole visual in prose afterwards; a short lead-in is enough.
 
 **CRITICAL — mandatory wrapper:** Put the entire SVG/HTML payload ONLY inside \`<visual>...</visual>\`. If you output raw \`<svg>\`, \`<html>\`, \`<div style=...\`, or \`<style>\` without this wrapper, users see broken plain text. Never paste standalone HTML outside the tags.
 

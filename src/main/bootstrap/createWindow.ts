@@ -1,5 +1,11 @@
 import { join } from 'node:path';
-import { BrowserWindow, nativeTheme, type Event, type HandlerDetails } from 'electron/main';
+import {
+  BrowserWindow,
+  nativeTheme,
+  type Event,
+  type HandlerDetails,
+  type RenderProcessGoneDetails
+} from 'electron/main';
 import { shell } from 'electron/common';
 
 import type { ThemeMode } from '../../shared/contracts';
@@ -63,6 +69,69 @@ function titleBarOptions() {
   };
 }
 
+/**
+ * Renderer crashes we answer with a reload, and the ceiling on how often.
+ *
+ * `clean-exit` and `killed` are excluded: the first is an orderly teardown and
+ * the second is someone (or the OS) deliberately ending the process, and
+ * resurrecting either would fight the intent.
+ */
+const RECOVERABLE_EXIT_REASONS = new Set(['crashed', 'oom', 'abnormal-exit', 'launch-failed']);
+
+/**
+ * A crash *during boot* would otherwise reload into the same crash forever, so
+ * recovery is capped rather than unconditional. Three inside a rolling minute
+ * is enough to ride out a one-off OOM and few enough that a reproducible boot
+ * crash gives up quickly and leaves the failure visible.
+ */
+const MAX_RELOADS = 3;
+const RELOAD_WINDOW_MS = 60_000;
+
+/**
+ * Bring the window back after the renderer process dies.
+ *
+ * V8 has a hard heap ceiling, and a long session with a large transcript can
+ * reach it. When it does, the renderer is gone but the window frame survives —
+ * the user is left staring at a white rectangle while agents carry on working
+ * invisibly behind it. Electron reports this and does nothing else.
+ *
+ * A reload is a complete fix here in a way it would not be in a browser: every
+ * piece of durable state lives in SQLite in the main process, so the renderer
+ * holds nothing that is not re-readable. The white screen becomes a blink.
+ *
+ * `now` is injected so the rolling window is testable without waiting a minute.
+ */
+export function attachRendererRecovery(
+  window: BrowserWindow,
+  now: () => number = () => Date.now()
+) {
+  let reloadTimestamps: number[] = [];
+
+  window.webContents.on(
+    'render-process-gone',
+    (_event: Event, details: RenderProcessGoneDetails) => {
+      if (!RECOVERABLE_EXIT_REASONS.has(details.reason)) return;
+      if (window.isDestroyed()) return;
+
+      const at = now();
+      reloadTimestamps = reloadTimestamps.filter((stamp) => at - stamp < RELOAD_WINDOW_MS);
+
+      if (reloadTimestamps.length >= MAX_RELOADS) {
+        console.error(
+          `[window] renderer gone (${details.reason}); ${MAX_RELOADS} reloads inside ${RELOAD_WINDOW_MS}ms already, not retrying.`
+        );
+        return;
+      }
+
+      reloadTimestamps.push(at);
+      console.warn(
+        `[window] renderer gone (${details.reason}); reloading (${reloadTimestamps.length}/${MAX_RELOADS}).`
+      );
+      window.webContents.reload();
+    }
+  );
+}
+
 export type CreateWindowOptions = {
   /** macOS-only: sidebar vibrancy so the desktop shows through translucent panels. */
   translucentSidebar?: boolean;
@@ -109,6 +178,8 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
     void shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  attachRendererRecovery(window);
 
   window.webContents.on('will-navigate', (event: Event, url: string) => {
     const isLocalFile = url.startsWith('file://');

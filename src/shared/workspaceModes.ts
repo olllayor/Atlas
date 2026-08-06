@@ -56,7 +56,15 @@ export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = 'work';
  * Withholding them is stronger than a prompt instruction: the model cannot call
  * a tool that was never in its tool set.
  */
-export const CODE_ONLY_TOOL_NAMES = ['write_file', 'edit_file', 'git_status', 'git_diff'] as const;
+export const CODE_ONLY_TOOL_NAMES = [
+  'write_file',
+  'edit_file',
+  'git_status',
+  'git_diff',
+  'git_push',
+  'github_pr_status',
+  'github_pr_create'
+] as const;
 
 export function isWorkspaceMode(value: unknown): value is WorkspaceMode {
   return WORKSPACE_MODES.some((entry) => entry.value === value);

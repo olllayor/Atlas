@@ -250,7 +250,7 @@ test('the changed-files bar renders as a header plus every patch', () => {
   assert.ok(summary);
 
   const text = changedFilesToPlainText(summary);
-  assert.ok(text.startsWith('Changed 1 file +1 -1'));
+  assert.ok(text.startsWith('Edited 1 file +1 -1'));
   assert.ok(text.includes('-const b = 2;'));
   assert.ok(!text.includes('−'));
 });

@@ -250,7 +250,13 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
 
       const terminal = new Terminal({
         convertEol: false,
-        cursorBlink: true,
+        // A blinking cursor drives a repaint twice a second for as long as the
+        // dock is open, and under the WebGL renderer each one is a GPU frame.
+        // xterm already pauses the blink on blur, so the cost is bounded to a
+        // focused terminal — but it is still motion, and Reduce motion turns
+        // motion off. `cursorInactiveStyle` below keeps the focused/unfocused
+        // distinction legible without it.
+        cursorBlink: !reduceMotion,
         cursorStyle: 'bar',
         // An unfocused terminal that still shows a solid block reads as the
         // active input when it is not; the outline says "this is waiting".

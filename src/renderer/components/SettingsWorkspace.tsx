@@ -5,6 +5,7 @@ import {
   LockClosedIcon,
   MinusIcon,
   MixerHorizontalIcon,
+  CubeIcon,
   MoonIcon,
   PlusIcon,
   ReloadIcon,
@@ -37,6 +38,7 @@ import type {
   ThemeMode,
   UsageProviderSummary,
   UsageSummary,
+  VisualMode,
 } from '../../shared/contracts';
 import {
   CODE_FONT_SIZE_MAX,
@@ -46,6 +48,7 @@ import {
   DEFAULT_SETTINGS_APPEARANCE,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
+  designThemeSupportsLight,
   normalizeThemeColor,
 } from '../../shared/contracts';
 import { exportTheme, parseThemeImport } from '../lib/themeOverrides';
@@ -56,6 +59,7 @@ import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
 import { ModelSettingsPage } from './providers/ModelSettingsPage';
+import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
 import { SlotLabel } from './ui/slot-label';
 import { Switch as UiSwitch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -88,6 +92,7 @@ type SettingsWorkspaceProps = {
   onAppearancePatch: (patch: AppearancePatch) => void;
   onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
   telemetryEnabled: boolean;
@@ -103,6 +108,7 @@ type NavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
+  { key: 'plugins', label: 'Plugins', icon: CubeIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
@@ -128,6 +134,7 @@ export function SettingsWorkspace({
   onAppearancePatch,
   onUpdateKeybindings,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
   telemetryEnabled,
@@ -212,12 +219,15 @@ export function SettingsWorkspace({
                   isRefreshingModels={isRefreshingModels}
                   onOpenProviders={() => onNavigate('providers')}
                   onToggleFreeModels={onToggleFreeModels}
+                  onVisualModeChange={onVisualModeChange}
                   onUpdateAction={onUpdateAction}
                   onRefreshModels={onRefreshModels}
                 />
               ) : null}
 
               {activeSection === 'providers' ? <ModelSettingsPage /> : null}
+
+              {activeSection === 'plugins' ? <PluginsSettingsPage /> : null}
 
               {activeSection === 'appearance' ? (
                 <AppearancePage
@@ -262,6 +272,10 @@ function sectionTitle(section: SettingsSection) {
     return 'Model settings';
   }
 
+  if (section === 'plugins') {
+    return 'Plugins';
+  }
+
   if (section === 'appearance') {
     return 'Appearance';
   }
@@ -287,6 +301,7 @@ function GeneralPage({
   isRefreshingModels,
   onOpenProviders,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
 }: {
@@ -295,6 +310,7 @@ function GeneralPage({
   isRefreshingModels: boolean;
   onOpenProviders: () => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
@@ -323,6 +339,18 @@ function GeneralPage({
             ariaLabel="Toggle free models by default"
           />
         </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Chat">
+        <SettingsStackedRow
+          title="Inline visuals"
+          description="Diagrams, charts and interactive blocks rendered inside a reply. On automatic, the assistant only draws one when you ask for something visual."
+        >
+          <VisualModePicker
+            current={settings?.chat.visualMode ?? 'auto'}
+            onChange={onVisualModeChange}
+          />
+        </SettingsStackedRow>
       </SettingsGroup>
 
       <SettingsGroup title="Catalog and updates">
@@ -418,7 +446,11 @@ function AppearancePage({
           title="Theme mode"
           description="Choose whether Atlas follows your system appearance or stays fixed."
         >
-          <ThemeModePicker current={themeMode} onChange={onThemeModeChange} />
+          <ThemeModePicker
+            current={themeMode}
+            designTheme={designTheme}
+            onChange={onThemeModeChange}
+          />
         </SettingsStackedRow>
         <SettingsStackedRow
           title="Design theme"
@@ -1120,7 +1152,28 @@ function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: 
   );
 }
 
-function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: (mode: ThemeMode) => void }) {
+/**
+ * `designTheme` gates the Light segment: only some themes ship a light palette
+ * (see `DESIGN_THEMES_WITH_LIGHT`), and under the others the app painted a dark
+ * UI with `color-scheme: light`, which whitened native inputs and scrollbars.
+ * Offering a mode that cannot be honoured is worse than not offering it, so the
+ * segment is disabled and says why. `System` stays available — it resolves to
+ * dark under those themes.
+ */
+function ThemeModePicker({
+  current,
+  designTheme,
+  onChange,
+}: {
+  current: ThemeMode;
+  designTheme: DesignTheme;
+  onChange: (mode: ThemeMode) => void;
+}) {
+  const supportsLight = designThemeSupportsLight(designTheme);
+  // A preference stored before the theme changed (or before this gate existed)
+  // can still say `light`. The app paints dark in that case, so the picker says
+  // dark too rather than highlighting a segment that is disabled and inert.
+  const effective: ThemeMode = current === 'light' && !supportsLight ? 'dark' : current;
   const items: Array<{ mode: ThemeMode; label: string; icon: typeof SunIcon }> = [
     { mode: 'light', label: 'Light', icon: SunIcon },
     { mode: 'dark', label: 'Dark', icon: MoonIcon },
@@ -1135,6 +1188,52 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
     >
       {items.map((item) => {
         const Icon = item.icon;
+        const isActive = item.mode === effective;
+        const isDisabled = item.mode === 'light' && !supportsLight;
+
+        return (
+          <button
+            key={item.mode}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            aria-disabled={isDisabled}
+            disabled={isDisabled}
+            title={isDisabled ? 'This design theme has no light palette.' : undefined}
+            onClick={() => onChange(item.mode)}
+            className={`${SEGMENT_BASE} gap-2 ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE} ${
+              isDisabled ? 'cursor-not-allowed opacity-40' : ''
+            }`}
+          >
+            <Icon className="h-4 w-4" />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function VisualModePicker({
+  current,
+  onChange,
+}: {
+  current: VisualMode;
+  onChange: (mode: VisualMode) => void;
+}) {
+  const items: Array<{ mode: VisualMode; label: string }> = [
+    { mode: 'auto', label: 'Automatic' },
+    { mode: 'always', label: 'Always' },
+    { mode: 'off', label: 'Never' },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Inline visuals"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
+      {items.map((item) => {
         const isActive = item.mode === current;
 
         return (
@@ -1144,9 +1243,8 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
             role="radio"
             aria-checked={isActive}
             onClick={() => onChange(item.mode)}
-            className={`${SEGMENT_BASE} gap-2 ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
+            className={`${SEGMENT_BASE} ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
           >
-            <Icon className="h-4 w-4" />
             <span>{item.label}</span>
           </button>
         );

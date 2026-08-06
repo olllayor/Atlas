@@ -1308,6 +1308,36 @@ export class ConversationsRepo {
     };
   }
 
+  /**
+   * Whether the conversation's most recent assistant turn rendered a visual.
+   *
+   * Read by the visual gate so a follow-up like "make it wider" stays attached
+   * to the diagram it is about. Only the last assistant message counts: a chart
+   * from twenty turns ago says nothing about the current question.
+   */
+  hasRecentVisual(conversationId: string): boolean {
+    const row = this.db
+      .prepare<{ conversationId: string }, Pick<MessageRow, 'parts_json'>>(
+        `
+          SELECT parts_json
+          FROM messages
+          WHERE conversation_id = @conversationId
+            AND role = 'assistant'
+            AND status = 'complete'
+          ORDER BY created_at DESC
+          LIMIT 1
+        `
+      )
+      .get({ conversationId });
+
+    if (!row?.parts_json) {
+      return false;
+    }
+
+    const parts = parseJson<ChatMessagePart[]>(row.parts_json);
+    return Array.isArray(parts) && parts.some((part) => part?.type === 'visual');
+  }
+
   getModelHistory(conversationId: string) {
     const rows = this.db
       .prepare<

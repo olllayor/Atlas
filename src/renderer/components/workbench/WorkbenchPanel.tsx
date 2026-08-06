@@ -6,7 +6,7 @@
  * conversation; the task list is still this conversation's tool calls rather
  * than a fleet.
  *
- *   Changes  — every `file_change` call's diff, aggregated across the thread
+ *   Review   — the repository's diff, by scope, with stage / revert / comment
  *   Git      — branch, working tree, history, and commit
  *   Tasks    — every tool call in the thread with its status
  *
@@ -22,40 +22,31 @@
  * borderless rows, hairline separators only, opacity-based hierarchy.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, X } from 'lucide-react';
+import { useMemo } from 'react';
+import { Check, X } from 'lucide-react';
 
-import type {
-  ChatMessage,
-  ChatToolPart,
-  FileChangeRecord,
-  GitFileStatus,
-  WorkspaceMode,
-} from '../../../shared/contracts';
+import type { ChatMessage, ChatToolPart, WorkspaceMode } from '../../../shared/contracts';
 import {
-  type DiffFile,
   type ToolCell,
   type ToolCellKind,
   type ToolCellStatus,
   buildToolCells,
   formatElapsed,
-  parseUnifiedDiff,
-  toolCellKind,
   toolCellStatus,
 } from '../../../shared/toolCellGrammar';
 import { cn } from '../../lib/utils';
-import { DiffBlock } from '../transcript/DiffBlock';
 import { GitPanel } from './GitPanel';
+import { ReviewPanel } from './ReviewPanel';
 
-export type WorkbenchTab = 'changes' | 'git' | 'tasks';
+export type WorkbenchTab = 'review' | 'git' | 'tasks';
 
 /**
  * `modes` decides where a tab is worth showing. Work mode cannot produce a diff
- * or touch a repository, so offering Changes and Git there would be three tabs
- * where only one can ever have content.
+ * or touch a repository, so offering Review and Git there would be tabs where
+ * only one can ever have content.
  */
 export const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; modes: WorkspaceMode[] }> = [
-  { id: 'changes', label: 'Changes', modes: ['code'] },
+  { id: 'review', label: 'Review', modes: ['code'] },
   { id: 'git', label: 'Git', modes: ['code'] },
   { id: 'tasks', label: 'Tasks', modes: ['work', 'code'] },
 ];
@@ -71,6 +62,8 @@ type WorkbenchPanelProps = {
   activeTab: WorkbenchTab;
   onTabChange: (tab: WorkbenchTab) => void;
   onClose: () => void;
+  /** Where the review pane's line comments go when the user sends them. */
+  onSendComments?: (text: string) => void;
 };
 
 /** Every tool part in the thread, in order. */
@@ -84,20 +77,28 @@ function collectToolParts(messages: ChatMessage[]): ChatToolPart[] {
   return parts;
 }
 
-export function WorkbenchPanel({ conversationId, mode, messages, activeTab, onTabChange, onClose }: WorkbenchPanelProps) {
+export function WorkbenchPanel({
+  conversationId,
+  mode,
+  messages,
+  activeTab,
+  onTabChange,
+  onClose,
+  onSendComments,
+}: WorkbenchPanelProps) {
   const toolParts = useMemo(() => collectToolParts(messages), [messages]);
   const tabs = useMemo(() => workbenchTabsForMode(mode), [mode]);
-  // Switching a conversation to Work with Changes open would otherwise leave a
+  // Switching a conversation to Work with Review open would otherwise leave a
   // selected tab that is no longer in the bar.
   const visibleTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : (tabs[0]?.id ?? 'tasks');
 
-  const counts = useMemo(() => {
-    let changes = 0;
-    for (const part of toolParts) {
-      if (toolCellKind(part) === 'edit') changes += 1;
-    }
-    return { changes, git: 0, tasks: toolParts.length };
-  }, [toolParts]);
+  // Only Tasks carries a count. Review and Git reflect the repository, which is
+  // not something the thread's tool calls can be counted to predict.
+  const counts: Record<WorkbenchTab, number> = {
+    review: 0,
+    git: 0,
+    tasks: toolParts.length,
+  };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg-base">
@@ -138,8 +139,20 @@ export function WorkbenchPanel({ conversationId, mode, messages, activeTab, onTa
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-auto-hide" role="tabpanel">
-        {visibleTab === 'changes' && <ChangesTab conversationId={conversationId} parts={toolParts} />}
+      {/*
+        Review owns its own scroller: the scope selector and the diff-wide
+        actions have to stay put while a long patch scrolls under them.
+      */}
+      <div
+        className={cn(
+          'min-h-0 flex-1',
+          visibleTab === 'review' ? 'overflow-hidden' : 'overflow-y-auto scrollbar-auto-hide'
+        )}
+        role="tabpanel"
+      >
+        {visibleTab === 'review' && (
+          <ReviewPanel conversationId={conversationId} onSendComments={onSendComments} />
+        )}
         {visibleTab === 'git' && <GitPanel conversationId={conversationId} />}
         {visibleTab === 'tasks' && <TasksTab parts={toolParts} />}
       </div>
@@ -152,249 +165,6 @@ function EmptyState({ title, body }: { title: string; body: string }) {
     <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center">
       <p className="text-base text-text-secondary">{title}</p>
       <p className="max-w-[36ch] text-sm leading-relaxed text-text-faint">{body}</p>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Changes — the IDE extension's changed-files pattern (spec §5, shot 12):
-// "N files edited +A −D" header, then one borderless row per file with
-// hairline separators, each expanding to its diff.
-// ---------------------------------------------------------------------------
-
-function ChangesTab({ conversationId, parts }: { conversationId?: string; parts: ChatToolPart[] }) {
-  const [dbRecords, setDbRecords] = useState<FileChangeRecord[]>([]);
-  const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
-  const [overrideStatus, setOverrideStatus] = useState<Record<string, 'pending' | 'accepted' | 'reverted'>>({});
-
-  useEffect(() => {
-    if (!conversationId || !window.atlasChat?.fileChanges?.list) return;
-    window.atlasChat.fileChanges.list(conversationId).then(setDbRecords).catch(() => {});
-  }, [conversationId, parts]);
-
-  // The working tree is the other half of "what changed": files touched
-  // outside this thread (by the user, by a rebase) never produced a tool call,
-  // so nothing above would ever mention them.
-  useEffect(() => {
-    if (!conversationId || !window.atlasChat?.git?.getState) return;
-    window.atlasChat.git
-      .getState(conversationId)
-      .then((state) => setGitFiles(state.isRepo ? state.files : []))
-      .catch(() => {});
-  }, [conversationId, parts]);
-
-  const files = useMemo(() => {
-    const byPath = new Map<string, { file: DiffFile; recordId?: string; status: 'pending' | 'accepted' | 'reverted' }>();
-
-    for (const part of parts) {
-      if (toolCellKind(part) !== 'edit') continue;
-      const output = typeof part.output === 'string' ? part.output : '';
-      const parsed = parseUnifiedDiff(output);
-      if (!parsed) continue;
-      for (const file of parsed) {
-        byPath.set(file.path, { file, status: overrideStatus[file.path] ?? 'pending' });
-      }
-    }
-
-    // The DB records carry the same project-relative path the diff header
-    // does, so they key straight onto the tool-call rows — and they are the
-    // ones that can be accepted or reverted, so they win.
-    //
-    // Legacy rows written before the path was normalised hold an absolute
-    // path; the suffix pass folds those onto the row they belong to instead of
-    // listing the same file twice.
-    for (const rec of dbRecords) {
-      const parsed = parseUnifiedDiff(rec.diffText);
-      const diffFile = parsed?.[0] ?? { path: rec.filePath, added: 1, removed: 0, hunks: [] };
-
-      let key = rec.filePath;
-      if (!byPath.has(key)) {
-        for (const existingKey of byPath.keys()) {
-          if (rec.filePath.endsWith(`/${existingKey}`) || existingKey.endsWith(`/${rec.filePath}`)) {
-            key = existingKey;
-            break;
-          }
-        }
-      }
-
-      byPath.set(key, {
-        file: diffFile,
-        recordId: rec.id,
-        status: overrideStatus[key] ?? overrideStatus[rec.filePath] ?? rec.status ?? 'pending'
-      });
-    }
-
-    return [...byPath.values()].sort((a, b) => a.file.path.localeCompare(b.file.path));
-  }, [parts, dbRecords, overrideStatus]);
-
-  const handleAccept = async (filePath: string, recordId?: string) => {
-    setOverrideStatus((prev) => ({ ...prev, [filePath]: 'accepted' }));
-    if (recordId && window.atlasChat?.fileChanges?.accept) {
-      try {
-        await window.atlasChat.fileChanges.accept(recordId);
-      } catch (err) {
-        console.warn('Accept failed:', err);
-      }
-    }
-  };
-
-  const handleRevert = async (filePath: string, recordId?: string) => {
-    setOverrideStatus((prev) => ({ ...prev, [filePath]: 'reverted' }));
-    if (conversationId && recordId && window.atlasChat?.fileChanges?.revert) {
-      try {
-        await window.atlasChat.fileChanges.revert(conversationId, recordId);
-      } catch (err) {
-        console.warn('Revert failed:', err);
-      }
-    }
-  };
-
-  const editedPaths = new Set(files.map((item) => item.file.path));
-  const untouchedGitFiles = gitFiles.filter((file) => !editedPaths.has(file.path));
-
-  if (!files.length && !untouchedGitFiles.length) {
-    return (
-      <EmptyState
-        title="No file changes yet"
-        body="Edits made in this conversation appear here as diffs, alongside anything else git sees in the working tree."
-      />
-    );
-  }
-
-  const added = files.reduce((sum, item) => sum + item.file.added, 0);
-  const removed = files.reduce((sum, item) => sum + item.file.removed, 0);
-
-  return (
-    <div className="px-4 py-2">
-      {files.length > 0 ? (
-        <>
-          <p className="py-1.5 text-sm text-text-tertiary">
-            {files.length} file{files.length === 1 ? '' : 's'} edited{' '}
-            <span className="tabular-nums">
-              <span className="text-diff-add-fg">+{added}</span>{' '}
-              <span className="text-diff-del-fg">−{removed}</span>
-            </span>
-          </p>
-
-          <div>
-            {files.map(({ file, recordId, status }) => (
-              <FileChangeRow
-                key={file.path}
-                file={file}
-                defaultOpen={files.length === 1}
-                status={status}
-                onAccept={() => handleAccept(file.path, recordId)}
-                onRevert={() => handleRevert(file.path, recordId)}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
-
-      {untouchedGitFiles.length > 0 ? (
-        <section>
-          {/* No diff and no revert: these are the user's own changes, and the
-              workbench does not get to undo those. */}
-          <h3 className="pb-1 pt-3 text-sm font-normal text-text-tertiary">Also in the working tree</h3>
-          <ul>
-            {untouchedGitFiles.map((file) => (
-              <li
-                key={file.path}
-                className="flex min-h-8 items-center gap-2.5 border-t border-border-subtle first:border-t-0"
-              >
-                <span className="min-w-0 flex-1 truncate text-base text-text-secondary" title={file.path}>
-                  {file.path}
-                </span>
-                <span className="shrink-0 font-mono text-sm text-text-faint">
-                  {`${file.indexStatus}${file.workingTreeStatus}`.trim() || '—'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-    </div>
-  );
-}
-
-function FileChangeRow({
-  file,
-  defaultOpen,
-  status = 'pending',
-  onAccept,
-  onRevert
-}: {
-  file: DiffFile;
-  defaultOpen: boolean;
-  status?: 'pending' | 'accepted' | 'reverted';
-  onAccept?: () => void;
-  onRevert?: () => void;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const label = file.previousPath ? `${file.previousPath} → ${file.path}` : file.path;
-
-  return (
-    <div className={cn('border-t border-border-subtle first:border-t-0', status === 'reverted' && 'opacity-50 line-through')}>
-      <div className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-bg-hover">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          <span className="min-w-0 flex-1 truncate text-base text-text-primary" title={label}>
-            {label}
-          </span>
-          <span className="shrink-0 tabular-nums text-sm">
-            <span className="text-diff-add-fg">+{file.added}</span>{' '}
-            <span className="text-diff-del-fg">−{file.removed}</span>
-          </span>
-          <ChevronDown
-            aria-hidden
-            className={cn(
-              'size-3.5 shrink-0 text-text-faint transition-transform',
-              !open && '-rotate-90'
-            )}
-          />
-        </button>
-
-        {status === 'pending' && (onAccept || onRevert) ? (
-          <div className="flex shrink-0 items-center gap-1">
-            {onAccept ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onAccept();
-                }}
-                className="rounded bg-bg-surface px-2 py-0.5 text-xs text-success transition-colors hover:bg-bg-hover"
-              >
-                Accept
-              </button>
-            ) : null}
-            {onRevert ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRevert();
-                }}
-                className="rounded bg-bg-surface px-2 py-0.5 text-xs text-error transition-colors hover:bg-bg-hover"
-              >
-                Revert
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {status === 'accepted' ? <span className="shrink-0 text-xs font-medium text-success">Accepted</span> : null}
-        {status === 'reverted' ? <span className="shrink-0 text-xs font-medium text-error">Reverted</span> : null}
-      </div>
-
-      {open && (
-        <div className="pb-3">
-          <DiffBlock file={file} />
-        </div>
-      )}
     </div>
   );
 }

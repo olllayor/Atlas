@@ -138,7 +138,8 @@ export function resolveConversationWorkspace(
         filePath: change.filePath,
         beforeContent: change.beforeContent,
         afterContent: change.afterContent,
-        diffText: change.diffText
+        diffText: change.diffText,
+        toolCallId: change.toolCallId ?? null
       });
     };
   }

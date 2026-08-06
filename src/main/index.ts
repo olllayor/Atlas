@@ -29,12 +29,35 @@ import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
 import { registerWorkspaceIpc } from './ipc/workspace';
 import { registerGitIpc } from './ipc/git';
+import { registerGitHubIpc } from './ipc/github';
 import { registerFileChangesIpc } from './ipc/fileChanges';
 import { registerTerminalIpc } from './ipc/terminal';
+import { IdeLauncher } from './workspace/IdeLauncher';
 import { ProjectDetector } from './workspace/ProjectDetector';
 import { AgentInstructionsService } from './workspace/AgentInstructions';
 import { EnvStore } from './workspace/EnvStore';
+import { GitReviewService } from './workspace/GitReviewService';
 import { GitStateService } from './workspace/GitStateService';
+import { getSharedGitHubService } from './workspace/GitHubCli';
+import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
+import { McpClientManager } from './ai/mcp/McpClientManager';
+import type { ActivationRecord } from './plugins/PluginActivation';
+import { PluginActivationStore } from './plugins/PluginActivation';
+import {
+  registerPluginIconProtocolHandler,
+  registerPluginIconScheme,
+} from './plugins/pluginIconProtocol';
+import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
+import { marketplaceCheckoutRoot, withBundledMarketplace } from './plugins/bundledMarketplace';
+import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
+import { PluginInstaller } from './plugins/PluginInstaller';
+import { PluginMarketplaceService } from './plugins/PluginMarketplaceService';
+import { PluginRegistry } from './plugins/PluginRegistry';
+import { registerPluginsIpc } from './ipc/plugins';
+import { createPluginMcpSource } from './plugins/PluginMcpSource';
+import { SkillsService } from './plugins/SkillsService';
+import { McpSecretStore } from './secrets/mcpSecrets';
+import { createMcpToolsProvider } from './ai/mcp/mcpToolsProvider';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
 import { PtyService } from './terminal/PtyService';
 import { assertTrustedSender } from './ipc/security';
@@ -60,12 +83,20 @@ const LEGACY_USER_DATA_DIRECTORIES = ['Atlas', 'CheapChat', 'cheapchat'];
 
 app.setName(APP_NAME);
 
+// Dev-only escape hatch: `ATLAS_REMOTE_DEBUG_PORT=9223 pnpm dev` exposes the
+// renderer over CDP so styling/compositing issues can be inspected headlessly.
+// Never set in production builds; the switch must land before app ready.
+if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.ATLAS_REMOTE_DEBUG_PORT);
+}
+
 // Custom schemes must be declared before the app is ready. `atlas-site` gives
 // previewed sites their own secure origin instead of loading them over file://;
 // `atlas-attachment` does the same for stored files, which the CSP will not
 // load over file:// either.
 registerSitePreviewScheme();
 registerAttachmentScheme();
+registerPluginIconScheme();
 
 async function pathExists(path: string) {
   try {
@@ -230,9 +261,12 @@ app.whenReady().then(async () => {
   sitePreviewHost.registerProtocolHandler();
 
   const projectDetector = new ProjectDetector();
+  const ideLauncher = new IdeLauncher();
   const agentInstructions = new AgentInstructionsService();
   const envStore = new EnvStore(database.raw);
   const gitStateService = new GitStateService();
+  const gitReviewService = new GitReviewService();
+  const githubService = getSharedGitHubService();
   const fileChangeTracker = new FileChangeTracker(database.fileChanges);
 
   // The Terminal panel's shells. Output is pushed to every open window: the
@@ -244,8 +278,67 @@ app.whenReady().then(async () => {
     }
   }, database.terminalHistory);
 
+  // One scan of ~/.atlas/plugins feeds every component type, so the prompt and
+  // the tool set cannot disagree about what is installed.
+  const pluginRegistry = new PluginRegistry({
+    isEnabled: (name) => !database.settings.getDisabledPlugins().includes(name),
+    // A bundle may declare the oldest Atlas that understands it; refusing to
+    // load beats loading it without the parts its author relied on.
+    appVersion: app.getVersion(),
+  });
+  const pluginInstaller = new PluginInstaller(pluginRegistry);
+  const checkoutRoot = marketplaceCheckoutRoot();
+  // Artwork is served from these two roots and nowhere else, whatever a
+  // manifest asks for.
+  registerPluginIconProtocolHandler(() => [pluginRegistry.root, checkoutRoot]);
+  // Interrupted installs leave staging directories behind. Upstream documents
+  // sweeping them and does not; a machine surveyed for this work still had
+  // three from a month earlier.
+  pluginInstaller.sweepStaging();
+  // Checkouts live beside the bundles but outside them: a dot-directory is
+  // skipped by the registry scan, so a cloned marketplace is never mistaken
+  // for an installed plugin.
+  const marketplaceRegistry = new MarketplaceRegistry(
+    // The bundled marketplace is prepended rather than stored: it is not a
+    // choice the user made, so it cannot drift from what the build contains.
+    () => withBundledMarketplace(database.settings.getMarketplaces<MarketplaceRecord>()),
+    checkoutRoot,
+  );
+  const pluginMarketplaces = new PluginMarketplaceService(
+    marketplaceRegistry,
+    pluginRegistry,
+    pluginInstaller,
+    () => database.settings.getMarketplaces<MarketplaceRecord>(),
+    (records) => database.settings.setMarketplaces(records),
+  );
+
+  // MCP is no longer a feature with a configuration surface: servers arrive
+  // only inside installed plugins, and this manager is the loader internal that
+  // runs them.
+  const mcpSecrets = new McpSecretStore();
+  const listPluginServers = createPluginMcpSource(pluginRegistry);
+  const mcpManager = new McpClientManager(listPluginServers, (serverId) =>
+    mcpSecrets.getEnv(serverId)
+  );
+  // Gating: a bundle's servers stay unconnected and out of the request until a
+  // skill from that plugin is opened. Twenty installed plugins therefore cost
+  // no tool schemas until the conversation is about one of them.
+  const pluginActivations = new PluginActivationStore(
+    pluginRegistry,
+    () => database.settings.getPluginActivations<ActivationRecord>(),
+    (value) => database.settings.setPluginActivations(value),
+    () => new Set(database.settings.getAlwaysOnPlugins()),
+  );
+  const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers, (conversationId) =>
+    pluginActivations.serverFilter(conversationId),
+  );
+  const skillsService = new SkillsService(pluginRegistry);
+
   app.on('will-quit', () => {
     ptyService.disposeAll();
+    // Spawned servers outlive the window otherwise: the transport keeps the
+    // child alive, and nothing else would reap it.
+    void mcpManager.disposeAll();
   });
 
   // The turn path reads project env vars synchronously, so the keychain values
@@ -253,6 +346,8 @@ app.whenReady().then(async () => {
   void envStore.primeAll().catch((err) => {
     console.warn('[main] env prime failed:', err);
   });
+
+  const checkpointCoordinator = new CheckpointCoordinator(database);
 
   const chatEngine = new ChatEngine(
     database.conversations,
@@ -284,6 +379,11 @@ app.whenReady().then(async () => {
           onAgentCommand: (command, exitCode) =>
             ptyService.echoAgentCommand(conversationId, command, exitCode),
         }),
+      () => database.settings.getVisualMode(),
+      mcpToolsProvider,
+      skillsService,
+      (conversationId, pluginName, requiredServers) =>
+        pluginActivations.activateForSkill(conversationId, pluginName, requiredServers),
     ),
     database.runtimeState,
     toolStateStore,
@@ -291,6 +391,7 @@ app.whenReady().then(async () => {
     async ({ modelId, capability }) => {
       await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
     },
+    checkpointCoordinator,
   );
 
   registerSettingsIpc({
@@ -306,9 +407,26 @@ app.whenReady().then(async () => {
     settingsRepo: database.settings,
     onConversationDeleted: (conversationId) => ptyService.kill(conversationId),
   });
-  registerProjectsIpc(database.projects);
+  registerProjectsIpc({
+    projectsRepo: database.projects,
+    settingsRepo: database.settings,
+    ideLauncher,
+  });
   registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
-  registerGitIpc(database, gitStateService);
+  registerGitIpc(database, gitStateService, gitReviewService);
+  registerGitHubIpc(database, githubService);
+  // Plugins Atlas ships with are present without being asked for. Runs after
+  // the staging sweep so a half-finished copy is never mistaken for installed.
+  pluginMarketplaces.installDefaults();
+
+  registerPluginsIpc({
+    registry: pluginRegistry,
+    installer: pluginInstaller,
+    marketplaces: pluginMarketplaces,
+    activations: pluginActivations,
+    setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
+    setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
+  });
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
   registerChatIpc(chatEngine);
@@ -369,6 +487,14 @@ app.whenReady().then(async () => {
   window.once('show', () => {
     updateService.start();
     capturePostHogEvent(POSTHOG_EVENTS.APP_LAUNCHED);
+    // Deliberately after the window is up rather than beside the other
+    // priming above: these are child processes, and spawning them while the
+    // renderer is still loading would trade the first turn's latency for the
+    // first paint's. By the time the user has typed anything, the servers are
+    // connected and their tools already listed.
+    // Gated servers are deliberately not warmed: warming one would spawn the
+    // process the gate exists to avoid.
+    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(() => undefined);
   });
 
   app.on('activate', () => {

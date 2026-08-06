@@ -2,6 +2,7 @@ import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
 
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import type {
+  ChatInputMessage,
   ChatMessagePart,
   ChatStartRequest,
   ContextUsageSnapshot,
@@ -17,6 +18,8 @@ import {
   getTextContentFromParts,
 } from '../../../shared/messageParts';
 import { estimateImageTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
+import type { VisualMode } from '../../../shared/visualIntent';
+import { DEFAULT_VISUAL_MODE, resolveVisualGate } from '../../../shared/visualIntent';
 import { VisualStreamParser } from '../../../shared/visualParser';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
@@ -30,6 +33,8 @@ import {
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
+import type { SkillsService } from '../../plugins/SkillsService';
+import { createSkillTools } from '../../plugins/skillTools';
 import type { ToolWorkspace } from '../tools/toolWorkspace';
 import { DEFAULT_TOOL_WORKSPACE } from '../tools/toolWorkspace';
 import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
@@ -49,6 +54,17 @@ import { ContextManager } from './ContextManager';
 export type SiteToolContext = {
   conversationId: string;
   mentions: MentionId[];
+};
+
+/**
+ * Supplies MCP tools to a turn.
+ *
+ * `loadTools` may connect and is awaited on the send path; `peekTools` answers
+ * from cache for the synchronous context meter.
+ */
+export type McpToolsProvider = {
+  loadTools: (conversationId?: string) => Promise<ToolSet>;
+  peekTools: () => ToolSet;
 };
 
 export type PendingToolApproval = {
@@ -110,6 +126,34 @@ type TurnState = {
  */
 export function stepScopedPartId(partId: string, stepIndex: number) {
   return stepIndex === 0 ? partId : `${partId}#${stepIndex}`;
+}
+
+/**
+ * The text of the message this turn is answering.
+ *
+ * Attachments are skipped on purpose: a pasted screenshot is context, not a
+ * request to draw one.
+ */
+export function latestUserText(messages: ChatInputMessage[] | undefined): string {
+  if (!messages?.length) {
+    return '';
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') {
+      continue;
+    }
+
+    const fromParts = (message.parts ?? [])
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .filter((text) => text.length > 0)
+      .join('\n');
+
+    return (fromParts || message.content || '').trim();
+  }
+
+  return '';
 }
 
 /** Open a new step the first time a given tool call is seen. */
@@ -332,7 +376,74 @@ export class ChatSessionRuntime {
      * process and never accepted from the renderer.
      */
     private readonly workspaceResolver: (conversationId: string) => ToolWorkspace = () => DEFAULT_TOOL_WORKSPACE,
+    /**
+     * The user's visual preference, read per turn so a change in Settings
+     * applies to the next message rather than to the next restart.
+     */
+    private readonly visualModeResolver: () => VisualMode = () => DEFAULT_VISUAL_MODE,
+    /**
+     * Supplies tools from the user's MCP servers.
+     *
+     * Two entry points because the two callers differ: the send path can await
+     * a connection, while the context meter is synchronous and settles for the
+     * last known catalog. The meter being a token estimate makes that trade
+     * safe — the worst case is a slightly low estimate on the first turn after
+     * a server is added, never a different tool set than the one that runs.
+     */
+    private readonly mcpToolsProvider: McpToolsProvider | null = null,
+    /**
+     * Installed plugins' skills.
+     *
+     * Read synchronously on both the send path and the context meter, like the
+     * workspace and the instructions: what the prompt lists and what the meter
+     * counts must be the same set, or the ring drifts from the request.
+     */
+    private readonly skillsService: SkillsService | null = null,
+    /**
+     * Turns on a plugin's servers when one of its skills is opened.
+     *
+     * Only wired on the send path. The context meter builds the same tool set
+     * to measure it, and measuring must not activate anything.
+     */
+    private readonly onSkillLoaded:
+      | ((conversationId: string, pluginName: string, requiredServers: string[]) => boolean)
+      | null = null,
   ) {}
+
+  /**
+   * Whether this turn may produce a visual.
+   *
+   * Gated on the user's own words: the ~2k-token visual spec used to ship with
+   * every request, which both paid for itself on turns nobody wanted a diagram
+   * for and pushed the model into drawing one anyway. The same answer decides
+   * whether the stream parser looks for visual markup, so a turn that was never
+   * told how to emit a visual cannot have one parsed out of it either.
+   */
+  private resolveVisualsEnabled(conversationId: string, userText: string): boolean {
+    const mode = (() => {
+      try {
+        return this.visualModeResolver();
+      } catch {
+        return DEFAULT_VISUAL_MODE;
+      }
+    })();
+
+    if (mode !== 'auto') {
+      return resolveVisualGate({ mode, userText }).enabled;
+    }
+
+    // Only consulted for `auto`, and only to keep "make it wider" attached to
+    // the diagram it is about.
+    const hadRecentVisual = (() => {
+      try {
+        return this.conversationsRepo.hasRecentVisual?.(conversationId) ?? false;
+      } catch {
+        return false;
+      }
+    })();
+
+    return resolveVisualGate({ mode, userText, hadRecentVisual }).enabled;
+  }
 
   private resolveWorkspace(conversationId: string): ToolWorkspace {
     try {
@@ -451,19 +562,34 @@ export class ChatSessionRuntime {
     const workspace = this.resolveWorkspace(request.conversationId);
     const siteTools = this.resolveSiteTools(request);
     const tools = request.enableTools
-      ? createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace)
+      ? {
+          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
+          ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          // Deliberately no activation hook here — see the constructor.
+          // Last known catalog: this path cannot await a connection, and an
+          // estimate is what it exists to produce.
+          ...(this.mcpToolsProvider?.peekTools() ?? {}),
+        }
       : undefined;
     const toolTokens = tools ? estimateToolDefinitionTokens(tools) : 0;
 
     // The system prompt is measured without the summary addendum first: the
     // addendum's size depends on how much history gets compressed, which is
     // what the budget below decides.
+    // Measured against the unsent composer text, which is what the gate will
+    // see when the message is actually sent: the ring must not drop 2k tokens
+    // the moment the user types the word "diagram".
+    const visualsEnabled = this.resolveVisualsEnabled(
+      request.conversationId,
+      request.pendingText ?? ''
+    );
     const baseSystemPrompt = this.buildSystemPrompt(
       request.enableTools,
       null,
       siteTools != null,
       toolPermissionMode,
-      workspace
+      workspace,
+      visualsEnabled
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
     const pendingTokens = estimatePendingTokens(request);
@@ -551,6 +677,7 @@ export class ChatSessionRuntime {
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
+    visualsEnabled = false,
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -565,19 +692,31 @@ export class ChatSessionRuntime {
       : null;
     // Tell the model what it may actually do, so it does not plan around a tool
     // that was withheld from its tool set.
+    // Listed only when the tools are, because `load_skill` is the only way to
+    // act on the list and it ships with the rest of the tool set.
+    const skillsPrompt =
+      this.skillsService?.describeForPrompt({
+        mode: workspace.mode,
+        hasProject: workspace.root != null
+      }) ?? null;
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
+      ...(skillsPrompt ? [skillsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
-    const base = enableTools ? `${toolPrompt}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT;
-    if (!contextAddendum) {
-      return base;
-    }
+    // The visual spec goes last of the Atlas-owned blocks and only when this
+    // turn asked for a visual, so an ordinary question is not carrying two
+    // thousand tokens of SVG instructions it will never use.
+    const sections = [
+      ...(enableTools ? [toolPrompt] : []),
+      ...(visualsEnabled ? [VISUAL_PROMPT] : []),
+      ...(contextAddendum ? [contextAddendum] : []),
+    ];
 
-    return `${base}\n\n${contextAddendum}`;
+    return sections.join('\n\n');
   }
 
   private resolveSiteTools(request: {
@@ -627,8 +766,32 @@ export class ChatSessionRuntime {
     // Resolved once per turn, like the tool set: a mode switch mid-stream must
     // not change what this turn was allowed to do.
     const workspace = this.resolveWorkspace(request.conversationId);
+    // Same reasoning: the gate is evaluated once so a retry cannot answer the
+    // same message with a different set of instructions.
+    const visualsEnabled = this.resolveVisualsEnabled(
+      request.conversationId,
+      latestUserText(request.messages)
+    );
+    // Resolved once per turn alongside the rest: a server coming up mid-stream
+    // must not change what this turn was offered. A provider that throws is
+    // treated as contributing nothing rather than failing the send.
+    const mcpTools = request.enableTools
+      ? await (
+          this.mcpToolsProvider?.loadTools(request.conversationId) ?? Promise.resolve({})
+        ).catch(() => ({}))
+      : {};
     const tools = request.enableTools
-      ? createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace)
+      ? {
+          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
+          ...(this.skillsService
+            ? createSkillTools(
+                this.skillsService,
+                (pluginName, requiredServers) =>
+                  this.onSkillLoaded?.(request.conversationId, pluginName, requiredServers) ?? false,
+              )
+            : {}),
+          ...mcpTools,
+        }
       : undefined;
     // Catalog-derived limits so the adapter can size the request to this model
     // rather than to a provider-wide constant.
@@ -641,7 +804,7 @@ export class ChatSessionRuntime {
         lastTextPartId: 'assistant-text',
         stepIndex: 0,
         steppedToolCallIds: new Set<string>(),
-        visualParser: new VisualStreamParser(),
+        visualParser: new VisualStreamParser({ enabled: visualsEnabled }),
         pendingApprovals: new Map<string, PendingToolApproval>(),
       };
       // Same budget the ring displays, so what is shown is what is sent.
@@ -654,7 +817,14 @@ export class ChatSessionRuntime {
           requestedMaxOutputTokens: request.maxOutputTokens,
           fixedFloorTokens:
             estimateTextTokens(
-              this.buildSystemPrompt(request.enableTools, null, siteTools != null, toolPermissionMode, workspace)
+              this.buildSystemPrompt(
+                request.enableTools,
+                null,
+                siteTools != null,
+                toolPermissionMode,
+                workspace,
+                visualsEnabled
+              )
             ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
         }).budget,
       });
@@ -677,13 +847,15 @@ export class ChatSessionRuntime {
           apiKey,
           modelId: request.modelId,
           messages: modelInput.recentMessages,
-          system: this.buildSystemPrompt(
-            request.enableTools,
-            modelInput.systemContextAddendum,
-            siteTools != null,
-            toolPermissionMode,
-            workspace,
-          ),
+          system:
+            this.buildSystemPrompt(
+              request.enableTools,
+              modelInput.systemContextAddendum,
+              siteTools != null,
+              toolPermissionMode,
+              workspace,
+              visualsEnabled,
+            ) || undefined,
           tools,
           toolChoice: inferToolChoice(request),
           temperature: request.temperature,

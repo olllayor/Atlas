@@ -14,7 +14,7 @@ import type { SavedVisual } from '../../../shared/contracts';
 import { buildVisualSrcDoc } from '../../../shared/visualDocument';
 import { detectRequiredLibraries } from '../../../shared/visualParser';
 import { chartJs, d3Js } from '../../visual/bundles';
-import { detectDiagramSpec } from './interactive-diagram';
+import { detectDiagramSpec } from '../../../shared/diagramSpec';
 import { detectRiveContent } from './rive-visual';
 import { readThemeTokens } from './visual';
 

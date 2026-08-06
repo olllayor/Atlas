@@ -17,9 +17,10 @@
  * cap was a dead end with no way to see the rest. Both are fixed here.
  */
 
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, MessageSquarePlus } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
+import type { ReviewComment } from '../../../shared/review';
 import type { DiffFile, DiffLine } from '../../../shared/toolCellGrammar';
 import { diffFileToPlainText } from '../../../shared/toolCellGrammar';
 import { useClipboard } from '../../hooks/useClipboard';
@@ -57,7 +58,24 @@ function RawDiffBlock({ file }: { file: DiffFile }) {
   );
 }
 
-export function DiffBlock({ file }: { file: DiffFile }) {
+/**
+ * `onAddComment` and `commentsFor` turn a read-only diff into a reviewable one.
+ *
+ * Both optional, and both absent in the transcript: a diff inside a message is
+ * a record of what happened, and there is nothing to leave feedback on. The
+ * review pane passes them, which is where Codex puts line comments too — hover
+ * a line, press `+`, and the note is attached to that line rather than to the
+ * conversation.
+ */
+export function DiffBlock({
+  file,
+  onAddComment,
+  commentsFor
+}: {
+  file: DiffFile;
+  onAddComment?: (line: DiffLine) => void;
+  commentsFor?: (line: DiffLine) => ReviewComment[];
+}) {
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useClipboard();
   const raw = useRawTranscript();
@@ -132,7 +150,13 @@ export function DiffBlock({ file }: { file: DiffFile }) {
                   </td>
                 </tr>
               ) : (
-                <DiffRow key={index} line={row} gutterWidth={gutterWidth} />
+                <DiffRow
+                  key={index}
+                  line={row}
+                  gutterWidth={gutterWidth}
+                  onAddComment={onAddComment}
+                  comments={commentsFor?.(row) ?? []}
+                />
               )
             )}
           </tbody>
@@ -153,20 +177,46 @@ export function DiffBlock({ file }: { file: DiffFile }) {
   );
 }
 
-function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number }) {
+function DiffRow({
+  line,
+  gutterWidth,
+  onAddComment,
+  comments
+}: {
+  line: DiffLine;
+  gutterWidth: number;
+  onAddComment?: (line: DiffLine) => void;
+  comments: ReviewComment[];
+}) {
   const isAdd = line.sign === '+';
   const isDel = line.sign === '-';
 
   return (
-    <tr className={cn(isAdd && 'bg-diff-add-bg', isDel && 'bg-diff-del-bg')}>
+    <>
+    <tr className={cn('group/row', isAdd && 'bg-diff-add-bg', isDel && 'bg-diff-del-bg')}>
       <td
         className={cn(
-          'select-none whitespace-pre px-2 text-right align-top tabular-nums text-diff-gutter-fg',
+          'relative select-none whitespace-pre px-2 text-right align-top tabular-nums text-diff-gutter-fg',
           isAdd && 'bg-diff-add-gutter-bg',
           isDel && 'bg-diff-del-gutter-bg'
         )}
         style={{ width: `${gutterWidth + 1}ch` }}
       >
+        {/*
+          Overlaid rather than given a column of its own: a third column would
+          shift every line of every diff sideways to make room for an
+          affordance that is invisible until the pointer is on that one row.
+        */}
+        {onAddComment ? (
+          <button
+            type="button"
+            onClick={() => onAddComment(line)}
+            aria-label={`Comment on line ${line.lineNumber ?? ''}`}
+            className="absolute left-0 top-0 z-10 hidden h-full items-center rounded-sm bg-bg-surface px-1 text-text-tertiary hover:text-text-primary group-hover/row:flex focus-visible:flex"
+          >
+            <MessageSquarePlus className="size-3" aria-hidden />
+          </button>
+        ) : null}
         {line.lineNumber ?? ''}
       </td>
       <td
@@ -189,5 +239,17 @@ function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number })
         {line.content}
       </td>
     </tr>
+
+    {comments.map((comment) => (
+      <tr key={comment.id}>
+        <td aria-hidden />
+        <td className="whitespace-pre-wrap py-1 pr-2">
+          <span className="block border-l-2 border-brand pl-2 text-xs leading-5 text-text-secondary">
+            {comment.body}
+          </span>
+        </td>
+      </tr>
+    ))}
+    </>
   );
 }

@@ -201,6 +201,40 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
 ON conversation_turns (conversation_id, created_at);
 
+-- Git snapshots bracketing each turn, so a turn's edits can be shown as one
+-- diff and undone as one act. The status column records the skipped cases (no
+-- project, not a repository, git unavailable) rather than dropping the row, so
+-- the UI can say why a turn has no diff instead of showing nothing.
+CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  turn_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  repo_root TEXT NOT NULL,
+  ref_name TEXT,
+  commit_sha TEXT,
+  tree_sha TEXT,
+  head_sha TEXT,
+  status TEXT NOT NULL,
+  skip_reason TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- One row per (turn, kind): the retry, compaction and approval-resume paths all
+-- re-enter a turn, and a second capture would silently redefine its baseline.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_checkpoints_turn_kind
+ON workspace_checkpoints (turn_id, kind);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_conversation
+ON workspace_checkpoints (conversation_id, created_at);
+
+-- User-configured MCP servers. Each row is a local program this app will run,
+-- so it is only ever written from the settings UI over a trusted sender.
+--
+-- env_json holds literal values the user typed; env_var_names lists variables
+-- forwarded from this process. Prefer the latter for anything secret: a
+-- spawned server receives a cleared environment plus a fixed allowlist, and
+-- literal values are stored here in the clear.
 CREATE TABLE IF NOT EXISTS approval_requests (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,

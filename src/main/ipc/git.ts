@@ -1,13 +1,17 @@
 import { ipcMain } from 'electron/main';
 
 import type {
+  GitApplyHunkRequest,
   GitBranchInfo,
   GitCommitRequest,
   GitLogEntry,
+  GitReviewRequest,
   GitStateSummary
 } from '../../shared/contracts';
+import type { ReviewDiff } from '../../shared/review';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
+import type { GitReviewService } from '../workspace/GitReviewService';
 import type { GitStateService } from '../workspace/GitStateService';
 import { describeConversationWorkspace } from '../workspace/conversationWorkspace';
 import { withUserFacingErrors } from './errors';
@@ -15,7 +19,8 @@ import { assertTrustedSender } from './security';
 
 export function registerGitIpc(
   db: AppDatabase,
-  gitStateService: GitStateService
+  gitStateService: GitStateService,
+  gitReviewService: GitReviewService
 ) {
   const EMPTY_STATE: GitStateSummary = {
     isRepo: false,
@@ -50,14 +55,12 @@ export function registerGitIpc(
     return project.root;
   };
 
+  // One `git status --porcelain=v1 --branch` carries the branch, the upstream
+  // drift and the file list together, so this is a single subprocess rather
+  // than the three it used to fan out to.
   const readState = async (root: string): Promise<GitStateSummary> => {
-    const [branch, files, aheadBehind] = await Promise.all([
-      gitStateService.getBranch(root),
-      gitStateService.getStatus(root),
-      gitStateService.getAheadBehind(root)
-    ]);
-
-    return { isRepo: true, branch, files, ahead: aheadBehind.ahead, behind: aheadBehind.behind };
+    const { branch, files, ahead, behind } = await gitStateService.getState(root);
+    return { isRepo: true, branch, files, ahead, behind };
   };
 
   ipcMain.handle(
@@ -148,6 +151,113 @@ export function registerGitIpc(
 
         if (!project || !project.exists) return [];
         return gitStateService.getBranches(project.root);
+      }
+    )
+  );
+
+  /**
+   * The commit pair bounding the assistant's most recent completed turn.
+   *
+   * Read from the checkpoint table rather than from git: only the table knows
+   * which refs belong to which turn, and it also records the turns that were
+   * *not* captured, which is the difference between "nothing changed" and
+   * "this folder is not a repository".
+   */
+  const lastTurnRange = (conversationId: string): { from: string; to: string } | null => {
+    const captured = db.workspaceCheckpoints
+      .listForConversation(conversationId)
+      .filter((entry) => entry.status === 'captured' && entry.kind !== 'undo');
+
+    for (let index = captured.length - 1; index >= 0; index -= 1) {
+      const post = captured[index]!;
+
+      if (post.kind !== 'post' || !post.commitSha) {
+        continue;
+      }
+
+      const pre = captured.find((entry) => entry.turnId === post.turnId && entry.kind === 'pre');
+
+      if (pre?.commitSha) {
+        return { from: pre.commitSha, to: post.commitSha };
+      }
+    }
+
+    return null;
+  };
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitReview,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitReview,
+      async (event, request: GitReviewRequest): Promise<ReviewDiff> => {
+        assertTrustedSender(event);
+
+        const workspace = describeConversationWorkspace(db, request.conversationId);
+        const project = workspace.project;
+
+        // Not an error: an unattached conversation is a normal state, and the
+        // pane says so itself rather than showing a failure toast on open.
+        if (!project || !project.exists || !gitStateService.isGitRepo(project.root)) {
+          return {
+            scope: request.scope,
+            files: [],
+            subject: null,
+            emptyReason: 'Attach a project folder that is a git repository to review changes.'
+          };
+        }
+
+        return gitReviewService.review(project.root, request.scope, {
+          commit: request.commit ?? null,
+          range: request.scope === 'lastTurn' ? lastTurnRange(request.conversationId) : null
+        });
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitStage,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitStage,
+      async (event, conversationId: string, paths: string[]): Promise<void> => {
+        assertTrustedSender(event);
+        await gitReviewService.stage(resolveRepoRoot(conversationId), paths);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitUnstage,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitUnstage,
+      async (event, conversationId: string, paths: string[]): Promise<void> => {
+        assertTrustedSender(event);
+        await gitReviewService.unstage(resolveRepoRoot(conversationId), paths);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitRevert,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitRevert,
+      async (event, conversationId: string, paths: string[]): Promise<void> => {
+        assertTrustedSender(event);
+        await gitReviewService.revert(resolveRepoRoot(conversationId), paths);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.gitApplyHunk,
+    withUserFacingErrors(
+      IPC_CHANNELS.gitApplyHunk,
+      async (event, request: GitApplyHunkRequest): Promise<void> => {
+        assertTrustedSender(event);
+
+        await gitReviewService.applyPatch(resolveRepoRoot(request.conversationId), request.patch, {
+          cached: request.cached,
+          reverse: request.reverse
+        });
       }
     )
   );

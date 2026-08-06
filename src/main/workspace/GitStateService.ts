@@ -40,48 +40,143 @@ export type GitBranchInfo = {
   remote: boolean;
 };
 
+/** What `--branch` adds to a porcelain status: the header line, decoded. */
+export type GitBranchState = {
+  branch: string | null;
+  ahead: number | null;
+  behind: number | null;
+};
+
+export type GitWorkingState = GitBranchState & {
+  files: GitFileStatus[];
+};
+
+const DETACHED_BRANCH_LABEL = 'HEAD (detached)';
+const DETACHED_HEADER = 'HEAD (no branch)';
+const NO_COMMITS_PREFIX = 'No commits yet on ';
+
+const UNKNOWN_BRANCH_STATE: GitBranchState = { branch: null, ahead: null, behind: null };
+
+/**
+ * Decode the `## …` line that `git status --branch` prints first.
+ *
+ * The shapes, all of which appear in normal use:
+ *
+ *     ## main                                  no upstream
+ *     ## main...origin/main                    upstream, in sync
+ *     ## main...origin/main [ahead 1]          one side only
+ *     ## main...origin/main [ahead 1, behind 2]
+ *     ## main...origin/main [gone]             upstream ref deleted
+ *     ## HEAD (no branch)                      detached
+ *     ## No commits yet on main                fresh repo
+ *
+ * Ahead/behind stay null rather than falling to zero whenever there is nothing
+ * to compare against — no upstream, or an upstream that has been deleted.
+ * "0 ahead, 0 behind" would claim the branch is in sync with a remote it has
+ * never been pushed to, which is a different and much more reassuring fact.
+ */
+export function parseStatusBranchHeader(line: string): GitBranchState {
+  if (!line.startsWith('## ')) return UNKNOWN_BRANCH_STATE;
+
+  let rest = line.slice(3).trim();
+
+  if (rest === DETACHED_HEADER) {
+    return { branch: DETACHED_BRANCH_LABEL, ahead: null, behind: null };
+  }
+
+  if (rest.startsWith(NO_COMMITS_PREFIX)) {
+    rest = rest.slice(NO_COMMITS_PREFIX.length);
+  }
+
+  // `[` is not a legal character in a refname, so the bracket can only ever be
+  // the tracking suffix and never part of a branch name.
+  const tracking = /\s\[(.+)\]$/.exec(rest);
+  const spec = tracking ? rest.slice(0, tracking.index) : rest;
+
+  // Likewise `..` is forbidden in a refname, so the `...` separator is
+  // unambiguous and neither side can contain it.
+  const separator = spec.indexOf('...');
+  const branch = (separator === -1 ? spec : spec.slice(0, separator)).trim() || null;
+
+  if (separator === -1) return { branch, ahead: null, behind: null };
+  if (!tracking) return { branch, ahead: 0, behind: 0 };
+
+  const detail = tracking[1]!;
+  if (detail === 'gone') return { branch, ahead: null, behind: null };
+
+  const ahead = /ahead (\d+)/.exec(detail);
+  const behind = /behind (\d+)/.exec(detail);
+
+  return {
+    branch,
+    ahead: ahead ? Number.parseInt(ahead[1]!, 10) : 0,
+    behind: behind ? Number.parseInt(behind[1]!, 10) : 0
+  };
+}
+
+/** Decode one `XY path` line of porcelain v1 output. */
+export function parseStatusFileLine(line: string): GitFileStatus {
+  const indexStatus = line[0] || ' ';
+  const workingTreeStatus = line[1] || ' ';
+  let path = line.slice(3).trim();
+
+  // Renamed/copied files arrive as 'R  old -> new'; the new path is the one
+  // that exists on disk and the only one worth showing.
+  if ((indexStatus === 'R' || indexStatus === 'C') && path.includes(' -> ')) {
+    path = path.split(' -> ').pop()!.trim();
+  }
+
+  return { path, indexStatus, workingTreeStatus };
+}
+
 export class GitStateService {
   isGitRepo(root: string): boolean {
     const absRoot = resolve(root);
     return existsSync(resolve(absRoot, '.git'));
   }
 
-  async getBranch(root: string): Promise<string | null> {
-    if (!this.isGitRepo(root)) return null;
+  /**
+   * Branch, upstream drift and working-tree status in one `git` invocation.
+   *
+   * These used to be three: `branch --show-current`, `status --porcelain=v1`
+   * and `rev-list --left-right --count @{upstream}...HEAD`. Adding `--branch`
+   * to the status call makes it print all three as a header line above the file
+   * list, so the panel costs one subprocess instead of three — and, unlike
+   * caching the two cheap ones, the answer is never stale.
+   *
+   * `getBranch` / `getStatus` / `getAheadBehind` remain as narrow readers on
+   * top of this, so there is exactly one parser and one command to keep right.
+   */
+  async getState(root: string): Promise<GitWorkingState> {
+    if (!this.isGitRepo(root)) return { ...UNKNOWN_BRANCH_STATE, files: [] };
     const workspace: ToolWorkspace = { mode: 'code', root };
+
     try {
-      const output = await runGit(['branch', '--show-current'], workspace);
-      return output.trim() || 'HEAD (detached)';
+      const output = await runGit(['status', '--porcelain=v1', '--branch'], workspace);
+      const lines = output.split('\n').filter(Boolean);
+      const hasHeader = lines[0]?.startsWith('## ') ?? false;
+
+      return {
+        ...parseStatusBranchHeader(hasHeader ? lines[0]! : ''),
+        files: (hasHeader ? lines.slice(1) : lines).map(parseStatusFileLine)
+      };
     } catch (err) {
-      console.warn('[GitStateService] getBranch failed:', err);
-      return null;
+      console.warn('[GitStateService] getState failed:', err);
+      return { ...UNKNOWN_BRANCH_STATE, files: [] };
     }
   }
 
+  async getBranch(root: string): Promise<string | null> {
+    return (await this.getState(root)).branch;
+  }
+
   /**
-   * How far the branch has drifted from its upstream.
-   *
-   * Null when there is no upstream at all — "0 ahead, 0 behind" would claim
-   * the branch is in sync with a remote it has never been pushed to.
+   * How far the branch has drifted from its upstream. Null when there is no
+   * upstream to have drifted from — see `parseStatusBranchHeader`.
    */
   async getAheadBehind(root: string): Promise<{ ahead: number | null; behind: number | null }> {
-    if (!this.isGitRepo(root)) return { ahead: null, behind: null };
-    const workspace: ToolWorkspace = { mode: 'code', root };
-
-    try {
-      const output = await runGit(
-        ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'],
-        workspace
-      );
-      const [behind, ahead] = output.trim().split(/\s+/).map((value) => Number.parseInt(value, 10));
-      return {
-        ahead: Number.isFinite(ahead) ? ahead! : null,
-        behind: Number.isFinite(behind) ? behind! : null
-      };
-    } catch {
-      // No upstream configured, or a fresh repo with no commits.
-      return { ahead: null, behind: null };
-    }
+    const { ahead, behind } = await this.getState(root);
+    return { ahead, behind };
   }
 
   async switchBranch(root: string, name: string): Promise<void> {
@@ -125,25 +220,7 @@ export class GitStateService {
   }
 
   async getStatus(root: string): Promise<GitFileStatus[]> {
-    if (!this.isGitRepo(root)) return [];
-    const workspace: ToolWorkspace = { mode: 'code', root };
-    try {
-      const output = await runGit(['status', '--porcelain=v1'], workspace);
-      const lines = output.split('\n').filter(Boolean);
-      return lines.map((line) => {
-        const indexStatus = line[0] || ' ';
-        const workingTreeStatus = line[1] || ' ';
-        let path = line.slice(3).trim();
-        // Handle renamed/copied files: 'R  old -> new' or 'C  old -> new'
-        if ((indexStatus === 'R' || indexStatus === 'C') && path.includes(' -> ')) {
-          path = path.split(' -> ').pop()!.trim();
-        }
-        return { path, indexStatus, workingTreeStatus };
-      });
-    } catch (err) {
-      console.warn('[GitStateService] getStatus failed:', err);
-      return [];
-    }
+    return (await this.getState(root)).files;
   }
 
   async getLog(root: string, maxCount = 20): Promise<GitLogEntry[]> {

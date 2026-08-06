@@ -1,0 +1,22 @@
+{
+  "name": "atlas-bundled",
+  "interface": {
+    "displayName": "Bundled with Atlas"
+  },
+  "description": "Plugins that ship with the app.",
+  "plugins": [
+    {
+      "name": "plugin-authoring",
+      "source": {
+        "source": "local",
+        "path": "./plugins/plugin-authoring"
+      },
+      "description": "Write plugins for Atlas: manifests, skills, and MCP server config.",
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import {
   FolderPlus,
   GitBranch,
   LayoutGrid,
+  Plug,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -26,6 +27,7 @@ import type {
   SettingsSummary,
   WorkspaceProject,
 } from '../../shared/contracts';
+import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
 import { RailSectionLabel } from './railPrimitives';
@@ -37,7 +39,7 @@ import {
   useSidebarHoverCardDelay,
 } from './sidebarHoverCardDelay';
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
-import { BrushSpinner } from './ui/brush-spinner';
+import { StatusDot } from './ui/status-dot';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -142,7 +144,17 @@ type SidebarProps = {
   onSetProjectPinned: (projectId: string, pinned: boolean) => void;
   onOpenLanding: () => void;
   onOpenSites: () => void;
+  onOpenPlugins: () => void;
   onOpenSearch: () => void;
+  /**
+   * The open conversation's mode, which decides what the primary nav offers.
+   *
+   * Sites is a Code-mode destination and Connectors a Work-mode one, so showing
+   * both to everyone made the rail describe the app rather than the thing being
+   * worked on. Optional, because a sidebar with no conversation selected still
+   * has to render something: Work is the default mode, so it is the fallback.
+   */
+  workspaceMode?: WorkspaceMode;
   onRefreshModels: () => void;
   onCheckForUpdates: () => void;
   onToggleCollapsed: () => void;
@@ -311,7 +323,9 @@ export function Sidebar({
   onSetProjectPinned,
   onOpenLanding,
   onOpenSites,
+  onOpenPlugins,
   onOpenSearch,
+  workspaceMode = 'work',
   onRefreshModels,
   onCheckForUpdates,
   onToggleCollapsed,
@@ -977,6 +991,30 @@ export function Sidebar({
               {sidebarToggleShortcutLabel}
             </span>
           ) : null}
+
+          {/*
+            Search lives up here rather than in the nav below, because it is
+            not a place. The rows under it are destinations you go to and stay
+            in; search opens the palette over whatever you were already doing,
+            and giving it a full-width row alongside them implied otherwise —
+            while spending a slot the mode-specific destinations need.
+          */}
+          {!collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onOpenSearch}
+                  aria-label="Search chats and commands"
+                  className="flex h-9 w-9 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+                >
+                  <Search className="size-4" strokeWidth={1.75} aria-hidden />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Search chats and commands</TooltipContent>
+            </Tooltip>
+          ) : null}
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -1017,10 +1055,18 @@ export function Sidebar({
             label="Search chats and commands"
             onClick={onOpenSearch}
           />
+          {workspaceMode === 'code' ? (
+            <RailButton
+              icon={<LayoutGrid className="size-4" strokeWidth={1.75} aria-hidden />}
+              label="Sites"
+              onClick={onOpenSites}
+            />
+          ) : null}
+
           <RailButton
-            icon={<LayoutGrid className="size-4" strokeWidth={1.75} aria-hidden />}
-            label="Sites"
-            onClick={onOpenSites}
+            icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+            label="Plugins"
+            onClick={onOpenPlugins}
           />
 
           {runningItem ? (
@@ -1032,7 +1078,9 @@ export function Sidebar({
                   aria-label={`Generating in ${runningItem.primaryLabel}`}
                   className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover"
                 >
-                  <BrushSpinner size={14} strokeWidth={1.5} speed={1.5} />
+                  {/* The button already carries the label and the tooltip, so
+                      the dot repeats neither — it is decorative here. */}
+                  <StatusDot size="md" tone="running" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">{runningItem.primaryLabel}</TooltipContent>
@@ -1058,15 +1106,26 @@ export function Sidebar({
                 ) : undefined
               }
             />
+            {/*
+              One mode-specific destination. Sites is where a Code-mode chat's
+              output goes. Work mode's slot held Connectors, the hand-rolled MCP
+              catalog that the plugin system replaces; it stays empty until the
+              plugins view lands rather than pointing at a page that is gone.
+            */}
+            {workspaceMode === 'code' ? (
+              <SidebarNavRow
+                icon={<LayoutGrid className="size-4" strokeWidth={1.75} aria-hidden />}
+                label="Sites"
+                onClick={onOpenSites}
+              />
+            ) : null}
+
+            {/* Not mode-specific: a plugin's skills apply to any conversation,
+                so hiding this in one mode would hide half the feature. */}
             <SidebarNavRow
-              icon={<Search className="size-4" strokeWidth={1.75} aria-hidden />}
-              label="Search"
-              onClick={onOpenSearch}
-            />
-            <SidebarNavRow
-              icon={<LayoutGrid className="size-4" strokeWidth={1.75} aria-hidden />}
-              label="Sites"
-              onClick={onOpenSites}
+              icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+              label="Plugins"
+              onClick={onOpenPlugins}
             />
           </div>
 

@@ -175,7 +175,10 @@ export const Attachment = ({
           ],
           variant === "list" && [
             "flex w-full items-center gap-3 border p-3",
-            "hover:bg-accent/50",
+            // The hover tier, like every other row in the app. This was
+            // `bg-accent/50` — the *active* token at half strength, which only
+            // happened to land near the hover value.
+            "hover:bg-bg-hover",
           ],
           className,
         )}

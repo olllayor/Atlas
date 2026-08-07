@@ -1,6 +1,8 @@
 # R1 — Pin the 33 ms stream coalescer with merge-invariant tests
 
-Part of [`00-deep-dive-and-plan.md`](00-deep-dive-and-plan.md) → [gap G1](../00-deep-dive-and-plan.md).
+Part of [`00-deep-dive-and-plan.md`](00-deep-dive-and-plan.md) → gap G1.
+
+## Status: ✅ built (`src/main/ai/core/streamBuffer.ts` + `tests/streamBuffer.test.ts`)
 
 ## Why
 

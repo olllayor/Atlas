@@ -298,6 +298,10 @@ Everything above shipped. What remains is small, deliberate, and mostly about
 
 ## 3. Tracks (ordered by dependency)
 
+> **Implementation status (2026-08-07): all four tracks below are built, tested,
+> and committed on branch `feat/t3code-borrow-R1-R4/openrouter-deepseek-chat`:
+> R1 (`b11b62d`), R2 (`5b3cb4e`), R4 (`b14d535`), R3 (`bc81359`).**
+
 Small, focused, shippable. **R1** is pure hardening of already-shipped borrows;
 **R2** closes the raw-mode guarantee; **R3–R4** are forward work rooted in the
 event spine.

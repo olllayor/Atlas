@@ -2,6 +2,8 @@
 
 Part of [`00-deep-dive-and-plan.md`](00-deep-dive-and-plan.md) → track R3.
 
+## Status: ✅ built (`src/shared/activityFeed.ts` + `tests/activityFeed.test.ts`)
+
 ## Why
 
 The borrow catalog's "runtime activity model" (§1.1) is the skeleton for *any*
@@ -10,26 +12,32 @@ after the turn settles, distinct from the raw message transcript. The reuse
 target is the existing `conversation_events` → `deriveWorkLogEntry` projection —
 **no second transcript source** (principle #2).
 
-## Note on overlap
+## What shipped (the read-model)
 
-`docs/plans/agents/03-agents-panel-and-quiet-timeline.md` already plans a
-"quiet timeline" that hides agent-attributed rows from the main thread. R3 is the
-general case (all activity, not just agent rows) and should share its fold +
-render machinery. Coordinate so the two don't build parallel folds.
+`buildActivityFeed(entries: WorkLogEntry[])` folds a flat, persisted list into
+turn-grouped rows keyed by the entry's **stable subject id** (`tool:<callId>` /
+`task:<taskId>` / `approval:<id>`), so:
 
-## Scope
+- a `tool.started` + `tool.completed` for one call fold onto one row;
+- recurring `task.progress` ticks fold onto the task's row (upsert, not append);
+- `approval.requested` + `approval.resolved` fold onto one approval row;
+- **order-robust**: a terminal event with no start row still creates the row, and
+  a late start row only fills metadata and never regresses a final status
+  (sticky terminal);
+- `message.*` / `reasoning.*` deltas are excluded — that is the transcript
+  answer, not the feed of what the conversation did.
 
-- A shared read-model over `WorkLogEntry[]` that groups by turn and phase with a
-  stable `getWorkLogEntryId`-derived key (reuse existing ids; upsert, don't
-  append — principle #3).
-- A sidebar/panel view fed by that model: dim summary rows per phase + elapsed,
-  status colour not label, turn rule for turns that did work (reuse the Codex-
-  parity `ActivityBlock` grammar).
-- Pure fold with invariant tests (order-robust: a terminal event with no start
-  row creates the entity; a late start only fills metadata).
+Deliberately **UI-free**: the fold is the shared, testable source. The Agents
+panel / quiet-timeline render layer it feeds is tracked in
+`docs/plans/agents/03-agents-panel-and-quiet-timeline.md`, which should reuse
+this read-model rather than build a parallel fold.
+
+## Invariants pinned (9 tests)
+
+Stable-key folding; first-seen row order; per-turn grouping; sticky terminal on
+late start; terminal-creates-row; message/reasoning exclusion; title→summary→type
+headline fallback; task-progress folding; approval folding.
 
 ## Acceptance
 
-- The feed renders from the persisted log after a reload (no live-only data).
-- Invariant tests green under `pnpm test`; `pnpm build` passes.
-- No new tables; purely additive payload fields if needed (principle #1).
+- `pnpm test` green; `pnpm build` passes. (Verified: 9/9 tests pass.)

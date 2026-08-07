@@ -250,3 +250,93 @@ test('RuntimeStateRepo marks active sessions interrupted and pending approvals s
   assert.equal(runtimeState.getLatestProviderSession(conversation.id)?.status, 'interrupted');
   assert.equal(runtimeState.getApprovalById('approval-recovery')?.status, 'stale');
 });
+
+test('RuntimeStateRepo upserts task.* events onto one row and stamps agentKind once at record time', (t) => {
+  const { raw, database, tempDir } = createDatabase('atlas-runtime-tasks-');
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+  const messageId = conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: '',
+    status: 'streaming',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+  });
+
+  runtimeState.createTurn({
+    id: 'turn-task',
+    conversationId: conversation.id,
+    requestId: 'request-task',
+    assistantMessageId: messageId,
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+  });
+  runtimeState.startProviderSession({
+    id: 'session-task',
+    conversationId: conversation.id,
+    turnId: 'turn-task',
+    requestId: 'request-task',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+  });
+
+  // Not in the denylist, so the boundary classifies it as a real agent, not
+  // internal background plumbing.
+  runtimeState.recordEvent({
+    eventId: 'task-event-1',
+    conversationId: conversation.id,
+    turnId: 'turn-task',
+    requestId: 'request-task',
+    activityType: 'task.started',
+    tone: 'info',
+    provider: 'system',
+    payload: { taskId: 'task-abc', taskType: 'subagent', title: 'Investigate flaky test' },
+  });
+
+  runtimeState.recordEvent({
+    eventId: 'task-event-2',
+    conversationId: conversation.id,
+    turnId: 'turn-task',
+    requestId: 'request-task',
+    activityType: 'task.progress',
+    tone: 'info',
+    provider: 'system',
+    payload: { taskId: 'task-abc', summary: 'Reproducing', usage: { totalTokens: 500, inputTokens: 300 } },
+  });
+
+  runtimeState.recordEvent({
+    eventId: 'task-event-3',
+    conversationId: conversation.id,
+    turnId: 'turn-task',
+    requestId: 'request-task',
+    activityType: 'task.completed',
+    tone: 'info',
+    provider: 'system',
+    payload: { taskId: 'task-abc', status: 'completed', usage: { totalTokens: 900 } },
+  });
+
+  const activities = runtimeState.listActivitiesByConversation(conversation.id);
+  assert.equal(activities.length, 1);
+
+  const taskRow = activities[0];
+  assert.equal(taskRow.id, 'task:task-abc');
+  assert.equal(taskRow.status, 'completed');
+  assert.equal(taskRow.isFinal, true);
+  assert.equal(taskRow.title, 'Investigate flaky test');
+  assert.equal(taskRow.payload?.agentKind, 'agent');
+
+  // Usage merges across ticks and survives the round-trip through
+  // `payload_json` — `inputTokens` from tick 2 is still there even though
+  // the terminal tick only reported `totalTokens`.
+  const usage = taskRow.payload?.usage as { totalTokens: number; inputTokens?: number } | undefined;
+  assert.equal(usage?.totalTokens, 900);
+  assert.equal(usage?.inputTokens, 300);
+});

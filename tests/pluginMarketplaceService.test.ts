@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import type { MarketplaceRecord } from '../src/main/plugins/MarketplaceRegistry.js';
-import { MarketplaceRegistry } from '../src/main/plugins/MarketplaceRegistry.js';
+import { MarketplaceRegistry, fetchRepository } from '../src/main/plugins/MarketplaceRegistry.js';
 import { PluginInstaller } from '../src/main/plugins/PluginInstaller.js';
 import { PluginMarketplaceService } from '../src/main/plugins/PluginMarketplaceService.js';
 import { PluginRegistry } from '../src/main/plugins/PluginRegistry.js';
@@ -72,7 +73,7 @@ function setup(t: Ctx) {
     }
   );
 
-  return { dir, pluginsRoot, plugins, service, records: () => records };
+  return { dir, pluginsRoot, plugins, marketplaces, installer, service, records: () => records };
 }
 
 test('adding a marketplace reads its catalogue', (t) => {
@@ -133,6 +134,36 @@ test('removing a marketplace drops it from the view', (t) => {
 
   service.remove('demo-market');
   assert.deepEqual(service.view().marketplaces, []);
+});
+
+test('checkouts nothing refers to any more are collected', (t) => {
+  const { dir, marketplaces } = setup(t);
+  const checkouts = join(dir, 'checkouts');
+
+  // What a machine accumulates: a clone for a marketplace the user removed, and
+  // a temporary from an install that never finished. Neither was ever swept.
+  mkdirSync(join(checkouts, 'long-gone-market', '.git'), { recursive: true });
+  mkdirSync(join(checkouts, 'fetch-abc123'), { recursive: true });
+
+  assert.equal(marketplaces.sweepCheckouts(), 2);
+  assert.deepEqual(readdirSync(checkouts), []);
+});
+
+test('the checkout of a marketplace still added is kept', (t) => {
+  const { dir, marketplaces, records } = setup(t);
+  const checkouts = join(dir, 'checkouts');
+
+  records().push({ name: 'live-market', source: { kind: 'git', url: 'https://example.test/r.git', ref: null } });
+  mkdirSync(join(checkouts, 'live-market'), { recursive: true });
+  mkdirSync(join(checkouts, 'dead-market'), { recursive: true });
+
+  assert.equal(marketplaces.sweepCheckouts(), 1);
+  assert.deepEqual(readdirSync(checkouts), ['live-market']);
+});
+
+test('sweeping when nothing has ever been checked out is a no-op', (t) => {
+  const { marketplaces } = setup(t);
+  assert.equal(marketplaces.sweepCheckouts(), 0);
 });
 
 test('installing from a catalogue goes through the same validation as a folder', (t) => {
@@ -381,4 +412,141 @@ test('a catalogue at Atlas\u2019s own location wins over one written for another
     service.view().marketplaces[0]?.entries.map((entry) => entry.name),
     ['for-atlas']
   );
+});
+
+test('a checkout under a symlinked temp root still resolves its subdirectory', (t) => {
+  // Regression. `containedPath` compared a realpath-resolved candidate against
+  // an *unresolved* root, and on macOS `/var` is a symlink to `/private/var` —
+  // so a git entry with a `subdir` refused to install with "points outside its
+  // marketplace" for a path that had never left it. Every checkout lives under
+  // a temporary directory, so this was every subdir entry on that platform.
+  const dir = mkdtempSync(join(tmpdir(), 'atlas-contained-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const repo = join(dir, 'repo');
+  mkdirSync(join(repo, 'plugins', 'demo'), { recursive: true });
+  writeFileSync(
+    join(repo, 'plugins', 'demo', 'plugin.json'),
+    JSON.stringify({ name: 'demo', version: '1.0.0', description: 'd' })
+  );
+  mkdirSync(join(repo, 'plugins', 'demo', 'skills', 'greet'), { recursive: true });
+  writeFileSync(
+    join(repo, 'plugins', 'demo', 'skills', 'greet', 'SKILL.md'),
+    ['---', 'name: greet', 'description: Say hello.', '---', 'Body.'].join('\n')
+  );
+
+  execFileSync('git', ['init', '--quiet'], { cwd: repo, stdio: 'pipe' });
+  execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+  execFileSync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--quiet', '-m', 'init'],
+    { cwd: repo, stdio: 'pipe' }
+  );
+
+  const fetched = fetchRepository(join(dir, 'checkouts'), {
+    url: repo,
+    ref: null,
+    subdir: 'plugins/demo'
+  });
+
+  try {
+    assert.ok(fetched.path.endsWith(join('plugins', 'demo')), fetched.path);
+    // The resolved commit is what makes a URL install provenance-bearing.
+    assert.match(fetched.sha ?? '', /^[0-9a-f]{40}$/);
+  } finally {
+    rmSync(fetched.root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Commit changed between check and install
+ * ------------------------------------------------------------------ */
+
+/** A bare-enough local git repo whose HEAD `write()` moves. */
+function gitFixture(root: string, version: string) {
+  mkdirSync(join(root, 'skills', 'greet'), { recursive: true });
+  write(join(root, 'plugin.json'), JSON.stringify({ name: 'moving-target', version, description: 'd' }));
+  write(
+    join(root, 'skills', 'greet', 'SKILL.md'),
+    ['---', 'name: greet', `description: Version ${version}.`, '---', `Body ${version}.`].join('\n')
+  );
+
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
+  execFileSync('git', ['add', '-A'], { cwd: root, stdio: 'pipe' });
+  execFileSync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--quiet', '-m', version],
+    { cwd: root, stdio: 'pipe' }
+  );
+
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root }).toString().trim();
+}
+
+test('a commit landing between preview and install is what gets installed, not what was previewed', (t) => {
+  // The scenario the acceptance criteria name: the user reviews a plugin's
+  // capabilities, and — before they press Install — the publisher pushes a
+  // new commit. `previewUrl` and `installFromUrl` each call `fetchRepository`
+  // independently rather than one reusing the other's checkout, precisely so
+  // installing cannot silently reuse bytes a *different* fetch reviewed.
+  //
+  // Driven at the `fetchRepository` layer rather than through
+  // `previewUrl`/`installFromUrl` themselves: those validate the URL as
+  // `https://` first (correctly — a local path must never be readable through
+  // the paste-a-link surface), which a filesystem fixture cannot satisfy. This
+  // exercises the exact sequence both methods run once past that check.
+  const { pluginsRoot, plugins, marketplaces, installer } = setup(t);
+  const repoDir = mkdtempSync(join(tmpdir(), 'atlas-race-repo-'));
+  t.after(() => rmSync(repoDir, { recursive: true, force: true }));
+
+  const firstSha = gitFixture(repoDir, '1.0.0');
+
+  const previewed = fetchRepository(marketplaces.checkoutDirectory, { url: repoDir, ref: null, subdir: null });
+  assert.equal(previewed.sha, firstSha);
+  rmSync(previewed.root, { recursive: true, force: true }); // previewUrl discards its checkout
+
+  // The publisher moves HEAD before Install is pressed.
+  const secondSha = gitFixture(repoDir, '2.0.0');
+  assert.notEqual(secondSha, firstSha);
+
+  const installFetch = fetchRepository(marketplaces.checkoutDirectory, { url: repoDir, ref: null, subdir: null });
+
+  try {
+    assert.equal(installFetch.sha, secondSha, 'install re-fetched HEAD rather than reusing the preview');
+
+    const result = installer.install(installFetch.path, {
+      origin: { marketplace: null, entry: null, sha: installFetch.sha, url: repoDir, ref: null, subdir: null, connectors: null }
+    });
+
+    assert.equal(result.ok, true, result.ok ? '' : result.error);
+    assert.equal(result.ok && result.version, '2.0.0');
+  } finally {
+    rmSync(installFetch.root, { recursive: true, force: true });
+  }
+
+  plugins.invalidate();
+  const [onDisk] = plugins.snapshot().plugins;
+  assert.equal(onDisk?.manifest.version, '2.0.0');
+  assert.match(
+    readFileSync(join(pluginsRoot, 'moving-target', 'skills', 'greet', 'SKILL.md'), 'utf8'),
+    /Body 2\.0\.0/
+  );
+});
+
+test('two independent fetches of a moving repository each see their own HEAD', (t) => {
+  // The other half of the same property, without an install: neither fetch
+  // is cached, so asking twice always answers against the world as it is at
+  // that moment.
+  const { marketplaces } = setup(t);
+  const repoDir = mkdtempSync(join(tmpdir(), 'atlas-race-repo2-'));
+  t.after(() => rmSync(repoDir, { recursive: true, force: true }));
+
+  gitFixture(repoDir, '1.0.0');
+  const first = fetchRepository(marketplaces.checkoutDirectory, { url: repoDir, ref: null, subdir: null });
+  rmSync(first.root, { recursive: true, force: true });
+
+  gitFixture(repoDir, '1.1.0');
+  const second = fetchRepository(marketplaces.checkoutDirectory, { url: repoDir, ref: null, subdir: null });
+  rmSync(second.root, { recursive: true, force: true });
+
+  assert.notEqual(first.sha, second.sha);
 });

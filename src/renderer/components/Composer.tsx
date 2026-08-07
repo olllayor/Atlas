@@ -59,7 +59,14 @@ import {
 } from './ai-elements/context';
 import { ImageLightbox } from './ai-elements/image-lightbox';
 import { useContextUsage } from '../hooks/useContextUsage';
+import { CommandAutocompleteList, useCommandAutocomplete } from './CommandAutocomplete';
+import type { PluginMentionEntry } from '../../shared/pluginMentions';
 import { MentionAutocompleteList, useMentionAutocomplete } from './MentionAutocomplete';
+import {
+  PluginMentionAutocompleteList,
+  toPluginMentionCatalog,
+  usePluginMentionAutocomplete
+} from './PluginMentionAutocomplete';
 import type { DraftStateLike } from './types';
 
 /**
@@ -539,7 +546,52 @@ export function Composer({
     setAttachmentError,
     getAttachmentRejectionReason,
   );
-  const mentions = useMentionAutocomplete({ value, onChange, textareaRef, disabled });
+  // The installed set, for the `@plugin` picker. Fetched once per mount: the
+  // plugins page invalidates on its own, and re-reading on every keystroke
+  // would put an IPC round trip in the typing path.
+  const [pluginCatalog, setPluginCatalog] = useState<PluginMentionEntry[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void window.atlasChat.plugins
+      .list()
+      .then((view) => {
+        if (mounted) setPluginCatalog(toPluginMentionCatalog(view.plugins));
+      })
+      // An unreadable plugins directory costs the picker, never the composer.
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const plugins = usePluginMentionAutocomplete({
+    value,
+    onChange,
+    textareaRef,
+    catalog: pluginCatalog,
+    disabled
+  });
+  const mentions = useMentionAutocomplete({
+    value,
+    onChange,
+    textareaRef,
+    // Both trigger on `@`. The plugin picker wins while it has something to
+    // offer, because it is the more specific answer: `@github` names an
+    // installed bundle, and the built-in list has one fixed entry.
+    disabled: disabled || plugins.isOpen
+  });
+  // The two pickers cannot both be open: a mention needs an `@` and a command
+  // only ever triggers on a `/` in the first column.
+  const commands = useCommandAutocomplete({ value, onChange, textareaRef, disabled });
+
+  const syncPickerCarets = useCallback(() => {
+    mentions.syncCaret();
+    commands.syncCaret();
+    plugins.syncCaret();
+  }, [commands, mentions, plugins]);
 
   // -- textarea auto-grow ---------------------------------------------------
   // Layout effect (not effect) so a paste never paints at the old height, and
@@ -745,7 +797,7 @@ export function Composer({
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Consumed keys must stop here so they neither submit nor move the caret,
     // and must not reach the app's global Escape handling.
-    if (mentions.handleKeyDown(event)) {
+    if (plugins.handleKeyDown(event) || mentions.handleKeyDown(event) || commands.handleKeyDown(event)) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -1000,6 +1052,15 @@ export function Composer({
             ) : null}
 
             <div className="relative px-1 pt-0.5" ref={fieldRef}>
+              {plugins.isOpen ? (
+                <PluginMentionAutocompleteList
+                  activeIndex={plugins.activeIndex}
+                  listboxId={plugins.listboxId}
+                  onHover={plugins.setActiveIndex}
+                  onSelect={plugins.select}
+                  suggestions={plugins.suggestions}
+                />
+              ) : null}
               {mentions.isOpen ? (
                 <MentionAutocompleteList
                   activeIndex={mentions.activeIndex}
@@ -1010,12 +1071,22 @@ export function Composer({
                   suggestions={mentions.suggestions}
                 />
               ) : null}
+              {commands.isOpen ? (
+                <CommandAutocompleteList
+                  activeIndex={commands.activeIndex}
+                  anchorRef={fieldRef}
+                  listboxId={commands.listboxId}
+                  onHover={commands.setActiveIndex}
+                  onSelect={commands.select}
+                  suggestions={commands.suggestions}
+                />
+              ) : null}
               <textarea
                 ref={textareaRef}
                 value={value}
                 onChange={(e) => {
                   onChange(e.target.value);
-                  mentions.syncCaret();
+                  syncPickerCarets();
                   if (pendingDeleteId) {
                     setPendingDeleteId(null);
                   }
@@ -1025,11 +1096,12 @@ export function Composer({
                 onScroll={syncScrollEdges}
                 onCompositionStart={() => setIsComposing(true)}
                 onCompositionEnd={() => setIsComposing(false)}
-                onSelect={mentions.syncCaret}
-                onClick={mentions.syncCaret}
+                onSelect={syncPickerCarets}
+                onClick={syncPickerCarets}
                 onBlur={() => {
                   onComposerFocusChange(false);
                   mentions.dismiss();
+                  commands.dismiss();
                 }}
                 onFocus={() => {
                   onComposerFocusChange(true);
@@ -1040,9 +1112,15 @@ export function Composer({
                 rows={1}
                 aria-label="Message"
                 role="combobox"
-                aria-expanded={mentions.isOpen}
-                aria-controls={mentions.isOpen ? mentions.listboxId : undefined}
-                aria-activedescendant={mentions.activeOptionId}
+                aria-expanded={mentions.isOpen || commands.isOpen}
+                aria-controls={
+                  mentions.isOpen
+                    ? mentions.listboxId
+                    : commands.isOpen
+                      ? commands.listboxId
+                      : undefined
+                }
+                aria-activedescendant={mentions.activeOptionId ?? commands.activeOptionId}
                 aria-autocomplete="list"
                 // "Do anything", not "Message…": the composer drives tools and
                 // file edits, not just chat, and the reference names the

@@ -21,22 +21,34 @@ const SCAN_TTL_MS = 5_000;
 
 export type PluginFailure = { root: string; error: string };
 
+/** An installed bundle Atlas refuses to run, and the reason shown for it. */
+export type BlockedPlugin = { plugin: LoadedPlugin; reason: string };
+
 export type PluginSnapshot = {
   /**
-   * Bundles that are installed *and* enabled.
+   * Bundles that are installed *and* enabled *and* not revoked.
    *
-   * Only enabled plugins are here, so a consumer cannot contribute a disabled
+   * Only these are here, so a consumer cannot contribute a disabled or revoked
    * plugin's tools by forgetting to filter. Turning a plugin off has to mean
    * off everywhere, and the safe default belongs at the source.
    */
   plugins: LoadedPlugin[];
   /** Installed but switched off. Shown in settings, used nowhere else. */
   disabled: LoadedPlugin[];
+  /**
+   * Installed but revoked.
+   *
+   * Its own bucket rather than folded into `disabled`, because the two are not
+   * the same claim: disabled is a choice the user made and can undo, and this
+   * is one they cannot. The distinction has to survive as far as the UI, which
+   * must not offer a switch that would do nothing.
+   */
+  blocked: BlockedPlugin[];
   /** Bundles that could not be loaded, for the settings UI. */
   failures: PluginFailure[];
 };
 
-const EMPTY: PluginSnapshot = { plugins: [], disabled: [], failures: [] };
+const EMPTY: PluginSnapshot = { plugins: [], disabled: [], blocked: [], failures: [] };
 
 export class PluginRegistry {
   readonly root: string;
@@ -47,6 +59,15 @@ export class PluginRegistry {
     now?: () => number;
     /** Consulted on every scan, so a toggle applies without a restart. */
     isEnabled?: (name: string) => boolean;
+    /**
+     * Why a bundle may not run, from the revocation list.
+     *
+     * Consulted here rather than in each consumer for the same reason
+     * `isEnabled` is: one scan feeds the prompt, the tool set and the settings
+     * page, and a revocation that any one of them could forget to apply is not
+     * a revocation.
+     */
+    blockedReason?: (name: string, version: string) => string | null;
     /** Checked against a bundle's `atlas.minAppVersion`. */
     appVersion?: string;
   }) {
@@ -58,11 +79,13 @@ export class PluginRegistry {
     this.root = options?.root ?? join(homedir(), '.atlas', 'plugins');
     this.now = options?.now ?? (() => Date.now());
     this.isEnabled = options?.isEnabled ?? (() => true);
+    this.blockedReason = options?.blockedReason ?? (() => null);
     this.appVersion = options?.appVersion;
   }
 
   private readonly now: () => number;
   private readonly isEnabled: (name: string) => boolean;
+  private readonly blockedReason: (name: string, version: string) => string | null;
   private readonly appVersion: string | undefined;
 
   /**
@@ -101,6 +124,7 @@ export class PluginRegistry {
 
     const plugins: LoadedPlugin[] = [];
     const disabled: LoadedPlugin[] = [];
+    const blocked: BlockedPlugin[] = [];
     const failures: PluginFailure[] = [];
     const claimed = new Set<string>();
 
@@ -132,14 +156,30 @@ export class PluginRegistry {
         continue;
       }
 
-      claimed.add(result.plugin.manifest.name);
-      (this.isEnabled(result.plugin.manifest.name) ? plugins : disabled).push(result.plugin);
+      const { name, version } = result.plugin.manifest;
+      claimed.add(name);
+
+      // Checked before the enabled switch, because a revoked plugin is not a
+      // preference: it must land in `blocked` whether or not the user had
+      // already turned it off, so re-enabling it cannot bring it back.
+      const reason = this.blockedReason(name, version);
+
+      if (reason) {
+        blocked.push({ plugin: result.plugin, reason });
+        continue;
+      }
+
+      (this.isEnabled(name) ? plugins : disabled).push(result.plugin);
     }
 
     if (failures.length > 0) {
       logger.warn('plugins.load_failed', { count: failures.length, first: failures[0]?.error });
     }
 
-    return { plugins, disabled, failures };
+    if (blocked.length > 0) {
+      logger.warn('plugins.blocked', { count: blocked.length, names: blocked.map((e) => e.plugin.manifest.name) });
+    }
+
+    return { plugins, disabled, blocked, failures };
   }
 }

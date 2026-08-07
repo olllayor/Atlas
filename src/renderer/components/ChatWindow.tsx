@@ -38,6 +38,7 @@ import {
 import { ConversationEmptyState } from './ai-elements/conversation';
 import { ImageLightbox } from './ai-elements/image-lightbox';
 import { MessageResponse } from './ai-elements/message';
+import { PluginInvocationRow } from './transcript/PluginInvocationRow';
 import { VisualBlock } from './ai-elements/visual';
 import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
@@ -398,6 +399,10 @@ function AssistantParts({
 
     if (part.type === 'visual') {
       return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+    }
+
+    if (part.type === 'plugin-invocation') {
+      return <PluginInvocationRow key={part.id} part={part} />;
     }
 
     if (rawMode) {

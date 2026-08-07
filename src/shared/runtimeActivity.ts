@@ -1,8 +1,11 @@
 import type {
+  ActivityType,
   CanonicalToolType,
   ChatMessagePart,
   ChatToolPart,
   RuntimeEventEnvelope,
+  RuntimeTaskStatus,
+  RuntimeTaskUsage,
   StreamEvent,
   WorkLogEntry,
   WorkLogEntryStatus,
@@ -68,7 +71,202 @@ export function getWorkLogEntryId(event: RuntimeEventEnvelope) {
     return `approval:${event.approvalId}`;
   }
 
+  /**
+   * `task.*` events recur — a subagent reports `task.progress` on every tick
+   * of its run, sometimes hundreds of times. Deriving the id from the subject
+   * (`taskId`) rather than the event makes every tick for one task collapse
+   * onto the same row instead of appending a new one, the same fix `tool:` and
+   * `approval:` ids already give tool calls and approvals above. This must
+   * come before the `activity:` fallback or the first recurring task event
+   * Atlas ever emits floods the work log.
+   */
+  if (event.activityType.startsWith('task.') && typeof event.payload.taskId === 'string') {
+    return `task:${event.payload.taskId}`;
+  }
+
   return `activity:${event.eventId}`;
+}
+
+/**
+ * Task type names an emitter can attach to `TaskAgentLinkage.taskType`.
+ *
+ * `MONITOR_TASK_TYPES` are live background processes (a shell, a dev server)
+ * that happen to ride the task pipeline for progress reporting but are not
+ * agents in their own right. `INERT_TASK_TYPES` are static artifacts (a plan)
+ * with no liveness at all. Both classify as `background` in
+ * `classifyTaskAgentKind`; they are kept as separate sets because a future
+ * liveness indicator (Working vs Monitoring) needs to tell them apart and
+ * should not have to re-derive that split from scratch.
+ */
+export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
+  'monitor',
+  'shell',
+  'local_bash',
+  'terminal',
+  'site_dev_server',
+]);
+
+export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(['plan']);
+
+/**
+ * Denylist by design, not an allowlist. Agent-flavoured type names drift as
+ * new agent kinds ship; an allowlist silently drops a real subagent the first
+ * time a new name appears — t3code shipped exactly that bug. Unknown type ⇒
+ * agent, so a new type name fails open into visibility rather than into
+ * silence.
+ *
+ * A task launched from inside an agent (`agentId` set) with no distinguishing
+ * type name is agent-internal plumbing and classifies as `background`. A
+ * nested task that *does* carry a type name is judged on that name like any
+ * other task — including an unrecognized one, which still resolves to
+ * `agent`, because a nested agent can outlive the parent that spawned it and
+ * must stay in the roster rather than being swept into "internal work".
+ */
+export function classifyTaskAgentKind(input: { taskType?: string; agentId?: string }): 'agent' | 'background' {
+  const type = input.taskType?.trim().toLowerCase();
+
+  if (type && (MONITOR_TASK_TYPES.has(type) || INERT_TASK_TYPES.has(type))) {
+    return 'background';
+  }
+
+  if (input.agentId && !type) {
+    return 'background';
+  }
+
+  return 'agent';
+}
+
+/**
+ * A work-log row with no `agentKind` at all predates this feature — it is a
+ * plain `tool.*`/`approval.*` row, or a `task.*` row whose stamp aged out of
+ * retention along with the rest of its payload. Either way it must render
+ * exactly as it did before task/agent support existed, which means staying
+ * out of any agent-only surface. `background` is that safe default; it is
+ * deliberately not the same default as `classifyTaskAgentKind`'s "unknown ⇒
+ * agent", because that rule is about *classifying a task Atlas just saw*, and
+ * this one is about *a row Atlas has no classification for at all*.
+ */
+export function getWorkLogAgentKind(entry: Pick<WorkLogEntry, 'payload'>): 'agent' | 'background' {
+  return entry.payload?.agentKind === 'agent' ? 'agent' : 'background';
+}
+
+function pickString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * `agentId`/`parentToolCallId` can arrive either as top-level envelope fields
+ * or embedded in `payload` (`TaskAgentLinkage` carries `agentId` on every
+ * task payload). Both are folded into one pair here so callers only need to
+ * check one place.
+ *
+ * `payload.toolCallId` is read as a `parentToolCallId` source for `task.*`
+ * rows only, where `TaskAgentLinkage` defines it as *the spawn tool call that
+ * created this task*. On any other row that key means the opposite — the
+ * call's own id — and reading it here would mark every ordinary tool row as
+ * nested inside an agent. Nothing writes `toolCallId` into a non-task payload
+ * today; the gate is what keeps that true by construction.
+ */
+export function resolveTaskLinkage(event: {
+  activityType?: ActivityType;
+  agentId?: string | null;
+  parentToolCallId?: string | null;
+  payload: Record<string, unknown>;
+}): { agentId: string | null; parentToolCallId: string | null } {
+  const payload = event.payload ?? {};
+  const spawnToolCallId = event.activityType?.startsWith('task.') ? pickString(payload.toolCallId) : null;
+
+  return {
+    agentId: pickString(event.agentId) ?? pickString(payload.agentId),
+    parentToolCallId:
+      pickString(event.parentToolCallId) ?? pickString(payload.parentToolCallId) ?? spawnToolCallId,
+  };
+}
+
+function mergeNumberMax(a: number | undefined, b: number | undefined): number | undefined {
+  if (typeof a !== 'number') {
+    return typeof b === 'number' ? b : undefined;
+  }
+
+  if (typeof b !== 'number') {
+    return a;
+  }
+
+  return Math.max(a, b);
+}
+
+/**
+ * Field-wise max-merge of task usage snapshots.
+ *
+ * A later frame's `undefined` field never overwrites an earlier known value —
+ * usage only ever grows within one task, so the larger of two readings for
+ * the same field is always the more accurate one. That makes the merge
+ * idempotent under duplicate and out-of-order frames: replaying the same tick
+ * twice, or receiving ticks out of sequence, converges on the same result
+ * either way, which is what makes the work-log fold order-robust.
+ */
+export function mergeTaskUsage(
+  current: RuntimeTaskUsage | undefined,
+  incoming: RuntimeTaskUsage | undefined,
+): RuntimeTaskUsage | undefined {
+  if (!current) {
+    return incoming;
+  }
+
+  if (!incoming) {
+    return current;
+  }
+
+  return {
+    totalTokens: mergeNumberMax(current.totalTokens, incoming.totalTokens) ?? 0,
+    inputTokens: mergeNumberMax(current.inputTokens, incoming.inputTokens),
+    cachedInputTokens: mergeNumberMax(current.cachedInputTokens, incoming.cachedInputTokens),
+    outputTokens: mergeNumberMax(current.outputTokens, incoming.outputTokens),
+    reasoningTokens: mergeNumberMax(current.reasoningTokens, incoming.reasoningTokens),
+    toolUses: mergeNumberMax(current.toolUses, incoming.toolUses),
+    durationMs: mergeNumberMax(current.durationMs, incoming.durationMs),
+  };
+}
+
+/**
+ * Merge one payload onto another with "never downgrade a known field"
+ * semantics: an incoming key overwrites only when it is present and not
+ * `null`/`undefined`. A late frame that simply omits a field (the normal
+ * shape of a progress tick, which resends only what changed) leaves the
+ * earlier value alone instead of blanking it.
+ */
+function mergePayloadForward(
+  previous: Record<string, unknown> | null | undefined,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...previous };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value !== undefined && value !== null) {
+      merged[key] = value;
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Folds a `RuntimeTaskStatus` down to the work-log's smaller status
+ * vocabulary. `completed` is unambiguous; `failed`/`cancelled`/`interrupted`
+ * are all terminal-but-unhappy and collapse to `error` the same way a failed
+ * tool call does; everything else (including a status the fold has never seen
+ * before) is `running` until something terminal arrives.
+ */
+function mapTaskStatus(status: RuntimeTaskStatus | undefined): { status: WorkLogEntryStatus; isFinal: boolean } {
+  switch (status) {
+    case 'completed':
+      return { status: 'completed', isFinal: true };
+    case 'failed':
+    case 'cancelled':
+    case 'interrupted':
+      return { status: 'error', isFinal: true };
+    default:
+      return { status: 'running', isFinal: false };
+  }
 }
 
 function resolveToolStatus(payload: Record<string, unknown>): WorkLogEntryStatus {
@@ -84,7 +282,88 @@ function resolveToolStatus(payload: Record<string, unknown>): WorkLogEntryStatus
   return 'completed';
 }
 
+/**
+ * `task.*` fold. Kept separate from the tool/approval fold below because the
+ * merge semantics are genuinely different: a tool call is a linear
+ * started → updated* → completed sequence where the latest payload is simply
+ * the current truth, but a task accumulates — usage only grows, a terminal
+ * status is sticky, and a late `task.started` (or a `task.completed` that
+ * beat its own start row through an aged-out cache) must never regress
+ * anything already known.
+ */
+function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEventEnvelope): WorkLogEntry {
+  const linkage = resolveTaskLinkage(event);
+  const agentId = linkage.agentId ?? previous?.agentId ?? null;
+  const parentToolCallId = linkage.parentToolCallId ?? previous?.parentToolCallId ?? null;
+
+  const previousUsage =
+    previous?.payload && typeof previous.payload.usage === 'object' && previous.payload.usage !== null
+      ? (previous.payload.usage as RuntimeTaskUsage)
+      : undefined;
+  const incomingUsage =
+    typeof event.payload.usage === 'object' && event.payload.usage !== null
+      ? (event.payload.usage as RuntimeTaskUsage)
+      : undefined;
+
+  const payload = mergePayloadForward(previous?.payload, event.payload);
+  const usage = mergeTaskUsage(previousUsage, incomingUsage);
+  if (usage) {
+    payload.usage = usage;
+  }
+
+  const title =
+    pickString(event.payload.title) ??
+    pickString(event.payload.description) ??
+    previous?.title ??
+    titleCase(pickString(event.payload.taskType) ?? 'task');
+
+  const summary = pickString(event.payload.summary) ?? pickString(event.payload.description) ?? previous?.summary ?? null;
+
+  let status: WorkLogEntryStatus;
+  let isFinal: boolean;
+  if (previous?.isFinal) {
+    // Once a task has reached a terminal state nothing can un-terminate it —
+    // a stray progress tick or a start row that arrives late must only fill
+    // metadata (handled by mergePayloadForward above), never resurrect it.
+    status = previous.status;
+    isFinal = true;
+  } else {
+    const reportedStatus = pickString(event.payload.status) as RuntimeTaskStatus | null;
+    // `task.completed` with no explicit `status` field still means success —
+    // "completed" is the event's own name, not just one possible payload value.
+    const resolvedStatus = reportedStatus ?? (event.activityType === 'task.completed' ? 'completed' : undefined);
+    ({ status, isFinal } = mapTaskStatus(resolvedStatus));
+  }
+
+  return {
+    id: previous?.id ?? getWorkLogEntryId(event),
+    conversationId: event.conversationId,
+    turnId: event.turnId,
+    requestId: event.requestId,
+    messageId: event.messageId ?? previous?.messageId ?? null,
+    activityType: event.activityType,
+    tone: event.tone,
+    toolType: event.toolType ?? previous?.toolType ?? null,
+    toolCallId: event.toolCallId ?? previous?.toolCallId ?? null,
+    approvalId: event.approvalId ?? previous?.approvalId ?? null,
+    title,
+    summary,
+    status,
+    sequence: event.sequence,
+    isFinal,
+    payload,
+    agentId,
+    parentToolCallId,
+    createdAt: previous?.createdAt ?? event.occurredAt,
+    updatedAt: event.occurredAt,
+  };
+}
+
 export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEventEnvelope): WorkLogEntry | null {
+  if (event.activityType.startsWith('task.')) {
+    return deriveTaskWorkLogEntry(previous, event);
+  }
+
   const title =
     typeof event.payload.title === 'string' && event.payload.title.trim()
       ? event.payload.title.trim()
@@ -137,6 +416,8 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     isFinal = false;
   }
 
+  const linkage = resolveTaskLinkage(event);
+
   return {
     id: previous?.id ?? getWorkLogEntryId(event),
     conversationId: event.conversationId,
@@ -154,6 +435,8 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     sequence: event.sequence,
     isFinal,
     payload: event.payload,
+    agentId: linkage.agentId ?? previous?.agentId ?? null,
+    parentToolCallId: linkage.parentToolCallId ?? previous?.parentToolCallId ?? null,
     createdAt: previous?.createdAt ?? event.occurredAt,
     updatedAt: event.occurredAt,
   };

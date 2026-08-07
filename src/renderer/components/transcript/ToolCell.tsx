@@ -14,6 +14,8 @@ import { ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { ChatToolPart } from '../../../shared/contracts';
+import { isMcpToolName } from '../../../shared/mcp';
+import type { McpUiDescriptor } from '../../../shared/mcpUi';
 import {
   type DiffFile,
   type ToolCell as ToolCellModel,
@@ -26,6 +28,7 @@ import { useDisclosure } from '../../stores/useTranscriptUiStore';
 import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
+import { McpUiFrame } from './McpUiFrame';
 import { TerminalBlock } from './TerminalBlock';
 
 /** Expanded details indent by ~16px under their summary row. */
@@ -326,7 +329,75 @@ function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCe
       <Disclosure open={isOpen}>
         <CellDetail cell={cell} approvals={approvals} />
       </Disclosure>
+
+      {/* Outside the disclosure on purpose. A component is the visible point of
+          the call that produced it; hiding it behind a chevron would mean the
+          user has to go looking for the thing the plugin drew for them. */}
+      <McpUiSlot cell={cell} />
     </div>
+  );
+}
+
+/**
+ * The UI component a tool call produced, if it produced one.
+ *
+ * Asks main rather than reading anything off the part: markup is deliberately
+ * absent from `ChatToolPart.output`, so that the model's context and the
+ * conversation's stored history both stay free of a page of third-party HTML.
+ *
+ * Most cells have no component and the answer is `null`, which is why this is
+ * one small query per finished MCP cell rather than anything bulk. Cells that
+ * are not MCP calls never ask at all.
+ */
+function McpUiSlot({ cell }: { cell: ToolCellModel }) {
+  const [descriptors, setDescriptors] = useState<McpUiDescriptor[]>([]);
+
+  // `Explored`-style cells merge several parts, so a cell can in principle
+  // carry more than one component. Stable string key rather than the array, or
+  // the effect re-runs on every render with a fresh identity.
+  const callIds = useMemo(
+    () =>
+      cell.parts
+        .filter((part) => part.state === 'output-available' && isMcpToolName(part.toolName))
+        .map((part) => part.toolCallId)
+        .join(' '),
+    [cell.parts]
+  );
+
+  useEffect(() => {
+    if (!callIds) {
+      setDescriptors([]);
+      return;
+    }
+
+    let mounted = true;
+
+    void Promise.all(callIds.split(' ').map((id) => window.atlasChat.mcpUi.describe(id)))
+      .then((results) => {
+        if (mounted) {
+          setDescriptors(results.filter((entry): entry is McpUiDescriptor => entry != null));
+        }
+      })
+      // A component that cannot be described is a component that is not shown.
+      // The tool's text result is already in the transcript either way, so this
+      // degrades to exactly the pre-UI behaviour rather than to an error.
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+    };
+  }, [callIds]);
+
+  if (descriptors.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {descriptors.map((descriptor) => (
+        <McpUiFrame key={descriptor.toolCallId} descriptor={descriptor} />
+      ))}
+    </>
   );
 }
 

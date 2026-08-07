@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
+import { containedWritePath } from '../../security/containedFs';
 import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
 import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
@@ -114,5 +115,20 @@ export function resolveWritablePath(filePath: string, workspace: ToolWorkspace |
     );
   }
 
-  return target;
+  // The checks above are lexical — `resolve` and `relative` on the spelled
+  // path — and a symlink inside the project (`./shared` pointing at `~/.ssh`)
+  // passes every one of them while still writing outside the project on
+  // disk. `containedWritePath` resolves the real, symlink-followed location
+  // (realpathing the deepest existing ancestor, since the write target
+  // itself may not exist yet) and re-proves containment against that.
+  const contained = containedWritePath(root, target);
+  if (!contained) {
+    throw new WorkspaceWriteError(
+      `Path resolves through a symlink to somewhere outside the project folder (${root}). ` +
+        `A symlinked file or directory inside the project can point anywhere on disk, and writes ` +
+        `must land inside the project's real location, not wherever the link happens to point.`
+    );
+  }
+
+  return contained;
 }

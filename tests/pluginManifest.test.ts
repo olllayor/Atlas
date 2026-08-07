@@ -142,18 +142,23 @@ test('unknown manifest keys survive instead of failing the parse', () => {
   // vocabulary. Rejecting them would fail nearly half the ecosystem.
   const parsed = parsedManifest({
     agents: './agents/',
-    commands: './commands/',
     sessionStart: './start.md',
     strict: true
   });
 
-  assert.deepEqual(Object.keys(parsed.unknown).sort(), [
-    'agents',
-    'commands',
-    'sessionStart',
-    'strict'
-  ]);
+  assert.deepEqual(Object.keys(parsed.unknown).sort(), ['agents', 'sessionStart', 'strict']);
   assert.equal(parsed.unknown.strict, true);
+});
+
+test('a declared commands path is modelled rather than merely preserved', () => {
+  // `commands` was an unknown key until commands were loaded. A declared path
+  // now supplements the conventional `./commands/` rather than replacing it,
+  // like every other component.
+  const parsed = parsedManifest({ commands: './prompts/' });
+
+  assert.equal(parsed.paths.commands, './prompts/');
+  assert.equal('commands' in parsed.unknown, false);
+  assert.deepEqual(pluginComponentPaths(parsed, 'commands'), ['./commands/', './prompts/']);
 });
 
 test('an inline hooks block is preserved rather than read as a path', () => {
@@ -240,29 +245,73 @@ test('a bare server map without the mcpServers wrapper is accepted', () => {
   assert.equal(result.ok && result.servers[0]?.key, 'local');
 });
 
-test('streamable_http and sse are read as the http transport', () => {
-  for (const type of ['http', 'streamable_http', 'sse']) {
+test('every HTTP spelling maps to a transport, and sse stays distinct from it', () => {
+  for (const type of ['http', 'streamable-http', 'streamable_http']) {
     const result = parsePluginMcpServers(
       JSON.stringify({ s: { type, url: 'https://example.com/mcp' } })
     );
     assert.equal(result.ok && result.servers[0]?.transport, 'http', type);
   }
+
+  // Not folded into `http`. They are different handshakes, and the spec
+  // requires the declared transport to be the one attempted first.
+  const sse = parsePluginMcpServers(JSON.stringify({ s: { type: 'sse', url: 'https://example.com/mcp' } }));
+  assert.equal(sse.ok && sse.servers[0]?.transport, 'sse');
 });
 
-test('an incomplete server declaration is refused rather than half-loaded', () => {
-  assert.equal(parsePluginMcpServers(JSON.stringify({ s: { type: 'http' } })).ok, false);
-  assert.equal(parsePluginMcpServers(JSON.stringify({ s: { args: ['x'] } })).ok, false);
-  assert.equal(parsePluginMcpServers(JSON.stringify({ s: 'not-an-object' })).ok, false);
-  assert.equal(parsePluginMcpServers('{').ok, false);
-});
-
-test('a server pointing its command or cwd outside the bundle is refused', () => {
-  assert.equal(parsePluginMcpServers(JSON.stringify({ s: { command: '../evil' } })).ok, false);
-  assert.equal(parsePluginMcpServers(JSON.stringify({ s: { command: '/usr/bin/env' } })).ok, false);
-  assert.equal(
-    parsePluginMcpServers(JSON.stringify({ s: { command: 'node', cwd: '../..' } })).ok,
-    false
+test('one bad server entry costs that entry, not the whole configuration', () => {
+  // The spec requires a client to skip an invalid server and keep loading the
+  // rest. A bundle shipping four servers and one typo used to contribute
+  // nothing at all, which looked exactly like a plugin that had stopped working.
+  const result = parsePluginMcpServers(
+    JSON.stringify({
+      good: { command: 'node', args: ['./server.js'] },
+      noUrl: { type: 'http' },
+      noCommand: { args: ['x'] },
+      notAnObject: 'nope',
+      unknownTransport: { type: 'carrier-pigeon' }
+    })
   );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.deepEqual(
+    result.servers.map((server) => server.key),
+    ['good']
+  );
+  assert.equal(result.warnings.length, 4, result.warnings.join(' | '));
+});
+
+test('a file that is not readable at all is still fatal', () => {
+  // The distinction that matters: one broken *entry* is recoverable, a file
+  // that cannot be parsed says nothing about any server in it.
+  assert.equal(parsePluginMcpServers('{').ok, false);
+  assert.equal(parsePluginMcpServers('[]').ok, false);
+});
+
+test('a server pointing its command or cwd outside the bundle is skipped', () => {
+  for (const server of [
+    { command: '../evil' },
+    { command: '/usr/bin/env' },
+    { command: 'node', cwd: '../..' },
+    { command: 'node', cwd: '/etc' },
+    // Expansion is defined for args, env and cwd — never for the command.
+    { command: '${PLUGIN_ROOT}/bin/server' }
+  ]) {
+    const result = parsePluginMcpServers(JSON.stringify({ s: server }));
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.ok && result.servers, [], JSON.stringify(server));
+  }
+});
+
+test('an empty mcpServers object is valid and means no servers', () => {
+  const result = parsePluginMcpServers(JSON.stringify({ mcpServers: {} }));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.ok && result.servers, []);
+  assert.deepEqual(result.ok && result.warnings, []);
 });
 
 test('a plugin server name is qualified so two bundles can both ship "github"', () => {

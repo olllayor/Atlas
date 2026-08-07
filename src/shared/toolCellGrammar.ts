@@ -14,6 +14,7 @@
  */
 
 import type { CanonicalToolType, ChatToolPart, ChatToolState } from './contracts';
+import { describeMcpToolName } from './mcp';
 import { isPlanToolPart } from './planTool';
 
 /** Head/tail line budget for an agent tool call's output block. */
@@ -575,11 +576,18 @@ function buildSingleCell(part: ChatToolPart): ToolCell {
     } catch {
       args = '';
     }
+    // `github.search_issues`, not `mcp__github_github__search_issues`. The wire
+    // name is an implementation detail; what a reader needs is which plugin
+    // acted and what it did. Falls back to the raw name when the namespacing
+    // cannot be read back — a confident half-answer would be worse.
+    const display = describeMcpToolName(part.toolName);
+    const shown = display?.label ?? part.toolName;
+
     return {
       ...base,
-      label: `${finished ? 'Called' : 'Calling'} ${part.toolName}`,
+      label: `${finished ? 'Called' : 'Calling'} ${shown}`,
       verb: finished ? 'Called' : 'Calling',
-      subject: `${part.toolName}(${args})`,
+      subject: `${shown}(${args})`,
       subjectIsCode: true,
       detail:
         part.state === 'output-error'

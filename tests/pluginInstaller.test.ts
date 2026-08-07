@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  ftruncateSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -223,6 +235,131 @@ test('the settings view describes servers from resolved values, not author prose
   assert.equal(server?.detail, 'https://example.test/mcp', 'the literal endpoint, not the note');
   assert.equal(server?.bearerTokenEnvVar, 'DEMO_TOKEN');
   assert.doesNotMatch(JSON.stringify(plugin), /trust me/, 'author prose must not reach the summary');
+});
+
+/* ------------------------------------------------------------------ *
+ * Archive/duplicate hardening
+ * ------------------------------------------------------------------ */
+
+test('a bundle over the size ceiling is refused before anything is copied', (t) => {
+  const { dir, root, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'huge', (path) => {
+    // One file well past the 512 MB ceiling. Sparse, so the test does not
+    // actually consume that much disk — only the reported size has to be big.
+    const fd = openSync(join(path, 'huge.bin'), 'w');
+    ftruncateSync(fd, 600 * 1024 * 1024);
+    closeSync(fd);
+  });
+
+  const result = installer.install(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error, /larger than/);
+  // Refused before the copy: nothing landed, and no staging directory was
+  // left for the sweep to find either.
+  assert.deepEqual(readdirNames(root), []);
+});
+
+test('an archive bomb of entry count, not bytes, is also refused before copying', (t) => {
+  // The size ceiling above catches a bundle that is big; this catches one that
+  // is merely numerous — a directory of a few hundred thousand empty or
+  // near-empty files costs almost nothing in bytes but would make every walk
+  // Atlas does over the bundle (this scan, the symlink-escape check after the
+  // copy, the skill/command discovery) expensive or worse. Real cost: this
+  // test writes 50,001 files, and is the slowest test in the suite on purpose
+  // — that is the actual cost being bounded.
+  const { dir, root, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'numerous', (path) => {
+    const flood = join(path, 'flood');
+    mkdirSync(flood, { recursive: true });
+
+    for (let index = 0; index <= 50_000; index += 1) {
+      writeFileSync(join(flood, `f${index}`), '');
+    }
+  });
+
+  const result = installer.install(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error, /more than 50000 entries|more than 50,000 entries/);
+  assert.deepEqual(readdirNames(root), []);
+});
+
+test('two entries differing only by case are refused rather than silently colliding', (t) => {
+  const { dir, root, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'cased', (path) => {
+    write(join(path, 'skills', 'yeet', 'NOTES.md'), 'kept');
+    write(join(path, 'skills', 'yeet', 'notes.md'), 'also kept, until this check');
+  });
+
+  // The vulnerability this guards is a source that is case-*sensitive* — a
+  // Linux checkout, a Docker volume — landing on the case-*insensitive*
+  // volume most desktop installs use. On a case-insensitive host (macOS's
+  // default APFS, this machine) the two `write()` calls above never produced
+  // two directory entries to begin with — the second silently overwrote the
+  // first at the OS level before the installer ever saw it, which is a
+  // faithful preview of the real bug but not a way to test the *guard*.
+  const entries = readdirNames(join(bundle, 'skills', 'yeet'));
+
+  if (!entries.includes('NOTES.md') || !entries.includes('notes.md')) {
+    t.skip('this filesystem folds case, so no case collision reaches the installer to be caught');
+    return;
+  }
+
+  const result = installer.install(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error, /differ only by case/);
+  assert.deepEqual(readdirNames(root), []);
+});
+
+test('the same name repeating at different directory levels is not a false positive', (t) => {
+  // The collision check is scoped per directory. A plugin legitimately has one
+  // SKILL.md per skill folder — that must not be flagged as a "duplicate".
+  const { dir, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'multi-skill', (path) => {
+    write(join(path, 'skills', 'a', 'SKILL.md'), ['---', 'name: a', 'description: A.', '---', 'x'].join('\n'));
+    write(join(path, 'skills', 'b', 'SKILL.md'), ['---', 'name: b', 'description: B.', '---', 'x'].join('\n'));
+  });
+
+  const result = installer.install(bundle);
+
+  assert.equal(result.ok, true, result.ok ? '' : result.error);
+});
+
+test('an ordinary bundle comfortably clears both checks', (t) => {
+  const { dir, installer } = workspace(t);
+  const result = installer.install(sourceBundle(dir, 'ordinary'));
+
+  assert.equal(result.ok, true, result.ok ? '' : result.error);
+});
+
+test('installing the same bundle twice concurrently: one wins, the other fails clean', async (t) => {
+  // No corruption either way: the atomic-rename design already makes this
+  // safe, and this asserts that rather than adding new production code for it.
+  // Two installs racing the same name can both pass the "not yet installed"
+  // check before either has renamed into place; the loser's `renameSync` onto
+  // an existing directory throws, which the installer's own catch turns into a
+  // clean error and a swept staging directory — not a half-written plugin.
+  const { dir, root, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'race');
+
+  const [first, second] = await Promise.all([
+    Promise.resolve().then(() => installer.install(bundle)),
+    Promise.resolve().then(() => installer.install(bundle))
+  ]);
+
+  const results = [first, second];
+  const succeeded = results.filter((result) => result.ok);
+  const failed = results.filter((result) => !result.ok);
+
+  assert.equal(succeeded.length, 1, 'exactly one install won the race');
+  assert.equal(failed.length, 1, 'the other failed rather than corrupting anything');
+
+  // The installed copy is a real, complete, loadable plugin — not a partial
+  // write from whichever rename lost.
+  assert.ok(existsSync(join(root, 'race', '.codex-plugin', 'plugin.json')));
+  assert.deepEqual(readdirNames(root), ['race']);
 });
 
 function readdirNames(dir: string): string[] {

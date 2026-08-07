@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 
+import type { Blocklist } from '../../shared/blocklist';
+import { BLOCKLIST_PATHS, parseBlocklist } from '../../shared/blocklist';
 import type { MarketplaceCatalog, MarketplaceEntry } from '../../shared/marketplace';
 import { MARKETPLACE_CATALOG_PATHS, marketplaceEntryBlocker, parseMarketplaceCatalog } from '../../shared/marketplace';
 import { logger } from '../observability/logger';
@@ -38,6 +40,13 @@ export type MarketplaceRecord = {
 export type ResolvedMarketplace = {
   record: MarketplaceRecord;
   catalog: MarketplaceCatalog | null;
+  /**
+   * Revocations this marketplace publishes.
+   *
+   * Read alongside the catalogue because it travels with it. Whose revocations
+   * are allowed to bind what is not decided here — see `PluginBlocklistService`.
+   */
+  blocklist: Blocklist | null;
   /** Absolute path to the checkout the catalogue was read from. */
   root: string | null;
   error: string | null;
@@ -49,6 +58,18 @@ export class MarketplaceRegistry {
     /** Where git marketplaces are checked out. Kept beside the plugins. */
     private readonly checkoutRoot: string
   ) {}
+
+  /**
+   * Where throwaway fetches go.
+   *
+   * Exposed so a URL install lands beside the marketplace clones rather than in
+   * a root of its own: `sweepCheckouts()` already collects every `fetch-`
+   * temporary here, so an install interrupted halfway is cleaned up by
+   * machinery that exists, not by a second copy of it.
+   */
+  get checkoutDirectory(): string {
+    return this.checkoutRoot;
+  }
 
   /**
    * Every configured marketplace with its catalogue.
@@ -67,15 +88,17 @@ export class MarketplaceRegistry {
     try {
       root = this.checkout(record);
     } catch (error) {
-      return { record, catalog: null, root: null, error: messageOf(error) };
+      return { record, catalog: null, blocklist: null, root: null, error: messageOf(error) };
     }
 
-    const found = readCatalog(root);
+    const blocklist = readBlocklist(root);
+    const found = readFirst(root, MARKETPLACE_CATALOG_PATHS);
 
     if (!found) {
       return {
         record,
         catalog: null,
+        blocklist,
         root,
         error: `No catalogue. Expected one of: ${MARKETPLACE_CATALOG_PATHS.join(', ')}.`
       };
@@ -84,8 +107,56 @@ export class MarketplaceRegistry {
     const parsed = parseMarketplaceCatalog(found);
 
     return parsed.ok
-      ? { record, catalog: parsed.catalog, root, error: null }
-      : { record, catalog: null, root, error: parsed.error };
+      ? { record, catalog: parsed.catalog, blocklist, root, error: null }
+      : { record, catalog: null, blocklist, root, error: parsed.error };
+  }
+
+  /**
+   * Deletes checkouts no configured marketplace still needs.
+   *
+   * Called at startup, and after a marketplace is removed. Every git
+   * marketplace clones into a directory named after it and every fetch creates
+   * a `fetch-` temporary beside those, so anything not named by a current
+   * record is either a marketplace the user dropped or an interrupted install.
+   *
+   * Path marketplaces are deliberately not represented here: they are read in
+   * place and have no checkout to collect.
+   */
+  sweepCheckouts(): number {
+    let entries;
+
+    try {
+      entries = readdirSync(this.checkoutRoot, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+
+    const wanted = new Set(
+      this.listRecords()
+        .filter((record) => record.source.kind === 'git')
+        .map((record) => record.name)
+    );
+
+    let swept = 0;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || wanted.has(entry.name)) {
+        continue;
+      }
+
+      try {
+        rmSync(join(this.checkoutRoot, entry.name), { recursive: true, force: true });
+        swept += 1;
+      } catch {
+        // Worth neither a crash nor a retry loop; the next launch tries again.
+      }
+    }
+
+    if (swept > 0) {
+      logger.info('marketplace.checkouts_swept', { count: swept });
+    }
+
+    return swept;
   }
 
   /**
@@ -181,6 +252,57 @@ export class MarketplaceRegistry {
  * deliberately not initialised — a submodule is a second repository the
  * catalogue never named and the user never reviewed.
  */
+/**
+ * Fetches a repository into a throwaway checkout and says which commit landed.
+ *
+ * The resolved sha is the return value because it is the only identifier in the
+ * chain the publisher does not choose. A ref moves; a tag can be repointed; a
+ * version string is whatever the manifest says. Recording what was *actually*
+ * fetched is what makes "this republished at a different commit" answerable
+ * later, and it is why a URL install is provenance-bearing rather than a
+ * one-way door.
+ */
+export function fetchRepository(
+  checkoutRoot: string,
+  target: { url: string; ref: string | null; subdir: string | null }
+): { path: string; root: string; sha: string | null } {
+  mkdirSync(checkoutRoot, { recursive: true });
+  const temp = mkdtempSync(join(checkoutRoot, 'fetch-'));
+
+  try {
+    cloneAt(target.url, temp, null, target.ref);
+
+    const path = target.subdir ? containedPath(temp, target.subdir) : temp;
+
+    if (!path) {
+      throw new Error('That link points outside the repository.');
+    }
+
+    return { path, root: temp, sha: resolveHead(temp) };
+  } catch (error) {
+    rmSync(temp, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** The commit a checkout is sitting on, or `null` if git will not say. */
+function resolveHead(checkout: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: checkout,
+      timeout: GIT_TIMEOUT_MS,
+      stdio: 'pipe',
+      windowsHide: true
+    })
+      .toString()
+      .trim() || null;
+  } catch {
+    // Not fatal. A checkout whose commit cannot be read still installs; it just
+    // cannot participate in the republished-at-a-different-commit check.
+    return null;
+  }
+}
+
 function cloneAt(url: string, target: string, sha: string | null, ref: string | null): void {
   const options = { timeout: GIT_TIMEOUT_MS, stdio: 'pipe' as const, windowsHide: true };
 
@@ -202,8 +324,33 @@ function cloneAt(url: string, target: string, sha: string | null, ref: string | 
   );
 }
 
-function readCatalog(root: string): string | null {
-  for (const relative of MARKETPLACE_CATALOG_PATHS) {
+/**
+ * The revocations a marketplace publishes, if any.
+ *
+ * A missing file is the ordinary case and means nothing is revoked. A file that
+ * will not parse is logged and treated as empty rather than as a reason to fail
+ * the marketplace: the catalogue is still readable, and refusing to show it
+ * would turn a malformed blocklist into a denial of the whole storefront.
+ */
+function readBlocklist(root: string): Blocklist | null {
+  const text = readFirst(root, BLOCKLIST_PATHS);
+
+  if (text == null) {
+    return null;
+  }
+
+  const parsed = parseBlocklist(text);
+
+  if (!parsed.ok) {
+    logger.warn('marketplace.blocklist_unreadable', { root, error: parsed.error });
+    return null;
+  }
+
+  return parsed.blocklist;
+}
+
+function readFirst(root: string, paths: readonly string[]): string | null {
+  for (const relative of paths) {
     const path = join(root, ...relative.split('/'));
 
     try {
@@ -220,9 +367,26 @@ function readCatalog(root: string): string | null {
   return null;
 }
 
-/** Resolves a marketplace-relative path and proves it stayed inside. */
+/**
+ * Resolves a marketplace-relative path and proves it stayed inside.
+ *
+ * Both sides are realpath-resolved before they are compared, and the root side
+ * is the part that is easy to get wrong. A checkout lives under a temporary
+ * directory, and on macOS `/var` is a symlink to `/private/var` — so the
+ * candidate resolves to `/private/var/…` while an unresolved root is still
+ * `/var/…`, and every containment check fails against a path that never left.
+ * The symptom is a catalogue entry with a `subdir` refusing to install with
+ * "points outside its marketplace", which is both wrong and alarming.
+ */
 function containedPath(root: string, declared: string): string | null {
-  const candidate = resolve(root, declared.replace(/^\.[/\\]/, ''));
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return null;
+  }
+
+  const candidate = resolve(realRoot, declared.replace(/^\.[/\\]/, ''));
 
   let real: string;
   try {
@@ -231,7 +395,7 @@ function containedPath(root: string, declared: string): string | null {
     return null;
   }
 
-  return real === root || real.startsWith(root + sep) ? real : null;
+  return real === realRoot || real.startsWith(realRoot + sep) ? real : null;
 }
 
 function messageOf(error: unknown): string {

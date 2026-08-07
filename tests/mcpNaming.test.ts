@@ -5,7 +5,10 @@ import {
   MAX_TOOL_NAME_LENGTH,
   buildMcpServerEnv,
   defaultMcpEnvVars,
+  describeMcpToolEffects,
+  describeMcpToolName,
   isMcpToolName,
+  mcpAnnotationsConflict,
   isValidMcpCommand,
   mcpToolNeedsApproval,
   namespaceMcpTool,
@@ -56,6 +59,30 @@ test('the approval stances behave as configured', () => {
   assert.equal(mcpToolNeedsApproval('approve', undefined), false);
   assert.equal(mcpToolNeedsApproval('writes', { readOnlyHint: true }), false);
   assert.equal(mcpToolNeedsApproval('writes', undefined), true);
+});
+
+test('a destructive tool keeps its friction even under blanket approval', () => {
+  assert.equal(mcpToolNeedsApproval('approve', { destructiveHint: true }), true);
+  // Unannotated traffic is what blanket approval is for, and it is untouched.
+  assert.equal(mcpToolNeedsApproval('approve', { openWorldHint: true }), false);
+});
+
+test('contradictory hints do not buy a tool a pass', () => {
+  assert.equal(mcpAnnotationsConflict({ readOnlyHint: true, destructiveHint: true }), true);
+  assert.equal(mcpToolNeedsApproval('auto', { readOnlyHint: true, destructiveHint: true }), true);
+  assert.equal(mcpToolNeedsApproval('writes', { readOnlyHint: true, destructiveHint: true }), true);
+});
+
+test('the effect summary is derived from annotations, not from prose', () => {
+  assert.match(describeMcpToolEffects(undefined), /may change state/);
+  assert.match(describeMcpToolEffects({ readOnlyHint: true }), /read-only/);
+  assert.match(describeMcpToolEffects({ destructiveHint: true }), /delete or overwrite/);
+  assert.match(describeMcpToolEffects({ openWorldHint: true }), /outside this conversation/);
+  assert.match(describeMcpToolEffects({ idempotentHint: false }), /repeating the call/);
+  assert.match(
+    describeMcpToolEffects({ readOnlyHint: true, destructiveHint: true }),
+    /effects unclear/
+  );
 });
 
 test('a spawned server gets an allowlist, never the whole environment', () => {
@@ -132,4 +159,38 @@ test('arguments are split into a list, with quoting honoured', async () => {
   // Shell syntax survives as literal text: it is one argument, not an operator,
   // because there is no shell on the other side to interpret it.
   assert.deepEqual(parseMcpArgs('a; rm -rf /'), ['a;', 'rm', '-rf', '/']);
+});
+
+test('a namespaced tool name reads back as plugin.tool for the transcript', () => {
+  // The wire name is an implementation detail. What a reader needs is which
+  // plugin acted and what it did.
+  assert.deepEqual(describeMcpToolName('mcp__github_github__search_issues'), {
+    plugin: 'github',
+    tool: 'search_issues',
+    label: 'github.search_issues'
+  });
+});
+
+test('a plugin whose server key differs from its name keeps both', () => {
+  assert.equal(describeMcpToolName('mcp__acme_kanban__list_cards')?.label, 'acme_kanban.list_cards');
+});
+
+test('a tool name with underscores survives the split', () => {
+  // The delimiter is `__`; a single underscore inside either half is data.
+  assert.deepEqual(describeMcpToolName('mcp__neon_neon__run_sql_query'), {
+    plugin: 'neon',
+    tool: 'run_sql_query',
+    label: 'neon.run_sql_query'
+  });
+});
+
+test('anything that is not a namespaced MCP name returns null rather than a guess', () => {
+  for (const name of ['read_file', 'mcp__', 'mcp____tool', 'mcp__server__', 'load_skill', '']) {
+    assert.equal(describeMcpToolName(name), null, name);
+  }
+});
+
+test('a name round-trips from the namespacer that produced it', () => {
+  const wire = namespaceMcpTool('github/github', 'search_issues');
+  assert.equal(describeMcpToolName(wire)?.label, 'github.search_issues');
 });

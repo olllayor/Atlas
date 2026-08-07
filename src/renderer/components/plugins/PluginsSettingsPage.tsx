@@ -211,11 +211,15 @@ function PluginRow({
       icon={<PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} />}
       title={plugin.displayName ?? plugin.name}
       badge={plugin.name !== (plugin.displayName ?? plugin.name) ? plugin.name : undefined}
-      subtitle={plugin.description}
+      // A revoked plugin says so instead of describing itself: its own text is
+      // no longer the useful thing about it.
+      subtitle={plugin.blockedReason ?? plugin.description}
       trailing={
         <UiSwitch
-          checked={plugin.enabled}
-          disabled={busy}
+          checked={plugin.enabled && !plugin.blockedReason}
+          // Not a preference the user can toggle back on, so the switch does
+          // not pretend otherwise.
+          disabled={busy || Boolean(plugin.blockedReason)}
           onCheckedChange={(next) => onToggle(plugin.name, next)}
         />
       }

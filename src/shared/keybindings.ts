@@ -5,6 +5,7 @@ export const KEYBINDING_COMMANDS = [
   'sidebar.toggle',
   'chat.new',
   'settings.open',
+  'plugins.open',
   'composer.focus',
   'models.openSwitcher',
   'workspace.mode.toggle',

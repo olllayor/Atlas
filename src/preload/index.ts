@@ -189,6 +189,8 @@ const api: RendererApi = {
     setEnabled: (name: string, enabled: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsSetEnabled, name, enabled),
     installFromPicker: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromPicker),
+    previewUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsPreviewUrl, url),
+    installFromUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromUrl, url),
     revealRoot: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsRevealRoot),
     marketplaces: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsMarketplaces),
     addMarketplace: (input) => ipcRenderer.invoke(IPC_CHANNELS.pluginsAddMarketplace, input),
@@ -196,12 +198,21 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.pluginsRemoveMarketplace, name),
     installFromMarketplace: (marketplace: string, plugin: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsInstallFromMarketplace, marketplace, plugin),
+    checkUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckUpdates),
+    update: (plugin: string) => ipcRenderer.invoke(IPC_CHANNELS.pluginsUpdate, plugin),
+    commands: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsCommands),
+    commandBody: (qualifiedName: string, args: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsCommandBody, qualifiedName, args),
     activation: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsActivation, conversationId),
     setActivated: (conversationId: string, plugin: string, active: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsSetActivated, conversationId, plugin, active),
     setAlwaysOn: (conversationId: string, plugin: string, alwaysOn: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsSetAlwaysOn, conversationId, plugin, alwaysOn)
+  },
+  mcpUi: {
+    // Returns a descriptor, never markup. See `main/ipc/mcpUi.ts`.
+    describe: (toolCallId: string) => ipcRenderer.invoke(IPC_CHANNELS.mcpUiDescribe, toolCallId)
   },
   fileChanges: {
     list: (conversationId: string) =>

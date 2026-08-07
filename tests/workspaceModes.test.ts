@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -28,7 +28,10 @@ import {
 const modelsRepo = { list: () => [] } as never;
 
 function makeProject() {
-  const root = mkdtempSync(join(tmpdir(), 'atlas-workspace-'));
+  // Realpathed up front: $TMPDIR is itself a symlink on macOS
+  // (`/var` -> `/private/var`), so an un-resolved root would never compare
+  // equal to what the now-containment-checked `resolveWritablePath` returns.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'atlas-workspace-')));
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -117,19 +120,30 @@ test('writes are refused when code mode has no project', () => {
 });
 
 test('writes cannot escape the project root', () => {
-  const workspace = { mode: 'code' as const, root: '/tmp/project' };
-  assert.throws(() => resolveWritablePath('../outside.txt', workspace), /outside the project folder/);
-  assert.throws(() => resolveWritablePath('/etc/hosts', workspace), /outside the project folder/);
-  assert.equal(resolveWritablePath('src/app.ts', workspace), resolve('/tmp/project/src/app.ts'));
+  const project = makeProject();
+  try {
+    const workspace = { mode: 'code' as const, root: project.root };
+    assert.throws(() => resolveWritablePath('../outside.txt', workspace), /outside the project folder/);
+    assert.throws(() => resolveWritablePath('/etc/hosts', workspace), /outside the project folder/);
+    assert.equal(resolveWritablePath('src/app.ts', workspace), resolve(project.root, 'src/app.ts'));
+  } finally {
+    project.cleanup();
+  }
 });
 
 test('repository and Atlas metadata stay read-only inside a writable root', () => {
-  const workspace = { mode: 'code' as const, root: '/tmp/project' };
-  assert.throws(() => resolveWritablePath('.git/hooks/pre-commit', workspace), /read-only/);
-  assert.throws(() => resolveWritablePath('.atlas/config.json', workspace), /read-only/);
-  // A file that merely starts with the same letters is not metadata.
-  assert.equal(resolveWritablePath('.gitignore', workspace), resolve('/tmp/project/.gitignore'));
+  const project = makeProject();
+  try {
+    const workspace = { mode: 'code' as const, root: project.root };
+    assert.throws(() => resolveWritablePath('.git/hooks/pre-commit', workspace), /read-only/);
+    assert.throws(() => resolveWritablePath('.atlas/config.json', workspace), /read-only/);
+    // A file that merely starts with the same letters is not metadata.
+    assert.equal(resolveWritablePath('.gitignore', workspace), resolve(project.root, '.gitignore'));
+  } finally {
+    project.cleanup();
+  }
 });
+
 
 test('a generated diff round-trips through the transcript parser', () => {
   const before = ['one', 'two', 'three', 'four', 'five'].join('\n');

@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
-import { access, readFile, readdir, stat } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
 import { BoundedCommandOutput } from './commandOutputCap';
+import type { ContainedFsFailure } from '../../security/containedFs';
+import { containedRead, containedReadBuffer } from '../../security/containedFs';
 import type { SandboxPolicy } from './sandbox';
 import {
   buildSandboxedLaunch,
@@ -233,6 +235,40 @@ async function readTextLikeFile(filePath: string, raw: string, offset?: number, 
   };
 }
 
+/**
+ * Read caps for the `read_file` tool. `read_file` intentionally takes any
+ * absolute path on the user's machine — Atlas is a local-first client and
+ * this is not a confinement boundary — but "any path" still has to survive a
+ * FIFO that never yields a writer or a multi-gigabyte file, either of which
+ * would otherwise stall or OOM the Electron main process on a plain
+ * `readFile`. Text gets the tighter cap because it is quoted back to the
+ * model at full fidelity; binary/PDF/image content is re-sliced down to
+ * `MAX_BINARY_BASE64_BYTES` regardless, so the larger cap only bounds how
+ * much is pulled off disk before that slice.
+ */
+const TEXT_READ_BYTE_CAP = 5 * 1024 * 1024;
+const BINARY_READ_BYTE_CAP = 20 * 1024 * 1024;
+
+function throwForContainedFailure(reason: ContainedFsFailure, filePath: string): never {
+  switch (reason) {
+    case 'not-found':
+      throw new Error(`File not found: ${filePath}`);
+    case 'not-regular-file':
+      throw new Error('Path is not a file.');
+    case 'outside-root':
+      throw new Error(`Path is outside the allowed root: ${filePath}`);
+    case 'disallowed-extension':
+      throw new Error(`File extension is not allowed: ${filePath}`);
+    case 'changed-during-read':
+      throw new Error(`File changed on disk while it was being read: ${filePath}`);
+    case 'invalid-path':
+      throw new Error('Expected an absolute path.');
+    case 'read-failed':
+    default:
+      throw new Error(`Failed to read file: ${filePath}`);
+  }
+}
+
 export async function readToolExecute(input: {
   file_path: string;
   offset?: number;
@@ -244,18 +280,23 @@ export async function readToolExecute(input: {
   const extension = extname(filePath).toLowerCase();
 
   if (extension === '.ipynb') {
-    const raw = await readFile(filePath, 'utf8');
-    const rendered = renderNotebookContent(raw);
+    const capped = containedRead({ path: filePath, byteCap: TEXT_READ_BYTE_CAP });
+    if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+    const rendered = renderNotebookContent(capped.contents);
     const result = await readTextLikeFile(filePath, rendered, input.offset, input.limit);
     return {
       ...result,
-      type: result.type === 'text' ? 'notebook' : result.type
+      type: result.type === 'text' ? 'notebook' : result.type,
+      ...(capped.truncated ? { readTruncated: true } : {})
     };
   }
 
   if (extension === '.pdf' || IMAGE_EXTENSIONS.has(extension)) {
-    const buffer = await readFile(filePath);
-    const bytes = buffer.subarray(0, Math.min(buffer.byteLength, MAX_BINARY_BASE64_BYTES));
+    const capped = containedReadBuffer({ path: filePath, byteCap: BINARY_READ_BYTE_CAP });
+    if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+    const bytes = capped.buffer.subarray(0, Math.min(capped.buffer.byteLength, MAX_BINARY_BASE64_BYTES));
 
     return {
       type: extension === '.pdf' ? 'pdf' as const : 'image' as const,
@@ -263,13 +304,16 @@ export async function readToolExecute(input: {
         filePath,
         base64: bytes.toString('base64'),
         originalSize: fileStats.size,
-        truncated: buffer.byteLength > bytes.byteLength,
+        truncated: capped.truncated || capped.buffer.byteLength > bytes.byteLength,
         pagesRequested: input.pages
       }
     };
   }
 
-  const buffer = await readFile(filePath);
+  const capped = containedReadBuffer({ path: filePath, byteCap: TEXT_READ_BYTE_CAP });
+  if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+  const buffer = capped.buffer;
   const isText = TEXT_EXTENSIONS.has(extension) || !looksBinary(buffer);
 
   if (!isText) {
@@ -284,12 +328,16 @@ export async function readToolExecute(input: {
         totalLines: 0,
         originalSize: fileStats.size,
         base64: bytes.toString('base64'),
-        truncated: buffer.byteLength > bytes.byteLength
+        truncated: capped.truncated || buffer.byteLength > bytes.byteLength
       }
     };
   }
 
-  return readTextLikeFile(filePath, buffer.toString('utf8'), input.offset, input.limit);
+  // The cap can land mid multibyte-character; trim the partial tail rather
+  // than let it decode to replacement characters the file never contained.
+  const text = buffer.toString('utf8').replace(/�+$/u, '');
+  const result = await readTextLikeFile(filePath, text, input.offset, input.limit);
+  return capped.truncated ? { ...result, readTruncated: true } : result;
 }
 
 export function runCommand(

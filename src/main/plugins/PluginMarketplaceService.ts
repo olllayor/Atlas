@@ -1,12 +1,20 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { MarketplaceEntryView, MarketplaceView, MarketplacesView } from '../../shared/contracts';
+import type {
+  MarketplaceEntryView,
+  MarketplaceView,
+  MarketplacesView,
+  PluginUrlPreview
+} from '../../shared/contracts';
 import type { MarketplaceEntry } from '../../shared/marketplace';
 import { BUNDLED_MARKETPLACE_NAME, marketplaceEntryBlocker } from '../../shared/marketplace';
+import { describePluginUrl, parsePluginUrl } from '../../shared/pluginUrl';
 import { logger } from '../observability/logger';
-import { readPluginCapability, readPluginIconPath } from './PluginLoader';
+import { loadPlugin, readPluginCapability, readPluginIconPath } from './PluginLoader';
+import { fetchRepository } from './MarketplaceRegistry';
 import { pluginIconUrl } from './pluginIconUrl';
+import type { PluginBlocklistService } from './PluginBlocklistService';
 import type { PluginInstaller } from './PluginInstaller';
 import type { MarketplaceRecord, MarketplaceRegistry, ResolvedMarketplace } from './MarketplaceRegistry';
 import type { PluginRegistry } from './PluginRegistry';
@@ -29,7 +37,15 @@ export class PluginMarketplaceService {
     private readonly plugins: PluginRegistry,
     private readonly installer: PluginInstaller,
     private readonly readRecords: () => MarketplaceRecord[],
-    private readonly writeRecords: (records: MarketplaceRecord[]) => void
+    private readonly writeRecords: (records: MarketplaceRecord[]) => void,
+    /**
+     * Optional so the tests can build a service without one.
+     *
+     * Present in production: resolving marketplaces is the only moment
+     * revocations are readable, so every path that resolves them refreshes the
+     * list rather than leaving it to a fetch of its own.
+     */
+    private readonly blocklist?: PluginBlocklistService
   ) {}
 
   add(record: MarketplaceRecord): void {
@@ -82,18 +98,29 @@ export class PluginMarketplaceService {
     }
 
     this.writeRecords(this.readRecords().filter((entry) => entry.name !== name));
+    // Its checkout is now something nothing refers to. Collected here rather
+    // than only at startup so removing a marketplace reclaims the disk it used.
+    this.marketplaces.sweepCheckouts();
   }
 
   /** Every marketplace with its catalogue, and what is already installed. */
   view(): MarketplacesView {
+    const snapshot = this.plugins.snapshot();
     const installed = new Set(
-      [...this.plugins.snapshot().plugins, ...this.plugins.snapshot().disabled].map(
+      [...snapshot.plugins, ...snapshot.disabled, ...snapshot.blocked.map((entry) => entry.plugin)].map(
         (plugin) => plugin.manifest.name
       )
     );
 
+    const resolved = this.marketplaces.resolveAll();
+
+    // Opening the plugins page already re-reads every marketplace, so the
+    // revocation list is refreshed from that fetch rather than a second one.
+    this.blocklist?.refresh(resolved);
+    this.plugins.invalidate();
+
     return {
-      marketplaces: this.marketplaces.resolveAll().map((resolved) => toView(resolved, installed))
+      marketplaces: resolved.map((entry) => toView(entry, installed, this.blocklist))
     };
   }
 
@@ -109,13 +136,21 @@ export class PluginMarketplaceService {
    * removed on purpose stays removed rather than coming back every launch.
    */
   installDefaults(): void {
-    for (const resolved of this.marketplaces.resolveAll()) {
+    const resolvedAll = this.marketplaces.resolveAll();
+
+    // Startup already resolves every marketplace here, so this is where the
+    // revocation list is picked up for the session — before anything installs.
+    this.blocklist?.refresh(resolvedAll);
+    this.plugins.invalidate();
+
+    for (const resolved of resolvedAll) {
       if (!resolved.record.builtIn || !resolved.catalog || !resolved.root) {
         continue;
       }
 
+      const snapshot = this.plugins.snapshot();
       const installed = new Set(
-        this.plugins.snapshot().plugins.concat(this.plugins.snapshot().disabled).map(
+        [...snapshot.plugins, ...snapshot.disabled, ...snapshot.blocked.map((e) => e.plugin)].map(
           (plugin) => plugin.manifest.name
         )
       );
@@ -172,10 +207,35 @@ export class PluginMarketplaceService {
       throw new Error(blocker);
     }
 
+    const revoked = this.blocklist?.checkEntry(marketplaceName, pluginName, entry.version);
+
+    if (revoked) {
+      // Refused at install as well as at load, or a revoked plugin would be one
+      // click away from running again.
+      throw new Error(revoked.message);
+    }
+
     const materialized = this.marketplaces.materialize(resolved.root, entry);
 
     try {
-      const result = this.installer.install(materialized.path);
+      const result = this.installer.install(materialized.path, {
+        // Recorded so the update check knows what to re-fetch, and so a scoped
+        // revocation can tell this copy from one installed elsewhere.
+        origin: {
+          marketplace: marketplaceName,
+          entry: pluginName,
+          sha: entry.source.kind === 'git' ? entry.source.sha : null,
+          // A catalogue install is identified by its marketplace and entry, so
+          // the URL fields stay empty. They are how a *pasted-link* install is
+          // found again; see `installFromUrl`.
+          url: null,
+          ref: null,
+          subdir: null,
+          // Filled by the installer, which is the only place that has read the
+          // bundle that actually landed.
+          connectors: null
+        }
+      });
 
       if (!result.ok) {
         throw new Error(result.error);
@@ -188,9 +248,149 @@ export class PluginMarketplaceService {
       }
     }
   }
+
+  /**
+   * Installs a bundle from a link the user pasted.
+   *
+   * The gap this closes: an Agent Plugins bundle is a directory in somebody's
+   * repository, and people find them on a forge. Before this, the only ways in
+   * were a native folder picker — which means clone it yourself first — or
+   * adding a whole marketplace for one plugin. Neither is what a person means
+   * when they say "install this".
+   *
+   * It is the same install as every other, with the same validation, staging
+   * and containment checks. The only new thing is where the directory came
+   * from, and that is recorded rather than forgotten so the plugin stays
+   * updatable.
+   */
+  installFromUrl(input: string): { name: string; version: string } {
+    const parsed = parsePluginUrl(input);
+
+    if (!parsed.ok) {
+      throw new Error(parsed.error);
+    }
+
+    const fetched = fetchRepository(this.marketplaces.checkoutDirectory, parsed.target);
+
+    try {
+      // Refused before the install, not after. A revoked bundle reachable by
+      // pasting its repository URL would make the blocklist a formality — the
+      // catalogue path already refuses it, and this is the same decision.
+      const probe = loadPlugin(fetched.path);
+
+      if (!probe.ok) {
+        throw new Error(probe.error);
+      }
+
+      const revoked = this.blocklist?.check(probe.plugin.manifest.name, probe.plugin.manifest.version);
+
+      if (revoked) {
+        throw new Error(revoked.message);
+      }
+
+      const result = this.installer.install(fetched.path, {
+        origin: {
+          // No marketplace: nobody vouched for this, the user did. That
+          // distinction matters for scoped revocations, which may only bind
+          // what their own catalogue published.
+          marketplace: null,
+          entry: null,
+          sha: fetched.sha,
+          url: parsed.target.url,
+          ref: parsed.target.ref,
+          subdir: parsed.target.subdir,
+          connectors: null
+        }
+      });
+
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      logger.info('plugins.installed_from_url', {
+        name: result.name,
+        url: parsed.target.url,
+        sha: fetched.sha
+      });
+
+      return { name: result.name, version: result.version };
+    } finally {
+      rmSync(fetched.root, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * What a link would install, without installing it.
+   *
+   * Fetches, reads the bundle, throws the checkout away. This is what makes the
+   * confirmation honest: the capability summary is built from the *resolved*
+   * manifest — the literal commands, endpoints and variables — rather than from
+   * a description the author wrote. A summary derived from anything the author
+   * controls is a summary the author can lie in.
+   */
+  previewUrl(input: string): PluginUrlPreview {
+    const parsed = parsePluginUrl(input);
+
+    if (!parsed.ok) {
+      throw new Error(parsed.error);
+    }
+
+    const fetched = fetchRepository(this.marketplaces.checkoutDirectory, parsed.target);
+
+    try {
+      const probe = loadPlugin(fetched.path);
+
+      if (!probe.ok) {
+        throw new Error(probe.error);
+      }
+
+      const plugin = probe.plugin;
+      const revoked = this.blocklist?.check(plugin.manifest.name, plugin.manifest.version);
+
+      return {
+        source: describePluginUrl(parsed.target),
+        sha: fetched.sha,
+        name: plugin.manifest.name,
+        version: plugin.manifest.version,
+        description: plugin.manifest.description,
+        format: plugin.manifest.format,
+        installed: this.plugins.snapshot().plugins.some((p) => p.manifest.name === plugin.manifest.name),
+        blockedReason: revoked?.message ?? null,
+        skills: plugin.skills.map((skill) => skill.name),
+        commands: plugin.commands.map((command) => command.name),
+        servers: plugin.mcpServers.map((server) => ({
+          key: server.key,
+          transport: server.transport,
+          detail:
+            server.transport === 'stdio'
+              ? [server.command, ...server.args].filter(Boolean).join(' ')
+              : (server.url ?? ''),
+          envKeys: Object.keys(server.env),
+          envVars: server.envVars,
+          headerNames: Object.keys(server.headers)
+        })),
+        connectors: plugin.connectors.map((connector) => ({
+          key: connector.key,
+          id: connector.id,
+          kind: connector.kind,
+          capabilities: connector.capabilities,
+          category: connector.category,
+          required: connector.required
+        })),
+        hooksDeclared: plugin.manifest.paths.hooks != null || 'hooks' in plugin.manifest.unknown,
+        warnings: plugin.warnings
+      };
+    } finally {
+      rmSync(fetched.root, { recursive: true, force: true });
+    }
+  }
 }
 
-function toView(resolved: ResolvedMarketplace, installed: Set<string>): MarketplaceView {
+function toView(
+  resolved: ResolvedMarketplace,
+  installed: Set<string>,
+  blocklist: PluginBlocklistService | undefined
+): MarketplaceView {
   return {
     name: resolved.record.name,
     builtIn: resolved.record.builtIn === true,
@@ -203,7 +403,13 @@ function toView(resolved: ResolvedMarketplace, installed: Set<string>): Marketpl
         : resolved.record.source.path,
     error: resolved.error,
     entries: (resolved.catalog?.entries ?? []).map((entry) =>
-      toEntryView(entry, installed, resolved.root, resolved.record.builtIn === true)
+      toEntryView(
+        entry,
+        installed,
+        resolved.root,
+        resolved.record.builtIn === true,
+        blocklist?.checkEntry(resolved.record.name, entry.name, entry.version)?.message ?? null
+      )
     )
   };
 }
@@ -212,7 +418,8 @@ function toEntryView(
   entry: MarketplaceEntry,
   installed: Set<string>,
   marketplaceRoot: string | null,
-  builtIn: boolean
+  builtIn: boolean,
+  revoked: string | null
 ): MarketplaceEntryView {
   return {
     name: entry.name,
@@ -231,8 +438,9 @@ function toEntryView(
     builtIn,
     installed: installed.has(entry.name),
     // Non-null means Atlas refuses it. Shown rather than filtered out, so a
-    // catalogue is not silently shorter than the one the publisher wrote.
-    blocked: marketplaceEntryBlocker(entry) ?? unusableReason(entry, marketplaceRoot),
+    // catalogue is not silently shorter than the one the publisher wrote. A
+    // revocation leads: it is the reason that outranks every other.
+    blocked: revoked ?? marketplaceEntryBlocker(entry) ?? unusableReason(entry, marketplaceRoot),
     authOnInstall: entry.authPolicy === 'ON_INSTALL'
   };
 }

@@ -812,6 +812,14 @@ export default function App() {
       return;
     }
 
+    if (command === 'plugins.open') {
+      live.setCommandPaletteOpen(false);
+      runViewTransition(() => {
+        live.openPlugins();
+      });
+      return;
+    }
+
     if (command === 'composer.focus') {
       // Close first: the palette's FocusScope returns focus to its trigger on
       // unmount, so focusing the composer in the same tick is undone at once.

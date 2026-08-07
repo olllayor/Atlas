@@ -2,6 +2,7 @@ import type { McpServerConfig } from '../../shared/mcp';
 import { MCP_DEFAULT_STARTUP_TIMEOUT_MS, MCP_DEFAULT_TOOL_TIMEOUT_MS } from '../../shared/mcp';
 import { PLUGIN_SERVER_APPROVAL_MODE, pluginServerName } from '../../shared/plugins';
 import type { LoadedMcpServer, LoadedPlugin } from './PluginLoader';
+import { pluginDataDir } from './PluginLoader';
 import type { PluginRegistry } from './PluginRegistry';
 
 /**
@@ -35,6 +36,13 @@ function toServerConfig(plugin: LoadedPlugin, server: LoadedMcpServer): McpServe
     envVars: server.envVars,
     cwd: server.cwd,
     url: server.url,
+    headers: server.headers,
+    // The two variables the Agent Plugins spec requires every plugin subprocess
+    // to receive. Carried on the config rather than looked up at spawn time so
+    // that the manager stays ignorant of plugins, which is the property that
+    // lets everything downstream apply unchanged.
+    pluginRoot: plugin.root,
+    pluginDataDir: pluginDataDir(plugin.manifest.name),
     // A bundle ships servers as part of itself; disabling one individually is
     // an install-level decision that does not exist yet.
     enabled: true,

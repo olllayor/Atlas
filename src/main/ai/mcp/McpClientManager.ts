@@ -1,8 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { mkdir } from 'node:fs/promises';
 
-import type { McpServerConfig } from '../../../shared/mcp';
+import type { McpServerConfig, McpToolAnnotations } from '../../../shared/mcp';
 import { buildMcpServerEnv, isValidMcpCommand } from '../../../shared/mcp';
 import { logger } from '../../observability/logger';
 
@@ -19,7 +21,15 @@ export type McpToolDefinition = {
   toolName: string;
   description: string;
   inputSchema: unknown;
-  annotations: { readOnlyHint?: boolean } | undefined;
+  /**
+   * The shape the tool promises its structured result will take.
+   *
+   * Kept beside the input schema because a server that publishes one is saying
+   * its answer lives in `structuredContent`, and a reader that only looks at
+   * `content[]` would hand the model an empty string.
+   */
+  outputSchema: unknown;
+  annotations: McpToolAnnotations | undefined;
 };
 
 export type McpServerHealth = {
@@ -173,7 +183,10 @@ export class McpClientManager {
         toolName: entry.name,
         description: entry.description ?? '',
         inputSchema: entry.inputSchema,
-        annotations: entry.annotations as { readOnlyHint?: boolean } | undefined
+        // Carried whether or not a server declares one: the shape a tool
+        // publishes about its own effects is what the approval ladder reads.
+        outputSchema: entry.outputSchema ?? null,
+        annotations: entry.annotations as McpToolAnnotations | undefined
       }));
 
       this.catalogs.set(server.id, { at: this.now(), tools });
@@ -189,7 +202,15 @@ export class McpClientManager {
   async callTool(
     serverId: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    /**
+     * Cancels the in-flight request when the turn that made it is aborted.
+     *
+     * Optional, and not new required plumbing everywhere: a caller with no
+     * signal to offer — a test, a script — gets exactly today's behaviour, an
+     * uncancellable call bounded only by the tool timeout.
+     */
+    signal?: AbortSignal
   ): Promise<unknown> {
     const server = this.listServers().find((entry) => entry.id === serverId);
 
@@ -212,7 +233,7 @@ export class McpClientManager {
     return connection.client.callTool(
       { name: toolName, arguments: args },
       undefined,
-      { timeout: server.toolTimeoutMs || DEFAULT_TOOL_TIMEOUT_MS }
+      { timeout: server.toolTimeoutMs || DEFAULT_TOOL_TIMEOUT_MS, signal }
     );
   }
 
@@ -299,7 +320,7 @@ export class McpClientManager {
   }
 
   private async buildTransport(server: McpServerConfig) {
-    if (server.transport === 'http') {
+    if (server.transport === 'http' || server.transport === 'sse') {
       if (!server.url) {
         throw new Error(`The MCP server "${server.name}" has no URL.`);
       }
@@ -315,12 +336,23 @@ export class McpClientManager {
         );
       }
 
-      return new StreamableHTTPClientTransport(
-        new URL(server.url),
-        token
-          ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } }
-          : undefined
-      );
+      // The bundle's own headers first, so a resolved bearer token cannot be
+      // displaced by one — the parser already refuses `Authorization` in a
+      // manifest, and this makes the precedence explicit rather than incidental.
+      const headers: Record<string, string> = {
+        ...server.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      };
+
+      const options = Object.keys(headers).length > 0 ? { requestInit: { headers } } : undefined;
+
+      // The declared transport decides the first attempt. Streamable HTTP and
+      // the legacy SSE binding are different handshakes, and a server that
+      // said `sse` means it — guessing the modern one and failing would report
+      // as an unreachable server rather than a mismatched transport.
+      return server.transport === 'sse'
+        ? new SSEClientTransport(new URL(server.url), options)
+        : new StreamableHTTPClientTransport(new URL(server.url), options);
     }
 
     if (!server.command || !isValidMcpCommand(server.command)) {
@@ -334,10 +366,23 @@ export class McpClientManager {
     // binary has no reason to see them.
     const env = await this.resolveEnv(server.id).catch(() => ({}));
 
+    // Created before launch, per the Agent Plugins spec: a plugin is entitled
+    // to assume `$PLUGIN_DATA` names a directory it can write to, and a server
+    // that has to `mkdir -p` its own data directory is one that will fail
+    // differently on every platform.
+    if (server.pluginDataDir) {
+      await mkdir(server.pluginDataDir, { recursive: true }).catch(() => undefined);
+    }
+
     return new StdioClientTransport({
       command: server.command,
       args: server.args,
-      env: buildMcpServerEnv({ env, envVars: server.envVars }),
+      env: buildMcpServerEnv({
+        env,
+        envVars: server.envVars,
+        pluginRoot: server.pluginRoot,
+        pluginDataDir: server.pluginDataDir
+      }),
       cwd: server.cwd ?? undefined,
       stderr: 'pipe'
     });

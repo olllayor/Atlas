@@ -9,7 +9,7 @@ import type {
   RuntimeProviderSession,
   WorkLogEntry,
 } from '../../../shared/contracts';
-import { deriveWorkLogEntry, getWorkLogEntryId } from '../../../shared/runtimeActivity';
+import { classifyTaskAgentKind, deriveWorkLogEntry, getWorkLogEntryId, resolveTaskLinkage } from '../../../shared/runtimeActivity';
 import type { SqliteDatabase } from '../client';
 
 type RuntimeEventRow = {
@@ -106,6 +106,12 @@ function parseJson<T>(value: string | null): T | null {
 }
 
 function mapEvent(row: RuntimeEventRow): RuntimeEventEnvelope {
+  const payload = parseJson<Record<string, unknown>>(row.payload_json) ?? {};
+  // `agentId`/`parentToolCallId` have no columns of their own — no migration
+  // means they only ever persisted inside `payload_json`, so a row read back
+  // off disk reconstructs its top-level convenience fields from there.
+  const linkage = resolveTaskLinkage({ activityType: row.activity_type, payload });
+
   return {
     eventId: row.event_id,
     conversationId: row.conversation_id,
@@ -121,11 +127,16 @@ function mapEvent(row: RuntimeEventRow): RuntimeEventEnvelope {
     approvalId: row.approval_id,
     provider: row.provider_id,
     providerEventType: row.provider_event_type,
-    payload: parseJson<Record<string, unknown>>(row.payload_json) ?? {},
+    payload,
+    agentId: linkage.agentId,
+    parentToolCallId: linkage.parentToolCallId,
   };
 }
 
 function mapWorkLog(row: WorkLogRow): WorkLogEntry {
+  const payload = parseJson<Record<string, unknown>>(row.payload_json);
+  const linkage = resolveTaskLinkage({ activityType: row.activity_type, payload: payload ?? {} });
+
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -142,7 +153,9 @@ function mapWorkLog(row: WorkLogRow): WorkLogEntry {
     status: row.status,
     sequence: row.sequence,
     isFinal: Boolean(row.is_final),
-    payload: parseJson<Record<string, unknown>>(row.payload_json),
+    payload,
+    agentId: linkage.agentId,
+    parentToolCallId: linkage.parentToolCallId,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -412,6 +425,7 @@ export class RuntimeStateRepo {
       const nextSequence = this.getLastSequence(nextInput.conversationId) + 1;
       const envelope: RuntimeEventEnvelope = {
         ...nextInput,
+        payload: this.normalizeEventPayload(nextInput),
         occurredAt: now,
         sequence: nextSequence,
       };
@@ -479,6 +493,40 @@ export class RuntimeStateRepo {
     });
 
     return transaction(input);
+  }
+
+  /**
+   * Classify-once-at-the-boundary: this is the only place `agentKind` is ever
+   * computed. Everything downstream (the work-log fold, and eventually the
+   * renderer) treats it as an opaque field it forwards, never re-derives —
+   * re-deriving it in more than one place is exactly how a client and a
+   * server disagree about whether a row belongs in the Agents panel.
+   *
+   * `agentId`/`parentToolCallId` have no dedicated columns (no migration), so
+   * this also folds whatever the caller set at the envelope level into
+   * `payload` — the JSON column is the only durable place they can live, and
+   * folding here means every reader (`mapEvent`, `mapWorkLog`) can recover
+   * them the same way regardless of which level the caller populated.
+   */
+  private normalizeEventPayload(input: RecordRuntimeEventInput): Record<string, unknown> {
+    const payload: Record<string, unknown> = { ...(input.payload ?? {}) };
+
+    if (payload.agentId == null && input.agentId != null) {
+      payload.agentId = input.agentId;
+    }
+
+    if (payload.parentToolCallId == null && input.parentToolCallId != null) {
+      payload.parentToolCallId = input.parentToolCallId;
+    }
+
+    if (input.activityType.startsWith('task.')) {
+      payload.agentKind = classifyTaskAgentKind({
+        taskType: typeof payload.taskType === 'string' ? payload.taskType : undefined,
+        agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
+      });
+    }
+
+    return payload;
   }
 
   private projectEvent(event: RuntimeEventEnvelope) {

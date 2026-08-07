@@ -344,6 +344,33 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         startedAt: part?.startedAt ?? event.occurredAt,
         completedAt: event.occurredAt ?? part?.completedAt
       }));
+    case 'plugin-invocation': {
+      // Keyed by plugin and skill, which is what the resolver deduplicates on:
+      // a retried turn re-announces the same mentions, and appending a second
+      // identical row would make one `@github` look like two.
+      const id = `plugin-invocation:${event.plugin}:${event.skill ?? ''}`;
+
+      if (parts.some((part) => part.type === 'plugin-invocation' && part.id === id)) {
+        return parts;
+      }
+
+      // Prepended: the row states what the turn was scoped to *before* it ran,
+      // so it belongs above the work rather than wherever the event happened to
+      // land in the stream.
+      return [
+        {
+          id,
+          type: 'plugin-invocation' as const,
+          plugin: event.plugin,
+          skill: event.skill,
+          mention: event.mention,
+          outcome: event.outcome,
+          version: event.version,
+          detail: event.detail
+        },
+        ...parts
+      ];
+    }
     case 'visual-start': {
       const visualPart: ChatVisualPart = {
         id: event.visualId,

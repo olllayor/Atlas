@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mcp-ui-demo",
+  "version": "1.0.0",
+  "description": "A local fixture for exercising the sandboxed plugin-UI host. Returns one ui:// component and nothing else.",
+  "license": "MIT",
+  "keywords": ["fixture", "mcp-ui", "sandbox"],
+  "extensions": {
+    "com.olllayor.atlaschat": {
+      "requiresProject": false
+    }
+  }
+}

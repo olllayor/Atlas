@@ -255,6 +255,42 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 CREATE INDEX IF NOT EXISTS idx_approval_requests_pending
 ON approval_requests (conversation_id, status, created_at);
 
+-- What a plugin did, kept where it survives a restart. Separate from
+-- conversation_events on purpose: that table is read on every transcript
+-- replay, and audit payloads run to kilobytes rather than bytes — folding them
+-- in would make loading an old conversation pay for records nobody asked to
+-- see. idempotency_key is UNIQUE so a resumed turn re-announcing the same
+-- mention, or a retried write, lands once rather than duplicating the trail.
+--
+-- No REFERENCES/CASCADE: the whole point of an audit trail is that it
+-- outlives the thing it describes. A deleted conversation should not also
+-- erase the record that a plugin ran inside it — that is exactly the record
+-- someone investigating a deletion would go looking for.
+CREATE TABLE IF NOT EXISTS plugin_audit_records (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  server_json TEXT,
+  plugin_name TEXT,
+  plugin_version TEXT,
+  tool_name TEXT,
+  outcome TEXT NOT NULL,
+  approval_id TEXT,
+  tool_call_id TEXT,
+  detail TEXT,
+  payload_json TEXT,
+  truncation_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_audit_request
+ON plugin_audit_records (request_id, occurred_at);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_audit_conversation
+ON plugin_audit_records (conversation_id, occurred_at);
+
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,

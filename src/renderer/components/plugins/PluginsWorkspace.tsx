@@ -1,4 +1,4 @@
-import { GearIcon, MagnifyingGlassIcon, PlusIcon, ReloadIcon } from '@radix-ui/react-icons';
+import { FileIcon, GearIcon, MagnifyingGlassIcon, PlusIcon, ReloadIcon, UpdateIcon } from '@radix-ui/react-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 
@@ -7,12 +7,14 @@ import type {
   MarketplaceView,
   MarketplacesView,
   PluginSummary,
+  PluginUpdateView,
   PluginsView
 } from '../../../shared/contracts';
 import { notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 import { PluginIcon } from './PluginIcon';
 import { PluginDetailPanel } from './PluginDetailPanel';
+import { InstallFromUrlDialog } from './InstallFromUrlDialog';
 import { MarketplaceManager } from './MarketplaceManager';
 
 const EMPTY_PLUGINS: PluginsView = { root: '', plugins: [], failures: [] };
@@ -38,6 +40,11 @@ export function PluginsWorkspace() {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
+  // Only ever populated by an explicit check: resolving marketplaces re-clones
+  // every git remote, so it is not something to do on mount.
+  const [updates, setUpdates] = useState<PluginUpdateView[]>([]);
+  const [installingUrl, setInstallingUrl] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -69,9 +76,36 @@ export function PluginsWorkspace() {
     }
   };
 
+  const checkUpdates = useCallback(async () => {
+    setChecking(true);
+    try {
+      setUpdates(await window.atlasChat.plugins.checkUpdates());
+      // The same fetch refreshes the revocation list, so what is installed may
+      // have changed status even when no version did.
+      await load();
+    } catch (error) {
+      notifyError('Could not check for updates', error);
+    } finally {
+      setChecking(false);
+    }
+  }, [load]);
+
   const installedNames = useMemo(
     () => new Set(plugins.plugins.map((plugin) => plugin.name)),
     [plugins.plugins]
+  );
+
+  const updateFor = useMemo(
+    () => new Map(updates.map((update) => [update.plugin, update])),
+    [updates]
+  );
+
+  const outdated = useMemo(
+    // A republished version counts as something to act on. It is not a newer
+    // release, but it is the catalogue offering different code than what is
+    // installed, and leaving it out of the count is how it stays unnoticed.
+    () => updates.filter((update) => update.status === 'update-available' || update.status === 'republished'),
+    [updates]
   );
 
   const detail = plugins.plugins.find((plugin) => plugin.name === selected) ?? null;
@@ -111,18 +145,35 @@ export function PluginsWorkspace() {
           <IconButton label="Rescan" onClick={() => void load()} disabled={busy}>
             <ReloadIcon className={cn('size-4', busy && 'animate-spin')} aria-hidden />
           </IconButton>
+          <IconButton
+            label="Check for updates"
+            onClick={() => void checkUpdates()}
+            disabled={busy || checking}
+          >
+            <UpdateIcon className={cn('size-4', checking && 'animate-spin')} aria-hidden />
+          </IconButton>
           <IconButton label="Marketplaces" onClick={() => setManaging(true)}>
             <GearIcon className="size-4" aria-hidden />
           </IconButton>
+          {/* The link path leads. A plugin found in the wild is a URL; the
+              folder picker only helps once you have already cloned it, which
+              is the step this exists to remove. */}
           <button
             type="button"
-            onClick={() => void run(() => window.atlasChat.plugins.installFromPicker())}
+            onClick={() => setInstallingUrl(true)}
             disabled={busy}
             className="ml-1 flex items-center gap-1.5 rounded-lg bg-bg-active px-3 py-1.5 text-sm text-text-primary hover:bg-bg-hover disabled:opacity-50"
           >
             <PlusIcon className="size-4" aria-hidden />
             Install
           </button>
+          <IconButton
+            label="Install from a folder"
+            onClick={() => void run(() => window.atlasChat.plugins.installFromPicker())}
+            disabled={busy}
+          >
+            <FileIcon className="size-4" aria-hidden />
+          </IconButton>
         </div>
       </header>
 
@@ -157,6 +208,34 @@ export function PluginsWorkspace() {
             </ul>
           ) : null}
 
+          {outdated.length > 0 && tab === 'plugins' ? (
+            <div className="mt-4 flex items-center gap-3 rounded-lg border border-border-default bg-bg-surface px-3.5 py-2.5">
+              <p className="min-w-0 flex-1 text-xs text-text-secondary">
+                {outdated.length === 1
+                  ? `${outdated[0]?.plugin} has an update.`
+                  : `${outdated.length} plugins have updates.`}
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  void run(async () => {
+                    // Sequential rather than concurrent: each one stages, swaps
+                    // and deletes inside the same plugins directory, and there
+                    // is nothing to gain from interleaving that.
+                    for (const entry of outdated) {
+                      await window.atlasChat.plugins.update(entry.plugin);
+                    }
+                    setUpdates([]);
+                  })
+                }
+                disabled={busy}
+                className="shrink-0 rounded-md bg-bg-active px-2.5 py-1 text-2xs text-text-primary hover:bg-bg-hover disabled:opacity-50"
+              >
+                Update all
+              </button>
+            </div>
+          ) : null}
+
           {tab === 'plugins' ? (
             <PluginsTab
               plugins={plugins}
@@ -164,6 +243,7 @@ export function PluginsWorkspace() {
               query={query}
               busy={busy}
               installedNames={installedNames}
+              updateFor={updateFor}
               onOpen={setSelected}
               onInstall={(marketplace, plugin) =>
                 void run(() =>
@@ -181,10 +261,19 @@ export function PluginsWorkspace() {
       {detail ? (
         <PluginDetailPanel
           plugin={detail}
+          update={updateFor.get(detail.name) ?? null}
           busy={busy}
           onClose={() => setSelected(null)}
           onToggle={(enabled) =>
             void run(() => window.atlasChat.plugins.setEnabled(detail.name, enabled))
+          }
+          onUpdate={() =>
+            void run(async () => {
+              await window.atlasChat.plugins.update(detail.name);
+              setUpdates((current) =>
+                current.filter((entry) => entry.plugin !== detail.name)
+              );
+            })
           }
           onUninstall={() =>
             void run(async () => {
@@ -204,6 +293,15 @@ export function PluginsWorkspace() {
           onRemove={(name) => void run(() => window.atlasChat.plugins.removeMarketplace(name))}
         />
       ) : null}
+
+      {installingUrl ? (
+        <InstallFromUrlDialog
+          onClose={() => setInstallingUrl(false)}
+          onInstall={async (url) => {
+            setPlugins(await window.atlasChat.plugins.installFromUrl(url));
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -214,6 +312,7 @@ function PluginsTab({
   query,
   busy,
   installedNames,
+  updateFor,
   onOpen,
   onInstall,
   onManage
@@ -223,6 +322,7 @@ function PluginsTab({
   query: string;
   busy: boolean;
   installedNames: Set<string>;
+  updateFor: Map<string, PluginUpdateView>;
   onOpen: (name: string) => void;
   onInstall: (marketplace: string, plugin: string) => void;
   onManage: () => void;
@@ -259,13 +359,36 @@ function PluginsTab({
                 key={plugin.name}
                 type="button"
                 onClick={() => onOpen(plugin.name)}
-                title={plugin.displayName ?? plugin.name}
+                title={
+                  plugin.blockedReason
+                    ? `${plugin.name} — withdrawn`
+                    : (plugin.displayName ?? plugin.name)
+                }
                 className={cn(
-                  'rounded-xl p-0.5 transition-opacity hover:opacity-80',
+                  'relative rounded-xl p-0.5 transition-opacity hover:opacity-80',
                   !plugin.enabled && 'opacity-40'
                 )}
               >
                 <PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} />
+                {/* One dot, three meanings, never more than one at once: a
+                    withdrawn plugin has nothing to update to, and a republished
+                    version is not an ordinary release. */}
+                {plugin.blockedReason ? (
+                  <span
+                    aria-hidden
+                    className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full border border-bg-base bg-error-text"
+                  />
+                ) : updateFor.get(plugin.name)?.status === 'republished' ? (
+                  <span
+                    aria-hidden
+                    className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full border border-bg-base bg-warning"
+                  />
+                ) : updateFor.get(plugin.name)?.status === 'update-available' ? (
+                  <span
+                    aria-hidden
+                    className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full border border-bg-base bg-brand"
+                  />
+                ) : null}
               </button>
             ))}
           </div>

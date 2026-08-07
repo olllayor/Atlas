@@ -50,10 +50,19 @@ import {
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
 import { marketplaceCheckoutRoot, withBundledMarketplace } from './plugins/bundledMarketplace';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
+import { PluginBlocklistService } from './plugins/PluginBlocklistService';
 import { PluginInstaller } from './plugins/PluginInstaller';
 import { PluginMarketplaceService } from './plugins/PluginMarketplaceService';
+import { PluginOriginStore } from './plugins/PluginOrigins';
+import type { PluginOrigin } from './plugins/PluginOrigins';
 import { PluginRegistry } from './plugins/PluginRegistry';
+import { PluginUpdateService } from './plugins/PluginUpdateService';
 import { registerPluginsIpc } from './ipc/plugins';
+import { registerMcpUiIpc } from './ipc/mcpUi';
+import { McpAuditLog } from './ai/mcp/McpAuditLog';
+import { resolveMcpToolProvenance } from './ai/mcp/mcpToolProvenance';
+import { McpUiStore } from './ai/mcp/McpUiStore';
+import { registerMcpUiProtocolHandler, registerMcpUiScheme } from './ai/mcp/mcpUiProtocol';
 import { createPluginMcpSource } from './plugins/PluginMcpSource';
 import { SkillsService } from './plugins/SkillsService';
 import { McpSecretStore } from './secrets/mcpSecrets';
@@ -73,6 +82,7 @@ import { KeychainStore } from './secrets/keychain';
 import { resolveConversationWorkspace } from './workspace/conversationWorkspace';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
+import { EMPTY_BLOCKLIST } from '../shared/blocklist';
 import { IPC_CHANNELS } from '../shared/ipc';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 
@@ -97,6 +107,11 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 registerSitePreviewScheme();
 registerAttachmentScheme();
 registerPluginIconScheme();
+// Plugin UI components. Must be registered before the app is ready, like the
+// three above, and gets its own scheme for the same reason: the widget's CSP is
+// a response header this process writes, which is a guarantee no `srcdoc`
+// document can offer — one of those inherits the renderer's policy instead.
+registerMcpUiScheme();
 
 async function pathExists(path: string) {
   try {
@@ -278,15 +293,31 @@ app.whenReady().then(async () => {
     }
   }, database.terminalHistory);
 
+  // Where each installed bundle came from. Nothing else records it, and both
+  // the update check and a scoped revocation are unanswerable without it.
+  const pluginOrigins = new PluginOriginStore(
+    () => database.settings.getPluginOrigins<PluginOrigin>(),
+    (records) => database.settings.setPluginOrigins(records),
+  );
+  // Read from the marketplaces, cached in settings. The scan below runs on the
+  // turn-setup path, so it consults the stored answer and never the network.
+  const pluginBlocklist = new PluginBlocklistService(
+    () => database.settings.getPluginBlocklist(EMPTY_BLOCKLIST),
+    (value) => database.settings.setPluginBlocklist(value),
+    pluginOrigins,
+  );
   // One scan of ~/.atlas/plugins feeds every component type, so the prompt and
   // the tool set cannot disagree about what is installed.
   const pluginRegistry = new PluginRegistry({
     isEnabled: (name) => !database.settings.getDisabledPlugins().includes(name),
+    // Withheld here rather than in each consumer: a revocation any one of them
+    // could forget to apply is not a revocation.
+    blockedReason: (name, version) => pluginBlocklist.check(name, version)?.message ?? null,
     // A bundle may declare the oldest Atlas that understands it; refusing to
     // load beats loading it without the parts its author relied on.
     appVersion: app.getVersion(),
   });
-  const pluginInstaller = new PluginInstaller(pluginRegistry);
+  const pluginInstaller = new PluginInstaller(pluginRegistry, pluginOrigins);
   const checkoutRoot = marketplaceCheckoutRoot();
   // Artwork is served from these two roots and nowhere else, whatever a
   // manifest asks for.
@@ -304,12 +335,24 @@ app.whenReady().then(async () => {
     () => withBundledMarketplace(database.settings.getMarketplaces<MarketplaceRecord>()),
     checkoutRoot,
   );
+  // Checkouts for marketplaces nobody refers to any more are dead weight the
+  // installer's own sweep never covered — it only looks inside the plugins
+  // directory, and these live beside it.
+  marketplaceRegistry.sweepCheckouts();
   const pluginMarketplaces = new PluginMarketplaceService(
     marketplaceRegistry,
     pluginRegistry,
     pluginInstaller,
     () => database.settings.getMarketplaces<MarketplaceRecord>(),
     (records) => database.settings.setMarketplaces(records),
+    pluginBlocklist,
+  );
+  const pluginUpdates = new PluginUpdateService(
+    marketplaceRegistry,
+    pluginRegistry,
+    pluginInstaller,
+    pluginOrigins,
+    pluginBlocklist,
   );
 
   // MCP is no longer a feature with a configuration surface: servers arrive
@@ -329,8 +372,26 @@ app.whenReady().then(async () => {
     (value) => database.settings.setPluginActivations(value),
     () => new Set(database.settings.getAlwaysOnPlugins()),
   );
-  const mcpToolsProvider = createMcpToolsProvider(mcpManager, listPluginServers, (conversationId) =>
-    pluginActivations.serverFilter(conversationId),
+  // In memory and never persisted: a widget is a view of one moment, and
+  // reviving last week's card would show state the server has long since
+  // changed while re-running third-party markup nobody asked for again.
+  const mcpUiStore = new McpUiStore();
+  registerMcpUiProtocolHandler(mcpUiStore);
+  registerMcpUiIpc(mcpUiStore);
+
+  // Held apart from the runtime-envelope table: that one is read on the
+  // transcript replay path, and audit payloads would make every conversation
+  // load pay for records nobody is looking at. Backed by SQLite rather than
+  // left in memory, so a record written before a restart is still there
+  // after one — the whole reason "session history" means something.
+  const mcpAuditLog = new McpAuditLog(database.pluginAudit);
+
+  const mcpToolsProvider = createMcpToolsProvider(
+    mcpManager,
+    listPluginServers,
+    (conversationId) => pluginActivations.serverFilter(conversationId),
+    mcpUiStore,
+    mcpAuditLog,
   );
   const skillsService = new SkillsService(pluginRegistry);
 
@@ -384,6 +445,16 @@ app.whenReady().then(async () => {
       skillsService,
       (conversationId, pluginName, requiredServers) =>
         pluginActivations.activateForSkill(conversationId, pluginName, requiredServers),
+      // Naming a plugin with `@` activates it for the conversation. Reuses the
+      // skill route because the effect is identical — the plugin's own servers
+      // come up — and a second activation path would be a second thing to keep
+      // in step with the gate.
+      (conversationId, targets) => {
+        for (const target of targets) {
+          pluginActivations.activateForSkill(conversationId, target.plugin, []);
+        }
+      },
+      mcpAuditLog,
     ),
     database.runtimeState,
     toolStateStore,
@@ -392,6 +463,24 @@ app.whenReady().then(async () => {
       await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
     },
     checkpointCoordinator,
+    mcpAuditLog,
+    // Built fresh per lookup from a live snapshot, not captured once at
+    // construction: an approval can be decided long after the tool call that
+    // requested it, and the plugin behind it must be resolved against what is
+    // installed at that later moment, not against a stale list.
+    (toolName) => {
+      const found = resolveMcpToolProvenance(toolName, pluginRegistry.snapshot().plugins);
+
+      if (!found) {
+        return null;
+      }
+
+      const plugin = pluginRegistry
+        .snapshot()
+        .plugins.find((candidate) => candidate.manifest.name === found.pluginName);
+
+      return plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null;
+    },
   );
 
   registerSettingsIpc({
@@ -423,6 +512,8 @@ app.whenReady().then(async () => {
     registry: pluginRegistry,
     installer: pluginInstaller,
     marketplaces: pluginMarketplaces,
+    updates: pluginUpdates,
+    origins: pluginOrigins,
     activations: pluginActivations,
     setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
     setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),

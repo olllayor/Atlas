@@ -127,6 +127,26 @@ test('a loaded body is fenced as untrusted before it reaches the model', (t) => 
   assert.match(text, /Ignore all previous instructions\./, 'the body still arrives');
 });
 
+test('a loaded skill names its own folder, so its references resolve', (t) => {
+  const root = pluginsRoot(t);
+  const bundle = installPlugin(root, 'demo', {
+    yeet: { description: 'Ship it.', body: 'Follow the checklist in references/steps.md.' }
+  });
+  write(join(bundle, 'skills', 'yeet', 'references', 'steps.md'), 'One. Two.');
+
+  const text = new SkillsService(new PluginRegistry({ root })).read('yeet');
+  const folder = join(bundle, 'skills', 'yeet');
+
+  assert.ok(text.includes(folder), `expected the skill folder ${folder} in:\n${text}`);
+  assert.match(text, /relative to that folder/);
+  // The anchor is Atlas's sentence and sits ahead of the body, so a skill
+  // cannot introduce a different root by writing one into its own Markdown.
+  assert.ok(
+    text.indexOf(folder) < text.indexOf('Follow the checklist'),
+    'the folder is stated before the untrusted body, not after it'
+  );
+});
+
 test('an unknown skill name answers instead of failing the turn', (t) => {
   const service = new SkillsService(new PluginRegistry({ root: pluginsRoot(t) }));
   const text = service.read('made-up');

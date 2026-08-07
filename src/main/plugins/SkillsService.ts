@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+
 import { formatSkillBody } from '../../shared/plugins';
 import type { LoadedSkill } from './PluginLoader';
 import { readSkillBody } from './PluginLoader';
@@ -84,10 +86,12 @@ export class SkillsService {
   }
 
   /**
-   * A skill's instructions, fenced as untrusted.
+   * A skill's instructions, fenced as untrusted, anchored to its folder.
    *
    * Third-party Markdown phrased as instructions is the same injection surface
-   * as a tool result, and gets the same treatment.
+   * as a tool result, and gets the same treatment. The folder is named because
+   * a skill is a directory rather than a file, and a body that points at
+   * `references/` is unusable without knowing where `references/` is.
    */
   read(name: string): string {
     const skill = this.find(name);
@@ -102,7 +106,7 @@ export class SkillsService {
       return `The skill "${skill.qualifiedName}" could not be read from disk.`;
     }
 
-    return formatSkillBody(skill.pluginName, skill.name, body);
+    return formatSkillBody(skill.pluginName, skill.name, body, dirname(skill.path));
   }
 
   /**

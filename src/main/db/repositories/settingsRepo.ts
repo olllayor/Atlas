@@ -145,6 +145,40 @@ export class SettingsRepo {
     this.setJsonSetting('plugins.activations', value);
   }
 
+  /**
+   * Where each installed plugin came from.
+   *
+   * Stored beside the plugins rather than inside them: a bundle must not be
+   * able to describe its own provenance, and this is what the update check
+   * re-fetches from and what a scoped revocation is matched against.
+   */
+  getPluginOrigins<T>(): Record<string, T> {
+    const value = this.getJsonSetting<unknown>('plugins.origins', {});
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, T>)
+      : {};
+  }
+
+  setPluginOrigins<T>(value: Record<string, T>) {
+    this.setJsonSetting('plugins.origins', value);
+  }
+
+  /**
+   * The last revocations Atlas read from its marketplaces.
+   *
+   * Cached rather than fetched on demand for two reasons: the plugin scan runs
+   * on the turn-setup path and must never reach the network, and a revocation
+   * has to survive being offline. A blocklist that only applies when a remote
+   * is reachable is one an attacker can defeat by unplugging a cable.
+   */
+  getPluginBlocklist<T>(fallback: T): T {
+    return this.getJsonSetting<T>('plugins.blocklist', fallback);
+  }
+
+  setPluginBlocklist<T>(value: T) {
+    this.setJsonSetting('plugins.blocklist', value);
+  }
+
   /** Plugins whose tools should be available without loading a skill first. */
   getAlwaysOnPlugins(): string[] {
     const value = this.getJsonSetting<unknown>('plugins.alwaysOn', []);

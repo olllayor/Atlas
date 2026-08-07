@@ -1,3 +1,5 @@
+import type { McpTransportKind } from './mcp';
+import type { McpUiDescriptor } from './mcpUi';
 import type { MentionId } from './mentions';
 import type {
   CreateSiteRequest,
@@ -156,14 +158,36 @@ import type { AtlasPluginOptions } from './plugins';
 
 export type PluginServerSummary = {
   name: string;
-  transport: 'stdio' | 'http';
+  transport: McpTransportKind;
   /** The literal command that will run, or the literal endpoint reached. */
   detail: string;
   /** Environment variable names forwarded from Atlas to the server. */
   envVars: string[];
   /** Names of literal values the bundle sets. Values are not shown. */
   envKeys: string[];
+  /** Header names the bundle sets. Values are not shown, and secrets are refused. */
+  headerNames: string[];
   bearerTokenEnvVar: string | null;
+};
+
+/**
+ * A declared connector, as the browser shows it.
+ *
+ * Every one of these renders unavailable. Atlas has no connector broker, and a
+ * connector's token is supplied by the authorising *application* rather than
+ * negotiated here — which is the substantive difference from a remote MCP
+ * server and the reason this is a separate type rather than another transport.
+ */
+export type PluginConnectorSummary = {
+  key: string;
+  /** The opaque id, shown so a user can match it against what they authorised elsewhere. */
+  id: string;
+  kind: 'first-party-connector' | 'apps-sdk-app' | 'unknown';
+  /** Declared capabilities, verbatim. The format carries no scopes field. */
+  capabilities: string[];
+  category: string | null;
+  /** The bundle says it cannot function without this one. */
+  required: boolean;
 };
 
 export type PluginSkillSummary = {
@@ -171,6 +195,25 @@ export type PluginSkillSummary = {
   description: string;
   /** False when the bundle asked that the model not choose this on its own. */
   implicitInvocation: boolean;
+  /** Declared environment requirements, from Agent Skills frontmatter. */
+  compatibility: string | null;
+  /**
+   * Tools the skill asked to have pre-approved.
+   *
+   * Shown so the user can see what was requested. Atlas does not act on it —
+   * a third-party file asking to skip approval prompts is exactly the request
+   * that should be visible rather than granted.
+   */
+  allowedTools: string[];
+};
+
+export type PluginCommandSummary = {
+  /** `<plugin>:<command>`, the id the body is fetched by. */
+  qualifiedName: string;
+  pluginName: string;
+  name: string;
+  description: string;
+  argumentHint: string;
 };
 
 export type PluginSummary = {
@@ -185,12 +228,104 @@ export type PluginSummary = {
   root: string;
   enabled: boolean;
   skills: PluginSkillSummary[];
+  commands: PluginCommandSummary[];
   servers: PluginServerSummary[];
+  /** Declared OAuth connectors. Always unavailable; see `PluginConnectorSummary`. */
+  connectors: PluginConnectorSummary[];
   /** Atlas parses hooks and refuses to run them; this only says one is present. */
   hooksDeclared: boolean;
   /** What the bundle declared in its Atlas-specific block. */
   atlas: AtlasPluginOptions;
+  /**
+   * Why Atlas refuses to run it, when a revocation covers it.
+   *
+   * Distinct from `enabled: false`, which is a choice the user made and can
+   * undo. This one they cannot, so the UI must not offer a switch for it.
+   */
+  blockedReason: string | null;
+  /** Where it was installed from, for the update check. Null for a folder install. */
+  marketplace: string | null;
   /** Non-fatal problems found while loading, e.g. a skill that was skipped. */
+  warnings: string[];
+};
+
+/**
+ * What a marketplace currently offers for one installed plugin.
+ *
+ * `unknown` and `unavailable` are reported rather than omitted: a plugin Atlas
+ * cannot check is the one that will silently never update, which is exactly
+ * what a user needs telling.
+ */
+export type PluginUpdateView = {
+  plugin: string;
+  marketplace: string | null;
+  installed: string;
+  /** The version on offer, when the catalogue publishes one. */
+  available: string | null;
+  /**
+   * The commit installed, and the one the catalogue now pins.
+   *
+   * Shown on the row rather than kept internal. A user deciding whether to run
+   * someone else's newer code is entitled to see *which* code, and a version
+   * string alone cannot say — see `republished`.
+   */
+  installedSha: string | null;
+  availableSha: string | null;
+  /**
+   * `republished` is the one that matters and the one that used to be hidden.
+   *
+   * Same version number, different commit. Either the publisher shipped new
+   * code without bumping, or the tag was moved under it — a force-push, a
+   * compromised repository, a retagged release. Atlas cannot tell those apart,
+   * and neither can the user, but reporting it as `up-to-date` meant nobody got
+   * the chance to look. It is not an error: it is the one update whose diff is
+   * worth reading before applying.
+   */
+  status: 'update-available' | 'republished' | 'up-to-date' | 'unknown' | 'unavailable';
+  /** Why the status is what it is, when that needs saying. */
+  detail: string | null;
+};
+
+/**
+ * What a pasted link turns out to contain, shown before anything is installed.
+ *
+ * Every field is derived from the *resolved* bundle — the literal commands, the
+ * literal endpoints, the manifest that actually landed — and never from a
+ * description the author wrote. A summary built from author-controlled strings
+ * is a summary the author can lie in, which would make the confirmation worse
+ * than no confirmation at all.
+ */
+export type PluginUrlPreview = {
+  /** The repository, ref and subdirectory Atlas resolved, not the string typed. */
+  source: string;
+  /** The commit actually fetched. The one identifier the publisher does not pick. */
+  sha: string | null;
+  name: string;
+  version: string;
+  description: string;
+  format: 'agent-plugins' | 'vendor';
+  /** True when a plugin of this name is already installed; installing would be refused. */
+  installed: boolean;
+  /** Set when this bundle has been revoked. Installing is refused. */
+  blockedReason: string | null;
+  skills: string[];
+  commands: string[];
+  servers: {
+    key: string;
+    transport: McpTransportKind;
+    /** The literal command that would run, or the literal endpoint reached. */
+    detail: string;
+    envKeys: string[];
+    envVars: string[];
+    headerNames: string[];
+  }[];
+  /**
+   * Declared connectors. Always unavailable, and shown before install for
+   * exactly that reason: a bundle whose only component is one installs cleanly
+   * and then does nothing.
+   */
+  connectors: PluginConnectorSummary[];
+  hooksDeclared: boolean;
   warnings: string[];
 };
 
@@ -496,7 +631,33 @@ export type ChatVisualPart = {
   title?: string;
 };
 
-export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart | ChatVisualPart;
+/**
+ * A resolved `@plugin` mention, carried on the turn it scoped.
+ *
+ * A part rather than transcript-only state so it persists with the message: a
+ * conversation reopened next week should still say which plugin and version
+ * answered it, and that is also the record the audit log reads.
+ *
+ * Mirrors `StreamPluginInvocationEvent` and grants nothing — see that type.
+ */
+export type ChatPluginInvocationPart = {
+  id: string;
+  type: 'plugin-invocation';
+  plugin: string;
+  skill: string | null;
+  mention: string;
+  outcome: PluginInvocationOutcome;
+  version: string | null;
+  detail: string | null;
+};
+
+export type ChatMessagePart =
+  | ChatTextPart
+  | ChatReasoningPart
+  | ChatFilePart
+  | ChatToolPart
+  | ChatVisualPart
+  | ChatPluginInvocationPart;
 
 export type ToolExecutionRecord = {
   id: string;
@@ -1280,6 +1441,67 @@ export type StreamNoticeEvent = {
   level: 'info' | 'warning';
 };
 
+/**
+ * Why a named plugin could or could not be used.
+ *
+ * Four outcomes rather than a boolean, because the difference is the entire
+ * point of showing the row: "it ran", "the plugin ran but that skill does not
+ * exist", "it is switched off" and "it was withdrawn" are four different things
+ * to tell a user, and only some of them are theirs to fix.
+ */
+export type PluginInvocationOutcome =
+  | 'invoked'
+  | 'skill-not-found'
+  | 'plugin-disabled'
+  | 'plugin-blocked'
+  | 'plugin-not-installed';
+
+/**
+ * One `@plugin` mention, resolved, announced before the turn runs.
+ *
+ * **Descriptive only.** This event grants nothing. It does not activate a
+ * server, does not widen a tool set, and above all does not stand in for MCP
+ * approval — a call this event describes still stops at the same per-call
+ * prompt every other third-party tool does. It exists so the transcript, and
+ * later the audit record, read from one resolution rather than each re-deriving
+ * it from the message text and drifting apart.
+ *
+ * Emitted for unavailable plugins too. A mention that produced nothing is
+ * exactly the case a user needs told about; silence is indistinguishable from a
+ * typo, and they retype a name that was right all along.
+ */
+export type StreamPluginInvocationEvent = {
+  type: 'plugin-invocation';
+  requestId: string;
+  /**
+   * The assistant message this turn is producing, when it already has a row.
+   *
+   * Null on a first send, and that is not a gap: the message is not written
+   * until the turn finishes, so at announce time there is genuinely no id yet.
+   * `requestId` above identifies the turn either way, and is what the audit
+   * record joins on. Populated on a resumed or re-approved turn, where the row
+   * does exist.
+   */
+  messageId: string | null;
+  /** Manifest name — the identity everything else is keyed by. */
+  plugin: string;
+  /** Unqualified skill name when the mention named one. */
+  skill: string | null;
+  /** Exactly what the user typed, e.g. `@github pr-review`. Never reconstructed. */
+  mention: string;
+  outcome: PluginInvocationOutcome;
+  /**
+   * The installed version at resolution time.
+   *
+   * Recorded here rather than looked up later: a plugin can be updated between
+   * the turn and anyone reading it back, and an audit line that reports the
+   * version as of *reading* would be answering a different question.
+   */
+  version: string | null;
+  /** One sentence for the reader when the outcome is not `invoked`. */
+  detail: string | null;
+};
+
 export type StreamVisualStartEvent = {
   type: 'visual-start';
   requestId: string;
@@ -1330,6 +1552,7 @@ export type StreamEvent =
   | StreamToolOutputDeniedEvent
   | StreamToolApprovalRequestedEvent
   | StreamToolApprovalRespondedEvent
+  | StreamPluginInvocationEvent
   | StreamVisualStartEvent
   | StreamVisualCompleteEvent
   | StreamMetaEvent
@@ -1351,7 +1574,11 @@ export type ActivityType =
   | 'runtime.warning'
   | 'runtime.error'
   | 'turn.started'
-  | 'turn.completed';
+  | 'turn.completed'
+  | 'task.started'
+  | 'task.progress'
+  | 'task.updated'
+  | 'task.completed';
 
 export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
 
@@ -1364,6 +1591,63 @@ export type CanonicalToolType =
   | 'image_view';
 
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
+
+/**
+ * Where a `task.*` row stands. Not the same set as `WorkLogEntryStatus`: this
+ * is what an emitter reports about the task itself, and `deriveWorkLogEntry`
+ * folds it down to the smaller work-log vocabulary (`running` / `completed` /
+ * `error`).
+ */
+export type RuntimeTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'idle'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+/**
+ * Token/tool accounting for a task, folded across every progress tick with
+ * `mergeTaskUsage`. Only `totalTokens` is required — a provider that never
+ * breaks its usage down still has one true number to show.
+ */
+export type RuntimeTaskUsage = {
+  totalTokens: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+};
+
+/**
+ * Optional agent-identity linkage carried on EVERY task payload — including
+ * progress and terminal payloads, not just `task.started`. Repetition is the
+ * point: a fold must be able to reconstruct an agent whose start row aged out
+ * of retention. All fields optional so old rows decode unchanged.
+ */
+export type TaskAgentLinkage = {
+  taskType?: string;
+  /** Server-stamped at record time; clients trust it rather than re-deriving it. */
+  agentKind?: 'agent' | 'background';
+  /** Owning agent when this task is nested inside another agent's run. */
+  agentId?: string;
+  parentAgentId?: string;
+  /** The spawn tool call that created this task. */
+  toolCallId?: string;
+  title?: string;
+  role?: string;
+  model?: string;
+  effort?: string;
+  agentIndex?: number;
+  attempt?: number;
+  outputFile?: string;
+  /** Provider-synthesized rows that belong only in the Agents surface. */
+  timelineBypass?: boolean;
+};
 
 export type RuntimeEventEnvelope = {
   eventId: string;
@@ -1381,6 +1665,15 @@ export type RuntimeEventEnvelope = {
   provider: ProviderId | 'system';
   providerEventType?: string | null;
   payload: Record<string, unknown>;
+  /**
+   * Owning agent/subagent, when this event belongs to one. Top-level rather
+   * than payload-only because the renderer filters on it hot-path (quiet
+   * timeline, Agents panel) and should not have to reach into `payload` to
+   * decide what to show.
+   */
+  agentId?: string | null;
+  /** The tool call that spawned the agent/task this event belongs to. */
+  parentToolCallId?: string | null;
 };
 
 export type WorkLogEntryStatus =
@@ -1409,6 +1702,9 @@ export type WorkLogEntry = {
   sequence: number;
   isFinal: boolean;
   payload: Record<string, unknown> | null;
+  /** Mirrors `RuntimeEventEnvelope.agentId`. See that field for why it is top-level. */
+  agentId?: string | null;
+  parentToolCallId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -1791,11 +2087,26 @@ export type RendererApi = {
     setEnabled: (name: string, enabled: boolean) => Promise<PluginsView>;
     /** Opens a directory picker and installs the chosen bundle. */
     installFromPicker: () => Promise<PluginsView | null>;
+    /**
+     * What a pasted repository link would install. Fetches; installs nothing.
+     *
+     * Split from `installFromUrl` so the confirmation is built from the real
+     * bundle rather than from a promise about it.
+     */
+    previewUrl: (url: string) => Promise<PluginUrlPreview>;
+    installFromUrl: (url: string) => Promise<PluginsView>;
     revealRoot: () => Promise<void>;
     marketplaces: () => Promise<MarketplacesView>;
     addMarketplace: (input: MarketplaceInput) => Promise<MarketplacesView>;
     removeMarketplace: (name: string) => Promise<MarketplacesView>;
     installFromMarketplace: (marketplace: string, plugin: string) => Promise<PluginsView>;
+    /** Re-reads every marketplace and reports what it offers. Costs a fetch. */
+    checkUpdates: () => Promise<PluginUpdateView[]>;
+    update: (plugin: string) => Promise<PluginsView>;
+    /** Every command installed plugins offer, for the composer's picker. */
+    commands: () => Promise<PluginCommandSummary[]>;
+    /** One command's expanded template, fetched when the user picks it. */
+    commandBody: (qualifiedName: string, args: string) => Promise<string>;
     activation: (conversationId: string) => Promise<PluginActivationEntry[]>;
     setActivated: (
       conversationId: string,
@@ -1807,6 +2118,17 @@ export type RendererApi = {
       plugin: string,
       alwaysOn: boolean
     ) => Promise<PluginActivationEntry[]>;
+  };
+  mcpUi: {
+    /**
+     * Whether a finished tool call left a UI component to draw.
+     *
+     * Returns a descriptor only — the call id, the component's `ui://` name and
+     * the server that sent it. Markup never crosses IPC: the renderer points a
+     * sandboxed frame at `atlas-widget://<id>` and the protocol handler serves
+     * the bytes with a policy the widget cannot edit.
+     */
+    describe: (toolCallId: string) => Promise<McpUiDescriptor | null>;
   };
   fileChanges: {
     list: (conversationId: string) => Promise<FileChangeRecord[]>;

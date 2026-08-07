@@ -7,6 +7,15 @@ import {
   normalizeSitePath,
   type SiteFileMeta,
 } from '../../shared/sites';
+import { containedRead } from '../security/containedFs';
+
+/**
+ * Cap for the text-file read path only (`site_read_file`). `readSiteFile`
+ * (Buffer, used by the preview server to serve whatever a site actually
+ * contains) is untouched — truncating a served asset would just break the
+ * preview, and the preview host is not reading files a model chose.
+ */
+const SITE_TEXT_READ_BYTE_CAP = 5 * 1024 * 1024;
 
 /**
  * On-disk storage for site artifacts.
@@ -98,8 +107,26 @@ export class SiteFileStore {
   }
 
   async readSiteTextFile(siteId: string, versionId: string, path: string): Promise<string> {
-    const buffer = await this.readSiteFile(siteId, versionId, path);
-    return buffer.toString('utf8');
+    const absolute = this.resolveFilePath(siteId, versionId, path);
+
+    // `resolveFilePath` above already proves the path is lexically inside
+    // the version directory; `containedRead` (no root — that confinement is
+    // already done) adds what the lexical check can't: a cap so a huge or
+    // pathological file can't stall or OOM the read, and an open-then-verify
+    // regular-file check instead of the separate lstat-then-readFile this
+    // used to do.
+    const result = containedRead({ path: absolute, byteCap: SITE_TEXT_READ_BYTE_CAP });
+
+    if (!result.ok) {
+      if (result.reason === 'not-regular-file') {
+        throw new Error(`Not a regular file: ${path}`);
+      }
+      throw new Error(`Failed to read site file: ${path}`);
+    }
+
+    return result.truncated
+      ? `${result.contents}\n\n[Content truncated — file exceeds the ${SITE_TEXT_READ_BYTE_CAP}-byte read limit.]`
+      : result.contents;
   }
 
   async deleteSiteFile(siteId: string, versionId: string, path: string): Promise<boolean> {

@@ -160,7 +160,12 @@ test('one malformed skill does not cost the bundle its other skills', (t) => {
 
   const plugin = loaded(root);
   assert.deepEqual(plugin.skills.map((skill) => skill.name), ['yeet']);
-  assert.equal(plugin.warnings.length, 2, 'each skipped skill is reported');
+
+  // Counted by cause rather than in total: the loader also reports conformance
+  // problems on the skills it *did* load, and a bare length assertion would
+  // break every time one of those is added.
+  const skipped = plugin.warnings.filter((warning) => warning.startsWith('Skipped '));
+  assert.equal(skipped.length, 2, `each skipped skill is reported: ${plugin.warnings.join(' | ')}`);
 });
 
 test('two skills declaring the same name keep the first and say so', (t) => {

@@ -8,8 +8,15 @@ import type {
   ContextUsageSnapshot,
   GetContextUsageRequest,
   StreamEvent,
+  StreamPluginInvocationEvent,
 } from '../../../shared/contracts';
 import type { MentionId } from '../../../shared/mentions';
+import type { PluginMentionEntry, PluginMentionTarget } from '../../../shared/pluginMentions';
+import { describePluginMention, parsePluginMentions } from '../../../shared/pluginMentions';
+import { isMcpToolName } from '../../../shared/mcp';
+import { pluginServerName } from '../../../shared/plugins';
+import { resolveMcpToolProvenance } from '../mcp/mcpToolProvenance';
+import type { AuditInput } from '../mcp/McpAuditLog';
 import {
   applyStreamEventToParts,
   buildFallbackMessageParts,
@@ -62,8 +69,15 @@ export type SiteToolContext = {
  * `loadTools` may connect and is awaited on the send path; `peekTools` answers
  * from cache for the synchronous context meter.
  */
+/** Which turn an audit record belongs to, and whose plugin produced it. */
+export type McpAuditContext = {
+  requestId: string;
+  conversationId: string;
+  pluginFor?: (serverName: string) => { name: string; version: string | null } | null;
+};
+
 export type McpToolsProvider = {
-  loadTools: (conversationId?: string) => Promise<ToolSet>;
+  loadTools: (conversationId?: string, audit?: McpAuditContext) => Promise<ToolSet>;
   peekTools: () => ToolSet;
 };
 
@@ -408,7 +422,250 @@ export class ChatSessionRuntime {
     private readonly onSkillLoaded:
       | ((conversationId: string, pluginName: string, requiredServers: string[]) => boolean)
       | null = null,
+    /**
+     * Turns on the plugins a message named with `@`.
+     *
+     * Distinct from `onSkillLoaded` in the one way that matters: this runs
+     * *before* the turn's tool set is resolved, because the mention is read off
+     * text the user already sent. `load_skill` fires mid-stream and so can only
+     * affect the next turn; an `@` mention affects this one.
+     *
+     * Like `onSkillLoaded`, absent on the context-measuring path — an estimate
+     * must not change what the next turn is allowed to do.
+     */
+    private readonly onPluginMentioned:
+      | ((conversationId: string, targets: PluginMentionTarget[]) => void)
+      | null = null,
+    /**
+     * Where plugin activity is recorded.
+     *
+     * Observational throughout: nothing in this class reads back from it, so a
+     * missing log changes what is *known* about a turn and never what the turn
+     * does.
+     */
+    private readonly audit: { record: (input: AuditInput) => void } | null = null,
   ) {}
+
+  /** The server behind a namespaced tool name, for an audit record. */
+  /**
+   * The real installed server and plugin behind a wire tool name, for an
+   * approval audit record.
+   *
+   * Exact, not guessed: matches the sanitised segment against every server
+   * every installed plugin declares, rather than re-deriving a label from the
+   * name's shape. Both fields come back `null` together when nothing matches
+   * — a plugin uninstalled since the call, or a name truncated past the point
+   * this can read — because a guessed attribution is worse than an absent one.
+   */
+  private describeAuditServer(toolName: string): {
+    server: { name: string; transport: string; endpoint: string | null } | null;
+    plugin: { name: string; version: string | null } | null;
+  } {
+    const plugins = this.skillsService?.snapshot().plugins ?? [];
+    const found = resolveMcpToolProvenance(toolName, plugins);
+
+    if (!found) {
+      return { server: null, plugin: null };
+    }
+
+    const plugin = plugins.find((candidate) => candidate.manifest.name === found.pluginName);
+    const server = plugin?.mcpServers.find((candidate) => candidate.key === found.serverKey);
+
+    return {
+      plugin: plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null,
+      server: server
+        ? {
+            name: pluginServerName(found.pluginName, server.key),
+            transport: server.transport,
+            endpoint: server.transport === 'stdio' ? null : server.url
+          }
+        : null
+    };
+  }
+
+  /**
+   * The plugins and skills a message named explicitly.
+   *
+   * Resolved against the registry rather than by shape: `@github pr-review` and
+   * `@github fix this` are syntactically identical, and only the installed set
+   * says which second word is a skill.
+   */
+  private resolvePluginMentions(text: string): PluginMentionTarget[] {
+    const snapshot = this.skillsService?.snapshot();
+
+    if (!snapshot || !text) {
+      return [];
+    }
+
+    // Disabled and revoked bundles are deliberately included. A mention of one
+    // must produce "that plugin is switched off", not silence — silence is
+    // indistinguishable from a typo, and the user is left retyping a name that
+    // was right all along.
+    const catalog: PluginMentionEntry[] = [
+      ...snapshot.plugins.map((plugin) => ({
+        name: plugin.manifest.name,
+        description: plugin.manifest.description,
+        skills: plugin.skills.map((skill) => skill.name),
+        available: true
+      })),
+      ...snapshot.disabled.map((plugin) => ({
+        name: plugin.manifest.name,
+        description: plugin.manifest.description,
+        skills: plugin.skills.map((skill) => skill.name),
+        available: false,
+        unavailableReason: 'This plugin is switched off. Enable it in Plugins to use it.'
+      })),
+      ...snapshot.blocked.map((entry) => ({
+        name: entry.plugin.manifest.name,
+        description: entry.plugin.manifest.description,
+        skills: entry.plugin.skills.map((skill) => skill.name),
+        available: false,
+        unavailableReason: entry.reason
+      }))
+    ];
+
+    return parsePluginMentions(text, catalog);
+  }
+
+  /**
+   * What an explicitly named plugin contributes to the prompt.
+   *
+   * Two jobs. It tells the model which plugin the user scoped the turn to, so
+   * a turn that named one does not wander off into unrelated tools. And when a
+   * skill was named, its body is inlined rather than left for `load_skill` —
+   * the user already chose it, so spending a tool round trip re-deciding would
+   * be asking the model to second-guess an explicit instruction.
+   *
+   * Inlining is also the only route to a skill whose sidecar sets
+   * `allow_implicit_invocation: false`: those are withheld from the index
+   * precisely so the model cannot pick them, and naming one is the whole point
+   * of the syntax.
+   */
+  private describePluginMentionsForPrompt(targets: PluginMentionTarget[]): string | null {
+    if (targets.length === 0 || !this.skillsService) {
+      return null;
+    }
+
+    const lines: string[] = [];
+
+    for (const target of targets) {
+      const unavailable = this.describeUnavailablePlugin(target.plugin);
+
+      if (unavailable) {
+        // Said out loud rather than dropped. The model needs to be able to tell
+        // the user why the thing they asked for did not happen.
+        lines.push(`- ${describePluginMention(target)} — unavailable. ${unavailable}`);
+        continue;
+      }
+
+      if (!target.skill) {
+        lines.push(`- ${describePluginMention(target)} — the user scoped this turn to this plugin.`);
+        continue;
+      }
+
+      const skill = this.skillsService.find(`${target.plugin}:${target.skill}`);
+
+      lines.push(
+        skill
+          ? `- ${describePluginMention(target)} — the user asked for this skill. Its instructions follow.`
+          : `- ${describePluginMention(target)} — no skill by that name; use the plugin's other capabilities.`
+      );
+
+      if (skill) {
+        lines.push(this.skillsService.read(skill.qualifiedName));
+      }
+    }
+
+    return [
+      '<invoked_plugins>',
+      'The user named these plugins directly. Prefer them over other tools for this turn.',
+      ...lines,
+      '</invoked_plugins>'
+    ].join('\n');
+  }
+
+  /**
+   * One resolved mention, as the transcript and the audit record will see it.
+   *
+   * Descriptive only. Nothing here activates a server or widens a tool set —
+   * `onPluginMentioned` does the activating, separately, and an MCP call this
+   * describes still stops at the same per-call approval as any other
+   * third-party tool. The event exists so attribution has one source of truth
+   * rather than each surface re-deriving it from the message text.
+   */
+  private describeInvocation(
+    target: PluginMentionTarget
+  ): Pick<StreamPluginInvocationEvent, 'plugin' | 'skill' | 'mention' | 'outcome' | 'version' | 'detail'> {
+    const snapshot = this.skillsService?.snapshot();
+    const mention = describePluginMention(target);
+    const base = { plugin: target.plugin, skill: target.skill, mention };
+
+    const installed = [
+      ...(snapshot?.plugins ?? []),
+      ...(snapshot?.disabled ?? []),
+      ...(snapshot?.blocked ?? []).map((entry) => entry.plugin)
+    ].find((plugin) => plugin.manifest.name === target.plugin);
+
+    // Captured at resolution rather than looked up later: a plugin can be
+    // updated between this turn and anyone reading it back, and a record that
+    // reported the version as of *reading* would answer a different question.
+    const version = installed?.manifest.version ?? null;
+
+    const blocked = snapshot?.blocked.find((entry) => entry.plugin.manifest.name === target.plugin);
+
+    if (blocked) {
+      return { ...base, outcome: 'plugin-blocked', version, detail: blocked.reason };
+    }
+
+    if (snapshot?.disabled.some((plugin) => plugin.manifest.name === target.plugin)) {
+      return {
+        ...base,
+        outcome: 'plugin-disabled',
+        version,
+        detail: 'Switched off. Enable it in Plugins.'
+      };
+    }
+
+    if (!snapshot?.plugins.some((plugin) => plugin.manifest.name === target.plugin)) {
+      return { ...base, outcome: 'plugin-not-installed', version, detail: 'Not installed.' };
+    }
+
+    if (target.skill && !this.skillsService?.find(`${target.plugin}:${target.skill}`)) {
+      // The plugin is fine; the skill is not. Reporting this as a plugin
+      // failure would send the user to the wrong place to fix it.
+      return {
+        ...base,
+        outcome: 'skill-not-found',
+        version,
+        detail: `No skill named "${target.skill}".`
+      };
+    }
+
+    return { ...base, outcome: 'invoked', version, detail: null };
+  }
+
+  /** Why a named plugin cannot be used, or `null` when it can. */
+  private describeUnavailablePlugin(name: string): string | null {
+    const snapshot = this.skillsService?.snapshot();
+
+    if (!snapshot) {
+      return null;
+    }
+
+    if (snapshot.plugins.some((plugin) => plugin.manifest.name === name)) {
+      return null;
+    }
+
+    const blocked = snapshot.blocked.find((entry) => entry.plugin.manifest.name === name);
+
+    if (blocked) {
+      return blocked.reason;
+    }
+
+    return snapshot.disabled.some((plugin) => plugin.manifest.name === name)
+      ? 'It is switched off. Enable it in Plugins to use it.'
+      : 'It is not installed.';
+  }
 
   /**
    * Whether this turn may produce a visual.
@@ -480,6 +737,7 @@ export class ChatSessionRuntime {
       emitEvent,
       messagesOverride,
       initialParts,
+      assistantMessageId,
     });
 
     const status: ExecuteTurnResult['status'] = result.pendingApprovals.length > 0 ? 'awaiting_approval' : 'completed';
@@ -589,7 +847,14 @@ export class ChatSessionRuntime {
       siteTools != null,
       toolPermissionMode,
       workspace,
-      visualsEnabled
+      visualsEnabled,
+      // Measured off the *unsent* composer text, exactly like the visual gate
+      // above and for the same reason: a named skill's body is inlined into the
+      // prompt, so the ring has to account for it while the user is still
+      // typing rather than dropping several thousand tokens at send time.
+      // Resolution only — `onPluginMentioned` is deliberately not wired on this
+      // path, so measuring cannot activate a server.
+      this.resolvePluginMentions(request.pendingText ?? '')
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
     const pendingTokens = estimatePendingTokens(request);
@@ -678,6 +943,14 @@ export class ChatSessionRuntime {
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
     visualsEnabled = false,
+    /**
+     * Plugins the user named with `@`.
+     *
+     * Counted by the context meter as well as sent, because a named skill's
+     * body is inlined here — that is real tokens, and a ring that ignored them
+     * would under-report exactly the turns that spend the most.
+     */
+    pluginMentions: PluginMentionTarget[] = [],
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -699,12 +972,17 @@ export class ChatSessionRuntime {
         mode: workspace.mode,
         hasProject: workspace.root != null
       }) ?? null;
+    const invokedPluginsPrompt = this.describePluginMentionsForPrompt(pluginMentions);
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
       ...(skillsPrompt ? [skillsPrompt] : []),
+      // After the index and before the project's own instructions: an explicit
+      // mention outranks what the model might have chosen for itself, and is
+      // still subject to everything Atlas enforces above it.
+      ...(invokedPluginsPrompt ? [invokedPluginsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
     // The visual spec goes last of the Atlas-owned blocks and only when this
@@ -743,6 +1021,7 @@ export class ChatSessionRuntime {
     emitEvent,
     messagesOverride,
     initialParts,
+    assistantMessageId,
   }: {
     requestId: string;
     request: ChatStartRequest;
@@ -752,6 +1031,8 @@ export class ChatSessionRuntime {
     emitEvent: (event: StreamEvent) => void;
     messagesOverride?: ModelMessage[];
     initialParts?: ChatMessagePart[];
+    /** Present on a resumed turn; absent on a first send, where no row exists yet. */
+    assistantMessageId?: string;
   }): Promise<ProviderStreamResult & { parts: ChatMessagePart[]; pendingApprovals: PendingToolApproval[] }> {
     let attempt = 0;
     let streamedAnyResponse = false;
@@ -772,12 +1053,75 @@ export class ChatSessionRuntime {
       request.conversationId,
       latestUserText(request.messages)
     );
+    // Read before the tool set is resolved, which is the whole reason `@github`
+    // works on the turn that types it: the mention is already in the user's
+    // text, so the servers it implies can be activated while there is still
+    // time for `loadTools` below to see them. `load_skill` cannot do this — it
+    // fires mid-stream, after the tool set is fixed.
+    const pluginMentions = this.resolvePluginMentions(latestUserText(request.messages));
+
+    if (pluginMentions.length > 0) {
+      this.onPluginMentioned?.(request.conversationId, pluginMentions);
+
+      // Announced before the stream opens, so the row states what the turn was
+      // scoped to rather than reporting it afterwards. Emitted for failures
+      // too: a mention that resolved to nothing is the case most worth telling
+      // the user about.
+      for (const target of pluginMentions) {
+        const invocation = this.describeInvocation(target);
+
+        emitEvent({
+          type: 'plugin-invocation',
+          requestId,
+          messageId: assistantMessageId ?? null,
+          ...invocation
+        });
+
+        // The durable half of the same fact the transcript row shows. Recorded
+        // even when the outcome is not `invoked` — a mention that resolved to
+        // nothing is exactly the kind of thing an audit trail should be able
+        // to answer for later, same as it is exactly what the user needed told
+        // about at the time.
+        this.audit?.record({
+          requestId,
+          conversationId: request.conversationId,
+          type: 'plugin_invocation',
+          server: null,
+          plugin: invocation.plugin ? { name: invocation.plugin, version: invocation.version } : null,
+          tool: null,
+          outcome: invocation.outcome === 'invoked' ? 'ok' : 'error',
+          approvalId: null,
+          toolCallId: null,
+          detail: invocation.detail,
+          payload: { mention: invocation.mention, skill: invocation.skill, outcome: invocation.outcome },
+          // One row per (turn, plugin, skill): a resumed turn re-announcing the
+          // same mention has nothing new to say about it.
+          idempotencyKey: `pi:${requestId}:${target.plugin}:${target.skill ?? ''}`
+        });
+      }
+    }
+
     // Resolved once per turn alongside the rest: a server coming up mid-stream
     // must not change what this turn was offered. A provider that throws is
     // treated as contributing nothing rather than failing the send.
     const mcpTools = request.enableTools
       ? await (
-          this.mcpToolsProvider?.loadTools(request.conversationId) ?? Promise.resolve({})
+          this.mcpToolsProvider?.loadTools(request.conversationId, {
+            requestId,
+            conversationId: request.conversationId,
+            // Exact, by the configured server name: `pluginServerName` joins
+            // `<plugin>/<key>` with a separator the plugin name cannot itself
+            // contain, so splitting on the first `/` cannot be ambiguous the
+            // way parsing a *wire* tool name is.
+            pluginFor: (serverName) => {
+              const [pluginName] = serverName.split('/');
+              const plugin = this.skillsService
+                ?.snapshot()
+                .plugins.find((candidate) => candidate.manifest.name === pluginName);
+
+              return plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null;
+            }
+          }) ?? Promise.resolve({})
         ).catch(() => ({}))
       : {};
     const tools = request.enableTools
@@ -823,7 +1167,8 @@ export class ChatSessionRuntime {
                 siteTools != null,
                 toolPermissionMode,
                 workspace,
-                visualsEnabled
+                visualsEnabled,
+                pluginMentions
               )
             ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
         }).budget,
@@ -855,6 +1200,7 @@ export class ChatSessionRuntime {
               toolPermissionMode,
               workspace,
               visualsEnabled,
+              pluginMentions,
             ) || undefined,
           tools,
           toolChoice: inferToolChoice(request),
@@ -926,6 +1272,31 @@ export class ChatSessionRuntime {
               toolName: event.toolName,
               reason: event.reason,
             });
+            // Observational, and placed after the state change it describes so
+            // it can never be mistaken for part of the decision. Only MCP calls
+            // are recorded here: a built-in tool's approval is not data leaving
+            // the machine, which is what this trail exists to account for.
+            if (isMcpToolName(event.toolName ?? '')) {
+              const provenance = this.describeAuditServer(event.toolName ?? '');
+
+              this.audit?.record({
+                requestId,
+                conversationId: request.conversationId,
+                type: 'approval_requested',
+                server: provenance.server,
+                plugin: provenance.plugin,
+                tool: event.toolName ?? null,
+                outcome: 'ok',
+                approvalId: event.approvalId,
+                toolCallId: event.toolCallId,
+                detail: event.reason ?? null,
+                // Keyed on the approval alone: a request is asked once, and a
+                // duplicate delivery of the same event must not read as a
+                // second, distinct approval being opened.
+                idempotencyKey: `ar:${event.approvalId}`
+              });
+            }
+
             this.applyEvent(turnState, { type: 'tool-approval-requested', requestId, ...event }, emitEvent);
           },
         });

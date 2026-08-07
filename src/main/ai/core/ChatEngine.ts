@@ -52,6 +52,8 @@ import { logger, startTimer } from '../../observability/logger';
 import type { RejectedCapability } from './ErrorNormalizer';
 import { detectRejectedCapability, normalizeError } from './ErrorNormalizer';
 import { ToolApprovalController } from './ToolApprovalController';
+import { isMcpToolName } from '../../../shared/mcp';
+import type { AuditInput } from '../mcp/McpAuditLog';
 import type { ProviderRegistry } from './providerRegistry';
 import type { ExecuteTurnResult } from './ChatSessionRuntime';
 import { ChatSessionRuntime } from './ChatSessionRuntime';
@@ -241,6 +243,21 @@ export class ChatEngine {
      * still one the user is allowed to send from.
      */
     private readonly checkpoints: TurnCheckpointHooks = NOOP_TURN_CHECKPOINTS,
+    /**
+     * Where approval decisions are recorded.
+     *
+     * Last, and optional, so every existing call site is unchanged — and
+     * observational, so a build that never passes one behaves identically.
+     */
+    private readonly auditLog?: { record: (input: AuditInput) => void },
+    /**
+     * Attributes a wire tool name to the installed plugin behind it, for the
+     * approval audit trail. `ChatEngine` has no registry of its own — this is
+     * built fresh from one each call, in `index.ts`, so it always answers
+     * against what is installed *now* rather than what was installed when the
+     * engine was constructed.
+     */
+    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null,
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -560,6 +577,37 @@ export class ChatEngine {
     }
 
     const sessionScopeKey = resolved.sessionScopeKey ?? null;
+
+    // The other half of the approval correlation. Recorded here, after the
+    // decision is already resolved, so the trail can prove which request a
+    // response answered — without which a transcript shows an approval and a
+    // call with no way to tie them together. Purely observational: the branch
+    // below acts on `request.decision`, never on whether this was written.
+    if (isMcpToolName(resolved.toolName ?? '')) {
+      this.auditLog?.record({
+        requestId: request.requestId,
+        conversationId: active.request.conversationId,
+        type: 'approval_responded',
+        server: null,
+        plugin: this.pluginLookup?.(resolved.toolName ?? '') ?? null,
+        tool: resolved.toolName ?? null,
+        outcome:
+          request.decision === 'decline'
+            ? 'denied'
+            : request.decision === 'cancel'
+              ? 'cancelled'
+              : 'ok',
+        approvalId: request.approvalId,
+        toolCallId: resolved.toolCallId ?? null,
+        detail: request.reason ?? null,
+        payload: { decision: request.decision, sessionScopeKey },
+        // Keyed on the approval alone, matching `approval_requested`: a
+        // decision is made once, and a duplicate delivery of this response
+        // must not read as the approval having been decided twice.
+        idempotencyKey: `ap:${request.approvalId}`
+      });
+    }
+
     this.recordRuntimeEnvelope(active, {
       eventId: randomUUID(),
       conversationId: active.request.conversationId,
@@ -1256,6 +1304,27 @@ export class ChatEngine {
           payload: {
             decision: event.approved ? 'accept' : 'decline',
             reason: event.reason,
+          },
+        }];
+      case 'plugin-invocation':
+        // Recorded as a runtime envelope, not only rendered. This is the first
+        // line of the audit trail the plugin work is building toward: which
+        // plugin, which skill, which version, and whether it resolved — all
+        // captured at the moment the turn was scoped, before any tool ran.
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'turn.started' as const,
+          tone: event.outcome === 'invoked' ? ('info' as const) : ('error' as const),
+          providerEventType: event.type,
+          payload: {
+            kind: 'plugin-invocation',
+            plugin: event.plugin,
+            skill: event.skill,
+            mention: event.mention,
+            outcome: event.outcome,
+            version: event.version,
+            detail: event.detail,
           },
         }];
       case 'visual-start':

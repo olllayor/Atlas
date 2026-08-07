@@ -62,6 +62,7 @@ import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import type { TurnCheckpointHooks } from '../../workspace/CheckpointCoordinator';
 import { NOOP_TURN_CHECKPOINTS } from '../../workspace/CheckpointCoordinator';
+import { getBufferedEventKey, mergeBufferedEvents } from './streamBuffer';
 
 type ActiveRequest = {
   requestId: string;
@@ -1066,9 +1067,9 @@ export class ChatEngine {
       this.bufferedEvents.set(requestId, buffered);
     }
 
-    const key = this.getBufferedEventKey(event);
+    const key = getBufferedEventKey(event);
     const existing = buffered.events.get(key);
-    buffered.events.set(key, this.mergeBufferedEvents(existing, event));
+    buffered.events.set(key, mergeBufferedEvents(existing, event));
 
     if (buffered.timer) {
       return;
@@ -1536,44 +1537,5 @@ export class ChatEngine {
       return false;
     }
   }
-
-  private getBufferedEventKey(event: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>) {
-    if (event.type === 'tool-input-delta') {
-      return `message:${event.requestId}:tool:${event.toolCallId}`;
-    }
-
-    return `message:${event.requestId}:${event.type}:${event.id}`;
-  }
-
-  private mergeBufferedEvents(
-    existing: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }> | undefined,
-    next: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>
-  ): Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }> {
-    if (!existing) {
-      return next;
-    }
-
-    if (existing.type === 'chunk' && next.type === 'chunk') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    if (existing.type === 'reasoning' && next.type === 'reasoning') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    if (existing.type === 'tool-input-delta' && next.type === 'tool-input-delta') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    return next;
-  }
 }
+

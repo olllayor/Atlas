@@ -16,6 +16,21 @@ type ApprovalResponse = {
   reason?: string;
 };
 
+/**
+ * Holds pending tool approvals and records "always allow for this session"
+ * grants.
+ *
+ * Semantics that callers (and the UI copy) must not drift from:
+ * - A grant is **conversation-scoped**: `accept_for_session` records the scope
+ *   key only against the conversation that granted it, never any other.
+ * - A grant is **per-runtime-session and ephemeral**: it lives in an in-memory
+ *   `Map` and is forgotten on restart. This is a deliberate privacy posture —
+ *   mirroring t3code's "session" semantics — and is the reason the approval UI
+ *   should say "until you quit Atlas", not "forever". Persistence would be a
+ *   product change requiring a real table (see R4 in docs/plans/t3code-borrow).
+ * - A plain `accept` or `decline` never records a grant; only `accept_for_session`
+ *   does, and only when the approval carries a `sessionScopeKey`.
+ */
 export class ToolApprovalController {
   private readonly pendingByRequest = new Map<string, Map<string, PendingApproval>>();
   private readonly grantedScopesByConversation = new Map<string, Set<string>>();

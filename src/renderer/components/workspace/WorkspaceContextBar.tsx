@@ -2,12 +2,14 @@ import {
   AlertTriangle,
   Check,
   ClipboardCheck,
+  Cloud,
   Code2,
   FileText,
   Folder,
   FolderOpen,
   FolderPlus,
   GitBranch,
+  GitFork,
   GitPullRequest,
   Laptop,
   Unlink,
@@ -23,20 +25,30 @@ import type {
   WorkspaceMode,
   WorkspaceProject,
 } from '../../../shared/contracts';
-import { describeWorkspaceMode } from '../../../shared/workspaceModes';
+import { describeWorkspaceMode, type ExecutionTarget } from '../../../shared/workspaceModes';
 import { notify, notifyError } from '../../lib/notify';
+import { ConfirmDialog } from '../providers/ConfirmDialog';
 import { EnvironmentDialog } from './EnvironmentDialog';
 import { PluginToolsChip } from './PluginToolsChip';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useClipboard } from '../../hooks/useClipboard';
 import { cn } from '../../lib/utils';
+import {
+  executionTargetChipText,
+  executionTargetRows,
+  revealTargetForChip,
+  worktreeBranchShort,
+} from './executionTargetViewModel';
 
 /**
  * One chip in the strip. Every item is a real button with the same geometry
@@ -86,35 +98,59 @@ const ContextChip = forwardRef<
  * scrollbar rail) so the chips line up with the slab below them.
  */
 export function WorkspaceContextBar({
-  conversationId,
   mode,
+  executionTarget = 'local',
   project,
-  projects,
+  projects = [],
+  worktreeRoot,
+  conversationId,
   projectContext,
   disabled,
+  cloudSandboxEnabled = false,
   onAttach,
   onSelect,
   onDetach,
   onReveal,
+  onRevealTarget,
+  onOpenSettings,
+  onExecutionTargetChange,
+  onRemoveWorktree,
   onProjectContextChanged,
 }: {
-  conversationId?: string;
   mode: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
   project: WorkspaceProject | null;
-  projects: WorkspaceProject[];
-  /** Detected type + configured env keys, from `workspace.context`. */
+  projects?: WorkspaceProject[];
+  worktreeRoot?: string | null;
+  conversationId?: string;
   projectContext?: ProjectContextInfo | null;
   disabled?: boolean;
+  /** Settings → Beta. Gates both the cloud row and, less obviously, selecting
+      local while the conversation currently runs in the cloud. */
+  cloudSandboxEnabled?: boolean;
   onAttach: () => void;
   onSelect: (projectId: string) => void;
   onDetach: () => void;
   onReveal: (projectId: string) => void;
+  /** Reveals the conversation's project or worktree root, resolved safely in main. */
+  onRevealTarget?: (target: 'project' | 'worktree') => void;
+  /** Opens Settings → Beta so cloud can be enabled. */
+  onOpenSettings?: () => void;
+  onExecutionTargetChange?: (target: ExecutionTarget) => void;
+  /** Deletes the conversation's worktree on disk; the target then reads local. */
+  onRemoveWorktree?: () => void;
   onProjectContextChanged?: () => void;
 }) {
   const needsProject = describeWorkspaceMode(mode).requiresProject && !project?.exists;
   const isMissing = project != null && !project.exists;
   const projectType = projectContext?.projectType ?? null;
   const [environmentOpen, setEnvironmentOpen] = useState(false);
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+
+  const confirmRemoveWorktree = () => {
+    setRemoveConfirmOpen(false);
+    onRemoveWorktree?.();
+  };
 
   return (
     <div className="pr-[6px]">
@@ -160,28 +196,24 @@ export function WorkspaceContextBar({
               />
 
               {/*
-            Where the turn runs. Atlas has no cloud runner, so the word never
-            changes — which is exactly why it is worth saying: in code mode the
-            model edits the real files in that folder, on this machine, and the
-            strip is the last thing you read before pressing send. Clicking it
-            proves the claim by opening the folder.
+            Where the turn runs — and, unlike its neighbours, also where the
+            next turn *will*. This is the one chip that is a picker, not just a
+            readout: the choice moves in step with project and branch, all three
+            keyed off the conversation. The admission rules (git for worktree,
+            the beta flag for cloud) come from the view model, not the JSX.
           */}
-              {project?.exists ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <ContextChip
-                      className="shrink-0"
-                      aria-label="Runs on this machine — reveal the folder"
-                      onClick={() => onReveal(project.id)}
-                    >
-                      <Laptop className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-                      <span>Local</span>
-                    </ContextChip>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    Runs on this machine — reveal the folder
-                  </TooltipContent>
-                </Tooltip>
+              {project?.exists && onExecutionTargetChange ? (
+                <ExecutionTargetChip
+                  executionTarget={executionTarget}
+                  worktreeLabel={worktreeBranchShort(conversationId)}
+                  isGitRepo={Boolean(project.isGitRepository)}
+                  cloudSandboxEnabled={cloudSandboxEnabled}
+                  hasWorktree={Boolean(worktreeRoot)}
+                  onSelect={onExecutionTargetChange}
+                  onReveal={onRevealTarget}
+                  onOpenSettings={onOpenSettings}
+                  onRemoveWorktree={() => setRemoveConfirmOpen(true)}
+                />
               ) : null}
 
               {project?.exists && project.branch ? (
@@ -228,7 +260,137 @@ export function WorkspaceContextBar({
           onEnvChanged={() => onProjectContextChanged?.()}
         />
       ) : null}
+
+      {onRemoveWorktree ? (
+        <ConfirmDialog
+          open={removeConfirmOpen}
+          tone="danger"
+          title="Remove worktree?"
+          description={
+            <span>
+              Deletes the isolated git worktree for this conversation from disk
+              and returns it to running locally. If the worktree holds
+              uncommitted changes, git will refuse and nothing is removed.
+            </span>
+          }
+          confirmLabel="Remove worktree"
+          cancelLabel="Cancel"
+          onConfirm={confirmRemoveWorktree}
+          onCancel={() => setRemoveConfirmOpen(false)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function ExecutionTargetChip({
+  executionTarget,
+  worktreeLabel,
+  isGitRepo,
+  cloudSandboxEnabled,
+  hasWorktree,
+  disabled,
+  onSelect,
+  onReveal,
+  onOpenSettings,
+  onRemoveWorktree,
+}: {
+  executionTarget: ExecutionTarget;
+  worktreeLabel: string | null;
+  isGitRepo: boolean;
+  cloudSandboxEnabled: boolean;
+  hasWorktree: boolean;
+  disabled?: boolean;
+  onSelect: (target: ExecutionTarget) => void;
+  onReveal?: (target: 'project' | 'worktree') => void;
+  onOpenSettings?: () => void;
+  /** Opens the destructive-removal confirmation; removal itself lives in App. */
+  onRemoveWorktree?: () => void;
+}) {
+  const copy = executionTargetChipText({ target: executionTarget, worktreeBranch: worktreeLabel });
+  const rows = executionTargetRows({ isGitRepo, cloudSandboxEnabled });
+  // A conversation on Worktree reveals its worktree root; anything else (local,
+  // cloud, or a worktree label without an actual root) reveals the project root.
+  const revealTarget = revealTargetForChip({ executionTarget, hasWorktree });
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild disabled={disabled}>
+            <ContextChip className="max-w-64 shrink-0" aria-label={copy.aria}>
+              {executionTarget === 'cloud' ? (
+                <Cloud className="size-3.5 shrink-0 text-brand" strokeWidth={1.75} aria-hidden="true" />
+              ) : executionTarget === 'worktree' ? (
+                <GitFork className="size-3.5 shrink-0 text-brand" strokeWidth={1.75} aria-hidden="true" />
+              ) : (
+                <Laptop className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+              )}
+              <span className="min-w-0 truncate">{copy.label}</span>
+            </ContextChip>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">{copy.tooltip}</TooltipContent>
+      </Tooltip>
+
+      <DropdownMenuContent align="start" side="top" sideOffset={6} className="w-[280px]">
+        <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-text-muted">
+          Execution target
+        </DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          aria-label="Execution target"
+          value={executionTarget}
+          onValueChange={(value) => onSelect(value as ExecutionTarget)}
+        >
+          {rows.map((row) =>
+            row.needsSettings ? (
+              <DropdownMenuItem
+                key={row.value}
+                onSelect={() => onOpenSettings?.()}
+                disabled={!onOpenSettings}
+                className="items-start rounded-md px-2.5 py-2 opacity-60"
+              >
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm font-medium text-text-primary">{row.label}</span>
+                  <span className="text-2xs leading-4 text-text-tertiary">{row.tagline}</span>
+                </span>
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuRadioItem
+                key={row.value}
+                value={row.value}
+                disabled={row.disabled}
+                className="items-start rounded-md py-2 pr-3"
+              >
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm font-medium text-text-primary">{row.label}</span>
+                  <span className="text-2xs leading-4 text-text-tertiary">{row.tagline}</span>
+                </span>
+              </DropdownMenuRadioItem>
+            ),
+          )}
+        </DropdownMenuRadioGroup>
+
+        {(executionTarget !== 'cloud' || hasWorktree) && onReveal ? (
+          <>
+            <DropdownMenuSeparator className="my-1" />
+            <DropdownMenuItem
+              onSelect={() => onReveal(revealTarget)}
+              className="gap-2 px-2.5 py-2 text-sm"
+            >
+              <FolderOpen className="size-4 shrink-0" strokeWidth={1.75} />
+              Reveal in file manager
+            </DropdownMenuItem>
+            {hasWorktree && onRemoveWorktree ? (
+              <DropdownMenuItem onSelect={onRemoveWorktree} className="gap-2 px-2.5 py-2 text-sm">
+                <Unlink className="size-4 shrink-0" strokeWidth={1.75} />
+                Remove worktree…
+              </DropdownMenuItem>
+            ) : null}
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

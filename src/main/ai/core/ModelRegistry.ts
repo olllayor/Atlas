@@ -199,11 +199,15 @@ export class ModelRegistry {
         reasoningEffort: this.settingsRepo.getReasoningEffort(),
         toolPermissionMode: this.settingsRepo.getToolPermissionMode(),
         workspaceMode: this.settingsRepo.getWorkspaceMode(),
+        executionTarget: this.settingsRepo.getExecutionTarget(),
         lastProjectId: this.settingsRepo.getLastProjectId(),
         // Validated here rather than in the renderer: a stored id whose provider
         // has since been removed or disabled must not be offered as a default.
         lastModelId: this.resolveLastModelId(),
-        visualMode: this.settingsRepo.getVisualMode()
+        visualMode: this.settingsRepo.getVisualMode(),
+        cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
+        cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
+        cloudSandboxWorkerSecret: this.settingsRepo.getCloudSandboxWorkerSecret(),
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,

@@ -1,0 +1,463 @@
+- generic [active] [ref=f1e1]:
+  - generic [ref=f1e2]:
+    - text: For the complete documentation index, see
+    - link "llms.txt" [ref=f1e3] [cursor=pointer]:
+      - /url: /llms.txt
+    - text: . Markdown versions of documentation pages are available by appending
+    - code [ref=f1e4]: .md
+    - text: to the page URL.
+  - banner [ref=f1e5]:
+    - generic [ref=f1e6]:
+      - link "ChatGPT" [ref=f1e7] [cursor=pointer]:
+        - /url: /
+      - navigation [ref=f1e12]:
+        - link "Home" [ref=f1e14] [cursor=pointer]:
+          - /url: /
+        - link "Docs" [ref=f1e16] [cursor=pointer]:
+          - /url: /docs
+        - link "Use cases" [ref=f1e18] [cursor=pointer]:
+          - /url: /use-cases
+        - link "Resources" [ref=f1e20] [cursor=pointer]:
+          - /url: /resources
+      - generic [ref=f1e21]:
+        - link "Try ChatGPT" [ref=f1e25] [cursor=pointer]:
+          - /url: https://chatgpt.com/
+        - button "Toggle light and dark theme" [ref=f1e30] [cursor=pointer]
+        - button "Search the docs" [ref=f1e33] [cursor=pointer]
+  - navigation "Docs sections" [ref=f1e38]:
+    - link "Overview" [ref=f1e39] [cursor=pointer]:
+      - /url: /docs
+    - link "Features" [ref=f1e42] [cursor=pointer]:
+      - /url: /docs/features
+    - link "Configuration" [ref=f1e44] [cursor=pointer]:
+      - /url: /docs/configuration
+    - link "Developers" [ref=f1e46] [cursor=pointer]:
+      - /url: /docs/developers
+    - link "Security" [ref=f1e48] [cursor=pointer]:
+      - /url: /docs/security-administration
+    - link "Administration" [ref=f1e50] [cursor=pointer]:
+      - /url: /docs/administration
+  - generic [ref=f1e53]:
+    - navigation [ref=f1e55]:
+      - list [ref=f1e57]:
+        - listitem [ref=f1e58]:
+          - link "Home" [ref=f1e59] [cursor=pointer]:
+            - /url: /docs
+      - generic [ref=f1e61]:
+        - heading "Get started" [level=3] [ref=f1e62]
+        - list [ref=f1e63]:
+          - listitem [ref=f1e64]:
+            - link "Quickstart" [ref=f1e65] [cursor=pointer]:
+              - /url: /docs/quickstart
+          - listitem [ref=f1e67]:
+            - link "Use ChatGPT" [ref=f1e68] [cursor=pointer]:
+              - /url: /docs/use-chatgpt
+          - listitem [ref=f1e70]:
+            - link "Get started with Work" [ref=f1e71] [cursor=pointer]:
+              - /url: /docs/get-started-with-work
+          - listitem [ref=f1e73]:
+            - link "Import from another agent" [ref=f1e74] [cursor=pointer]:
+              - /url: /docs/import
+      - generic [ref=f1e76]:
+        - heading "Foundations" [level=3] [ref=f1e77]
+        - list [ref=f1e78]:
+          - listitem [ref=f1e79]:
+            - link "Prompting" [ref=f1e80] [cursor=pointer]:
+              - /url: /docs/prompting
+          - listitem [ref=f1e82]:
+            - link "Personalize ChatGPT" [ref=f1e83] [cursor=pointer]:
+              - /url: /docs/personalize
+          - listitem [ref=f1e85]:
+            - link "Skills & Plugins" [ref=f1e86] [cursor=pointer]:
+              - /url: /docs/skills-and-plugins
+          - listitem [ref=f1e88]:
+            - link "Permissions" [ref=f1e89] [cursor=pointer]:
+              - /url: /docs/permission-modes
+      - generic [ref=f1e91]:
+        - heading "Explore" [level=3] [ref=f1e92]
+        - list [ref=f1e93]:
+          - listitem [ref=f1e94]:
+            - link "What's new" [ref=f1e95] [cursor=pointer]:
+              - /url: /docs/whats-new
+          - listitem [ref=f1e97]:
+            - link "Models" [ref=f1e98] [cursor=pointer]:
+              - /url: /docs/models
+          - listitem [ref=f1e100]:
+            - link "Pricing" [ref=f1e101] [cursor=pointer]:
+              - /url: /docs/pricing
+          - listitem [ref=f1e103]:
+            - link "Glossary" [ref=f1e104] [cursor=pointer]:
+              - /url: /docs/glossary
+      - generic [ref=f1e106]:
+        - heading "Available on" [level=3] [ref=f1e107]
+        - list [ref=f1e108]:
+          - listitem [ref=f1e109]:
+            - link "ChatGPT desktop app" [ref=f1e110] [cursor=pointer]:
+              - /url: /docs/app
+          - listitem [ref=f1e112]:
+            - link "Remote" [ref=f1e113] [cursor=pointer]:
+              - /url: /docs/remote
+          - listitem [ref=f1e115]:
+            - link "ChatGPT on the web" [ref=f1e116] [cursor=pointer]:
+              - /url: /docs/web
+          - listitem [ref=f1e118]:
+            - link "Codex CLI" [ref=f1e119] [cursor=pointer]:
+              - /url: /docs/codex/cli
+          - listitem [ref=f1e121]:
+            - link "Codex IDE extension" [ref=f1e122] [cursor=pointer]:
+              - /url: /docs/codex/ide
+          - listitem [ref=f1e124]:
+            - link "Codex cloud" [ref=f1e125] [cursor=pointer]:
+              - /url: /docs/cloud
+      - generic [ref=f1e127]:
+        - heading "Releases" [level=3] [ref=f1e128]
+        - list [ref=f1e129]:
+          - listitem [ref=f1e130]:
+            - link "Changelog" [ref=f1e131] [cursor=pointer]:
+              - /url: /docs/changelog
+          - listitem [ref=f1e133]:
+            - link "Feature Maturity" [ref=f1e134] [cursor=pointer]:
+              - /url: /docs/feature-maturity
+          - listitem [ref=f1e136]:
+            - link "Open Source" [ref=f1e137] [cursor=pointer]:
+              - /url: /docs/open-source
+    - main [ref=f1e139]:
+      - article [ref=f1e143]:
+        - generic [ref=f1e144]:
+          - region [ref=f1e145]:
+            - generic [ref=f1e146]:
+              - paragraph [ref=f1e147]: Codex IDE extension
+              - heading "Build with the context already in your editor" [level=1] [ref=f1e148]
+              - paragraph [ref=f1e149]: Work with Codex beside your code. Bring open files and selections into the prompt, review edits in place, and hand off longer work without breaking your flow.
+              - generic [ref=f1e150]:
+                - link "Install the extension" [ref=f1e152] [cursor=pointer]:
+                  - /url: https://marketplace.visualstudio.com/items?itemName=openai.chatgpt
+                - link "Extension quickstart" [ref=f1e158] [cursor=pointer]:
+                  - /url: "#getting-started"
+            - generic [ref=f1e166]:
+              - generic [ref=f1e167]:
+                - complementary "Explorer" [ref=f1e180]:
+                  - paragraph [ref=f1e181]: EXPLORER
+                  - paragraph [ref=f1e182]:
+                    - generic [ref=f1e183]: ⌄
+                    - text: RETRY-SERVICE
+                  - generic [ref=f1e184]:
+                    - paragraph [ref=f1e185]:
+                      - generic [ref=f1e186]: ⌄
+                      - text: src
+                    - button "retry.ts" [pressed] [ref=f1e189] [cursor=pointer]
+                    - button "retry.test.ts" [ref=f1e193] [cursor=pointer]
+                    - button "backoff.ts" [ref=f1e197] [cursor=pointer]
+                    - paragraph [ref=f1e201]:
+                      - generic [ref=f1e202]: ›
+                      - text: tests
+                    - paragraph [ref=f1e205]: package.json
+                - generic [ref=f1e208]:
+                  - tablist "Open files" [ref=f1e210]:
+                    - tab "retry.ts" [selected] [ref=f1e211] [cursor=pointer]:
+                      - text: retry.ts
+                      - generic [ref=f1e214]: ×
+                    - tab "retry.test.ts" [ref=f1e216] [cursor=pointer]:
+                      - text: retry.test.ts
+                      - generic [ref=f1e219]: ×
+                    - tab "backoff.ts" [ref=f1e220] [cursor=pointer]:
+                      - text: backoff.ts
+                      - generic [ref=f1e223]: ×
+                  - generic [ref=f1e224]:
+                    - generic [ref=f1e225]: src
+                    - generic [ref=f1e226]: ›
+                    - generic [ref=f1e227]: retry.ts
+                    - generic [ref=f1e228]: ›
+                    - generic [ref=f1e229]: retryOperation
+                  - tabpanel "retry.ts" [ref=f1e230]:
+                    - generic [ref=f1e231]:
+                      - generic [ref=f1e232]:
+                        - generic [ref=f1e233]: "1"
+                        - code [ref=f1e234]: "import { wait } from './backoff';"
+                      - generic [ref=f1e235]:
+                        - generic [ref=f1e236]: "2"
+                        - code [ref=f1e237]
+                      - generic [ref=f1e238]:
+                        - generic [ref=f1e239]: "3"
+                        - code [ref=f1e240]: export async function retryOperation<T>(
+                      - generic [ref=f1e241]:
+                        - generic [ref=f1e242]: "4"
+                        - code [ref=f1e243]: "fn: () => Promise<T>,"
+                      - generic [ref=f1e244]:
+                        - generic [ref=f1e245]: "5"
+                        - code [ref=f1e246]: retries = 3,
+                      - generic [ref=f1e247]:
+                        - generic [ref=f1e248]: "6"
+                        - code [ref=f1e249]: "): Promise<T> {"
+                      - generic [ref=f1e250]:
+                        - generic [ref=f1e251]: "7"
+                        - code [ref=f1e252]: let attempt = 0;
+                      - generic [ref=f1e253]:
+                        - generic [ref=f1e254]: "8"
+                        - code [ref=f1e255]: "let lastError: unknown;"
+                      - generic [ref=f1e256]:
+                        - generic [ref=f1e257]: "9"
+                        - code [ref=f1e258]
+                      - generic [ref=f1e259]:
+                        - generic [ref=f1e260]: "10"
+                        - code [ref=f1e261]: "while (attempt <= retries) {"
+                      - generic [ref=f1e262]:
+                        - generic [ref=f1e263]: "11"
+                        - code [ref=f1e264]: "try {"
+                      - generic [ref=f1e265]:
+                        - generic [ref=f1e266]: "12"
+                        - code [ref=f1e267]: return await fn();
+                      - generic [ref=f1e268]:
+                        - generic [ref=f1e269]: "13"
+                        - code [ref=f1e270]: "} catch (error) {"
+                      - generic [ref=f1e271]:
+                        - generic [ref=f1e272]: "14"
+                        - code [ref=f1e273]: lastError = error;
+                      - generic [ref=f1e274]:
+                        - generic [ref=f1e275]: "15"
+                        - code [ref=f1e276]: if (attempt >= retries) break;
+                      - generic [ref=f1e277]:
+                        - generic [ref=f1e278]: "16"
+                        - code [ref=f1e279]: await wait(200 * 2 ** attempt);
+                      - generic [ref=f1e280]:
+                        - generic [ref=f1e281]: "17"
+                        - code [ref=f1e282]: attempt++;
+                      - generic [ref=f1e283]:
+                        - generic [ref=f1e284]: "18"
+                        - code [ref=f1e285]: "}"
+                      - generic [ref=f1e286]:
+                        - generic [ref=f1e287]: "19"
+                        - code [ref=f1e288]: "}"
+                      - generic [ref=f1e289]:
+                        - generic [ref=f1e290]: "20"
+                        - code [ref=f1e291]: throw lastError;
+                      - generic [ref=f1e292]:
+                        - generic [ref=f1e293]: "21"
+                        - code [ref=f1e294]: "}"
+                - region "Codex extension" [ref=f1e295]:
+                  - generic [ref=f1e296]: CODEX
+                  - generic [ref=f1e299]:
+                    - button "Back to recent chats" [ref=f1e300] [cursor=pointer]
+                    - button "Trace and fix a flaky retry bug" [ref=f1e303] [cursor=pointer]: 🧰Trace and fix a flaky retry bug
+                    - button "Recent chats" [ref=f1e306] [cursor=pointer]
+                    - button "New chat" [ref=f1e312] [cursor=pointer]
+                  - generic [ref=f1e316]:
+                    - paragraph [ref=f1e318]: Trace and fix a flaky retry bug
+                    - button "Worked for 6m 53s" [ref=f1e320] [cursor=pointer]
+                    - generic [ref=f1e323]:
+                      - paragraph [ref=f1e324]:
+                        - strong [ref=f1e325]: Fixed successfully.
+                        - text: Retry loop now stops at max retries before waiting.
+                      - paragraph [ref=f1e326]: The retry guard now runs before the wait, so exhausted retries stop immediately while successful attempts keep the same behavior.
+                      - paragraph [ref=f1e327]: "Validation passed:"
+                      - list [ref=f1e328]:
+                        - listitem [ref=f1e329]: Retry exhaustion stops after the configured attempt count.
+                        - listitem [ref=f1e330]: Backoff still runs between retryable attempts.
+                        - listitem [ref=f1e331]: Focused retry tests pass.
+                      - paragraph [ref=f1e332]:
+                        - text: Updated
+                        - code [ref=f1e333]: retry.ts
+                        - text: without changing the editor integration.
+                      - generic [ref=f1e335]:
+                        - generic [ref=f1e336]:
+                          - generic [ref=f1e340]:
+                            - generic [ref=f1e341]: Edited retry.ts
+                            - generic [ref=f1e342]:
+                              - generic [ref=f1e343]: "+2"
+                              - generic [ref=f1e344]: −2
+                          - button "Undo" [ref=f1e345] [cursor=pointer]
+                        - generic [ref=f1e348]:
+                          - generic [ref=f1e349]: retry.ts
+                          - generic [ref=f1e350]: "+2"
+                          - generic [ref=f1e351]: −2
+                          - link "Review" [ref=f1e352] [cursor=pointer]:
+                            - /url: /docs/prompting#use-editor-context
+                  - generic [ref=f1e354]:
+                    - paragraph [ref=f1e355]: Ask for follow-up changes
+                    - generic [ref=f1e356]: 5.6-Sol
+              - generic [ref=f1e369]:
+                - generic [ref=f1e370]: main
+                - generic [ref=f1e371]: 0 problems
+                - generic [ref=f1e374]: Ln 16, Col 1
+                - generic [ref=f1e375]: TypeScript
+              - status [ref=f1e376]: Trace and fix a flaky retry bug. Retry loop now stops at max retries before waiting. Changes applied.
+          - region "Codex IDE extension advantages" [ref=f1e377]:
+            - generic [ref=f1e378]:
+              - article [ref=f1e379]:
+                - text: "01"
+                - heading "Use the context already open" [level=2] [ref=f1e380]
+                - paragraph [ref=f1e381]: Reference open files, selected code, and recent chats directly from the composer. Codex starts with the code you are already looking at, so you spend less time restating the problem.
+              - article [ref=f1e382]:
+                - text: "02"
+                - heading "Review changes beside your code" [level=2] [ref=f1e383]
+                - paragraph [ref=f1e384]: Read the summary, inspect a focused diff, and follow up in the same chat. Keep only the changes you want while the source and rationale stay visible together.
+              - article [ref=f1e385]:
+                - text: "03"
+                - heading "Delegate when the task grows" [level=2] [ref=f1e386]
+                - paragraph [ref=f1e387]: Keep quick iterations local, or connect Codex web when a task needs more time and room. Return to a reviewable result from the same editor workflow.
+          - region [ref=f1e388]:
+            - generic [ref=f1e389]:
+              - generic [ref=f1e390]:
+                - paragraph [ref=f1e391]: Quickstart
+                - heading "Get started in your IDE" [level=2] [ref=f1e392]
+                - paragraph [ref=f1e393]: Install or enable Codex, sign in, and start a chat with the context already open in your editor.
+              - generic [ref=f1e394]:
+                - list [ref=f1e395]:
+                  - listitem [ref=f1e396]:
+                    - generic [ref=f1e397]: "1"
+                    - heading "Install or enable Codex" [level=3] [ref=f1e398]
+                    - generic [ref=f1e399]:
+                      - paragraph [ref=f1e400]: Choose your IDE. VS Code and compatible editors use the Codex extension; Xcode and JetBrains IDEs provide their own integrations.
+                      - list [ref=f1e401]:
+                        - listitem [ref=f1e402]:
+                          - link "Visual Studio Code" [ref=f1e403] [cursor=pointer]:
+                            - /url: vscode:extension/openai.chatgpt
+                        - listitem [ref=f1e408]:
+                          - link "Cursor" [ref=f1e409] [cursor=pointer]:
+                            - /url: cursor:extension/openai.chatgpt
+                        - listitem [ref=f1e414]:
+                          - link "Windsurf" [ref=f1e415] [cursor=pointer]:
+                            - /url: windsurf:extension/openai.chatgpt
+                        - listitem [ref=f1e420]:
+                          - link "Visual Studio Code Insiders (opens in a new tab)" [ref=f1e421] [cursor=pointer]:
+                            - /url: https://marketplace.visualstudio.com/items?itemName=openai.chatgpt
+                            - generic [ref=f1e422]:
+                              - text: Visual Studio Code Insiders
+                              - generic [ref=f1e423]: (opens in a new tab)
+                        - listitem [ref=f1e427]:
+                          - link "Xcode (opens in a new tab)" [ref=f1e428] [cursor=pointer]:
+                            - /url: https://developer.apple.com/documentation/Xcode/setting-up-coding-intelligence
+                            - generic [ref=f1e429]:
+                              - text: Xcode
+                              - generic [ref=f1e430]: (opens in a new tab)
+                        - listitem [ref=f1e433]:
+                          - link "JetBrains IDEs (opens in a new tab)" [ref=f1e434] [cursor=pointer]:
+                            - /url: https://www.jetbrains.com/help/ai-assistant/codex-agent.html
+                            - generic [ref=f1e435]:
+                              - text: JetBrains IDEs
+                              - generic [ref=f1e436]: (opens in a new tab)
+                  - listitem [ref=f1e439]:
+                    - generic [ref=f1e440]: "2"
+                    - heading "Open Codex" [level=3] [ref=f1e441]
+                    - generic [ref=f1e443]:
+                      - paragraph [ref=f1e444]:
+                        - text: "VS Code, Cursor, or Windsurf: choose the Codex icon. If it is not visible, open the Command Palette and run"
+                        - strong [ref=f1e445]: "Codex: Open Codex Sidebar"
+                        - text: .
+                      - paragraph [ref=f1e446]: "Xcode: open the coding assistant, start a new chat, and choose Codex as the agent."
+                      - paragraph [ref=f1e447]: "JetBrains IDEs: open AI Chat and select Codex."
+                  - listitem [ref=f1e448]:
+                    - generic [ref=f1e449]: "3"
+                    - heading "Start your first chat" [level=3] [ref=f1e450]
+                    - generic [ref=f1e451]:
+                      - paragraph [ref=f1e452]: Open a project and ask Codex to explain the codebase, make a focused change, or help you debug an issue. Create Git checkpoints before and after a task so you can revert changes.
+                      - link "Read the best practices" [ref=f1e453] [cursor=pointer]:
+                        - /url: /guides/best-practices
+                - navigation "Codex IDE extension next steps" [ref=f1e454]:
+                  - paragraph [ref=f1e455]: Next steps
+                  - list [ref=f1e456]:
+                    - listitem [ref=f1e457]:
+                      - link "Prompt with editor context" [ref=f1e458] [cursor=pointer]:
+                        - /url: /docs/prompting#use-editor-context
+                    - listitem [ref=f1e459]:
+                      - link "Explore IDE commands" [ref=f1e460] [cursor=pointer]:
+                        - /url: /docs/developer-commands?surface=ide
+                    - listitem [ref=f1e461]:
+                      - link "Configure the extension" [ref=f1e462] [cursor=pointer]:
+                        - /url: /docs/developer-settings?surface=ide
+          - region [ref=f1e463]:
+            - generic [ref=f1e464]:
+              - heading "See what Codex can do in your IDE" [level=2] [ref=f1e465]
+              - paragraph [ref=f1e466]: Stay close to the code while Codex explains, edits, reviews, and delegates.
+            - generic [ref=f1e467]:
+              - article [ref=f1e468]:
+                - generic [ref=f1e469]:
+                  - text: "01"
+                  - heading "Use the context already open" [level=3] [ref=f1e470]
+                  - paragraph [ref=f1e471]: Add an open file, a selection, or a recent chat to the composer, then ask Codex to explain or edit the code with that context already attached.
+                  - link "Learn more" [ref=f1e472] [cursor=pointer]:
+                    - /url: /docs/prompting#use-editor-context
+                - img "Codex IDE context picker with a few open files and recent chats" [ref=f1e477]:
+                  - generic [ref=f1e480]:
+                    - generic [ref=f1e482]:
+                      - generic [ref=f1e483]: MERGE_REBRAND_POSITIONING.md
+                      - generic [ref=f1e487]:
+                        - generic [ref=f1e490]: element_merged_pill.png
+                        - generic [ref=f1e491]: .codex/skills/add-codex-use-case/resources
+                      - generic [ref=f1e492]: Assess breaking changes
+                      - generic [ref=f1e496]: Weekly review
+                      - generic [ref=f1e500]: Slack messages
+                      - generic [ref=f1e504]: Document repo architecture
+                      - generic [ref=f1e508]: Update get started sections
+                      - generic [ref=f1e512]: Update landing page illustrations
+                    - generic [ref=f1e516]:
+                      - paragraph [ref=f1e517]: Edit files.mdx using context from @merg
+                      - generic [ref=f1e518]:
+                        - generic [ref=f1e519]: Custom⌄
+                        - generic [ref=f1e526]: 5.6-Sol⌄
+              - article [ref=f1e534]:
+                - generic [ref=f1e535]:
+                  - text: "02"
+                  - heading "Review changes beside your code" [level=3] [ref=f1e536]
+                  - paragraph [ref=f1e537]: Review a concise summary and the changed lines without an extra navigation pane. Inspect the two affected files, keep the edits you want, and ask for a follow-up from the same view.
+                  - link "Learn more" [ref=f1e538] [cursor=pointer]:
+                    - /url: /docs/prompting
+                - img "A Codex change ready to review in an IDE" [ref=f1e543]
+              - article [ref=f1e544]:
+                - generic [ref=f1e545]:
+                  - text: "03"
+                  - heading "Delegate when the task gets bigger" [level=3] [ref=f1e546]
+                  - paragraph [ref=f1e547]: Choose local work for fast, hands-on iteration, or connect Codex web to delegate a longer task. The chat stays available when you return to review the result.
+                  - link "Learn more" [ref=f1e548] [cursor=pointer]:
+                    - /url: /docs/cloud#delegate-from-the-ide-extension
+                - img "Starting a cloud chat from the Codex IDE extension" [ref=f1e553]:
+                  - generic [ref=f1e556]:
+                    - paragraph [ref=f1e557]: Continue in
+                    - generic [ref=f1e558]:
+                      - paragraph [ref=f1e563]: Work locally
+                      - paragraph [ref=f1e568]: Cloud
+                      - paragraph [ref=f1e574]: openai/developers-website
+          - region [ref=f1e577]:
+            - generic [ref=f1e578]:
+              - heading "Use Codex IDE extension when…" [level=2] [ref=f1e579]
+              - generic [ref=f1e580]:
+                - generic [ref=f1e581]:
+                  - heading "You are making focused edits" [level=3] [ref=f1e582]
+                  - paragraph [ref=f1e583]: Keep the relevant files and Codex in the same view.
+                - generic [ref=f1e584]:
+                  - heading "You are learning unfamiliar code" [level=3] [ref=f1e585]
+                  - paragraph [ref=f1e586]: Ask about the files and symbols already open in the editor.
+                - generic [ref=f1e587]:
+                  - heading "You want to review changes in place" [level=3] [ref=f1e588]
+                  - paragraph [ref=f1e589]: Inspect and apply edits alongside the source.
+                - generic [ref=f1e590]:
+                  - heading "You want to delegate a larger task" [level=3] [ref=f1e591]
+                  - paragraph [ref=f1e592]: Start cloud work from the IDE and return to the result.
+          - generic [ref=f1e593]:
+            - heading "Other ChatGPT and Codex surfaces" [level=2] [ref=f1e594]
+            - navigation "ChatGPT and Codex surfaces" [ref=f1e595]:
+              - link [ref=f1e596] [cursor=pointer]:
+                - /url: /docs/app
+                - heading "Desktop app" [level=3] [ref=f1e600]
+                - paragraph [ref=f1e601]: Coordinate projects and long-running tasks on your desktop.
+              - link [ref=f1e604] [cursor=pointer]:
+                - /url: /docs/web
+                - heading "ChatGPT web" [level=3] [ref=f1e608]
+                - paragraph [ref=f1e609]: Research, analyze, and create from your browser.
+              - link [ref=f1e612] [cursor=pointer]:
+                - /url: /docs/codex/cli
+                - heading "Codex CLI" [level=3] [ref=f1e616]
+                - paragraph [ref=f1e617]: Inspect, edit, and automate from the terminal.
+              - link [ref=f1e620] [cursor=pointer]:
+                - /url: /docs/cloud
+                - heading "Codex cloud" [level=3] [ref=f1e624]
+                - paragraph [ref=f1e625]: Run coding tasks in parallel cloud environments.
+  - generic:
+    - button "Ask AI" [ref=f1e628] [cursor=pointer]
+    - dialog [ref=f1e630]:
+      - banner [ref=f1e631]:
+        - heading "Docs agent" [level=2] [ref=f1e632]
+        - generic [ref=f1e633]:
+          - button "Start a new docs agent chat" [ref=f1e634] [cursor=pointer]
+          - button "Close docs agent" [ref=f1e637] [cursor=pointer]
+      - paragraph [ref=f1e642]: Loading docs agent...

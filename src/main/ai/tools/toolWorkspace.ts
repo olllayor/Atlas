@@ -2,8 +2,8 @@ import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { containedWritePath } from '../../security/containedFs';
-import type { WorkspaceMode } from '../../../shared/workspaceModes';
-import { DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
+import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
+import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
 import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
 
 /**
@@ -13,10 +13,19 @@ import type { AgentInstructionsResult } from '../../workspace/AgentInstructions'
  */
 export type ToolWorkspace = {
   mode: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
   /** Absolute project root; null when no project is attached. */
   root: string | null;
+  /** Active git worktree directory path when executionTarget === 'worktree' */
+  worktreeRoot?: string | null;
+  /** Endpoint URL for Cloudflare Worker when executionTarget === 'cloud' */
+  cloudWorkerUrl?: string | null;
+  /** Auth secret for Cloudflare Worker when executionTarget === 'cloud' */
+  cloudWorkerSecret?: string | null;
   /** Attached project ID if available */
   projectId?: string | null;
+  /** Conversation ID — used to scope cloud sandbox Durable Object instances */
+  conversationId?: string | null;
   /** Project-specific environment variables to pass to sub-processes */
   env?: Record<string, string>;
   /**
@@ -50,8 +59,31 @@ export type ToolWorkspace = {
 
 export const DEFAULT_TOOL_WORKSPACE: ToolWorkspace = {
   mode: DEFAULT_WORKSPACE_MODE,
+  executionTarget: DEFAULT_EXECUTION_TARGET,
   root: null
 };
+
+/**
+ * The folder a turn actually operates in.
+ *
+ * Only a *worktree* target resolves to its `worktreeRoot`; every other target
+ * (local, cloud) operates on the attached project root. This must agree with
+ * the chip: switching a conversation from worktree back to local keeps the
+ * worktree on disk but must stop directing turns into it, and the write /
+ * sandbox boundaries below follow the same root or the UI and the runtime
+ * would disagree about where the agent is working.
+ */
+function effectiveExecutionRoot(workspace: ToolWorkspace | undefined): string | null {
+  if (!workspace) {
+    return null;
+  }
+  if (workspace.executionTarget === 'worktree') {
+    // A worktree target with no root (staleness, legacy rows) falls back to the
+    // project root rather than to nothing.
+    return workspace.worktreeRoot ?? workspace.root;
+  }
+  return workspace.root;
+}
 
 /**
  * The working directory for shell commands and for relative search paths.
@@ -61,12 +93,13 @@ export const DEFAULT_TOOL_WORKSPACE: ToolWorkspace = {
  * — a path no user chose and none can predict.
  */
 export function resolveWorkspaceCwd(workspace: ToolWorkspace | undefined): string {
-  return workspace?.root ?? homedir();
+  return effectiveExecutionRoot(workspace) ?? homedir();
 }
 
 /** Reads are unrestricted (as in Codex); only writes are confined to the root. */
 export function canWriteFiles(workspace: ToolWorkspace | undefined): workspace is ToolWorkspace & { root: string } {
-  return workspace?.mode === 'code' && typeof workspace.root === 'string' && workspace.root.length > 0;
+  const effectiveRoot = effectiveExecutionRoot(workspace);
+  return workspace?.mode === 'code' && typeof effectiveRoot === 'string' && effectiveRoot.length > 0;
 }
 
 export class WorkspaceWriteError extends Error {}
@@ -87,7 +120,8 @@ export function resolveWritablePath(filePath: string, workspace: ToolWorkspace |
     );
   }
 
-  if (!workspace.root) {
+  const effectiveRoot = effectiveExecutionRoot(workspace);
+  if (!effectiveRoot) {
     throw new WorkspaceWriteError(
       'Code mode has no project folder attached, so there is nowhere to write. Ask the user to choose a folder first.'
     );
@@ -98,7 +132,7 @@ export function resolveWritablePath(filePath: string, workspace: ToolWorkspace |
     throw new WorkspaceWriteError('Expected a file path.');
   }
 
-  const root = resolve(workspace.root);
+  const root = resolve(effectiveRoot);
   const target = isAbsolute(trimmed) ? resolve(trimmed) : resolve(root, trimmed);
   const relativePath = relative(root, target);
 

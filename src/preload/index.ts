@@ -53,7 +53,9 @@ const api: RendererApi = {
     searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request),
     fork: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsFork, request),
     startSide: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsStartSide, request),
-    listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId)
+    listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId),
+    removeWorktree: (conversationId, force) =>
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeRemove, { conversationId, force })
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
@@ -154,7 +156,10 @@ const api: RendererApi = {
     openInstructions: (conversationId: string, sourcePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsOpen, conversationId, sourcePath),
     initInstructions: (conversationId: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsInit, conversationId)
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsInit, conversationId),
+    openFile: (filePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceOpenFile, filePath),
+    revealPath: (request) => ipcRenderer.invoke(IPC_CHANNELS.workspaceRevealPath, request)
   },
   git: {
     getState: (conversationId: string) =>

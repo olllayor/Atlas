@@ -29,3 +29,19 @@ export type SandboxLaunch = {
   env: Record<string, string>;
   mechanism: SandboxMechanism;
 };
+
+export type BashToolResult = {
+  stdout: string;
+  stderr: string;
+  interrupted: boolean;
+  sandbox: SandboxMechanism;
+  sandboxNetwork: SandboxNetworkPolicy;
+  sandboxEscalated: boolean;
+  backgroundTaskId?: string;
+  noOutputExpected?: boolean;
+  outputTruncated?: true;
+  sandboxDenied?: true;
+  sandboxDenialHint?: string;
+  sandboxFailed?: true;
+  returnCodeInterpretation: 'success' | 'timed_out' | 'backgrounded' | 'sandbox_failed' | `exit_code_${number | 'unknown'}`;
+};

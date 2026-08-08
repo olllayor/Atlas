@@ -21,6 +21,7 @@ import {
 } from './sandbox';
 import type { ToolWorkspace } from './toolWorkspace';
 import { resolveWorkspaceCwd } from './toolWorkspace';
+import { cloudBashExecute } from './sandbox/cloudflareComputer';
 
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_READ_LIMIT = 4000;
@@ -885,6 +886,22 @@ export async function bashToolExecute(input: {
   run_in_background?: boolean;
   dangerouslyDisableSandbox?: boolean;
 }, workspace?: ToolWorkspace) {
+  if (workspace?.executionTarget === 'cloud') {
+    if (!workspace.cloudWorkerUrl) {
+      throw new Error(
+        'Cloud Sandbox is selected as execution target, but no Cloudflare Worker URL is configured. Please configure your Worker URL in Settings → Beta.'
+      );
+    }
+    return cloudBashExecute(input, workspace, {
+      endpoint: workspace.cloudWorkerUrl,
+      authToken: workspace.cloudWorkerSecret,
+    });
+  }
+  // A non-local target with no backing folder resolves to local rather than
+  // throwing: forks are created with executionTarget reset to 'local' now, but
+  // a row written before that rule (or another stale state) can still read back
+  // as 'worktree' with no worktreeRoot. resolveWorkspaceCwd handles the fallback.
+
   // Code mode exists so the agent can change a project, so the read-only
   // command policy is lifted there — the writable boundary is the OS sandbox
   // plus the approval ladder, not a regex list. Work mode keeps the regex as

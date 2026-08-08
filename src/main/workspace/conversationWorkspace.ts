@@ -6,6 +6,29 @@ import type { ToolWorkspace } from '../ai/tools/toolWorkspace';
 export type WorkspaceDatabase = Pick<AppDatabase, 'conversations' | 'projects'>;
 
 /**
+ * Whether re-pointing a conversation's attached project (or detaching it with
+ * an explicit `null`) should also detach its worktree.
+ *
+ * A worktree belongs to the project that provisioned it
+ * (`<root>/.atlas-worktrees/<conversationId>`), and the tool runtime resolves
+ * its working directory from that path. Keeping the old root after the chip's
+ * project chip moves would run every subsequent turn inside a folder the UI no
+ * longer shows — while a re-provision on the *new* project is the only correct
+ * worktree for the new folder. Detaches always count: a conversation is
+ * attached to nothing, so a worktree under a forgotten repo has no owner.
+ */
+export function shouldResetWorktreeOnProjectChange(input: {
+  currentProjectId: string | null;
+  currentWorktreeRoot: string | null | undefined;
+  requestedProjectId: string | null | undefined;
+}): boolean {
+  if (!input.currentWorktreeRoot || input.requestedProjectId === undefined) {
+    return false;
+  }
+  return input.requestedProjectId === null || input.currentProjectId !== input.requestedProjectId;
+}
+
+/**
  * The authoritative answer to "what may this conversation touch".
  *
  * Both callers — the chat runtime and the IPC layer — go through here so the
@@ -17,15 +40,17 @@ export function describeConversationWorkspace(
   database: WorkspaceDatabase,
   conversationId: string
 ): ConversationWorkspace {
-  const { mode, projectId } = database.conversations.getWorkspace(conversationId);
+  const { mode, executionTarget, projectId, worktreeRoot } = database.conversations.getWorkspace(conversationId);
   const project = projectId ? database.projects.get(projectId) : null;
   const usableProject = project?.exists ? project : null;
 
   return {
     conversationId,
     mode,
+    executionTarget,
     projectId,
     project,
+    worktreeRoot,
     ready: isWorkspaceModeReady(mode, usableProject != null)
   };
 }
@@ -72,6 +97,7 @@ export function resolveConversationWorkspace(
     envStore?: EnvStore;
     agentInstructions?: AgentInstructionsService;
     terminalHistory?: TerminalHistoryRepo;
+    settingsRepo?: import('../db/repositories/settingsRepo').SettingsRepo;
     onAgentCommand?: (command: string, exitCode: number | null) => void;
   }
 ): ToolWorkspace {
@@ -81,8 +107,13 @@ export function resolveConversationWorkspace(
 
   const toolWorkspace: ToolWorkspace = {
     mode: workspace.mode,
+    executionTarget: workspace.executionTarget,
     root,
-    projectId
+    worktreeRoot: workspace.worktreeRoot,
+    projectId,
+    conversationId,
+    cloudWorkerUrl: options?.settingsRepo?.getCloudSandboxWorkerUrl() ?? null,
+    cloudWorkerSecret: options?.settingsRepo?.getCloudSandboxWorkerSecret() ?? null
   };
 
   // AGENTS.md is re-read every turn through an mtime-revalidated cache, so a

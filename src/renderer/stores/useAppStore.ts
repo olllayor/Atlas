@@ -20,7 +20,8 @@ import type {
   ToolApprovalResponseRequest,
   ToolPermissionMode,
   WorkspaceMode,
-  WorkspaceProject
+  WorkspaceProject,
+  WorkLogEntry
 } from '../../shared/contracts';
 import { isWorkspaceModeReady } from '../../shared/workspaceModes';
 import {
@@ -117,6 +118,7 @@ type AppState = {
    */
   hasLoadedArchivedConversations: boolean;
   conversationDetails: Record<string, ConversationPage>;
+  activitiesByConversation: Record<string, WorkLogEntry[]>;
   conversationStats: ConversationStats | null;
   diagnostics: DiagnosticsSnapshot | null;
   inactiveConversationIds: string[];
@@ -169,8 +171,10 @@ type AppState = {
   setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
-    patch: { mode?: WorkspaceMode; projectId?: string | null }
+    patch: { mode?: WorkspaceMode; executionTarget?: import('../../shared/workspaceModes').ExecutionTarget; projectId?: string | null }
   ) => Promise<void>;
+  /** Deletes the conversation's git worktree and resets its target to local, with an optimistic list update. */
+  removeConversationWorktree: (conversationId: string) => Promise<void>;
   setConversationToolPermissionMode: (
     conversationId: string,
     mode: ToolPermissionMode
@@ -482,6 +486,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingArchivedConversations: false,
   hasLoadedArchivedConversations: false,
   conversationDetails: {},
+  activitiesByConversation: {},
   conversationStats: null,
   diagnostics: null,
   inactiveConversationIds: [],
@@ -515,7 +520,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? window.atlasChat.conversations.getPage(selectedConversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
           : Promise.resolve(null),
         selectedConversationId
-          ? window.atlasChat.chat.getRuntimeState({ conversationId: selectedConversationId })
+          ? window.atlasChat.chat.getRuntimeState({ conversationId: selectedConversationId }).catch(() => null)
           : Promise.resolve(null),
         window.atlasChat.models.list({
           // Always load the full catalog: the model picker applies the
@@ -535,6 +540,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const activeCredentialProviderId =
         settings.defaultProviderId ?? findConfiguredCredential(settings)?.providerId ?? '';
 
+      const snapshotPatch =
+        selectedConversationId && runtimeState
+          ? applyRuntimeSnapshotToStore(
+              {
+                draftsByConversation: {},
+                activitiesByConversation: {},
+                conversationDetails: {},
+                requestToConversation: {},
+                runtimeSequenceByConversation: {},
+              },
+              selectedConversationId,
+              runtimeState
+            )
+          : null;
+
       set({
         bootstrapping: false,
         initialized: true,
@@ -549,19 +569,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationDetails: buildBootstrapConversationDetails(selectedConversationId, detail, runtimeState),
         runtimeSequenceByConversation:
           selectedConversationId && runtimeState ? { [selectedConversationId]: runtimeState.lastSequence } : {},
-        draftsByConversation:
-          selectedConversationId && runtimeState
-            ? (applyRuntimeSnapshotToStore(
-                {
-                  draftsByConversation: {},
-                  conversationDetails: {},
-                  requestToConversation: {},
-                  runtimeSequenceByConversation: {}
-                },
-                selectedConversationId,
-                runtimeState
-              ).draftsByConversation ?? {})
-            : {},
+        draftsByConversation: snapshotPatch?.draftsByConversation ?? {},
+        activitiesByConversation: snapshotPatch?.activitiesByConversation ?? {},
         updateState,
         selectedModelIdByConversation:
           defaultModelId && selectedConversationId
@@ -742,10 +751,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const [detail, runtimeState] = await Promise.all([
         window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
-        window.atlasChat.chat.getRuntimeState({ conversationId }),
+        window.atlasChat.chat.getRuntimeState({ conversationId }).catch(() => null),
       ]);
+      const activeRuntimeState = runtimeState ?? null;
       set((current) => ({
-        ...applyRuntimeSnapshotToStore(current, conversationId, runtimeState, detail),
+        ...(activeRuntimeState
+          ? applyRuntimeSnapshotToStore(current, conversationId, activeRuntimeState, detail)
+          : {
+              conversationDetails: {
+                ...current.conversationDetails,
+                [conversationId]: detail,
+              },
+            }),
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
         selectedModelIdByConversation:
@@ -753,11 +770,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...current.selectedModelIdByConversation,
                 [conversationId]:
-                  runtimeState.conversation?.defaultModelId ??
+                  activeRuntimeState?.conversation?.defaultModelId ??
                   detail.conversation.defaultModelId ??
                   chooseDefaultModel(
                     current.models,
-                    runtimeState.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+                    activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
                     current.settings?.chat.lastModelId
                   ) ??
                   ''
@@ -1100,6 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? {
             ...conversation,
             workspaceMode: patch.mode ?? conversation.workspaceMode,
+            executionTarget: patch.executionTarget ?? conversation.executionTarget,
             projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
           }
         : conversation;
@@ -1112,7 +1130,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         conversations: state.conversations.map((conversation) =>
           conversation.id === conversationId
-            ? { ...conversation, workspaceMode: workspace.mode, projectId: workspace.projectId }
+            ? {
+                ...conversation,
+                workspaceMode: workspace.mode,
+                executionTarget: workspace.executionTarget,
+                worktreeRoot: workspace.worktreeRoot,
+                projectId: workspace.projectId
+              }
             : conversation
         ),
         settings: state.settings
@@ -1121,6 +1145,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               chat: {
                 ...state.settings.chat,
                 workspaceMode: workspace.mode,
+                executionTarget: workspace.executionTarget,
                 lastProjectId: workspace.projectId
               }
             }
@@ -1133,6 +1158,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ conversations: previous });
       notifyError('Could not update the workspace', error);
+    }
+  },
+
+  removeConversationWorktree: async (conversationId: string) => {
+    const previous = get().conversations;
+
+    // Optimistic: deleting the chip's worktree row should not wait a round trip
+    // to stop showing the worktree target, or the menu reads as laggy at the
+    // exact moment the folder it pointed at is disappearing.
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? { ...conversation, executionTarget: 'local', worktreeRoot: null }
+          : conversation
+      ),
+    }));
+
+    try {
+      const workspace = await window.atlasChat.conversations.removeWorktree(conversationId);
+
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                executionTarget: workspace.executionTarget,
+                worktreeRoot: workspace.worktreeRoot,
+                workspaceMode: workspace.mode,
+                projectId: workspace.projectId,
+              }
+            : conversation
+        ),
+      }));
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError('Could not remove worktree', error);
     }
   },
 
@@ -1819,20 +1880,65 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (event.sequence <= currentSequence) {
         return;
       }
-      const recovery = await window.atlasChat.chat.recoverEvents({
-        conversationId,
-        afterSequence: currentSequence,
-      });
-      if (recovery.events.length === 0) {
-        const snapshot = await window.atlasChat.chat.getRuntimeState({ conversationId });
-        set((current) => ({
-          ...applyRuntimeSnapshotToStore(current, conversationId, snapshot),
-          requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId },
-        }));
+      try {
+        const recovery = await window.atlasChat.chat.recoverEvents({
+          conversationId,
+          afterSequence: currentSequence,
+        });
+        if (recovery.events.length === 0) {
+          try {
+            const snapshot = await window.atlasChat.chat.getRuntimeState({ conversationId });
+            if (snapshot) {
+              set((current) => ({
+                ...applyRuntimeSnapshotToStore(current, conversationId, snapshot),
+                requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId },
+              }));
+              return;
+            }
+          } catch {
+            // getRuntimeState failed
+          }
+          set((current) => {
+            const draft = current.draftsByConversation[conversationId];
+            if (!draft) return {};
+            return {
+              draftsByConversation: {
+                ...current.draftsByConversation,
+                [conversationId]: {
+                  ...draft,
+                  notice: {
+                    code: 'reconnecting',
+                    message: 'Reconnecting to stream...',
+                    level: 'warning',
+                  },
+                },
+              },
+            };
+          });
+          return;
+        }
+        set((current) => applyRecoveredRuntimeEventsToStore(current, conversationId, recovery.events));
+        return;
+      } catch {
+        set((current) => {
+          const draft = current.draftsByConversation[conversationId];
+          if (!draft) return {};
+          return {
+            draftsByConversation: {
+              ...current.draftsByConversation,
+              [conversationId]: {
+                ...draft,
+                notice: {
+                  code: 'reconnecting',
+                  message: 'Reconnecting to stream...',
+                  level: 'warning',
+                },
+              },
+            },
+          };
+        });
         return;
       }
-      set((current) => applyRecoveredRuntimeEventsToStore(current, conversationId, recovery.events));
-      return;
     }
 
     // Apply a per-stream event (text/reasoning/tool/visual). The pure
@@ -1878,7 +1984,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           nextDrafts[conversationId] = {
             ...draft,
             status: event.code === 'aborted' ? 'aborted' : 'error',
-            errorMessage: event.message
+            errorMessage: event.message,
+            error: {
+              code: event.code,
+              message: event.message,
+              retryable: event.retryable,
+            },
           };
         } else {
           delete nextDrafts[conversationId];

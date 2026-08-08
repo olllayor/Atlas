@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { shell } from 'electron/common';
 import { ipcMain } from 'electron/main';
@@ -167,6 +167,54 @@ export function registerWorkspaceIpc(
         }
 
         agentInstructions.invalidate(project.root);
+        await shell.openPath(path);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceOpenFile,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceOpenFile,
+      async (event, filePath: string): Promise<void> => {
+        assertTrustedSender(event);
+        await shell.openPath(filePath);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceRevealPath,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceRevealPath,
+      async (
+        event,
+        request: { conversationId: string; target: 'project' | 'worktree' }
+      ): Promise<void> => {
+        assertTrustedSender(event);
+
+        const workspace = describeConversationWorkspace(db, request.conversationId);
+        const path =
+          request.target === 'worktree' ? workspace.worktreeRoot : workspace.project?.root;
+
+        if (!path) {
+          throw new Error(
+            request.target === 'worktree'
+              ? 'This conversation has no worktree.'
+              : 'Attach a project folder first.'
+          );
+        }
+
+        // A path the OS would fail to open (deleted folder, pruned worktree)
+        // gets a friendly in-app error instead of a modal from shell.openPath.
+        if (!existsSync(path)) {
+          throw new Error(
+            request.target === 'worktree'
+              ? 'This conversation’s worktree is no longer on disk.'
+              : 'That project folder is no longer on disk.'
+          );
+        }
+
         await shell.openPath(path);
       }
     )

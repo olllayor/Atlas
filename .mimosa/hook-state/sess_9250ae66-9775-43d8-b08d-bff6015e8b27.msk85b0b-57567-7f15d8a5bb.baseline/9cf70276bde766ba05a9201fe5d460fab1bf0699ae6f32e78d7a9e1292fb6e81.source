@@ -1,0 +1,192 @@
+import { jsxs as _jsxs, jsx as _jsx, Fragment as _Fragment } from "react/jsx-runtime";
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
+import { AlertCircle, ArrowDown, Bug, Check, CheckCircle2, Code2, Copy, FileText, Lightbulb, MessageSquare, PenTool, RefreshCw, Search, StopCircle, XCircle, } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useStickToBottom } from 'use-stick-to-bottom';
+import { ConversationEmptyState } from './ai-elements/conversation';
+import { MessageResponse } from './ai-elements/message';
+import { Confirmation, ConfirmationAccepted, ConfirmationRejected, ConfirmationRequest, ConfirmationTitle, } from './ai-elements/confirmation';
+import { Reasoning, ReasoningContent, ReasoningTrigger, } from './ai-elements/reasoning';
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './ai-elements/tool';
+import { useClipboard } from '../hooks/useClipboard';
+const HISTORY_LEADING_OVERSCAN = 4;
+const HISTORY_TRAILING_OVERSCAN = 2;
+const HISTORY_GAP_PX = 32;
+const suggestions = [
+    { icon: Lightbulb, text: 'Explain a concept', prompt: 'Explain quantum computing in simple terms' },
+    { icon: Code2, text: 'Write code', prompt: 'Write a Python function that sorts a list' },
+    { icon: Bug, text: 'Debug an error', prompt: 'Help me debug this error: ' },
+    { icon: FileText, text: 'Summarize text', prompt: 'Summarize the key points of ' },
+    { icon: PenTool, text: 'Help me write', prompt: 'Help me write an email that ' },
+    { icon: Search, text: 'Research something', prompt: 'Tell me about ' },
+];
+function MessageMeta({ latencyMs, modelLabel, }) {
+    if (!latencyMs && !modelLabel) {
+        return null;
+    }
+    return (_jsxs("div", { className: "mt-3 flex min-h-4 flex-wrap items-center gap-2", children: [latencyMs ? (_jsxs("span", { className: "inline-flex items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 font-mono text-[10.5px] leading-none tabular-nums text-text-faint/85", children: [latencyMs, "ms"] })) : null, modelLabel ? (_jsx("span", { className: "inline-flex max-w-[min(100%,360px)] items-center rounded-full border border-border-subtle bg-bg-hover px-2.5 py-1 text-[10.5px] leading-none text-text-faint/80", title: modelLabel, children: modelLabel })) : null] }));
+}
+function ReasoningRow({ text, isStreaming = false, latencyMs, }) {
+    if (!text?.trim()) {
+        return null;
+    }
+    return (_jsxs(Reasoning, { className: "mb-2.5", defaultOpen: false, duration: latencyMs ? Math.max(1, Math.round(latencyMs / 1000)) : undefined, isStreaming: isStreaming, children: [_jsx(ReasoningTrigger, {}), _jsx(ReasoningContent, { children: text })] }));
+}
+function ToolRow({ part }) {
+    const isOutputState = part.state === 'output-available' ||
+        part.state === 'output-error' ||
+        part.state === 'output-denied';
+    const hasInput = part.rawInput != null || part.input != null;
+    const hasOutput = part.output != null || Boolean(part.errorText) || part.state === 'output-denied';
+    const hasApproval = Boolean(part.approval);
+    const resolvedName = part.title?.trim() || part.toolName.replace(/[_-]+/g, ' ');
+    return (_jsxs(Tool, { className: "mb-2.5", defaultOpen: isOutputState, children: [_jsx(ToolHeader, { type: part.dynamic ? 'dynamic-tool' : `tool-${part.toolName}`, toolName: part.toolName, title: part.title, state: part.state }), hasInput || hasOutput || hasApproval ? (_jsxs(ToolContent, { children: [_jsxs(Confirmation, { approval: part.approval, state: part.state, className: hasInput || hasOutput ? 'mb-3' : undefined, children: [_jsx(ConfirmationTitle, { children: "Tool approval" }), _jsxs(ConfirmationRequest, { children: [_jsxs("div", { children: ["Approve running ", _jsx("span", { className: "font-medium text-white/86", children: resolvedName }), "."] }), part.input ? (_jsx("pre", { className: "mt-2 overflow-x-auto rounded-[12px] border border-white/6 bg-black/20 px-3 py-2 font-mono text-[11px] leading-5 text-white/58", children: JSON.stringify(part.input, null, 2) })) : null] }), _jsxs(ConfirmationAccepted, { children: [_jsx(CheckCircle2, { className: "size-4" }), _jsx("span", { children: "Tool execution approved" })] }), _jsxs(ConfirmationRejected, { children: [_jsx(XCircle, { className: "size-4" }), _jsx("span", { children: "Tool execution rejected" })] })] }), hasInput ? _jsx(ToolInput, { input: part.input ?? part.rawInput ?? '' }) : null, hasOutput ? (_jsx(ToolOutput, { errorText: part.state === 'output-denied' ? 'Tool execution was denied.' : part.errorText, output: part.output, className: hasInput ? 'mt-3' : undefined })) : null] })) : null] }));
+}
+function AssistantTextFallback({ content }) {
+    if (!content.trim()) {
+        return _jsx("div", { className: "text-[13.5px] font-medium text-text-muted", children: "Assistant response" });
+    }
+    return (_jsx("div", { className: "whitespace-pre-wrap break-words text-[15.5px] leading-[1.85] tracking-[-0.01em] text-text-primary", children: content }));
+}
+function AssistantParts({ content, isStreaming = false, latencyMs, parts, deferRichContent = false, }) {
+    if (deferRichContent) {
+        return _jsx(AssistantTextFallback, { content: content });
+    }
+    if (parts.length === 0) {
+        return isStreaming ? (_jsx("div", { className: "text-[13.5px] font-medium text-text-muted", children: "Thinking..." })) : (_jsx(AssistantTextFallback, { content: content }));
+    }
+    return (_jsx(_Fragment, { children: parts.map((part, index) => {
+            if (part.type === 'reasoning') {
+                return (_jsx(ReasoningRow, { text: part.text, latencyMs: latencyMs, isStreaming: isStreaming }, `reasoning-${index}`));
+            }
+            if (part.type === 'tool') {
+                return _jsx(ToolRow, { part: part }, part.toolCallId);
+            }
+            return (_jsx(MessageResponse, { className: "text-[15.5px] leading-[1.85] tracking-[-0.01em] text-text-primary", isAnimating: isStreaming && index === parts.length - 1, children: part.text }, `text-${index}`));
+        }) }));
+}
+function MessageRow({ message, deferRichContent = false, onRegenerate, }) {
+    const { copied, copy } = useClipboard();
+    const isAssistant = message.role === 'assistant';
+    if (!isAssistant) {
+        return (_jsx("div", { className: "group flex w-full justify-end", children: _jsxs("div", { className: "max-w-[min(62%,680px)]", children: [_jsx("div", { className: "rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.085),rgba(255,255,255,0.045))] px-5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]", children: _jsx("p", { className: "whitespace-pre-wrap text-[14px] leading-7 text-text-primary", children: message.content }) }), _jsx("div", { className: "mt-1.5 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100", children: _jsx("button", { type: "button", onClick: () => void copy(message.content), className: "rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary", title: copied ? 'Copied!' : 'Copy', children: copied ? _jsx(Check, { className: "h-3.5 w-3.5 text-success" }) : _jsx(Copy, { className: "h-3.5 w-3.5" }) }) })] }) }));
+    }
+    return (_jsx("div", { className: "group flex w-full", children: _jsxs("div", { className: "min-w-0 max-w-[min(100%,82ch)] flex-1", children: [_jsx(AssistantParts, { content: message.content, latencyMs: message.status === 'complete' ? message.latencyMs : null, parts: message.parts, deferRichContent: deferRichContent }), _jsx(MessageMeta, { latencyMs: message.status === 'complete' ? message.latencyMs : null, modelLabel: message.modelId }), _jsxs("div", { className: "mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100", children: [_jsx("button", { type: "button", onClick: () => void copy(message.content), className: "rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary", title: copied ? 'Copied!' : 'Copy', children: copied ? _jsx(Check, { className: "h-3.5 w-3.5 text-success" }) : _jsx(Copy, { className: "h-3.5 w-3.5" }) }), onRegenerate ? (_jsx("button", { type: "button", onClick: onRegenerate, className: "rounded-full p-1.5 text-text-faint transition hover:bg-bg-hover hover:text-text-primary", title: "Regenerate", children: _jsx(RefreshCw, { className: "h-3.5 w-3.5" }) })) : null] })] }) }));
+}
+function StreamingRow({ parts, modelLabel, errorMessage, status, }) {
+    const isError = status === 'error';
+    const isAborted = status === 'aborted';
+    return (_jsx("div", { className: "group flex w-full", children: _jsxs("div", { className: "min-w-0 max-w-[min(100%,84ch)] flex-1", children: [isError ? (_jsx("div", { className: "rounded-2xl border border-error-border bg-error-bg p-4", children: _jsxs("div", { className: "flex items-start gap-3", children: [_jsx(AlertCircle, { className: "mt-0.5 h-4 w-4 shrink-0 text-error" }), _jsxs("div", { className: "min-w-0 flex-1", children: [_jsx("p", { className: "text-sm font-medium text-error-text", children: "Something went wrong" }), _jsx("p", { className: "mt-1 text-xs text-error-text/80", children: errorMessage })] })] }) })) : isAborted ? (_jsx("div", { className: "rounded-2xl border border-border-subtle bg-bg-subtle p-4", children: _jsxs("div", { className: "flex items-start gap-3", children: [_jsx(StopCircle, { className: "mt-0.5 h-4 w-4 shrink-0 text-text-muted" }), _jsx("p", { className: "text-sm text-text-muted", children: "Generation stopped" })] }) })) : (_jsx(AssistantParts, { content: "", isStreaming: true, latencyMs: null, parts: parts })), modelLabel ? _jsx(MessageMeta, { modelLabel: modelLabel }) : null] }) }));
+}
+function buildHistoryRangeExtractor(isStreaming) {
+    return (range) => {
+        const trailingOverscan = isStreaming ? 0 : HISTORY_TRAILING_OVERSCAN;
+        const start = Math.max(0, range.startIndex - HISTORY_LEADING_OVERSCAN);
+        const end = Math.min(range.count - 1, range.endIndex + trailingOverscan);
+        const indexes = new Set(defaultRangeExtractor(range));
+        for (let index = start; index <= end; index += 1) {
+            indexes.add(index);
+        }
+        return [...indexes].sort((left, right) => left - right);
+    };
+}
+function estimateHistoryRowHeight(message) {
+    if (message.role === 'user') {
+        return Math.min(260, 96 + Math.ceil(message.content.length / 120) * 22);
+    }
+    const toolCount = message.parts.filter((part) => part.type === 'tool').length;
+    const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
+    return Math.min(520, 156 + Math.ceil(message.content.length / 100) * 24 + toolCount * 84 + reasoningCount * 56);
+}
+function SuggestionsState({ onSuggestionClick }) {
+    return (_jsx(ConversationEmptyState, { icon: _jsx(MessageSquare, { className: "h-12 w-12 text-text-muted" }), title: "What can I help with?", description: "Start with a prompt below or type your own message.", children: _jsx("div", { className: "mt-6 grid w-full max-w-lg grid-cols-2 gap-3", children: suggestions.map(({ icon: Icon, text, prompt }) => (_jsxs("button", { type: "button", onClick: () => onSuggestionClick(prompt), className: "flex items-center gap-3 rounded-xl border border-border-medium bg-bg-hover px-4 py-3 text-left text-sm text-text-tertiary transition hover:bg-bg-active hover:text-text-primary", children: [_jsx(Icon, { className: "h-4 w-4 shrink-0 text-text-muted" }), _jsx("span", { className: "truncate", children: text })] }, text))) }) }));
+}
+export function ChatWindow({ detail, draft, hasCredential, isLoadingOlder, onOpenSettings, onSuggestionClick, onLoadOlderMessages, }) {
+    const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useStickToBottom({
+        initial: 'instant',
+        resize: 'smooth',
+    });
+    const pendingPrependRef = useRef(null);
+    const lastAutoLoadCursorRef = useRef(null);
+    if (!detail) {
+        return (_jsx("div", { className: "relative flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-10 lg:px-12", children: _jsx(SuggestionsState, { onSuggestionClick: onSuggestionClick }) }));
+    }
+    const showSetupPrompt = !hasCredential && detail.messages.length === 0;
+    const rangeExtractor = useMemo(() => buildHistoryRangeExtractor(draft?.status === 'streaming'), [draft?.status]);
+    const rowVirtualizer = useVirtualizer({
+        count: detail.messages.length,
+        estimateSize: (index) => estimateHistoryRowHeight(detail.messages[index]),
+        getScrollElement: () => scrollRef.current,
+        getItemKey: (index) => detail.messages[index]?.id ?? index,
+        gap: HISTORY_GAP_PX,
+        overscan: 0,
+        rangeExtractor,
+    });
+    const virtualItems = rowVirtualizer.getVirtualItems();
+    const visibleRange = rowVirtualizer.range;
+    const loadOlderMessages = useCallback(async () => {
+        if (!detail.hasOlder || isLoadingOlder) {
+            return;
+        }
+        const scrollElement = scrollRef.current;
+        if (scrollElement) {
+            pendingPrependRef.current = {
+                conversationId: detail.conversation.id,
+                previousMessageCount: detail.messages.length,
+                previousScrollHeight: scrollElement.scrollHeight,
+            };
+        }
+        await onLoadOlderMessages(detail.conversation.id);
+    }, [detail.conversation.id, detail.hasOlder, detail.messages.length, isLoadingOlder, onLoadOlderMessages, scrollRef]);
+    useEffect(() => {
+        lastAutoLoadCursorRef.current = null;
+    }, [detail.conversation.id]);
+    useLayoutEffect(() => {
+        const pendingPrepend = pendingPrependRef.current;
+        const scrollElement = scrollRef.current;
+        if (!pendingPrepend ||
+            !scrollElement ||
+            pendingPrepend.conversationId !== detail.conversation.id ||
+            detail.messages.length <= pendingPrepend.previousMessageCount) {
+            return;
+        }
+        const heightDelta = scrollElement.scrollHeight - pendingPrepend.previousScrollHeight;
+        if (heightDelta > 0) {
+            scrollElement.scrollTop += heightDelta;
+        }
+        pendingPrependRef.current = null;
+    }, [detail.conversation.id, detail.messages.length, scrollRef]);
+    useEffect(() => {
+        if (!detail.hasOlder || isLoadingOlder || visibleRange?.startIndex !== 0 || !detail.nextCursor) {
+            return;
+        }
+        if (lastAutoLoadCursorRef.current === detail.nextCursor) {
+            return;
+        }
+        lastAutoLoadCursorRef.current = detail.nextCursor;
+        void loadOlderMessages();
+    }, [detail.hasOlder, detail.nextCursor, isLoadingOlder, loadOlderMessages, visibleRange?.startIndex]);
+    useEffect(() => {
+        if (!draft?.requestId) {
+            return;
+        }
+        void scrollToBottom({
+            animation: 'smooth',
+            wait: false,
+            ignoreEscapes: true,
+        });
+    }, [draft?.requestId, scrollToBottom]);
+    const showSuggestions = hasCredential && detail.messages.length === 0 && !draft;
+    if (showSetupPrompt) {
+        return (_jsx("div", { className: "relative flex min-h-0 flex-1 flex-col overflow-hidden px-8 py-10 lg:px-12", children: _jsxs("div", { className: "mx-auto w-full max-w-2xl rounded-[24px] border border-warning-border bg-warning-bg p-6 text-center", children: [_jsx("h2", { className: "text-lg font-medium text-text-primary", children: "Add your API key to start" }), _jsx("p", { className: "mt-2 text-sm text-text-tertiary", children: "Credentials are stored in your OS keychain. Nothing leaves your machine." }), _jsx("button", { type: "button", onClick: onOpenSettings, className: "btn-primary mt-4 px-4 py-2 text-sm", children: "Open Settings" })] }) }));
+    }
+    return (_jsxs("div", { className: "relative flex min-h-0 flex-1 flex-col overflow-hidden", children: [_jsx("div", { ref: scrollRef, className: "relative min-h-0 flex-1 overflow-y-auto", role: "log", "aria-live": "polite", children: _jsxs("div", { ref: contentRef, className: "mx-auto flex w-full max-w-content-max flex-col px-8 py-8 lg:px-10 xl:px-12 xl:py-10", children: [detail.hasOlder ? (_jsx("div", { className: "mb-6 flex justify-center", children: _jsxs("button", { type: "button", onClick: () => void loadOlderMessages(), disabled: isLoadingOlder, className: "inline-flex h-9 items-center gap-2 rounded-full border border-border-default bg-bg-subtle px-4 text-[12.5px] font-medium text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-70", children: [_jsx(RefreshCw, { className: `h-3.5 w-3.5 ${isLoadingOlder ? 'animate-spin' : ''}` }), _jsx("span", { children: isLoadingOlder ? 'Loading older messages…' : 'Load older messages' })] }) })) : null, showSuggestions ? (_jsx(SuggestionsState, { onSuggestionClick: onSuggestionClick })) : (_jsx("div", { className: "relative w-full", style: { height: rowVirtualizer.getTotalSize() }, children: virtualItems.map((virtualItem) => {
+                                const message = detail.messages[virtualItem.index];
+                                const isOutsideVisibleRange = visibleRange != null &&
+                                    (virtualItem.index < visibleRange.startIndex || virtualItem.index > visibleRange.endIndex);
+                                if (!message) {
+                                    return null;
+                                }
+                                return (_jsx("div", { ref: rowVirtualizer.measureElement, "data-index": virtualItem.index, className: "absolute left-0 top-0 w-full", style: { transform: `translateY(${virtualItem.start}px)` }, children: _jsx(MessageRow, { message: message, deferRichContent: isOutsideVisibleRange }) }, virtualItem.key));
+                            }) })), draft ? (_jsx("div", { className: detail.messages.length > 0 || showSuggestions ? 'mt-8' : undefined, children: _jsx(StreamingRow, { parts: draft.parts, modelLabel: draft.modelId, errorMessage: draft.errorMessage, status: draft.status }) })) : null] }) }), !isAtBottom ? (_jsxs("button", { type: "button", onClick: () => void scrollToBottom({ animation: 'smooth' }), className: "absolute bottom-4 left-1/2 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-border-medium bg-bg-elevated px-4 text-sm text-text-primary shadow-elevated transition hover:bg-bg-active", children: [_jsx(ArrowDown, { className: "h-4 w-4" }), _jsx("span", { children: "Jump to latest" })] })) : null] }));
+}

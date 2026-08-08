@@ -91,7 +91,8 @@ test('computeWritableRoots protects repository and Atlas metadata names', () => 
       join(canonical, '.git'),
       join(canonical, '.atlas'),
       join(canonical, '.hg'),
-      join(canonical, '.svn')
+      join(canonical, '.svn'),
+      join(canonical, '.atlas-worktrees')
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -19,11 +19,17 @@ import type {
   ProviderId,
   SearchMessagesRequest,
   ToolExecutionRecord,
-  WorkLogEntry,
-  WorkspaceMode
+  WorkLogEntry
 } from '../../../shared/contracts';
 import { isInlinableTextMediaType } from '../../../shared/attachments';
-import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspaceModes';
+import {
+  DEFAULT_WORKSPACE_MODE,
+  DEFAULT_EXECUTION_TARGET,
+  isWorkspaceMode,
+  isExecutionTarget,
+  type WorkspaceMode,
+  type ExecutionTarget,
+} from '../../../shared/workspaceModes';
 import { decodeConversationPageCursor, encodeConversationPageCursor } from '../../../shared/conversationPaging';
 import { buildFallbackMessageParts, getReasoningContentFromParts, getTextContentFromParts } from '../../../shared/messageParts';
 import { workLogEntryToChatToolPart } from '../../../shared/runtimeActivity';
@@ -44,6 +50,8 @@ type ConversationRow = {
   default_provider_id: ProviderId | null;
   default_model_id: string | null;
   workspace_mode: string | null;
+  execution_target: string | null;
+  worktree_root: string | null;
   project_id: string | null;
   tool_permission_mode: string | null;
   pinned_at: string | null;
@@ -62,6 +70,8 @@ type ConversationSummaryRow = {
   defaultProviderId: ProviderId | null;
   defaultModelId: string | null;
   workspaceMode: string | null;
+  executionTarget: string | null;
+  worktreeRoot: string | null;
   projectId: string | null;
   toolPermissionMode: string | null;
   status: import('../../../shared/contracts').ConversationStatus | null;
@@ -138,6 +148,8 @@ const SUMMARY_SELECT = `
     c.default_provider_id AS defaultProviderId,
     c.default_model_id AS defaultModelId,
     c.workspace_mode AS workspaceMode,
+    c.execution_target AS executionTarget,
+    c.worktree_root AS worktreeRoot,
     c.project_id AS projectId,
     c.tool_permission_mode AS toolPermissionMode,
     c.status AS status,
@@ -613,6 +625,8 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     defaultProviderId: row.defaultProviderId,
     defaultModelId: row.defaultModelId,
     workspaceMode: normalizeWorkspaceMode(row.workspaceMode),
+    executionTarget: normalizeExecutionTarget(row.executionTarget),
+    worktreeRoot: row.worktreeRoot,
     projectId: row.projectId,
     toolPermissionMode: isToolPermissionMode(row.toolPermissionMode) ? row.toolPermissionMode : DEFAULT_TOOL_PERMISSION_MODE,
     status: row.status || 'idle',
@@ -641,6 +655,10 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
  */
 function normalizeWorkspaceMode(value: unknown): WorkspaceMode {
   return isWorkspaceMode(value) ? value : DEFAULT_WORKSPACE_MODE;
+}
+
+function normalizeExecutionTarget(value: unknown): ExecutionTarget {
+  return isExecutionTarget(value) ? value : DEFAULT_EXECUTION_TARGET;
 }
 
 const NOOP_ATTACHMENT_STORE: Pick<
@@ -776,7 +794,7 @@ export class ConversationsRepo {
    * thread on the same repo needs no setup. The caller supplies them because
    * the preference lives in settings, not here.
    */
-  create(defaults: { workspaceMode?: WorkspaceMode; projectId?: string | null; toolPermissionMode?: ToolPermissionMode } = {}) {
+  create(defaults: { workspaceMode?: WorkspaceMode; executionTarget?: ExecutionTarget; projectId?: string | null; toolPermissionMode?: ToolPermissionMode } = {}) {
     const now = new Date();
     const createdAt = now.toISOString();
     const id = randomUUID();
@@ -794,6 +812,7 @@ export class ConversationsRepo {
             default_provider_id,
             default_model_id,
             workspace_mode,
+            execution_target,
             project_id,
             tool_permission_mode
           )
@@ -805,6 +824,7 @@ export class ConversationsRepo {
             NULL,
             NULL,
             @workspaceMode,
+            @executionTarget,
             @projectId,
             @toolPermissionMode
           )
@@ -816,6 +836,7 @@ export class ConversationsRepo {
         createdAt,
         updatedAt: createdAt,
         workspaceMode: defaults.workspaceMode ?? DEFAULT_WORKSPACE_MODE,
+        executionTarget: defaults.executionTarget ?? DEFAULT_EXECUTION_TARGET,
         projectId: defaults.projectId ?? null,
         toolPermissionMode
       });
@@ -919,12 +940,17 @@ export class ConversationsRepo {
     return this.getSummary(conversationId)!;
   }
 
-  /** The mode and project a turn should run under. Never taken from the renderer. */
-  getWorkspace(conversationId: string): { mode: WorkspaceMode; projectId: string | null } {
+  /** The mode, execution target, worktree, and project a turn should run under. Never taken from the renderer. */
+  getWorkspace(conversationId: string): {
+    mode: WorkspaceMode;
+    executionTarget: ExecutionTarget;
+    projectId: string | null;
+    worktreeRoot: string | null;
+  } {
     const row = this.db
-      .prepare<{ conversationId: string }, { workspace_mode: string | null; project_id: string | null }>(
+      .prepare<{ conversationId: string }, { workspace_mode: string | null; execution_target: string | null; project_id: string | null; worktree_root: string | null }>(
         `
-          SELECT workspace_mode, project_id
+          SELECT workspace_mode, execution_target, project_id, worktree_root
           FROM conversations
           WHERE id = @conversationId
         `
@@ -933,38 +959,42 @@ export class ConversationsRepo {
 
     return {
       mode: normalizeWorkspaceMode(row?.workspace_mode),
-      projectId: row?.project_id ?? null
+      executionTarget: normalizeExecutionTarget(row?.execution_target),
+      projectId: row?.project_id ?? null,
+      worktreeRoot: row?.worktree_root ?? null
     };
   }
 
   /**
-   * Set either half of the workspace. Like `rename`, this does not bump
+   * Set any part of the workspace. Like `rename`, this does not bump
    * `updated_at`: switching mode is not conversation activity and must not
    * reorder the sidebar.
    */
   setWorkspace(
     conversationId: string,
-    patch: { mode?: WorkspaceMode; projectId?: string | null }
-  ): { mode: WorkspaceMode; projectId: string | null } {
+    patch: { mode?: WorkspaceMode; executionTarget?: ExecutionTarget; projectId?: string | null; worktreeRoot?: string | null }
+  ): { mode: WorkspaceMode; executionTarget: ExecutionTarget; projectId: string | null; worktreeRoot: string | null } {
     const current = this.getWorkspace(conversationId);
     const mode = patch.mode ?? current.mode;
+    const executionTarget = patch.executionTarget ?? current.executionTarget;
     const projectId = patch.projectId === undefined ? current.projectId : patch.projectId;
+    const worktreeRoot = patch.worktreeRoot === undefined ? current.worktreeRoot : patch.worktreeRoot;
 
     const result = this.db
       .prepare(
         `
           UPDATE conversations
-          SET workspace_mode = @mode, project_id = @projectId
+          SET workspace_mode = @mode, execution_target = @executionTarget, project_id = @projectId, worktree_root = @worktreeRoot
           WHERE id = @conversationId
         `
       )
-      .run({ conversationId, mode, projectId });
+      .run({ conversationId, mode, executionTarget, projectId, worktreeRoot });
 
     if (result.changes === 0) {
       throw new Error(`Conversation ${conversationId} not found.`);
     }
 
-    return { mode, projectId };
+    return { mode, executionTarget, projectId, worktreeRoot };
   }
 
   /**

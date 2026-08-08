@@ -108,6 +108,25 @@ test('the shell falls back to the home directory when no project is attached', (
   assert.equal(resolveWorkspaceCwd({ mode: 'code', root: '/tmp/project' }), '/tmp/project');
 });
 
+test('the working root follows the execution target, never a stray worktree root', () => {
+  const worktree = { mode: 'code' as const, root: '/repo', worktreeRoot: '/repo/.atlas-worktrees/1' };
+
+  // Worktree target runs inside the worktree.
+  assert.equal(resolveWorkspaceCwd({ ...worktree, executionTarget: 'worktree' }), '/repo/.atlas-worktrees/1');
+
+  // Local with a leftover worktree on disk still operates on the project root.
+  assert.equal(resolveWorkspaceCwd({ ...worktree, executionTarget: 'local' }), '/repo');
+
+  // Cloud (and any non-worktree target) operates on the project root too.
+  assert.equal(resolveWorkspaceCwd({ ...worktree, executionTarget: 'cloud' }), '/repo');
+
+  // A worktree label with no root falls back to the project root, not nothing.
+  assert.equal(
+    resolveWorkspaceCwd({ mode: 'code', root: '/repo', executionTarget: 'worktree' }),
+    '/repo'
+  );
+});
+
 test('writes are refused outside code mode', () => {
   assert.throws(
     () => resolveWritablePath('notes.md', { mode: 'work', root: '/tmp/project' }),

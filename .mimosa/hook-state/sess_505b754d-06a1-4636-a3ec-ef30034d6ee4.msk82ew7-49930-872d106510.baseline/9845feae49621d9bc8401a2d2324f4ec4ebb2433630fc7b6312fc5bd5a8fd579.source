@@ -1,0 +1,77 @@
+import { normalizeError } from './ErrorNormalizer';
+export class ModelRegistry {
+    modelsRepo;
+    settingsRepo;
+    keychain;
+    provider;
+    constructor(modelsRepo, settingsRepo, keychain, provider) {
+        this.modelsRepo = modelsRepo;
+        this.settingsRepo = settingsRepo;
+        this.keychain = keychain;
+        this.provider = provider;
+    }
+    list(options = {}) {
+        return this.modelsRepo.list(options);
+    }
+    async refresh() {
+        const apiKey = await this.keychain.getSecret('openrouter');
+        if (!apiKey) {
+            throw new Error('Add an OpenRouter API key in settings before refreshing models.');
+        }
+        try {
+            const models = await this.provider.listModels(apiKey);
+            const validatedAt = new Date().toISOString();
+            this.modelsRepo.upsertModels(models);
+            this.settingsRepo.updateCredentialStatus('openrouter', {
+                hasSecret: true,
+                status: 'valid',
+                validatedAt
+            });
+            return this.modelsRepo.list();
+        }
+        catch (error) {
+            const normalized = normalizeError(error);
+            if (normalized.code === 'auth_error') {
+                this.settingsRepo.updateCredentialStatus('openrouter', {
+                    hasSecret: true,
+                    status: 'invalid',
+                    validatedAt: null
+                });
+            }
+            throw error;
+        }
+    }
+    async validateOpenRouterKey() {
+        const apiKey = await this.keychain.getSecret('openrouter');
+        if (!apiKey) {
+            this.settingsRepo.updateCredentialStatus('openrouter', {
+                hasSecret: false,
+                status: 'missing',
+                validatedAt: null
+            });
+            throw new Error('Save an OpenRouter API key first.');
+        }
+        await this.provider.validateCredential(apiKey);
+        this.settingsRepo.updateCredentialStatus('openrouter', {
+            hasSecret: true,
+            status: 'valid',
+            validatedAt: new Date().toISOString()
+        });
+    }
+    getSettingsSummary() {
+        const credentials = this.settingsRepo.getProviderCredentials();
+        const catalog = this.modelsRepo.getCatalogStats();
+        const staleThreshold = 12 * 60 * 60 * 1000;
+        const lastSyncedAt = catalog.lastSyncedAt ? Date.parse(catalog.lastSyncedAt) : 0;
+        return {
+            providers: credentials,
+            appearance: {
+                themeMode: this.settingsRepo.getThemeMode()
+            },
+            showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
+            modelCatalogLastSyncedAt: catalog.lastSyncedAt,
+            modelCatalogStale: !catalog.lastSyncedAt || Date.now() - lastSyncedAt > staleThreshold,
+            modelCatalogCount: catalog.count
+        };
+    }
+}

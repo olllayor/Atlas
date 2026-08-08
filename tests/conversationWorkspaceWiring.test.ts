@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { resolveConversationWorkspace } from '../src/main/workspace/conversationWorkspace.js';
+import { shouldResetWorktreeOnProjectChange } from '../src/main/workspace/conversationWorkspace.js';
 import type { WorkspaceDatabase } from '../src/main/workspace/conversationWorkspace.js';
 import type {
   AgentInstructionsResult,
@@ -170,4 +171,25 @@ test('file changes are recorded against the conversation that produced them', ()
   });
 
   assert.deepEqual(changes, [{ conversationId: 'conversation-1', filePath: 'src/index.ts' }]);
+});
+
+test('a project switch must reset a live worktree so turns never run in the old folder', () => {
+  const live = { currentProjectId: 'a', currentWorktreeRoot: '/a/.atlas-worktrees/1' };
+
+  // Changing the attached project detaches the old worktree.
+  assert.equal(shouldResetWorktreeOnProjectChange({ ...live, requestedProjectId: 'b' }), true);
+  // Detaching (explicit null) always resets it.
+  assert.equal(shouldResetWorktreeOnProjectChange({ ...live, requestedProjectId: null }), true);
+  // Re-selecting the same project is a no-op.
+  assert.equal(shouldResetWorktreeOnProjectChange({ ...live, requestedProjectId: 'a' }), false);
+  // No live worktree → nothing to detach.
+  assert.equal(
+    shouldResetWorktreeOnProjectChange({ currentProjectId: 'a', currentWorktreeRoot: null, requestedProjectId: 'b' }),
+    false
+  );
+  // No project change requested → untouched.
+  assert.equal(
+    shouldResetWorktreeOnProjectChange({ currentProjectId: 'a', currentWorktreeRoot: '/a/.atlas-worktrees/1', requestedProjectId: undefined }),
+    false
+  );
 });

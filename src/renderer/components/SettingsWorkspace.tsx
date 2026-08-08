@@ -1,14 +1,16 @@
 import {
+  BoxIcon,
   DesktopIcon,
   GearIcon,
   KeyboardIcon,
   LockClosedIcon,
   MinusIcon,
   MixerHorizontalIcon,
-  CubeIcon,
   MoonIcon,
+  PersonIcon,
   PlusIcon,
   ReloadIcon,
+  RocketIcon,
   SunIcon,
   TimerIcon,
   UpdateIcon,
@@ -108,11 +110,12 @@ type NavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
-  { key: 'plugins', label: 'Plugins', icon: CubeIcon },
+  { key: 'plugins', label: 'Plugins', icon: BoxIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
   { key: 'usage', label: 'Usage', icon: TimerIcon },
+  { key: 'beta', label: 'Beta', icon: RocketIcon },
 ];
 
 export function SettingsWorkspace({
@@ -259,6 +262,8 @@ export function SettingsWorkspace({
                   onTelemetryChange={onTelemetryChange}
                 />
               ) : null}
+
+              {activeSection === 'beta' ? <BetaPage settings={settings} /> : null}
             </div>
           </div>
         </div>
@@ -267,32 +272,115 @@ export function SettingsWorkspace({
   );
 }
 
-function sectionTitle(section: SettingsSection) {
-  if (section === 'providers') {
-    return 'Model settings';
+function sectionTitle(section: SettingsSection): string {
+  switch (section) {
+    case 'general':
+      return 'General';
+    case 'providers':
+      return 'Model settings';
+    case 'plugins':
+      return 'Plugins';
+    case 'appearance':
+      return 'Appearance';
+    case 'keyboard':
+      return 'Keyboard';
+    case 'usage':
+      return 'Usage';
+    case 'privacy':
+      return 'Privacy';
+    case 'beta':
+      return 'Beta features';
   }
+}
 
-  if (section === 'plugins') {
-    return 'Plugins';
-  }
+function BetaPage({ settings }: { settings: SettingsSummary | null }) {
+  const [workerUrl, setWorkerUrl] = useState(settings?.chat.cloudSandboxWorkerUrl ?? '');
+  const [workerSecret, setWorkerSecret] = useState(settings?.chat.cloudSandboxWorkerSecret ?? '');
 
-  if (section === 'appearance') {
-    return 'Appearance';
-  }
+  useEffect(() => {
+    setWorkerUrl(settings?.chat.cloudSandboxWorkerUrl ?? '');
+    setWorkerSecret(settings?.chat.cloudSandboxWorkerSecret ?? '');
+  }, [settings?.chat.cloudSandboxWorkerUrl, settings?.chat.cloudSandboxWorkerSecret]);
 
-  if (section === 'keyboard') {
-    return 'Keyboard';
-  }
+  const handleToggleEnabled = (enabled: boolean) => {
+    void window.atlasChat?.settings?.updatePreferences({
+      chat: { cloudSandboxEnabled: enabled },
+    });
+    notify({
+      tone: 'success',
+      title: enabled ? 'Cloud Sandbox enabled' : 'Cloud Sandbox disabled',
+      description: enabled ? 'Select Send to cloud in the execution target picker.' : 'Returned to local execution.',
+    });
+  };
 
-  if (section === 'usage') {
-    return 'Usage';
-  }
+  const handleSaveUrl = () => {
+    void window.atlasChat?.settings?.updatePreferences({
+      chat: { cloudSandboxWorkerUrl: workerUrl.trim() || null },
+    });
+    notify({ tone: 'success', title: 'Worker URL updated', description: 'Cloud Sandbox endpoint saved.' });
+  };
 
-  if (section === 'privacy') {
-    return 'Privacy';
-  }
+  const handleSaveSecret = () => {
+    void window.atlasChat?.settings?.updatePreferences({
+      chat: { cloudSandboxWorkerSecret: workerSecret.trim() || null },
+    });
+    notify({ tone: 'success', title: 'Worker Secret updated', description: 'Auth secret saved.' });
+  };
 
-  return 'General';
+  return (
+    <div className="space-y-6">
+      <SettingsGroup title="Cloud Sandbox (Experimental)">
+        <SettingsRow
+          title="Enable Cloud Sandbox"
+          description="Allow offloading AI tool execution to a remote Cloudflare Worker isolate shell rather than running commands locally."
+        >
+          <UiSwitch
+            checked={settings?.chat.cloudSandboxEnabled ?? false}
+            onCheckedChange={handleToggleEnabled}
+            aria-label="Enable Cloud Sandbox"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Cloudflare Worker URL"
+          description="HTTPS endpoint URL for your deployed Cloudflare Sandbox worker (e.g. https://atlas-cloud-sandbox.workers.dev)."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={workerUrl}
+              placeholder="https://my-sandbox.workers.dev"
+              onChange={(e) => setWorkerUrl(e.target.value)}
+              onBlur={handleSaveUrl}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveUrl();
+              }}
+              className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+            />
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Worker Auth Secret"
+          description="Shared Bearer token sent in Authorization header to authenticate requests with your worker."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={workerSecret}
+              placeholder="Optional Bearer secret"
+              onChange={(e) => setWorkerSecret(e.target.value)}
+              onBlur={handleSaveSecret}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveSecret();
+              }}
+              className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+            />
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+    </div>
+  );
 }
 
 function GeneralPage({

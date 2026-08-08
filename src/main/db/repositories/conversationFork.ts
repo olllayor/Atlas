@@ -79,6 +79,8 @@ type ParentRow = {
   default_provider_id: string | null;
   default_model_id: string | null;
   workspace_mode: string | null;
+  execution_target: string | null;
+  worktree_root: string | null;
   project_id: string | null;
   tool_permission_mode: string | null;
 };
@@ -300,6 +302,8 @@ export function forkConversation(
             default_provider_id,
             default_model_id,
             workspace_mode,
+            execution_target,
+            worktree_root,
             project_id,
             tool_permission_mode
           FROM conversations
@@ -542,6 +546,8 @@ export function forkConversation(
             default_model_id,
             title_auto,
             workspace_mode,
+            execution_target,
+            worktree_root,
             project_id,
             tool_permission_mode,
             status,
@@ -558,6 +564,8 @@ export function forkConversation(
             @defaultModelId,
             0,
             @workspaceMode,
+            @executionTarget,
+            @worktreeRoot,
             @projectId,
             @toolPermissionMode,
             'idle',
@@ -578,6 +586,18 @@ export function forkConversation(
         defaultProviderId: parent.default_provider_id,
         defaultModelId: parent.default_model_id,
         workspaceMode: parent.workspace_mode,
+        // executionTarget deliberately does NOT follow the fork: the parent's
+        // worktree (<root>/.atlas-worktrees/<parentId>) belongs to the parent's
+        // conversation, and a fork carrying the worktree target with no root of
+        // its own would show as "Worktree" in the chip while actually running
+        // as local. The fork starts local and gets a fresh worktree (under its
+        // own id) only when the user switches it to worktree mode.
+        executionTarget: 'local',
+        // worktreeRoot is intentionally NOT copied: the parent's worktree
+        // path (<root>/.atlas-worktrees/<parentId>) belongs to the parent's
+        // conversation. The fork gets a fresh worktree when/if the user
+        // switches it to worktree mode, provisioned under its own id.
+        worktreeRoot: null,
         projectId: parent.project_id,
         toolPermissionMode: parent.tool_permission_mode,
         // `title_auto` is 0 on purpose. The derived title is the only thing

@@ -12,8 +12,8 @@ import {
 
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
-import type { WorkspaceMode } from '../../../shared/contracts';
-import { WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
+import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
+import { EXECUTION_TARGETS, WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,8 +40,12 @@ type AccessMenuProps = {
   permissionMode?: ToolPermissionMode;
   /** Streaming or a tool-less model: the ladder rows grey out, the modes stay live. */
   permissionDisabled?: boolean;
+  executionTarget?: ExecutionTarget;
+  cloudSandboxEnabled?: boolean;
+  isGitRepo?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
+  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 };
@@ -61,8 +65,12 @@ function AccessMenuContent({
   ready,
   permissionMode,
   permissionDisabled,
+  executionTarget,
+  cloudSandboxEnabled,
+  isGitRepo,
   onModeChange,
   onPermissionModeChange,
+  onExecutionTargetChange,
   onRequestProject,
 }: AccessMenuProps) {
   return (
@@ -152,6 +160,47 @@ function AccessMenuContent({
           </DropdownMenuRadioGroup>
         </>
       ) : null}
+
+      {executionTarget && onExecutionTargetChange ? (
+        <>
+          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
+          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
+            Execution target · also in context bar
+          </DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            aria-label="Execution target"
+            value={executionTarget}
+            onValueChange={(val) => onExecutionTargetChange(val as ExecutionTarget)}
+          >
+            {EXECUTION_TARGETS.map((entry) => {
+              const isDisabled =
+                (entry.value === 'worktree' && !isGitRepo) ||
+                (entry.value === 'cloud' && !cloudSandboxEnabled);
+
+              let tagline = entry.tagline;
+              if (entry.value === 'worktree' && !isGitRepo) {
+                tagline = 'Requires a git repository attached';
+              } else if (entry.value === 'cloud' && !cloudSandboxEnabled) {
+                tagline = 'Enable in Settings → Beta';
+              }
+
+              return (
+                <DropdownMenuRadioItem
+                  key={entry.value}
+                  value={entry.value}
+                  disabled={isDisabled}
+                  className="items-start rounded-md py-2 pr-3"
+                >
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-sm font-medium text-text-primary">{entry.label}</span>
+                    <span className="text-2xs leading-4 text-text-tertiary">{tagline}</span>
+                  </span>
+                </DropdownMenuRadioItem>
+              );
+            })}
+          </DropdownMenuRadioGroup>
+        </>
+      ) : null}
     </>
   );
 }
@@ -176,6 +225,10 @@ export function WorkspaceModeSwitch({
   permissionMode,
   permissionDisabled,
   onPermissionModeChange,
+  executionTarget,
+  cloudSandboxEnabled,
+  isGitRepo,
+  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
@@ -193,6 +246,10 @@ export function WorkspaceModeSwitch({
   permissionMode?: ToolPermissionMode;
   permissionDisabled?: boolean;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
+  executionTarget?: ExecutionTarget;
+  cloudSandboxEnabled?: boolean;
+  isGitRepo?: boolean;
+  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 }) {
@@ -266,8 +323,12 @@ export function WorkspaceModeSwitch({
           ready={ready}
           permissionMode={permissionMode}
           permissionDisabled={permissionDisabled}
+          executionTarget={executionTarget}
+          cloudSandboxEnabled={cloudSandboxEnabled}
+          isGitRepo={isGitRepo}
           onModeChange={onChange}
           onPermissionModeChange={onPermissionModeChange}
+          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>
@@ -288,16 +349,24 @@ export function WorkspaceAccessChip({
   ready,
   permissionMode,
   disabled,
+  executionTarget,
+  cloudSandboxEnabled,
+  isGitRepo,
   onModeChange,
   onPermissionModeChange,
+  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
   ready: boolean;
   permissionMode: ToolPermissionMode;
   disabled?: boolean;
+  executionTarget?: ExecutionTarget;
+  cloudSandboxEnabled?: boolean;
+  isGitRepo?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange: (mode: ToolPermissionMode) => void;
+  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 }) {
@@ -355,8 +424,12 @@ export function WorkspaceAccessChip({
           mode={mode}
           ready={ready}
           permissionMode={permissionMode}
+          executionTarget={executionTarget}
+          cloudSandboxEnabled={cloudSandboxEnabled}
+          isGitRepo={isGitRepo}
           onModeChange={onModeChange}
           onPermissionModeChange={onPermissionModeChange}
+          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>

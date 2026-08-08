@@ -16,8 +16,8 @@ import {
 import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
 import type { VisualMode } from '../../../shared/visualIntent';
 import { DEFAULT_VISUAL_MODE, isVisualMode } from '../../../shared/visualIntent';
-import type { WorkspaceMode } from '../../../shared/workspaceModes';
-import { DEFAULT_WORKSPACE_MODE, isWorkspaceMode } from '../../../shared/workspaceModes';
+import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
+import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isExecutionTarget, isWorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
@@ -264,6 +264,42 @@ export class SettingsRepo {
 
   setWorkspaceMode(value: WorkspaceMode) {
     this.setJsonSetting('chat.workspaceMode', value);
+  }
+
+  /** Execution target new conversations start in. */
+  getExecutionTarget(): ExecutionTarget {
+    const value = this.getJsonSetting<ExecutionTarget>('chat.executionTarget', DEFAULT_EXECUTION_TARGET);
+    return isExecutionTarget(value) ? value : DEFAULT_EXECUTION_TARGET;
+  }
+
+  setExecutionTarget(value: ExecutionTarget) {
+    this.setJsonSetting('chat.executionTarget', value);
+  }
+
+  getCloudSandboxEnabled(): boolean {
+    return Boolean(this.getJsonSetting<boolean>('beta.cloudSandbox', false));
+  }
+
+  setCloudSandboxEnabled(value: boolean) {
+    this.setJsonSetting('beta.cloudSandbox', Boolean(value));
+  }
+
+  getCloudSandboxWorkerUrl(): string | null {
+    const value = this.getJsonSetting<string | null>('chat.cloudSandboxWorkerUrl', null);
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  setCloudSandboxWorkerUrl(value: string | null) {
+    this.setJsonSetting('chat.cloudSandboxWorkerUrl', value ? value.trim() : null);
+  }
+
+  getCloudSandboxWorkerSecret(): string | null {
+    const value = this.getJsonSetting<string | null>('chat.cloudSandboxWorkerSecret', null);
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  setCloudSandboxWorkerSecret(value: string | null) {
+    this.setJsonSetting('chat.cloudSandboxWorkerSecret', value ? value.trim() : null);
   }
 
   /**

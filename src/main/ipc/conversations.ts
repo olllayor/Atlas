@@ -13,13 +13,17 @@ import type {
   SetConversationWorkspaceRequest,
   StartSideConversationRequest
 } from '../../shared/contracts';
-import { isWorkspaceMode } from '../../shared/workspaceModes';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { isExecutionTarget, isWorkspaceMode } from '../../shared/workspaceModes';
+import { worktreeService } from '../workspace/WorktreeService';
 import type { AppDatabase } from '../db/client';
 import type { ConversationsRepo } from '../db/repositories/conversationsRepo';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
 import {
   describeConversationWorkspace,
-  resolveNewConversationProjectId
+  resolveNewConversationProjectId,
+  shouldResetWorktreeOnProjectChange
 } from '../workspace/conversationWorkspace';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
@@ -137,16 +141,27 @@ export function registerConversationsIpc({
 
   ipcMain.handle(
     IPC_CHANNELS.conversationsSetWorkspace,
-    withUserFacingErrors(IPC_CHANNELS.conversationsSetWorkspace, (event, request: SetConversationWorkspaceRequest) => {
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetWorkspace, async (event, request: SetConversationWorkspaceRequest) => {
       assertTrustedSender(event);
 
       if (request.mode !== undefined && !isWorkspaceMode(request.mode)) {
         throw new Error(`Unknown workspace mode: ${String(request.mode)}`);
       }
 
+      if (request.executionTarget !== undefined && !isExecutionTarget(request.executionTarget)) {
+        throw new Error(`Unknown execution target: ${String(request.executionTarget)}`);
+      }
+
+      if (request.executionTarget === 'cloud') {
+        if (!settingsRepo.getCloudSandboxEnabled()) {
+          throw new Error('Cloud Sandbox is disabled. Enable it in Settings → Beta first.');
+        }
+        if (!settingsRepo.getCloudSandboxWorkerUrl()) {
+          throw new Error('Cloud Sandbox Worker URL is not set. Configure it in Settings → Beta.');
+        }
+      }
+
       if (request.projectId) {
-        // Refuse an unknown id rather than storing a dangling reference that
-        // would silently leave the conversation with no root.
         const project = projectsRepo.get(request.projectId);
         if (!project) {
           throw new Error(`Project ${request.projectId} not found.`);
@@ -154,14 +169,56 @@ export function registerConversationsIpc({
         projectsRepo.touch(project.id);
       }
 
+      let worktreeRoot: string | null = undefined as any;
+      const currentWs = describeConversationWorkspace(database, request.conversationId);
+      // The target that actually lands. A project switch with no explicit
+      // target falls back to local so the conversation can never keep running
+      // inside an old project's worktree the chips no longer show.
+      let executionTarget = request.executionTarget;
+
+      if (request.executionTarget === 'worktree') {
+        const targetProject = request.projectId ? projectsRepo.get(request.projectId) : currentWs.project;
+        if (!targetProject || !targetProject.exists) {
+          throw new Error('Git Worktree target requires an attached project folder.');
+        }
+        if (!existsSync(resolve(targetProject.root, '.git'))) {
+          throw new Error(`Project folder (${targetProject.root}) is not a Git repository.`);
+        }
+
+        const wt = await worktreeService.provisionWorktree(targetProject.root, request.conversationId);
+        worktreeRoot = wt.path;
+      } else if (
+        shouldResetWorktreeOnProjectChange({
+          currentProjectId: currentWs.projectId,
+          currentWorktreeRoot: currentWs.worktreeRoot ?? null,
+          requestedProjectId: request.projectId,
+        })
+      ) {
+        // Changing (or detaching) the project abandons the old worktree rather
+        // than pointing every turn at a folder the UI no longer shows. Clear
+        // the root and drop to local unless the request picked another target
+        // explicitly (e.g. cloud).
+        worktreeRoot = null;
+        if (executionTarget === undefined) {
+          executionTarget = 'local';
+        }
+      }
+
       conversationsRepo.setWorkspace(request.conversationId, {
         mode: request.mode,
-        projectId: request.projectId
+        executionTarget,
+        projectId: request.projectId,
+        ...(worktreeRoot !== undefined ? { worktreeRoot } : {}),
       });
 
-      // Remember the choice for the next new conversation, not for existing ones.
       if (request.mode !== undefined) {
         settingsRepo.setWorkspaceMode(request.mode);
+      }
+
+      // Mirror whichever target actually landed, so a project switch that reset
+      // the conversation also resets the new-conversation default.
+      if (executionTarget !== undefined) {
+        settingsRepo.setExecutionTarget(executionTarget);
       }
 
       if (request.projectId !== undefined) {
@@ -169,6 +226,32 @@ export function registerConversationsIpc({
       }
 
       return describeConversationWorkspace(database, request.conversationId);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.worktreeRemove,
+    withUserFacingErrors(IPC_CHANNELS.worktreeRemove, async (event, { conversationId, force }: { conversationId: string; force?: boolean }) => {
+      assertTrustedSender(event);
+
+      const ws = describeConversationWorkspace(database, conversationId);
+
+      // No worktree to touch — return the (unchanged) workspace rather than
+      // resolving to undefined so the contract stays a ConversationWorkspace.
+      if (!ws.worktreeRoot) {
+        return describeConversationWorkspace(database, conversationId);
+      }
+
+      // The repo itself being gone on disk is the terminal state: the worktree
+      // metadata is already stale, so clear the row instead of letting a git
+      // invocation fail forever. Otherwise remove the checkout (idempotent in
+      // WorktreeService for a folder already deleted/pruned out-of-band).
+      if (ws.project?.exists) {
+        await worktreeService.removeWorktree(ws.project.root, { path: ws.worktreeRoot, force });
+      }
+
+      conversationsRepo.setWorkspace(conversationId, { worktreeRoot: null, executionTarget: 'local' });
+      return describeConversationWorkspace(database, conversationId);
     })
   );
 

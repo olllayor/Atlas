@@ -538,3 +538,49 @@ test('a plan survives the reload that downgrades tool inputs to a preview string
   assert.ok((longHydrated[0]?.input as string).length > 900, 'the plan preview outgrows the ordinary budget');
   assert.equal(derivePlanView(longHydrated)?.total, 40);
 });
+
+test('ConversationsRepo carries execution target and worktree root through the summary projection', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-conversations-workspace-summary-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction:
+      <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) =>
+      (...args: TArgs) => {
+        raw.exec('BEGIN');
+        try {
+          const result = callback(...args);
+          raw.exec('COMMIT');
+          return result;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      },
+  } as unknown as SqliteDatabase;
+  applySchema(database);
+  const conversations = new ConversationsRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+
+  // The worktree summary fields are what the composer chip hangs off, so both
+  // the workspace row and every summary-produced shape must surface them.
+  conversations.setWorkspace(conversation.id, {
+    executionTarget: 'worktree',
+    worktreeRoot: '/tmp/atlas/.atlas-worktrees/conv-1',
+  });
+
+  const listed = conversations.list().find((entry) => entry.id === conversation.id);
+  assert.equal(listed?.executionTarget, 'worktree');
+  assert.equal(listed?.worktreeRoot, '/tmp/atlas/.atlas-worktrees/conv-1');
+
+  const workspace = conversations.getWorkspace(conversation.id);
+  assert.equal(workspace.executionTarget, 'worktree');
+  assert.equal(workspace.worktreeRoot, '/tmp/atlas/.atlas-worktrees/conv-1');
+});

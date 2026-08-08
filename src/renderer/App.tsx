@@ -10,8 +10,8 @@ import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingComm
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
-import type { WorkspaceMode } from '../shared/workspaceModes';
-import { DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
+import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
+import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
@@ -300,6 +300,7 @@ export default function App() {
     setConversationArchived,
     setConversationWorkspace,
     setConversationToolPermissionMode,
+    removeConversationWorktree,
     createConversationInProject,
     forkConversation,
   } = useAppStore(
@@ -387,6 +388,7 @@ export default function App() {
       setConversationArchived: state.setConversationArchived,
       setConversationWorkspace: state.setConversationWorkspace,
       setConversationToolPermissionMode: state.setConversationToolPermissionMode,
+      removeConversationWorktree: state.removeConversationWorktree,
     }))
   );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
@@ -400,9 +402,6 @@ export default function App() {
    * suggestions screen, so the workspace chips and that screen come and go
    * together rather than on two different definitions of "new".
    */
-  const isUntouchedSession = Boolean(
-    activeConversation && activeConversation.messages.length === 0 && !activeDraft
-  );
   const isLoadingOlder = selectedConversationId ? Boolean(isLoadingOlderByConversation[selectedConversationId]) : false;
   const isLoadingConversation =
     selectedConversationId != null && isLoadingConversationId === selectedConversationId;
@@ -415,6 +414,8 @@ export default function App() {
     ? conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
     : null;
   const workspaceMode = activeConversationSummary?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
+  const executionTarget = activeConversationSummary?.executionTarget ?? settings?.chat.executionTarget ?? DEFAULT_EXECUTION_TARGET;
+  const activeWorktreeRoot = activeConversationSummary?.worktreeRoot ?? null;
   const activeProject = activeConversationSummary?.projectId
     ? projects.find((project) => project.id === activeConversationSummary.projectId) ?? null
     : null;
@@ -467,6 +468,17 @@ export default function App() {
     },
     [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
   );
+  const handleExecutionTargetChange = useCallback(
+    (target: ExecutionTarget) => {
+      if (!selectedConversationId) return;
+      void setConversationWorkspace(selectedConversationId, { executionTarget: target });
+    },
+    [selectedConversationId, setConversationWorkspace]
+  );
+  const handleRemoveWorktree = useCallback(() => {
+    if (!selectedConversationId) return;
+    void removeConversationWorktree(selectedConversationId);
+  }, [selectedConversationId, removeConversationWorktree]);
   /**
    * Put the files a turn edited back the way they were.
    *
@@ -1031,6 +1043,25 @@ export default function App() {
     root.style.setProperty('--font-code-mono', buildFontFamilyValue(appearance.codeFontFamily, '--font-mono-system'));
   }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
 
+  const activitiesByConversation = useAppStore((state) => state.activitiesByConversation);
+  const activeActivities = selectedConversationId
+    ? (activitiesByConversation[selectedConversationId] ?? [])
+    : [];
+
+  const prevRunningAgentsCountRef = useRef(0);
+  useEffect(() => {
+    const runningAgentsCount = activeActivities.filter((a) => {
+      const isAgent = a.payload?.agentKind === 'agent';
+      return isAgent && (a.status === 'running' || a.status === 'pending_approval');
+    }).length;
+
+    if (runningAgentsCount > 0 && prevRunningAgentsCountRef.current === 0) {
+      setWorkbenchTab('agents');
+      setWorkbenchOpen(true);
+    }
+    prevRunningAgentsCountRef.current = runningAgentsCount;
+  }, [activeActivities]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) {
@@ -1279,11 +1310,13 @@ export default function App() {
               disabled={!selectedConversationId}
               variant="heading"
               permissionMode={toolPermissionMode}
-              // Mid-stream the rung is already baked into the request in
-              // flight; the composer chip greys out for the same reason.
               permissionDisabled={activeDraft?.status === 'streaming'}
+              executionTarget={executionTarget}
+              cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
+              isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
               onChange={handleWorkspaceModeChange}
               onPermissionModeChange={handleToolPermissionModeChange}
+              onExecutionTargetChange={handleExecutionTargetChange}
               onRequestProject={
                 selectedConversationId
                   ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
@@ -1440,6 +1473,10 @@ export default function App() {
                   setWorkbenchTab('review');
                 }}
                 onUndoChanges={handleUndoTurnEdits}
+                onOpenAgentsPanel={() => {
+                  setWorkbenchOpen(true);
+                  setWorkbenchTab('agents');
+                }}
                 hasTools={hasModelTools}
                 projectName={activeProject?.exists ? activeProject.title : null}
               />
@@ -1454,40 +1491,45 @@ export default function App() {
               className="absolute inset-x-0 bottom-0 z-20 bg-bg-base"
               ref={composerDock.ref}
             >
-              {/*
-                Chips only on an untouched session. Once the conversation has a
-                turn in it the folder, runner and branch are settled facts that the
-                transcript itself evidences — leaving the strip up spends a row of
-                the composer's column restating them above every reply.
-              */}
-              {isUntouchedSession ? (
-                <WorkspaceContextBar
-                  conversationId={selectedConversationId ?? undefined}
-                  mode={workspaceMode}
-                  project={activeProject}
-                  projects={projects}
-                  projectContext={projectContext}
-                  disabled={!selectedConversationId}
-                  onProjectContextChanged={() => {
-                    void refreshProjectContext();
-                    void refreshProjects();
-                  }}
-                  onAttach={() => {
-                    void attachProject({ conversationId: selectedConversationId ?? undefined });
-                  }}
-                  onSelect={(projectId) => {
-                    if (!selectedConversationId) return;
-                    void setConversationWorkspace(selectedConversationId, { projectId });
-                  }}
-                  onDetach={() => {
-                    if (!selectedConversationId) return;
-                    void setConversationWorkspace(selectedConversationId, { projectId: null });
-                  }}
-                  onReveal={(projectId) => {
-                    void window.atlasChat.projects.reveal(projectId);
-                  }}
-                />
-              ) : null}
+              <WorkspaceContextBar
+                conversationId={selectedConversationId ?? undefined}
+                mode={workspaceMode}
+                executionTarget={executionTarget}
+                worktreeRoot={activeWorktreeRoot}
+                cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
+                onOpenSettings={() => runViewTransition(() => openSettings('beta'))}
+                onExecutionTargetChange={handleExecutionTargetChange}
+                onRemoveWorktree={handleRemoveWorktree}
+                project={activeProject}
+                projects={projects}
+                projectContext={projectContext}
+                disabled={!selectedConversationId}
+                onProjectContextChanged={() => {
+                  void refreshProjectContext();
+                  void refreshProjects();
+                }}
+                onAttach={() => {
+                  void attachProject({ conversationId: selectedConversationId ?? undefined });
+                }}
+                onSelect={(projectId) => {
+                  if (!selectedConversationId) return;
+                  void setConversationWorkspace(selectedConversationId, { projectId });
+                }}
+                onDetach={() => {
+                  if (!selectedConversationId) return;
+                  void setConversationWorkspace(selectedConversationId, { projectId: null });
+                }}
+                onReveal={(projectId) => {
+                  void window.atlasChat.projects.reveal(projectId);
+                }}
+                onRevealTarget={(target) => {
+                  if (!selectedConversationId) return;
+                  void window.atlasChat.workspace.revealPath({
+                    conversationId: selectedConversationId,
+                    target,
+                  });
+                }}
+              />
 
               <ChatComposerSlot
                 conversationId={selectedConversationId}
@@ -1619,10 +1661,12 @@ export default function App() {
                   conversationId={selectedConversationId ?? undefined}
                   mode={workspaceMode}
                   messages={activeConversation?.messages ?? []}
+                  activities={activeActivities}
                   activeTab={workbenchTab}
                   onTabChange={setWorkbenchTab}
                   onClose={() => setWorkbenchOpen(false)}
                   onSendComments={appendToComposer}
+                  onOpenOutputFile={(filePath) => void window.atlasChat.workspace.openFile(filePath)}
                 />
               </RendererErrorBoundary>
             </aside>

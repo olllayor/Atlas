@@ -163,6 +163,22 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setWorkspaceMode(patch.chat.workspaceMode);
       }
 
+      if (patch?.chat?.executionTarget) {
+        settingsRepo.setExecutionTarget(patch.chat.executionTarget);
+      }
+
+      if (patch?.chat?.cloudSandboxEnabled !== undefined) {
+        settingsRepo.setCloudSandboxEnabled(patch.chat.cloudSandboxEnabled);
+      }
+
+      if (patch?.chat?.cloudSandboxWorkerUrl !== undefined) {
+        settingsRepo.setCloudSandboxWorkerUrl(patch.chat.cloudSandboxWorkerUrl);
+      }
+
+      if (patch?.chat?.cloudSandboxWorkerSecret !== undefined) {
+        settingsRepo.setCloudSandboxWorkerSecret(patch.chat.cloudSandboxWorkerSecret);
+      }
+
       if (patch?.chat?.lastProjectId !== undefined) {
         settingsRepo.setLastProjectId(patch.chat.lastProjectId);
       }

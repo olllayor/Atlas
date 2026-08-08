@@ -36,7 +36,7 @@ export type * from './review';
 
 import type { ReviewDiff, ReviewScope } from './review';
 import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
-import type { WorkspaceMode } from './workspaceModes';
+import type { ExecutionTarget, WorkspaceMode } from './workspaceModes';
 import type { VisualMode } from './visualIntent';
 
 /**
@@ -500,9 +500,12 @@ export type TerminalStartResult = {
 export type ConversationWorkspace = {
   conversationId: string;
   mode: WorkspaceMode;
+  executionTarget: ExecutionTarget;
   projectId: string | null;
   /** Resolved from `projectId`; null when unset or the folder is gone. */
   project: WorkspaceProject | null;
+  /** Resolved worktree path when executionTarget === 'worktree'; null otherwise. */
+  worktreeRoot?: string | null;
   /** False when the mode needs a project and none is attached. */
   ready: boolean;
 };
@@ -510,6 +513,7 @@ export type ConversationWorkspace = {
 export type SetConversationWorkspaceRequest = {
   conversationId: string;
   mode?: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
   /** `null` detaches the project; omit to leave it unchanged. */
   projectId?: string | null;
 };
@@ -922,7 +926,7 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
-export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy';
+export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy' | 'beta';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -979,12 +983,20 @@ export type SettingsChatSummary = {
   toolPermissionMode: ToolPermissionMode;
   /** Mode new conversations start in. Per-conversation mode overrides it. */
   workspaceMode: WorkspaceMode;
+  /** Execution target new conversations start in. Per-conversation target overrides it. */
+  executionTarget: ExecutionTarget;
   /** Project new conversations attach to, so a coding session survives restart. */
   lastProjectId: string | null;
   /** Last model the user selected; null when it is no longer in the catalog. */
   lastModelId: string | null;
   /** When the assistant is allowed to answer with an inline visual. */
   visualMode: VisualMode;
+  /** Whether the experimental Cloud Sandbox execution target is enabled. */
+  cloudSandboxEnabled: boolean;
+  /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
+  cloudSandboxWorkerUrl: string | null;
+  /** Bearer secret key for authenticating requests to the user's Cloudflare Worker. */
+  cloudSandboxWorkerSecret: string | null;
 };
 
 export type SettingsSummary = {
@@ -1028,6 +1040,8 @@ export type ConversationSummary = {
   defaultProviderId: ProviderId | null;
   defaultModelId: string | null;
   workspaceMode: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
+  worktreeRoot?: string | null;
   projectId: string | null;
   toolPermissionMode: ToolPermissionMode;
   status?: ConversationStatus;
@@ -1867,10 +1881,14 @@ export type SettingsUpdateRequest = {
     toolPermissionMode?: ToolPermissionMode;
     /** Mode new conversations start in. */
     workspaceMode?: WorkspaceMode;
+    executionTarget?: ExecutionTarget;
     /** Project new conversations attach to; `null` clears it. */
     lastProjectId?: string | null;
-    lastModelId?: string;
+    lastModelId?: string | null;
     visualMode?: VisualMode;
+    cloudSandboxEnabled?: boolean;
+    cloudSandboxWorkerUrl?: string | null;
+    cloudSandboxWorkerSecret?: string | null;
   };
 };
 
@@ -1983,6 +2001,11 @@ export type RendererApi = {
     /** The side conversations of one chat. They appear in no other listing. */
     listSide: (conversationId: string) => Promise<ConversationSummary[]>;
     /**
+     * Deletes this conversation's git worktree and resets its execution target
+     * to local. No-op when the conversation has no worktree.
+     */
+    removeWorktree: (conversationId: string, force?: boolean) => Promise<ConversationWorkspace>;
+    /**
      * Ranked message-body hits, capped and archived-filtered. Any string is a
      * legal query — it is sanitized in the main process, never parsed here.
      */
@@ -2062,6 +2085,14 @@ export type RendererApi = {
     deleteEnv: (projectId: string, key: string) => Promise<void>;
     openInstructions: (conversationId: string, sourcePath: string) => Promise<void>;
     initInstructions: (conversationId: string) => Promise<void>;
+    openFile: (filePath: string) => Promise<void>;
+    /**
+     * Reveals a conversation's working location in the OS file manager. The
+     * renderer names a *target* ('project' | 'worktree'), never a raw path —
+     * the main process resolves and validates the path against the
+     * conversation's own workspace before opening it.
+     */
+    revealPath: (request: { conversationId: string; target: 'project' | 'worktree' }) => Promise<void>;
   };
   git: {
     getState: (conversationId: string) => Promise<GitStateSummary>;

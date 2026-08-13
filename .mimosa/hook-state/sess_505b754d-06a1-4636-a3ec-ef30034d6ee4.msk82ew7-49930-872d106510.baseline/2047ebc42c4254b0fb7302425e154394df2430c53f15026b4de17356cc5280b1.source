@@ -1,0 +1,102 @@
+"use client";
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { CodeBlock } from "@/components/CodeBlock";
+import { MessageResponse } from "@/components/ai-elements/message";
+import { cn } from "@/lib/utils";
+import { AlertTriangle, ArrowRightLeft, Ban, CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Loader2, ShieldAlert, Wrench, } from "lucide-react";
+import { isValidElement, useMemo } from "react";
+function formatToolName(value) {
+    if (!value) {
+        return "Tool";
+    }
+    const normalized = value
+        .replace(/^tool-/, "")
+        .replace(/^dynamic-tool$/, "dynamic tool")
+        .replace(/[_-]+/g, " ")
+        .trim();
+    if (!normalized) {
+        return "Tool";
+    }
+    return normalized
+        .split(/\s+/)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
+}
+function formatJson(value) {
+    if (typeof value === "string") {
+        return value;
+    }
+    try {
+        return JSON.stringify(value, null, 2);
+    }
+    catch {
+        return String(value);
+    }
+}
+function renderNodeOrCode(value, language = "json") {
+    if (isValidElement(value)) {
+        return value;
+    }
+    if (typeof value === "string") {
+        return value.trim().startsWith("{") || value.trim().startsWith("[") ? (_jsx(CodeBlock, { code: value, language: language })) : (_jsx(MessageResponse, { children: value }));
+    }
+    if (typeof value === "number" ||
+        typeof value === "boolean" ||
+        typeof value === "bigint") {
+        return _jsx(MessageResponse, { children: String(value) });
+    }
+    if (value == null) {
+        return null;
+    }
+    return _jsx(CodeBlock, { code: formatJson(value), language: language });
+}
+export function getStatusBadge(state) {
+    switch (state) {
+        case "input-streaming":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(CircleDashed, { className: "size-3 animate-spin" }), "Pending"] }));
+        case "input-available":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(Wrench, { className: "size-3" }), "Running"] }));
+        case "approval-requested":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-amber-500/20 bg-amber-500/[0.08] px-2.25 py-0.75 text-[9.5px] font-medium text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(ShieldAlert, { className: "size-3" }), "Awaiting Approval"] }));
+        case "approval-responded":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(ArrowRightLeft, { className: "size-3" }), "Responded"] }));
+        case "output-available":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-emerald-500/18 bg-emerald-500/[0.08] px-2.25 py-0.75 text-[9.5px] font-medium text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(CheckCircle2, { className: "size-3" }), "Completed"] }));
+        case "output-error":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-red-500/18 bg-red-500/[0.08] px-2.25 py-0.75 text-[9.5px] font-medium text-red-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(CircleAlert, { className: "size-3" }), "Error"] }));
+        case "output-denied":
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(Ban, { className: "size-3" }), "Denied"] }));
+        default:
+            return (_jsxs(Badge, { variant: "outline", className: "gap-1.25 border-white/8 bg-white/[0.03] px-2.25 py-0.75 text-[9.5px] font-medium text-white/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", children: [_jsx(Loader2, { className: "size-3 animate-spin" }), "Running"] }));
+    }
+}
+export const Tool = ({ className, defaultOpen = true, ...props }) => (_jsx(Collapsible, { defaultOpen: defaultOpen, className: cn("group/tool w-full overflow-hidden rounded-[20px] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.018))] shadow-[0_16px_36px_-28px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-sm", className), ...props }));
+export const ToolHeader = ({ className, type, state, title, toolName, ...props }) => {
+    const resolvedName = useMemo(() => {
+        if (title?.trim()) {
+            return title.trim();
+        }
+        if (type === "dynamic-tool") {
+            return formatToolName(toolName);
+        }
+        return formatToolName(type);
+    }, [title, toolName, type]);
+    const metaLabel = type === "dynamic-tool" ? "Dynamic tool call" : "Tool execution";
+    return (_jsxs(CollapsibleTrigger, { className: cn("flex w-full items-center justify-between gap-3.5 px-3.5 py-3 text-left transition hover:bg-white/[0.018]", className), ...props, children: [_jsxs("div", { className: "flex min-w-0 items-center gap-2.5", children: [_jsx("span", { className: "inline-flex size-9 shrink-0 items-center justify-center rounded-[12px] border border-white/6 bg-[linear-gradient(180deg,rgba(157,176,255,0.12),rgba(157,176,255,0.05))] text-[#aab8ff] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]", children: _jsx(Wrench, { className: "size-3.5" }) }), _jsxs("div", { className: "min-w-0", children: [_jsx("div", { className: "truncate text-[13.5px] font-medium tracking-[-0.02em] text-white/90", children: resolvedName }), _jsx("div", { className: "truncate pt-0.5 text-[10.5px] text-white/36", children: metaLabel })] })] }), _jsxs("div", { className: "flex shrink-0 items-center gap-2", children: [getStatusBadge(state), _jsx("span", { className: "inline-flex size-7.5 items-center justify-center rounded-full border border-white/6 bg-white/[0.03] text-white/34 transition group-hover/tool:text-white/52", children: _jsx(ChevronDown, { className: "size-3.25 transition-transform group-data-[state=open]/tool:rotate-180" }) })] })] }));
+};
+export const ToolContent = ({ className, ...props }) => (_jsx(CollapsibleContent, { className: cn("border-t border-white/6 px-3.5 pb-3.5 pt-3", className), ...props }));
+export const ToolInput = ({ className, input, ...props }) => {
+    const serialized = useMemo(() => formatJson(input), [input]);
+    return (_jsxs("div", { className: cn("rounded-[14px] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.015))] shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]", className), ...props, children: [_jsx("div", { className: "flex items-center justify-between border-b border-white/6 px-3 py-2", children: _jsx("span", { className: "text-[9.5px] font-medium uppercase tracking-[0.14em] text-white/40", children: "Input" }) }), _jsx(CodeBlock, { code: serialized, language: "json", className: "my-0 rounded-none border-0 bg-transparent shadow-none" })] }));
+};
+export const ToolOutput = ({ className, output, errorText, ...props }) => {
+    if (errorText) {
+        return (_jsx("div", { className: cn("rounded-[14px] border border-red-500/18 bg-[linear-gradient(180deg,rgba(244,63,94,0.12),rgba(244,63,94,0.06))] px-3 py-3 text-red-100", className), ...props, children: _jsxs("div", { className: "flex items-start gap-2", children: [_jsx(AlertTriangle, { className: "mt-0.5 size-3.5 shrink-0 text-red-200" }), _jsxs("div", { className: "min-w-0", children: [_jsx("div", { className: "text-[10px] font-medium uppercase tracking-[0.14em] text-red-200/70", children: "Error" }), _jsx("div", { className: "mt-1 text-[12.5px] leading-5 text-red-50/90", children: errorText })] })] }) }));
+    }
+    if (output == null) {
+        return null;
+    }
+    return (_jsxs("div", { className: cn("rounded-[14px] border border-white/6 bg-[linear-gradient(180deg,rgba(6,10,16,0.7),rgba(10,12,18,0.95))] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]", className), ...props, children: [_jsx("div", { className: "flex items-center justify-between border-b border-white/6 px-3 py-2", children: _jsx("span", { className: "text-[9.5px] font-medium uppercase tracking-[0.14em] text-white/40", children: "Output" }) }), _jsx("div", { className: "px-3 py-2.5 text-[12.5px] leading-[1.65] text-white/78", children: typeof output === "string" ? (_jsx(MessageResponse, { children: output })) : (renderNodeOrCode(output)) })] }));
+};

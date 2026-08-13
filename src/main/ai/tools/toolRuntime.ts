@@ -2,8 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
-import { access, readFile, readdir, stat } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+
+import { BoundedCommandOutput } from './commandOutputCap';
+import type { ContainedFsFailure } from '../../security/containedFs';
+import { containedRead, containedReadBuffer } from '../../security/containedFs';
+import type { SandboxPolicy } from './sandbox';
+import {
+  buildSandboxedLaunch,
+  deriveSandboxPolicy,
+  detectSandboxMechanism,
+  isLikelySandboxDenied,
+  isSandboxWrapperFailure,
+  markSandboxMechanismUnavailable,
+  SANDBOX_DENIAL_HINT
+} from './sandbox';
+import type { ToolWorkspace } from './toolWorkspace';
+import { resolveWorkspaceCwd } from './toolWorkspace';
+import { cloudBashExecute } from './sandbox/cloudflareComputer';
 
 const DEFAULT_READ_LIMIT = 2000;
 const MAX_READ_LIMIT = 4000;
@@ -81,6 +99,9 @@ type CommandResult = {
   stderr: string;
   code: number | null;
   interrupted: boolean;
+  /** Set only when the ingest cap dropped content; the text carries its own marker. */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 };
 
 function expandPath(value: string) {
@@ -215,6 +236,40 @@ async function readTextLikeFile(filePath: string, raw: string, offset?: number, 
   };
 }
 
+/**
+ * Read caps for the `read_file` tool. `read_file` intentionally takes any
+ * absolute path on the user's machine — Atlas is a local-first client and
+ * this is not a confinement boundary — but "any path" still has to survive a
+ * FIFO that never yields a writer or a multi-gigabyte file, either of which
+ * would otherwise stall or OOM the Electron main process on a plain
+ * `readFile`. Text gets the tighter cap because it is quoted back to the
+ * model at full fidelity; binary/PDF/image content is re-sliced down to
+ * `MAX_BINARY_BASE64_BYTES` regardless, so the larger cap only bounds how
+ * much is pulled off disk before that slice.
+ */
+const TEXT_READ_BYTE_CAP = 5 * 1024 * 1024;
+const BINARY_READ_BYTE_CAP = 20 * 1024 * 1024;
+
+function throwForContainedFailure(reason: ContainedFsFailure, filePath: string): never {
+  switch (reason) {
+    case 'not-found':
+      throw new Error(`File not found: ${filePath}`);
+    case 'not-regular-file':
+      throw new Error('Path is not a file.');
+    case 'outside-root':
+      throw new Error(`Path is outside the allowed root: ${filePath}`);
+    case 'disallowed-extension':
+      throw new Error(`File extension is not allowed: ${filePath}`);
+    case 'changed-during-read':
+      throw new Error(`File changed on disk while it was being read: ${filePath}`);
+    case 'invalid-path':
+      throw new Error('Expected an absolute path.');
+    case 'read-failed':
+    default:
+      throw new Error(`Failed to read file: ${filePath}`);
+  }
+}
+
 export async function readToolExecute(input: {
   file_path: string;
   offset?: number;
@@ -226,18 +281,23 @@ export async function readToolExecute(input: {
   const extension = extname(filePath).toLowerCase();
 
   if (extension === '.ipynb') {
-    const raw = await readFile(filePath, 'utf8');
-    const rendered = renderNotebookContent(raw);
+    const capped = containedRead({ path: filePath, byteCap: TEXT_READ_BYTE_CAP });
+    if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+    const rendered = renderNotebookContent(capped.contents);
     const result = await readTextLikeFile(filePath, rendered, input.offset, input.limit);
     return {
       ...result,
-      type: result.type === 'text' ? 'notebook' : result.type
+      type: result.type === 'text' ? 'notebook' : result.type,
+      ...(capped.truncated ? { readTruncated: true } : {})
     };
   }
 
   if (extension === '.pdf' || IMAGE_EXTENSIONS.has(extension)) {
-    const buffer = await readFile(filePath);
-    const bytes = buffer.subarray(0, Math.min(buffer.byteLength, MAX_BINARY_BASE64_BYTES));
+    const capped = containedReadBuffer({ path: filePath, byteCap: BINARY_READ_BYTE_CAP });
+    if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+    const bytes = capped.buffer.subarray(0, Math.min(capped.buffer.byteLength, MAX_BINARY_BASE64_BYTES));
 
     return {
       type: extension === '.pdf' ? 'pdf' as const : 'image' as const,
@@ -245,13 +305,16 @@ export async function readToolExecute(input: {
         filePath,
         base64: bytes.toString('base64'),
         originalSize: fileStats.size,
-        truncated: buffer.byteLength > bytes.byteLength,
+        truncated: capped.truncated || capped.buffer.byteLength > bytes.byteLength,
         pagesRequested: input.pages
       }
     };
   }
 
-  const buffer = await readFile(filePath);
+  const capped = containedReadBuffer({ path: filePath, byteCap: TEXT_READ_BYTE_CAP });
+  if (!capped.ok) throwForContainedFailure(capped.reason, filePath);
+
+  const buffer = capped.buffer;
   const isText = TEXT_EXTENSIONS.has(extension) || !looksBinary(buffer);
 
   if (!isText) {
@@ -266,31 +329,44 @@ export async function readToolExecute(input: {
         totalLines: 0,
         originalSize: fileStats.size,
         base64: bytes.toString('base64'),
-        truncated: buffer.byteLength > bytes.byteLength
+        truncated: capped.truncated || buffer.byteLength > bytes.byteLength
       }
     };
   }
 
-  return readTextLikeFile(filePath, buffer.toString('utf8'), input.offset, input.limit);
+  // The cap can land mid multibyte-character; trim the partial tail rather
+  // than let it decode to replacement characters the file never contained.
+  const text = buffer.toString('utf8').replace(/�+$/u, '');
+  const result = await readTextLikeFile(filePath, text, input.offset, input.limit);
+  return capped.truncated ? { ...result, readTruncated: true } : result;
 }
 
-function runCommand(
+export function runCommand(
   command: string,
   args: string[],
   options: {
     cwd?: string;
     timeoutMs?: number;
+    env?: Record<string, string>;
+    /** Per-stream ingest budget; defaults to COMMAND_OUTPUT_BYTE_BUDGET. */
+    maxOutputBytes?: number;
   } = {}
 ) {
   return new Promise<CommandResult>((resolvePromise, reject) => {
+    const combinedEnv = options.env ? { ...process.env, ...options.env } : process.env;
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: process.env,
+      env: combinedEnv,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    let stdout = '';
-    let stderr = '';
+    // Each stream is budgeted on its own, so a noisy stderr cannot squeeze out
+    // the stdout the model actually asked for. The decoders keep multi-byte
+    // characters intact across chunk boundaries.
+    const stdout = new BoundedCommandOutput(options.maxOutputBytes);
+    const stderr = new BoundedCommandOutput(options.maxOutputBytes);
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let interrupted = false;
     let timeoutId: NodeJS.Timeout | undefined;
 
@@ -302,11 +378,11 @@ function runCommand(
     }
 
     child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
+      stdout.write(typeof chunk === 'string' ? chunk : stdoutDecoder.write(chunk));
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
+      stderr.write(typeof chunk === 'string' ? chunk : stderrDecoder.write(chunk));
     });
 
     child.on('error', (error) => {
@@ -320,23 +396,46 @@ function runCommand(
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+
+      stdout.write(stdoutDecoder.end());
+      stderr.write(stderrDecoder.end());
+
       resolvePromise({
-        stdout,
-        stderr,
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
         code,
-        interrupted
+        interrupted,
+        ...(stdout.truncated ? { stdoutTruncated: true as const } : {}),
+        ...(stderr.truncated ? { stderrTruncated: true as const } : {})
       });
     });
   });
 }
 
-function resolveSearchPath(value?: string) {
-  if (!value?.trim()) {
-    return process.cwd();
+/**
+ * Relative search paths resolve against the conversation's workspace, so
+ * "search src/" means the attached project rather than wherever the Electron
+ * binary was launched from.
+ *
+ * With no project attached there is no sensible default: searching the whole
+ * home directory would take minutes and return mostly noise, so an omitted
+ * path is an error the model can act on rather than a scan it has to wait out.
+ */
+function resolveSearchPath(value: string | undefined, workspace: ToolWorkspace | undefined) {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    if (!workspace?.root) {
+      throw new Error(
+        'No project folder is attached, so there is no default search directory. Pass an explicit path.'
+      );
+    }
+
+    return workspace.root;
   }
 
-  const normalized = expandPath(value.trim());
-  return isAbsolute(normalized) ? normalized : resolve(process.cwd(), normalized);
+  const normalized = expandPath(trimmed);
+  return isAbsolute(normalized) ? normalized : resolve(resolveWorkspaceCwd(workspace), normalized);
 }
 
 function maybeResolveResultPath(basePath: string, value: string) {
@@ -358,8 +457,8 @@ export async function grepToolExecute(input: {
   head_limit?: number;
   offset?: number;
   multiline?: boolean;
-}) {
-  const searchPath = resolveSearchPath(input.path);
+}, workspace?: ToolWorkspace) {
+  const searchPath = resolveSearchPath(input.path, workspace);
   const outputMode = input.output_mode ?? 'files_with_matches';
   const headLimit = Math.max(0, Math.floor(input.head_limit ?? DEFAULT_GREP_LIMIT));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
@@ -414,7 +513,9 @@ export async function grepToolExecute(input: {
 
   args.push(searchPath);
 
-  const result = await runCommand('rg', args, { cwd: process.cwd(), timeoutMs: 30_000 });
+  // Deliberately unsandboxed: the argv is built here, not by the model, and
+  // ripgrep only reads. Reads are unrestricted under every Atlas sandbox policy.
+  const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
     throw new Error(result.stderr.trim() || `ripgrep exited with code ${result.code ?? 'unknown'}.`);
@@ -486,11 +587,12 @@ export async function grepToolExecute(input: {
 export async function globToolExecute(input: {
   pattern: string;
   path?: string;
-}) {
+}, workspace?: ToolWorkspace) {
   const startedAt = Date.now();
-  const searchPath = resolveSearchPath(input.path);
+  const searchPath = resolveSearchPath(input.path, workspace);
   const args = ['--files', '--hidden', '--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '-g', input.pattern, searchPath];
-  const result = await runCommand('rg', args, { cwd: process.cwd(), timeoutMs: 30_000 });
+  // Deliberately unsandboxed, for the same reason as grep_search above.
+  const result = await runCommand('rg', args, { cwd: resolveWorkspaceCwd(workspace), timeoutMs: 30_000 });
 
   if (result.code !== 0 && result.code !== 1) {
     throw new Error(result.stderr.trim() || `rg --files exited with code ${result.code ?? 'unknown'}.`);
@@ -773,8 +875,7 @@ function validateBashCommand(command: string) {
   }
 }
 
-async function ensureBashParentDirectoryExists() {
-  const cwd = process.cwd();
+async function ensureWorkingDirectoryReadable(cwd: string) {
   await access(dirname(resolve(cwd, '.')), fsConstants.R_OK);
 }
 
@@ -784,53 +885,133 @@ export async function bashToolExecute(input: {
   description?: string;
   run_in_background?: boolean;
   dangerouslyDisableSandbox?: boolean;
-}) {
-  validateBashCommand(input.command);
-  await ensureBashParentDirectoryExists();
+}, workspace?: ToolWorkspace) {
+  if (workspace?.executionTarget === 'cloud') {
+    if (!workspace.cloudWorkerUrl) {
+      throw new Error(
+        'Cloud Sandbox is selected as execution target, but no Cloudflare Worker URL is configured. Please configure your Worker URL in Settings → Beta.'
+      );
+    }
+    return cloudBashExecute(input, workspace, {
+      endpoint: workspace.cloudWorkerUrl,
+      authToken: workspace.cloudWorkerSecret,
+    });
+  }
+  // A non-local target with no backing folder resolves to local rather than
+  // throwing: forks are created with executionTarget reset to 'local' now, but
+  // a row written before that rule (or another stale state) can still read back
+  // as 'worktree' with no worktreeRoot. resolveWorkspaceCwd handles the fallback.
+
+  // Code mode exists so the agent can change a project, so the read-only
+  // command policy is lifted there — the writable boundary is the OS sandbox
+  // plus the approval ladder, not a regex list. Work mode keeps the regex as
+  // well, because on a host with no sandbox mechanism it is the only guard.
+  if (workspace?.mode !== 'code') {
+    validateBashCommand(input.command);
+  }
+
+  const cwd = resolveWorkspaceCwd(workspace);
+  await ensureWorkingDirectoryReadable(cwd);
 
   const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh';
+  const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command];
+
+  const mechanism = await detectSandboxMechanism();
+  // The escalation flag only means anything where there is a sandbox to
+  // escalate out of; on an unsandboxed host it is a no-op rather than a
+  // second, pointless approval prompt.
+  const escalated = Boolean(input.dangerouslyDisableSandbox) && mechanism !== 'none';
+  const policy: SandboxPolicy = escalated
+    ? { fs: { kind: 'danger-full-access' }, network: 'allow' }
+    : deriveSandboxPolicy(workspace);
+  const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
+
+  const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
 
   if (input.run_in_background) {
-    const child = spawn(shell, process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command], {
-      cwd: process.cwd(),
-      env: process.env,
+    const child = spawn(launch.command, launch.args, {
+      cwd,
+      env: combinedEnv,
       detached: true,
       stdio: 'ignore'
     });
     child.unref();
 
+    workspace?.onCommandRun?.({ command: input.command, exitCode: null, venue: 'local' });
+
+    // No denial detection is possible here: with `stdio: 'ignore'` there is no
+    // output to inspect and no exit code to wait for, so a sandbox denial in a
+    // background command surfaces only as the work never happening.
     return {
       stdout: '',
       stderr: '',
       interrupted: false,
       backgroundTaskId: randomUUID(),
       noOutputExpected: true,
-      dangerouslyDisableSandbox: Boolean(input.dangerouslyDisableSandbox),
+      sandbox: launch.mechanism,
+      sandboxNetwork: policy.network,
+      sandboxEscalated: escalated,
       returnCodeInterpretation: 'backgrounded'
     };
   }
 
-  const result = await runCommand(
-    shell,
-    process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command],
-    {
-      cwd: process.cwd(),
-      timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
+  const result = await runCommand(launch.command, launch.args, {
+    cwd,
+    env: { ...(workspace?.env ?? {}), ...launch.env },
+    timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
+  });
+
+  if (isSandboxWrapperFailure(launch.mechanism, result.code, result.stderr)) {
+    if (launch.mechanism === 'bubblewrap') {
+      markSandboxMechanismUnavailable();
     }
-  );
+
+    // The command never ran, so reporting its exit code as the command's own
+    // result would be a lie the model would then try to debug.
+    return {
+      stdout: '',
+      stderr: result.stderr,
+      interrupted: false,
+      sandbox: launch.mechanism,
+      sandboxNetwork: policy.network,
+      sandboxEscalated: escalated,
+      sandboxFailed: true as const,
+      returnCodeInterpretation: 'sandbox_failed'
+    };
+  }
+
+  workspace?.onCommandRun?.({ command: input.command, exitCode: result.code ?? null, venue: 'local' });
+
+  const isSuccess = !result.interrupted && result.code === 0;
+  const rawStdout = result.stdout;
+  const rawStderr = result.stderr;
+  // Silent commands (e.g. `rm`, `mkdir`, `touch`) produce empty stdout and stderr.
+  // Models like DeepSeek often interpret empty output as unconfirmed/failed and enter
+  // retry loops. Providing explicit success text gives clear feedback to the model.
+  const stdout = isSuccess && !rawStdout.trim() && !rawStderr.trim()
+    ? '(Command executed successfully with exit code 0)'
+    : rawStdout;
+  const sandboxDenied =
+    !result.interrupted && isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr);
 
   return {
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout,
+    stderr: rawStderr,
     interrupted: result.interrupted,
-    dangerouslyDisableSandbox: Boolean(input.dangerouslyDisableSandbox),
+    sandbox: launch.mechanism,
+    sandboxNetwork: policy.network,
+    sandboxEscalated: escalated,
+    // Additive: the bounded text already carries its own marker, but callers
+    // that summarise a run should not have to parse it back out.
+    ...(result.stdoutTruncated || result.stderrTruncated ? { outputTruncated: true as const } : {}),
+    ...(sandboxDenied ? { sandboxDenied: true as const, sandboxDenialHint: SANDBOX_DENIAL_HINT } : {}),
     returnCodeInterpretation:
       result.interrupted ? 'timed_out' : result.code === 0 ? 'success' : `exit_code_${result.code ?? 'unknown'}`
   };
 }
 
-export async function listDirectoryPreview(pathValue?: string) {
-  const basePath = resolveSearchPath(pathValue);
+export async function listDirectoryPreview(pathValue?: string, workspace?: ToolWorkspace) {
+  const basePath = resolveSearchPath(pathValue, workspace);
   const entries = await readdir(basePath, { withFileTypes: true });
   return entries.slice(0, 50).map((entry) => ({
     name: entry.name,

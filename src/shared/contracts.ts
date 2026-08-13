@@ -1,4 +1,541 @@
-export type ProviderId = 'openrouter' | 'glm' | 'openai' | 'gemini';
+import type { McpTransportKind } from './mcp';
+import type { McpUiDescriptor } from './mcpUi';
+import type { MentionId } from './mentions';
+import type {
+  CreateSiteRequest,
+  DeleteSiteFileRequest,
+  ExportSiteRequest,
+  ExportSiteResult,
+  OpenSitePreviewRequest,
+  PublishSiteRequest,
+  ReadSiteFileRequest,
+  RollbackSiteRequest,
+  SiteDetail,
+  SitePreviewTarget,
+  SiteReviewChecklist,
+  SiteSummary,
+  WriteSiteFileRequest,
+} from './sites';
+
+/**
+ * Every provider is user-configured, so an id is just the `custom:<slug>` the
+ * app minted when the endpoint was added. Historical ids (`openrouter`, `glm`)
+ * can still appear in old rows until the startup migration rewrites them.
+ */
+export type ProviderId = string;
+
+export type * from './sites';
+export type * from './mentions';
+export type * from './customProviders';
+export type * from './chatParameters';
+export type * from './workspaceModes';
+export type * from './planTool';
+export type * from './visualIntent';
+export type * from './mcp';
+export type * from './review';
+
+import type { ReviewDiff, ReviewScope } from './review';
+import type { ReasoningEffort, ToolPermissionMode } from './chatParameters';
+import type { ExecutionTarget, WorkspaceMode } from './workspaceModes';
+import type { VisualMode } from './visualIntent';
+
+/**
+ * A folder the user has attached to Atlas. `root` is the only capability that
+ * matters: it is the writable boundary in `code` mode and the shell's working
+ * directory in both modes.
+ */
+export type WorkspaceProject = {
+  id: string;
+  title: string;
+  root: string;
+  /** False once the folder has been moved or deleted since it was attached. */
+  exists: boolean;
+  /** True when `root` is inside a git working tree, so diff surfaces are real. */
+  isGitRepository: boolean;
+  /** Checked-out branch, or null when detached or not a repository. */
+  branch: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  /** When the project was pinned, or null. Pinned projects sort above the rest. */
+  pinnedAt: string | null;
+};
+
+export type CreateWorkspaceProjectRequest = {
+  /** Absolute path. Omit to open the native folder picker instead. */
+  root?: string;
+  title?: string;
+};
+
+/**
+ * An editor Atlas found installed on this machine. The launch target stays in
+ * the main process — the renderer picks by id, so nothing it sends can become
+ * the path of a process.
+ */
+export type DetectedIde = {
+  id: string;
+  name: string;
+  /** True for the one a plain click will use: the saved choice, else the first found. */
+  preferred: boolean;
+  /**
+   * The application's own icon, as a `data:` URL the OS rendered.
+   *
+   * Sent rather than bundled because these are the user's applications, not
+   * ours: shipping a sprite sheet would mean a stale Cursor mark the day they
+   * rebrand, and nothing at all for the editor we never thought to include.
+   * Null when the platform has no icon to give.
+   */
+  iconDataUrl: string | null;
+};
+
+export type ProjectType = 'node' | 'python' | 'rust' | 'go' | 'unknown';
+
+export type ProjectTypeInfo = {
+  type: ProjectType;
+  packageManager?: string;
+  framework?: string;
+  entryFile?: string;
+};
+
+/**
+ * What the main process loaded from AGENTS.md for this conversation. Paths and
+ * sizes only — the text itself belongs in the system prompt, not in a renderer
+ * the user would then be reading twice.
+ */
+export type AgentInstructionsSummary = {
+  sources: Array<{ path: string; scope: 'global' | 'project'; bytes: number; truncated: boolean }>;
+  nestedPaths: string[];
+  totalBytes: number;
+  truncated: boolean;
+};
+
+export type ProjectContextInfo = {
+  project: WorkspaceProject | null;
+  projectType: ProjectTypeInfo;
+  envKeys: string[];
+  detectedEnvKeys: string[];
+  mode: WorkspaceMode;
+  /** Null when no instruction file was found at either scope. */
+  agentInstructions: AgentInstructionsSummary | null;
+};
+
+export type EnvVarItem = {
+  key: string;
+  maskedValue: string;
+};
+
+export type GitFileStatus = {
+  path: string;
+  indexStatus: string;
+  workingTreeStatus: string;
+};
+
+export type GitLogEntry = {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+};
+
+export type GitBranchInfo = {
+  name: string;
+  current: boolean;
+  remote: boolean;
+};
+
+export type GitStateSummary = {
+  isRepo: boolean;
+  branch: string | null;
+  files: GitFileStatus[];
+  /** Commits this branch is ahead of / behind its upstream; null with no upstream. */
+  ahead: number | null;
+  behind: number | null;
+};
+
+/** One MCP server a bundle will run, described from resolved values only. */
+import type { AtlasPluginOptions } from './plugins';
+
+export type PluginServerSummary = {
+  name: string;
+  transport: McpTransportKind;
+  /** The literal command that will run, or the literal endpoint reached. */
+  detail: string;
+  /** Environment variable names forwarded from Atlas to the server. */
+  envVars: string[];
+  /** Names of literal values the bundle sets. Values are not shown. */
+  envKeys: string[];
+  /** Header names the bundle sets. Values are not shown, and secrets are refused. */
+  headerNames: string[];
+  bearerTokenEnvVar: string | null;
+};
+
+/**
+ * A declared connector, as the browser shows it.
+ *
+ * Every one of these renders unavailable. Atlas has no connector broker, and a
+ * connector's token is supplied by the authorising *application* rather than
+ * negotiated here — which is the substantive difference from a remote MCP
+ * server and the reason this is a separate type rather than another transport.
+ */
+export type PluginConnectorSummary = {
+  key: string;
+  /** The opaque id, shown so a user can match it against what they authorised elsewhere. */
+  id: string;
+  kind: 'first-party-connector' | 'apps-sdk-app' | 'unknown';
+  /** Declared capabilities, verbatim. The format carries no scopes field. */
+  capabilities: string[];
+  category: string | null;
+  /** The bundle says it cannot function without this one. */
+  required: boolean;
+};
+
+export type PluginSkillSummary = {
+  name: string;
+  description: string;
+  /** False when the bundle asked that the model not choose this on its own. */
+  implicitInvocation: boolean;
+  /** Declared environment requirements, from Agent Skills frontmatter. */
+  compatibility: string | null;
+  /**
+   * Tools the skill asked to have pre-approved.
+   *
+   * Shown so the user can see what was requested. Atlas does not act on it —
+   * a third-party file asking to skip approval prompts is exactly the request
+   * that should be visible rather than granted.
+   */
+  allowedTools: string[];
+};
+
+export type PluginCommandSummary = {
+  /** `<plugin>:<command>`, the id the body is fetched by. */
+  qualifiedName: string;
+  pluginName: string;
+  name: string;
+  description: string;
+  argumentHint: string;
+};
+
+export type PluginSummary = {
+  name: string;
+  version: string;
+  description: string;
+  displayName: string | null;
+  /** An opaque URL for the bundle's artwork, or null when it ships none. */
+  iconUrl: string | null;
+  author: string | null;
+  homepage: string | null;
+  root: string;
+  enabled: boolean;
+  skills: PluginSkillSummary[];
+  commands: PluginCommandSummary[];
+  servers: PluginServerSummary[];
+  /** Declared OAuth connectors. Always unavailable; see `PluginConnectorSummary`. */
+  connectors: PluginConnectorSummary[];
+  /** Atlas parses hooks and refuses to run them; this only says one is present. */
+  hooksDeclared: boolean;
+  /** What the bundle declared in its Atlas-specific block. */
+  atlas: AtlasPluginOptions;
+  /**
+   * Why Atlas refuses to run it, when a revocation covers it.
+   *
+   * Distinct from `enabled: false`, which is a choice the user made and can
+   * undo. This one they cannot, so the UI must not offer a switch for it.
+   */
+  blockedReason: string | null;
+  /** Where it was installed from, for the update check. Null for a folder install. */
+  marketplace: string | null;
+  /** Non-fatal problems found while loading, e.g. a skill that was skipped. */
+  warnings: string[];
+};
+
+/**
+ * What a marketplace currently offers for one installed plugin.
+ *
+ * `unknown` and `unavailable` are reported rather than omitted: a plugin Atlas
+ * cannot check is the one that will silently never update, which is exactly
+ * what a user needs telling.
+ */
+export type PluginUpdateView = {
+  plugin: string;
+  marketplace: string | null;
+  installed: string;
+  /** The version on offer, when the catalogue publishes one. */
+  available: string | null;
+  /**
+   * The commit installed, and the one the catalogue now pins.
+   *
+   * Shown on the row rather than kept internal. A user deciding whether to run
+   * someone else's newer code is entitled to see *which* code, and a version
+   * string alone cannot say — see `republished`.
+   */
+  installedSha: string | null;
+  availableSha: string | null;
+  /**
+   * `republished` is the one that matters and the one that used to be hidden.
+   *
+   * Same version number, different commit. Either the publisher shipped new
+   * code without bumping, or the tag was moved under it — a force-push, a
+   * compromised repository, a retagged release. Atlas cannot tell those apart,
+   * and neither can the user, but reporting it as `up-to-date` meant nobody got
+   * the chance to look. It is not an error: it is the one update whose diff is
+   * worth reading before applying.
+   */
+  status: 'update-available' | 'republished' | 'up-to-date' | 'unknown' | 'unavailable';
+  /** Why the status is what it is, when that needs saying. */
+  detail: string | null;
+};
+
+/**
+ * What a pasted link turns out to contain, shown before anything is installed.
+ *
+ * Every field is derived from the *resolved* bundle — the literal commands, the
+ * literal endpoints, the manifest that actually landed — and never from a
+ * description the author wrote. A summary built from author-controlled strings
+ * is a summary the author can lie in, which would make the confirmation worse
+ * than no confirmation at all.
+ */
+export type PluginUrlPreview = {
+  /** The repository, ref and subdirectory Atlas resolved, not the string typed. */
+  source: string;
+  /** The commit actually fetched. The one identifier the publisher does not pick. */
+  sha: string | null;
+  name: string;
+  version: string;
+  description: string;
+  format: 'agent-plugins' | 'vendor';
+  /** True when a plugin of this name is already installed; installing would be refused. */
+  installed: boolean;
+  /** Set when this bundle has been revoked. Installing is refused. */
+  blockedReason: string | null;
+  skills: string[];
+  commands: string[];
+  servers: {
+    key: string;
+    transport: McpTransportKind;
+    /** The literal command that would run, or the literal endpoint reached. */
+    detail: string;
+    envKeys: string[];
+    envVars: string[];
+    headerNames: string[];
+  }[];
+  /**
+   * Declared connectors. Always unavailable, and shown before install for
+   * exactly that reason: a bundle whose only component is one installs cleanly
+   * and then does nothing.
+   */
+  connectors: PluginConnectorSummary[];
+  hooksDeclared: boolean;
+  warnings: string[];
+};
+
+export type MarketplaceEntryView = {
+  name: string;
+  description: string | null;
+  iconUrl: string | null;
+  /** Shipped with the app rather than fetched from anywhere. */
+  builtIn: boolean;
+  category: string | null;
+  version: string | null;
+  /** Where the bundle comes from, and whether it is pinned to a commit. */
+  origin: string;
+  installed: boolean;
+  /** Non-null when Atlas refuses to install it, and why. */
+  blocked: string | null;
+  authOnInstall: boolean;
+};
+
+export type MarketplaceView = {
+  name: string;
+  /** Ships with Atlas. Always present, and the UI offers no way to remove it. */
+  builtIn: boolean;
+  displayName: string | null;
+  description: string | null;
+  owner: string | null;
+  /** The URL or folder the catalogue was read from. */
+  sourceLabel: string;
+  entries: MarketplaceEntryView[];
+  error: string | null;
+};
+
+export type MarketplacesView = { marketplaces: MarketplaceView[] };
+
+export type MarketplaceInput =
+  | { kind: 'path'; name: string; path: string }
+  | { kind: 'git'; name: string; url: string; ref: string | null };
+
+/**
+ * A plugin whose tools are gated, and whether this conversation has woken it.
+ *
+ * `alwaysOn` is the global escape hatch; `active` is true when the tools are
+ * usable right now, whatever the reason.
+ */
+export type PluginActivationEntry = {
+  name: string;
+  active: boolean;
+  alwaysOn: boolean;
+};
+
+export type PluginsView = {
+  /** Where bundles are installed from. Shown so the user can open it. */
+  root: string;
+  plugins: PluginSummary[];
+  failures: Array<{ root: string; error: string }>;
+};
+
+/** What the review pane asks for. `commit` carries the revision it wants. */
+export type GitReviewRequest = {
+  conversationId: string;
+  scope: ReviewScope;
+  commit?: string | null;
+};
+
+/**
+ * A hunk-level stage / unstage / revert.
+ *
+ * The patch is sent back rather than re-derived from a hunk index: the working
+ * tree may have moved since the diff was read, and applying "hunk 3" of a diff
+ * that no longer has three hunks is how the wrong lines get staged. A patch
+ * that no longer applies fails loudly instead.
+ */
+export type GitApplyHunkRequest = {
+  conversationId: string;
+  patch: string;
+  /** Into the index rather than the working tree. */
+  cached: boolean;
+  reverse: boolean;
+};
+
+export type GitHubPrInfo = {
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+};
+
+/**
+ * Whether this conversation can open a pull request, and whether it already has.
+ *
+ * Every precondition is reported separately rather than collapsed into one
+ * boolean, because each has a different fix and the toolbar says which.
+ */
+export type GitHubPrStatus = {
+  /** A `gh` launcher was found on disk. */
+  cliInstalled: boolean;
+  /** `gh auth status` succeeded. */
+  authenticated: boolean;
+  /** The `origin` remote points at github.com. */
+  isGitHubRemote: boolean;
+  /** `owner/repo`, when the remote is a GitHub one. */
+  slug: string | null;
+  branch: string | null;
+  pr: GitHubPrInfo | null;
+};
+
+export type GitCommitRequest = {
+  conversationId: string;
+  message: string;
+  amend?: boolean;
+  addAll?: boolean;
+};
+
+export type FileChangeSummary = {
+  fileCount: number;
+  added: number;
+  removed: number;
+  files: Array<{
+    id: string;
+    filePath: string;
+    diffText: string;
+    status: 'pending' | 'accepted' | 'reverted';
+  }>;
+};
+
+export type FileChangeStatus = 'pending' | 'accepted' | 'reverted';
+
+export type FileChangeRecord = {
+  id: string;
+  conversationId: string;
+  filePath: string;
+  beforeContent: string | null;
+  afterContent: string | null;
+  diffText: string;
+  status: FileChangeStatus;
+  toolCallId: string | null;
+  /** Counted from `diffText` when the change was recorded, never at read time. */
+  linesAdded: number;
+  linesRemoved: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TerminalHistoryEntry = {
+  id: string;
+  conversationId: string;
+  command: string;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
+/** `agent` marks a line echoed from a tool call rather than shell output. */
+export type TerminalOutputKind = 'stdout' | 'stderr' | 'exit' | 'agent';
+
+export type TerminalOutputEvent = {
+  conversationId: string;
+  data: string;
+  kind: TerminalOutputKind;
+};
+
+export type TerminalStartResult = {
+  cwd: string;
+  /** Output produced before this panel attached, so a re-mount isn't blank. */
+  scrollback: string;
+  reused: boolean;
+};
+
+/** Subset of WorktreeService's WorktreeInfo the renderer is allowed to see. */
+export type WorktreeInfoSummary = {
+  path: string;
+  head: string;
+  branch: string | null;
+  isMain: boolean;
+  isLocked?: boolean;
+  isPrunable?: boolean;
+};
+
+/** What the runtime resolved for a conversation: its mode and its folder. */
+export type ConversationWorkspace = {
+  conversationId: string;
+  mode: WorkspaceMode;
+  executionTarget: ExecutionTarget;
+  projectId: string | null;
+  /** Resolved from `projectId`; null when unset or the folder is gone. */
+  project: WorkspaceProject | null;
+  /** Resolved worktree path when executionTarget === 'worktree'; null otherwise. */
+  worktreeRoot?: string | null;
+  /** False when the mode needs a project and none is attached. */
+  ready: boolean;
+};
+
+export type SetConversationWorkspaceRequest = {
+  conversationId: string;
+  mode?: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
+  /** `null` detaches the project; omit to leave it unchanged. */
+  projectId?: string | null;
+};
+import type {
+  CreateCustomProviderRequest,
+  CustomProvider,
+  DiscoverCustomProviderModelsRequest,
+  DiscoveredModel,
+  ProviderPreset,
+  SetCustomProviderModelsRequest,
+  UpdateCustomProviderRequest
+} from './customProviders';
 
 export type {
   KeybindingCommand,
@@ -21,11 +558,22 @@ export type ChatPartState = 'streaming' | 'done';
 export type ChatToolState =
   | 'input-streaming'
   | 'input-available'
+  | 'output-partial'
   | 'approval-requested'
   | 'approval-responded'
   | 'output-available'
   | 'output-error'
   | 'output-denied';
+
+export type ToolExecutionState =
+  | 'queued'
+  | 'running'
+  | 'approval_requested'
+  | 'approved'
+  | 'denied'
+  | 'partial'
+  | 'completed'
+  | 'error';
 
 export type ChatTextPart = {
   id: string;
@@ -63,6 +611,7 @@ export type ChatToolPart = {
   id: string;
   type: 'tool';
   toolCallId: string;
+  requestId?: string;
   toolName: string;
   state: ChatToolState;
   rawInput?: string;
@@ -74,6 +623,18 @@ export type ChatToolPart = {
   title?: string;
   preliminary?: boolean;
   approval?: ChatToolApproval;
+  /**
+   * Canonical category of the call. The main process already derives this
+   * (`inferCanonicalToolType`) but it used to be dropped when runtime
+   * envelopes were downgraded to legacy `StreamEvent`s, so the renderer
+   * could not tell a shell command from a file edit. The transcript needs
+   * it to pick a verb, an accent, and a body renderer.
+   */
+  toolType?: CanonicalToolType | null;
+  /** ISO timestamp of the first event for this call. */
+  startedAt?: string;
+  /** ISO timestamp of the terminal event, once the call is final. */
+  completedAt?: string;
 };
 
 export type ChatVisualPart = {
@@ -84,7 +645,54 @@ export type ChatVisualPart = {
   title?: string;
 };
 
-export type ChatMessagePart = ChatTextPart | ChatReasoningPart | ChatFilePart | ChatToolPart | ChatVisualPart;
+/**
+ * A resolved `@plugin` mention, carried on the turn it scoped.
+ *
+ * A part rather than transcript-only state so it persists with the message: a
+ * conversation reopened next week should still say which plugin and version
+ * answered it, and that is also the record the audit log reads.
+ *
+ * Mirrors `StreamPluginInvocationEvent` and grants nothing — see that type.
+ */
+export type ChatPluginInvocationPart = {
+  id: string;
+  type: 'plugin-invocation';
+  plugin: string;
+  skill: string | null;
+  mention: string;
+  outcome: PluginInvocationOutcome;
+  version: string | null;
+  detail: string | null;
+};
+
+export type ChatMessagePart =
+  | ChatTextPart
+  | ChatReasoningPart
+  | ChatFilePart
+  | ChatToolPart
+  | ChatVisualPart
+  | ChatPluginInvocationPart;
+
+export type ToolExecutionRecord = {
+  id: string;
+  conversationId: string;
+  messageId: string;
+  requestId: string;
+  toolName: string;
+  inputPreview: string | null;
+  state: ToolExecutionState;
+  startedAt: string | null;
+  finishedAt: string | null;
+  partialOutputPreview: string | null;
+  finalOutputPreview: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  requiresApproval: boolean;
+  approvalId: string | null;
+  approvedAt: string | null;
+  deniedAt: string | null;
+  approvalReason: string | null;
+};
 
 export type ModelSummary = {
   id: string;
@@ -92,18 +700,144 @@ export type ModelSummary = {
   label: string;
   contextWindow: number | null;
   isFree: boolean;
-  supportsVision: boolean;
-  supportsDocumentInput: boolean;
-  supportsTools: boolean;
+  /**
+   * Input modality support, three-valued: `true` known to work, `false` known
+   * to be rejected, `null` nobody has said.
+   *
+   * An OpenAI-compatible `/models` list describes nothing, so most endpoints
+   * genuinely leave this unknown. Encoding that as `false` blocked images on
+   * models that can see them, with no way for the user to tell why; encoding it
+   * as `true` promised support the provider then refused. Unknown is allowed to
+   * be attempted, and a rejection is recorded as `false` (see
+   * `ChatEngine.rememberModalityRejection`).
+   */
+  supportsVision: boolean | null;
+  supportsDocumentInput: boolean | null;
+  /**
+   * Tool-calling support, three-valued like the modalities above. A model that
+   * cannot take tools answers a request carrying them with a 400, and that
+   * refusal is recorded here rather than repeated every turn.
+   */
+  supportsTools: boolean | null;
   archived: boolean;
   lastSyncedAt: string;
   lastSeenFreeAt: string | null;
+  /**
+   * Largest completion the upstream model accepts. `null` means the provider
+   * did not advertise one, in which case the adapter falls back to its own
+   * conservative default instead of guessing high and getting a 400.
+   */
+  maxOutputTokens?: number | null;
+  /**
+   * Some models (notably reasoning models) reject `temperature` outright, so
+   * the catalog records whether it is safe to send.
+   */
+  supportsTemperature?: boolean;
+  supportsReasoning?: boolean;
+  /**
+   * Effort levels the model actually accepts, from the catalog. `null` means
+   * unknown, in which case the UI offers its default ladder.
+   */
+  reasoningEfforts?: ReasoningEffort[] | null;
+};
+
+/**
+ * Per-model runtime facts a provider adapter needs to build an accurate
+ * request. Sourced from the model catalog rather than hardcoded per provider.
+ */
+export type ModelRuntimeHints = {
+  contextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  supportsTemperature?: boolean;
+  supportsReasoning?: boolean;
+  reasoningEfforts?: ReasoningEffort[] | null;
+  supportsTools?: boolean | null;
+};
+
+/**
+ * What the *next* request's prompt will occupy, measured against the model's
+ * window.
+ *
+ * This has to come from the main process: the renderer knows the transcript,
+ * but the prompt is not the transcript. `ContextManager` compresses older turns
+ * out of it, the system prompt and tool schemas add a fixed floor the
+ * transcript never shows, and both are invisible from the renderer. Measuring
+ * in the renderer produced a number that tracked conversation length rather
+ * than context pressure — the two diverge sharply on any long thread.
+ */
+export type ContextUsageSnapshot = {
+  /** Model context window; null when the catalog does not know it. */
+  maxTokens: number | null;
+  /** Total prompt size: system + tools + summary + raw history + pending input. */
+  promptTokens: number;
+  /**
+   * What this conversation has put in the window: summary + raw history +
+   * pending input, without the fixed system/tool floor.
+   *
+   * This is what the ring reports. The floor is real and is still charged on
+   * every request, but a brand-new chat showing a third of the window consumed
+   * before a word is typed reads as a bug rather than as the cost of the tool
+   * schemas — so the floor is broken out in the hover card instead, and the
+   * percentage tracks the thing the reader can actually influence.
+   */
+  conversationTokens: number;
+  systemTokens: number;
+  /** Tool names, descriptions and schema allowance. Zero when tools are off. */
+  toolTokens: number;
+  /** Raw turns that will be sent verbatim. */
+  historyTokens: number;
+  /** The compressed-older-turns block inside the system prompt. */
+  summaryTokens: number;
+  /** Composer text and attachments not yet sent. */
+  pendingTokens: number;
+  /** Held back for the completion; the usable prompt budget is the remainder. */
+  reservedOutputTokens: number;
+  /** Older turns compressed into the summary rather than sent raw. */
+  droppedTurnCount: number;
+  keptTurnCount: number;
+  /** True when the prompt exceeds the usable budget and may be rejected. */
+  overflow: boolean;
+  /**
+   * Provider accounting for the most recent completed turn, for cost display.
+   *
+   * Not comparable to `promptTokens`: for a turn that called tools, the SDK sums
+   * `inputTokens` across every step, so it measures total billed input for the
+   * turn rather than the size of any single prompt. Using it to calibrate the
+   * figures above would scale tool-heavy conversations badly wrong.
+   */
+  lastTurn: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    reasoningTokens: number | null;
+  } | null;
+};
+
+export type GetContextUsageRequest = {
+  conversationId: string;
+  modelId: string;
+  enableTools?: boolean;
+  toolPermissionMode?: ToolPermissionMode;
+  mentions?: MentionId[];
+  /** Unsent composer text, so the ring responds as the user types. */
+  pendingText?: string;
+  /** Unsent attachments, measured by kind rather than by byte size. */
+  pendingAttachments?: Array<{
+    mediaType?: string | null;
+    previewWidth?: number | null;
+    previewHeight?: number | null;
+  }>;
 };
 
 export type ListModelsOptions = {
   freeOnly?: boolean;
   includeArchived?: boolean;
   allowStale?: boolean;
+  /**
+   * Restrict to models whose provider is still configured and enabled. The
+   * cache outlives providers — a removed or disabled endpoint leaves rows
+   * behind that must not be offered as selectable models.
+   */
+  configuredOnly?: boolean;
 };
 
 export type ProviderCredentialSummary = {
@@ -114,8 +848,83 @@ export type ProviderCredentialSummary = {
 };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type DesignTheme = 'default' | 'xai' | 'cursor';
+export type DesignTheme = 'codex' | 'default' | 'xai' | 'cursor';
+
+export const DESIGN_THEMES: readonly DesignTheme[] = ['codex', 'default', 'xai', 'cursor'];
+
+export function isDesignTheme(value: unknown): value is DesignTheme {
+  return typeof value === 'string' && (DESIGN_THEMES as readonly string[]).includes(value);
+}
+
+/**
+ * Design themes that actually ship a light palette.
+ *
+ * `themes/codex.css` carries a `[data-theme='light']` block and `cursor.css` is
+ * authored light-first with a dark override; `default.css` and `xai.css` define
+ * one dark palette and nothing else. Light mode used to be offered for all four
+ * regardless, so picking it under those two set `color-scheme: light` — which
+ * repaints native form controls, scrollbars and autofill white — while every
+ * app surface stayed dark. The result was white-on-white text in inputs.
+ *
+ * The list is the single source of truth for both halves of the fix: the
+ * settings picker refuses to offer Light for a theme that has none, and
+ * `resolveAppliedThemeMode` clamps anything already stored (or arriving from
+ * `system`) back to dark.
+ */
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor'];
+
+export function designThemeSupportsLight(theme: DesignTheme): boolean {
+  return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
+}
+
+/**
+ * The mode actually painted: the stored preference resolved against the OS and
+ * then clamped to what the design theme can render.
+ */
+export function resolveAppliedThemeMode(
+  mode: ThemeMode,
+  designTheme: DesignTheme,
+  prefersDark: boolean
+): 'light' | 'dark' {
+  const resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+  return resolved === 'light' && !designThemeSupportsLight(designTheme) ? 'dark' : resolved;
+}
 export type FontFamilyOverride = string | null;
+export type BorderRadiusMode = 'theme-default' | 'none';
+
+/** Hex color override; null falls back to the design theme's own value. */
+export type ThemeColorOverride = string | null;
+
+export type ReduceMotionMode = 'system' | 'on' | 'off';
+
+export const REDUCE_MOTION_MODES: readonly ReduceMotionMode[] = ['system', 'on', 'off'];
+
+export function isReduceMotionMode(value: unknown): value is ReduceMotionMode {
+  return typeof value === 'string' && (REDUCE_MOTION_MODES as readonly string[]).includes(value);
+}
+
+export const CONTRAST_MIN = 0;
+export const CONTRAST_MAX = 100;
+/** Neutral midpoint: derived tokens render exactly as the theme authored them. */
+export const CONTRAST_DEFAULT = 50;
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim());
+}
+
+export function normalizeThemeColor(value: unknown): ThemeColorOverride {
+  if (!isHexColor(value)) {
+    return null;
+  }
+
+  const trimmed = (value as string).trim().toLowerCase();
+  if (trimmed.length === 4) {
+    // Expand #abc to #aabbcc so downstream color math has one shape to handle.
+    return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+  }
+
+  return trimmed;
+}
 
 export const UI_FONT_SIZE_MIN = 13;
 export const UI_FONT_SIZE_MAX = 18;
@@ -125,7 +934,9 @@ export const CODE_FONT_SIZE_MIN = 11;
 export const CODE_FONT_SIZE_MAX = 16;
 export const CODE_FONT_SIZE_DEFAULT = 13;
 
-export type SettingsSection = 'general' | 'appearance' | 'keyboard' | 'usage';
+export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
+
+export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy' | 'beta';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
@@ -134,30 +945,101 @@ export type SettingsAppearanceSummary = {
   codeFontSize: number;
   uiFontFamily: FontFamilyOverride;
   codeFontFamily: FontFamilyOverride;
+  borderRadius: BorderRadiusMode;
+  accentColor: ThemeColorOverride;
+  backgroundColor: ThemeColorOverride;
+  foregroundColor: ThemeColorOverride;
+  /** 0–100; 50 renders the theme exactly as authored. */
+  contrast: number;
+  translucentSidebar: boolean;
+  reduceMotion: ReduceMotionMode;
+  pointerCursors: boolean;
+  /**
+   * Render every transcript cell as plain text (Codex's `/raw`).
+   *
+   * Selecting rendered markdown, a diff table and a syntax-highlighted
+   * terminal block produces a paste full of layout artifacts — bullet glyphs,
+   * gutter line numbers, the U+2212 display minus. Raw mode is the escape
+   * hatch: same content, rendered as the characters it actually is.
+   */
+  rawTranscript: boolean;
 };
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   themeMode: 'dark',
-  designTheme: 'xai',
+  designTheme: 'codex',
   uiFontSize: UI_FONT_SIZE_DEFAULT,
   codeFontSize: CODE_FONT_SIZE_DEFAULT,
   uiFontFamily: null,
-  codeFontFamily: null
+  codeFontFamily: null,
+  borderRadius: DEFAULT_BORDER_RADIUS,
+  accentColor: null,
+  backgroundColor: null,
+  foregroundColor: null,
+  contrast: CONTRAST_DEFAULT,
+  translucentSidebar: false,
+  reduceMotion: 'system',
+  pointerCursors: false,
+  rawTranscript: false,
 };
 
 export type SettingsKeyboardSummary = {
   keybindings: import('./keybindings').KeybindingRule[];
 };
 
+/** Per-turn chat parameters the composer exposes, persisted across launches. */
+export type SettingsChatSummary = {
+  reasoningEffort: ReasoningEffort;
+  toolPermissionMode: ToolPermissionMode;
+  /** Mode new conversations start in. Per-conversation mode overrides it. */
+  workspaceMode: WorkspaceMode;
+  /** Execution target new conversations start in. Per-conversation target overrides it. */
+  executionTarget: ExecutionTarget;
+  /** Project new conversations attach to, so a coding session survives restart. */
+  lastProjectId: string | null;
+  /** Last model the user selected; null when it is no longer in the catalog. */
+  lastModelId: string | null;
+  /** When the assistant is allowed to answer with an inline visual. */
+  visualMode: VisualMode;
+  /** Whether the experimental Cloud Sandbox execution target is enabled. */
+  cloudSandboxEnabled: boolean;
+  /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
+  cloudSandboxWorkerUrl: string | null;
+  /**
+   * Whether a bearer secret has been configured. The token itself never
+   * leaves the main process — only this flag crosses IPC, so the renderer can
+   * render a "Clear secret" affordance without ever holding the value.
+   */
+  cloudSandboxHasSecret: boolean;
+};
+
 export type SettingsSummary = {
   providers: ProviderCredentialSummary[];
+  /** User-configured endpoints, so the UI can label and group them. */
+  customProviders: CustomProvider[];
   defaultProviderId: ProviderId | null;
   appearance: SettingsAppearanceSummary;
   keyboard: SettingsKeyboardSummary;
+  chat: SettingsChatSummary;
   showFreeOnlyByDefault: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
   modelCatalogCount: number;
+};
+
+export type ConversationStatus = 'idle' | 'running' | 'completed' | 'failed' | 'queued';
+
+/**
+ * The file-change footprint of one conversation, as `12 files · +240 −18`.
+ *
+ * Reverted changes are left out: the point of the line is what the session left
+ * behind, and a change that was taken back left nothing.
+ */
+export type ConversationChangeStats = {
+  /** Distinct files touched — editing one file twice is still one file. */
+  fileCount: number;
+  linesAdded: number;
+  linesRemoved: number;
 };
 
 export type ConversationSummary = {
@@ -171,6 +1053,55 @@ export type ConversationSummary = {
   lastMessageAt: string | null;
   defaultProviderId: ProviderId | null;
   defaultModelId: string | null;
+  workspaceMode: WorkspaceMode;
+  executionTarget?: ExecutionTarget;
+  worktreeRoot?: string | null;
+  projectId: string | null;
+  toolPermissionMode: ToolPermissionMode;
+  status?: ConversationStatus;
+  lastError?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  /**
+   * What this conversation did to the working tree, in one glance. Always
+   * present — a chat that changed nothing reports zeros rather than null, so no
+   * caller has to distinguish "no edits" from "not loaded".
+   */
+  changeStats: ConversationChangeStats;
+  /** When the chat was pinned, or null. Orders the sidebar's pinned section. */
+  pinnedAt: string | null;
+  /**
+   * When the chat was archived, or null. Archived chats are absent from the
+   * default listing, so this is only ever non-null on a row fetched by id or
+   * with `includeArchived`.
+   */
+  archivedAt: string | null;
+  /** The conversation this one was forked from, or null. Provenance only. */
+  forkOfConversationId: string | null;
+  /** The event-log watermark the fork was cut at. Null when there was none. */
+  forkPointSequence: number | null;
+  /**
+   * Non-null on a side conversation: the chat it is a tangent from. Such a row
+   * is absent from `list()` and from message search, so this is only ever
+   * non-null on a row fetched by id or through `listSideConversations`.
+   */
+  sideOfConversationId: string | null;
+};
+
+export type ForkConversationRequest = {
+  conversationId: string;
+  /**
+   * Inclusive cut, in the transcript's own ordering. Absent forks the whole
+   * conversation.
+   */
+  throughMessageId?: string | null;
+  title?: string;
+};
+
+export type StartSideConversationRequest = {
+  conversationId: string;
+  throughMessageId?: string | null;
+  title?: string;
 };
 
 export type ChatMessage = {
@@ -199,8 +1130,104 @@ export type ConversationDetail = {
     updatedAt: string;
     defaultProviderId: ProviderId | null;
     defaultModelId: string | null;
+    workspaceMode: WorkspaceMode;
+    projectId: string | null;
+    pinnedAt: string | null;
+    archivedAt: string | null;
   };
   messages: ChatMessage[];
+};
+
+export type CreateConversationRequest = {
+  /**
+   * Which project the new chat belongs to.
+   */
+  projectId?: string | null;
+  /**
+   * Initial tool permission mode.
+   */
+  toolPermissionMode?: ToolPermissionMode;
+};
+
+export type SetConversationToolPermissionModeRequest = {
+  conversationId: string;
+  toolPermissionMode: ToolPermissionMode;
+};
+
+export type ListConversationsRequest = {
+  /**
+   * Include archived chats. Omitted behaves exactly like the listing did before
+   * archive existed, so no caller has to be updated to keep its current view.
+   */
+  includeArchived?: boolean;
+};
+
+/**
+ * The model a conversation opens on, pinned to that conversation.
+ *
+ * Provider and model travel together because they are only meaningful as a
+ * pair: a model id recorded against the wrong provider is a send that fails in
+ * the main process. The caller reads both off the same catalog row rather than
+ * assembling them from separate sources.
+ */
+export type SetConversationDefaultModelRequest = {
+  conversationId: string;
+  providerId: ProviderId;
+  modelId: string;
+};
+
+export type SetConversationPinnedRequest = {
+  conversationId: string;
+  pinned: boolean;
+};
+
+export type SetConversationArchivedRequest = {
+  conversationId: string;
+  archived: boolean;
+};
+
+export type SearchMessagesRequest = {
+  /**
+   * Raw user input. It is never handed to the search engine as written — see
+   * `toFtsMatchExpression` — so `"`, `*` and `NEAR` are ordinary characters
+   * here, not a syntax error waiting to be typed.
+   */
+  query: string;
+  /** Hits to return, clamped to `MESSAGE_SEARCH_MAX_LIMIT`. Default 50. */
+  limit?: number;
+  /** Mirrors `ListConversationsRequest`: archived chats are out of sight until asked for. */
+  includeArchived?: boolean;
+};
+
+/**
+ * The matched span inside `MessageSearchHit.snippet` is wrapped in this pair.
+ *
+ * They are Private Use Area code points rather than `<mark>` tags because the
+ * rest of the snippet is whatever the user or model typed: with markup as the
+ * marker, a message containing the literal text `<mark>` would be
+ * indistinguishable from a real highlight. Split on them, never inject them.
+ */
+export const MESSAGE_SEARCH_MATCH_OPEN = '\uE000';
+export const MESSAGE_SEARCH_MATCH_CLOSE = '\uE001';
+
+/** Hard ceiling on hits, so a one-letter query cannot drag the whole history through IPC. */
+export const MESSAGE_SEARCH_MAX_LIMIT = 100;
+
+export type MessageSearchHit = {
+  conversationId: string;
+  /** Carried along so a result row can name its chat without a second lookup. */
+  conversationTitle: string;
+  messageId: string;
+  role: MessageRole;
+  /**
+   * A window of the message around the match, with the matched terms wrapped in
+   * `MESSAGE_SEARCH_MATCH_OPEN`/`_CLOSE`. Plain text otherwise.
+   */
+  snippet: string;
+  /** The message's timestamp, for ordering or display — results come back by relevance. */
+  createdAt: string;
+  /** True only ever with `includeArchived`; lets a result row mark itself. */
+  archived: boolean;
 };
 
 export type ConversationPageRequest = {
@@ -247,8 +1274,14 @@ export type ChatStartRequest = {
   modelId: string;
   messages: ChatInputMessage[];
   enableTools?: boolean;
+  /** Capabilities the user explicitly opted into via composer mentions (`@Sites`). */
+  mentions?: MentionId[];
   temperature?: number;
   maxOutputTokens?: number;
+  /** Thinking budget for this turn. Ignored by models without a thinking mode. */
+  reasoningEffort?: ReasoningEffort;
+  /** What the assistant may do with tools in this turn. */
+  toolPermissionMode?: ToolPermissionMode;
 };
 
 export type ChatStartResponse = {
@@ -308,7 +1341,20 @@ export type StreamReasoningEvent = {
   delta: string;
 };
 
-export type StreamToolInputStartEvent = {
+/**
+ * Fields every tool-related stream event may carry.
+ *
+ * These originate on `RuntimeEventEnvelope` and used to be dropped when
+ * envelopes were downgraded to legacy stream events. Both are optional so
+ * older persisted events and provider-native streams stay valid.
+ */
+export type StreamToolMetadata = {
+  toolType?: CanonicalToolType | null;
+  /** ISO timestamp of the originating runtime event. */
+  occurredAt?: string;
+};
+
+export type StreamToolInputStartEvent = StreamToolMetadata & {
   type: 'tool-input-start';
   requestId: string;
   toolCallId: string;
@@ -318,14 +1364,14 @@ export type StreamToolInputStartEvent = {
   title?: string;
 };
 
-export type StreamToolInputDeltaEvent = {
+export type StreamToolInputDeltaEvent = StreamToolMetadata & {
   type: 'tool-input-delta';
   requestId: string;
   toolCallId: string;
   delta: string;
 };
 
-export type StreamToolInputAvailableEvent = {
+export type StreamToolInputAvailableEvent = StreamToolMetadata & {
   type: 'tool-input-available';
   requestId: string;
   toolCallId: string;
@@ -336,7 +1382,7 @@ export type StreamToolInputAvailableEvent = {
   title?: string;
 };
 
-export type StreamToolOutputAvailableEvent = {
+export type StreamToolOutputAvailableEvent = StreamToolMetadata & {
   type: 'tool-output-available';
   requestId: string;
   toolCallId: string;
@@ -349,7 +1395,7 @@ export type StreamToolOutputAvailableEvent = {
   title?: string;
 };
 
-export type StreamToolOutputErrorEvent = {
+export type StreamToolOutputErrorEvent = StreamToolMetadata & {
   type: 'tool-output-error';
   requestId: string;
   toolCallId: string;
@@ -361,10 +1407,30 @@ export type StreamToolOutputErrorEvent = {
   title?: string;
 };
 
-export type StreamToolOutputDeniedEvent = {
+export type StreamToolOutputDeniedEvent = StreamToolMetadata & {
   type: 'tool-output-denied';
   requestId: string;
   toolCallId: string;
+  toolName?: string;
+  reason?: string;
+};
+
+export type StreamToolApprovalRequestedEvent = StreamToolMetadata & {
+  type: 'tool-approval-requested';
+  requestId: string;
+  approvalId: string;
+  toolCallId: string;
+  toolName?: string;
+  reason?: string;
+};
+
+export type StreamToolApprovalRespondedEvent = StreamToolMetadata & {
+  type: 'tool-approval-responded';
+  requestId: string;
+  approvalId: string;
+  toolCallId: string;
+  approved: boolean;
+  reason?: string;
 };
 
 export type StreamMetaEvent = {
@@ -382,6 +1448,86 @@ export type StreamErrorEvent = {
   code: string;
   message: string;
   retryable: boolean;
+};
+
+/**
+ * The turn is still alive but something happened worth saying out loud.
+ *
+ * There was no such event, and its absence was a real bug: a turn that timed
+ * out and retried three times emitted nothing at all between `turn.started` and
+ * the eventual failure, so seven minutes of retrying looked exactly like seven
+ * minutes of thinking. Notices are transient status, not transcript content —
+ * they are not persisted as runtime activity and the next chunk clears them.
+ */
+export type StreamNoticeEvent = {
+  type: 'notice';
+  requestId: string;
+  /** Machine-readable reason, e.g. `retrying`, `compacting`. */
+  code: string;
+  /** One sentence, already written for a reader. */
+  message: string;
+  level: 'info' | 'warning';
+};
+
+/**
+ * Why a named plugin could or could not be used.
+ *
+ * Four outcomes rather than a boolean, because the difference is the entire
+ * point of showing the row: "it ran", "the plugin ran but that skill does not
+ * exist", "it is switched off" and "it was withdrawn" are four different things
+ * to tell a user, and only some of them are theirs to fix.
+ */
+export type PluginInvocationOutcome =
+  | 'invoked'
+  | 'skill-not-found'
+  | 'plugin-disabled'
+  | 'plugin-blocked'
+  | 'plugin-not-installed';
+
+/**
+ * One `@plugin` mention, resolved, announced before the turn runs.
+ *
+ * **Descriptive only.** This event grants nothing. It does not activate a
+ * server, does not widen a tool set, and above all does not stand in for MCP
+ * approval — a call this event describes still stops at the same per-call
+ * prompt every other third-party tool does. It exists so the transcript, and
+ * later the audit record, read from one resolution rather than each re-deriving
+ * it from the message text and drifting apart.
+ *
+ * Emitted for unavailable plugins too. A mention that produced nothing is
+ * exactly the case a user needs told about; silence is indistinguishable from a
+ * typo, and they retype a name that was right all along.
+ */
+export type StreamPluginInvocationEvent = {
+  type: 'plugin-invocation';
+  requestId: string;
+  /**
+   * The assistant message this turn is producing, when it already has a row.
+   *
+   * Null on a first send, and that is not a gap: the message is not written
+   * until the turn finishes, so at announce time there is genuinely no id yet.
+   * `requestId` above identifies the turn either way, and is what the audit
+   * record joins on. Populated on a resumed or re-approved turn, where the row
+   * does exist.
+   */
+  messageId: string | null;
+  /** Manifest name — the identity everything else is keyed by. */
+  plugin: string;
+  /** Unqualified skill name when the mention named one. */
+  skill: string | null;
+  /** Exactly what the user typed, e.g. `@github pr-review`. Never reconstructed. */
+  mention: string;
+  outcome: PluginInvocationOutcome;
+  /**
+   * The installed version at resolution time.
+   *
+   * Recorded here rather than looked up later: a plugin can be updated between
+   * the turn and anyone reading it back, and an audit line that reports the
+   * version as of *reading* would be answering a different question.
+   */
+  version: string | null;
+  /** One sentence for the reader when the outcome is not `invoked`. */
+  detail: string | null;
 };
 
 export type StreamVisualStartEvent = {
@@ -405,6 +1551,24 @@ export type StreamDoneEvent = {
   messageId: string;
 };
 
+export type RuntimeSyncEvent = {
+  type: 'runtime-sync';
+  conversationId: string;
+  requestId: string;
+  eventId: string;
+  sequence: number;
+};
+
+/**
+ * The main process finished naming a session (an async LLM call that lands
+ * after the turn's `done` event), so the sidebar can update in place.
+ */
+export type StreamConversationTitleEvent = {
+  type: 'conversation-title';
+  conversationId: string;
+  title: string;
+};
+
 export type StreamEvent =
   | StreamChunkEvent
   | StreamReasoningEvent
@@ -414,11 +1578,240 @@ export type StreamEvent =
   | StreamToolOutputAvailableEvent
   | StreamToolOutputErrorEvent
   | StreamToolOutputDeniedEvent
+  | StreamToolApprovalRequestedEvent
+  | StreamToolApprovalRespondedEvent
+  | StreamPluginInvocationEvent
   | StreamVisualStartEvent
   | StreamVisualCompleteEvent
   | StreamMetaEvent
   | StreamErrorEvent
-  | StreamDoneEvent;
+  | StreamNoticeEvent
+  | StreamDoneEvent
+  | RuntimeSyncEvent
+  | StreamConversationTitleEvent;
+
+export type ActivityType =
+  | 'message.delta'
+  | 'message.completed'
+  | 'reasoning.delta'
+  | 'tool.started'
+  | 'tool.updated'
+  | 'tool.completed'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'runtime.warning'
+  | 'runtime.error'
+  | 'turn.started'
+  | 'turn.completed'
+  | 'task.started'
+  | 'task.progress'
+  | 'task.updated'
+  | 'task.completed';
+
+export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
+
+export type CanonicalToolType =
+  | 'command_execution'
+  | 'file_change'
+  | 'mcp_tool_call'
+  | 'dynamic_tool_call'
+  | 'web_search'
+  | 'image_view';
+
+export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
+
+/**
+ * Where a `task.*` row stands. Not the same set as `WorkLogEntryStatus`: this
+ * is what an emitter reports about the task itself, and `deriveWorkLogEntry`
+ * folds it down to the smaller work-log vocabulary (`running` / `completed` /
+ * `error`).
+ */
+export type RuntimeTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'idle'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+/**
+ * Token/tool accounting for a task, folded across every progress tick with
+ * `mergeTaskUsage`. Only `totalTokens` is required — a provider that never
+ * breaks its usage down still has one true number to show.
+ */
+export type RuntimeTaskUsage = {
+  totalTokens: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+};
+
+/**
+ * Optional agent-identity linkage carried on EVERY task payload — including
+ * progress and terminal payloads, not just `task.started`. Repetition is the
+ * point: a fold must be able to reconstruct an agent whose start row aged out
+ * of retention. All fields optional so old rows decode unchanged.
+ */
+export type TaskAgentLinkage = {
+  taskType?: string;
+  /** Server-stamped at record time; clients trust it rather than re-deriving it. */
+  agentKind?: 'agent' | 'background';
+  /** Owning agent when this task is nested inside another agent's run. */
+  agentId?: string;
+  parentAgentId?: string;
+  /** The spawn tool call that created this task. */
+  toolCallId?: string;
+  title?: string;
+  role?: string;
+  model?: string;
+  effort?: string;
+  agentIndex?: number;
+  attempt?: number;
+  outputFile?: string;
+  /** Provider-synthesized rows that belong only in the Agents surface. */
+  timelineBypass?: boolean;
+};
+
+export type RuntimeEventEnvelope = {
+  eventId: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  sequence: number;
+  occurredAt: string;
+  activityType: ActivityType;
+  tone: ActivityTone;
+  toolType?: CanonicalToolType | null;
+  messageId?: string | null;
+  toolCallId?: string | null;
+  approvalId?: string | null;
+  provider: ProviderId | 'system';
+  providerEventType?: string | null;
+  payload: Record<string, unknown>;
+  /**
+   * Owning agent/subagent, when this event belongs to one. Top-level rather
+   * than payload-only because the renderer filters on it hot-path (quiet
+   * timeline, Agents panel) and should not have to reach into `payload` to
+   * decide what to show.
+   */
+  agentId?: string | null;
+  /** The tool call that spawned the agent/task this event belongs to. */
+  parentToolCallId?: string | null;
+};
+
+export type WorkLogEntryStatus =
+  | 'running'
+  | 'pending_approval'
+  | 'completed'
+  | 'error'
+  | 'denied'
+  | 'stale'
+  | 'resolved';
+
+export type WorkLogEntry = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  messageId: string | null;
+  activityType: ActivityType;
+  tone: ActivityTone;
+  toolType: CanonicalToolType | null;
+  toolCallId: string | null;
+  approvalId: string | null;
+  title: string;
+  summary: string | null;
+  status: WorkLogEntryStatus;
+  sequence: number;
+  isFinal: boolean;
+  payload: Record<string, unknown> | null;
+  /** Mirrors `RuntimeEventEnvelope.agentId`. See that field for why it is top-level. */
+  agentId?: string | null;
+  parentToolCallId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ApprovalRequestStatus = 'pending' | 'resolved' | 'stale';
+
+export type ApprovalRequestRecord = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  messageId: string | null;
+  toolCallId: string;
+  toolName: string | null;
+  toolType: CanonicalToolType | null;
+  reason: string | null;
+  status: ApprovalRequestStatus;
+  decision: ApprovalDecision | null;
+  sessionScopeKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeCheckpointSummary = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  sequence: number;
+  pendingApprovalCount: number;
+  fileChangeSummary: string | null;
+  createdAt: string;
+};
+
+export type RuntimeProviderSession = {
+  id: string;
+  conversationId: string;
+  turnId: string;
+  requestId: string;
+  providerId: ProviderId;
+  modelId: string;
+  status: 'active' | 'completed' | 'aborted' | 'interrupted';
+  lastSequence: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RuntimeStateSnapshot = {
+  conversationId: string;
+  conversation: ConversationDetail['conversation'] | null;
+  lastSequence: number;
+  checkpointSequence: number;
+  messages: ChatMessage[];
+  activities: WorkLogEntry[];
+  pendingApprovals: ApprovalRequestRecord[];
+  providerSession: RuntimeProviderSession | null;
+  latestCheckpoint: RuntimeCheckpointSummary | null;
+};
+
+export type RuntimeStateRequest = {
+  conversationId: string;
+};
+
+export type RecoverEventsRequest = {
+  conversationId: string;
+  afterSequence: number;
+};
+
+export type RecoverEventsResponse = {
+  conversationId: string;
+  events: RuntimeEventEnvelope[];
+  lastSequence: number;
+};
+
+export type ToolApprovalResponseRequest = {
+  requestId: string;
+  approvalId: string;
+  decision: ApprovalDecision;
+  reason?: string;
+};
 
 export type UsageMetricState = 'available' | 'loading' | 'unavailable' | 'not_connected';
 
@@ -468,6 +1861,11 @@ export type DiagnosticsSnapshot = {
     arrayBuffersBytes: number;
   };
   databaseSizeBytes: number;
+  /**
+   * Where the main-process log is being written, so a bug report can include
+   * it. Null when the log could not be opened at all.
+   */
+  logFilePath: string | null;
 };
 
 export type SettingsUpdateRequest = {
@@ -479,9 +1877,32 @@ export type SettingsUpdateRequest = {
     codeFontSize?: number;
     uiFontFamily?: FontFamilyOverride;
     codeFontFamily?: FontFamilyOverride;
+    borderRadius?: BorderRadiusMode;
+    accentColor?: ThemeColorOverride;
+    backgroundColor?: ThemeColorOverride;
+    foregroundColor?: ThemeColorOverride;
+    contrast?: number;
+    translucentSidebar?: boolean;
+    reduceMotion?: ReduceMotionMode;
+    pointerCursors?: boolean;
+    rawTranscript?: boolean;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];
+  };
+  chat?: {
+    reasoningEffort?: ReasoningEffort;
+    toolPermissionMode?: ToolPermissionMode;
+    /** Mode new conversations start in. */
+    workspaceMode?: WorkspaceMode;
+    executionTarget?: ExecutionTarget;
+    /** Project new conversations attach to; `null` clears it. */
+    lastProjectId?: string | null;
+    lastModelId?: string | null;
+    visualMode?: VisualMode;
+    cloudSandboxEnabled?: boolean;
+    cloudSandboxWorkerUrl?: string | null;
+    cloudSandboxWorkerSecret?: string | null;
   };
 };
 
@@ -539,22 +1960,101 @@ export type RendererApi = {
     saveProviderKey: (providerId: ProviderId, secret: string) => Promise<SettingsSummary>;
     validateProviderKey: (providerId: ProviderId, secret?: string) => Promise<SettingsSummary>;
     updatePreferences: (patch: SettingsUpdateRequest) => Promise<SettingsSummary>;
+    testCloudSandbox: (url?: string, secret?: string) => Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
+    deployCloudSandbox: () => Promise<{ success: boolean; url?: string; secret?: string; error?: string }>;
+    generateCloudSandboxSecret: () => Promise<string>;
   };
   models: {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;
     refresh: () => Promise<ModelSummary[]>;
+    /**
+     * Fires when the main process changes the model catalog on its own (e.g.
+     * the startup backfill of reasoning levels), so an already-loaded renderer
+     * can re-fetch instead of showing the pre-change snapshot.
+     */
+    subscribe: (listener: () => void) => () => void;
+  };
+  providers: {
+    list: () => Promise<CustomProvider[]>;
+    create: (request: CreateCustomProviderRequest) => Promise<CustomProvider>;
+    update: (request: UpdateCustomProviderRequest) => Promise<CustomProvider>;
+    delete: (providerId: ProviderId) => Promise<void>;
+    setModels: (request: SetCustomProviderModelsRequest) => Promise<CustomProvider>;
+    discoverModels: (request: DiscoverCustomProviderModelsRequest) => Promise<DiscoveredModel[]>;
+    testConnection: (request: DiscoverCustomProviderModelsRequest) => Promise<void>;
+    listPresets: () => Promise<ProviderPreset[]>;
   };
   conversations: {
-    list: () => Promise<ConversationSummary[]>;
-    create: () => Promise<ConversationSummary>;
+    /** Archived chats are excluded unless `request.includeArchived` is set. */
+    list: (request?: ListConversationsRequest) => Promise<ConversationSummary[]>;
+    create: (request?: CreateConversationRequest) => Promise<ConversationSummary>;
     get: (conversationId: string) => Promise<ConversationDetail>;
     getPage: (conversationId: string, request?: ConversationPageRequest) => Promise<ConversationPage>;
     getStats: () => Promise<ConversationStats>;
     delete: (conversationId: string) => Promise<void>;
+    rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
+    getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
+    setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
+    resetCloudSandbox: (conversationId: string) => Promise<{ success: boolean; error?: string }>;
+    setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
+    /**
+     * Pins the conversation's own model, so a pick survives a restart even if
+     * nothing was ever sent. Without this the column was written only by the
+     * send path and an unsent pick was lost.
+     */
+    setDefaultModel: (request: SetConversationDefaultModelRequest) => Promise<void>;
+    /** Resolves to the updated row so an optimistic sidebar can reconcile. */
+    setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
+    setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;
+    /**
+     * A new conversation seeded with this one's history. The original is not
+     * written to. Resolves to the fork's row.
+     */
+    fork: (request: ForkConversationRequest) => Promise<ConversationSummary>;
+    /**
+     * The same copy with a shorter life: hidden from the listing and from
+     * search, and deleted when the chat it hangs off is.
+     */
+    startSide: (request: StartSideConversationRequest) => Promise<ConversationSummary>;
+    /** The side conversations of one chat. They appear in no other listing. */
+    listSide: (conversationId: string) => Promise<ConversationSummary[]>;
+    /**
+     * Deletes this conversation's git worktree and resets its execution target
+     * to local. No-op when the conversation has no worktree.
+     */
+    removeWorktree: (conversationId: string, force?: boolean) => Promise<ConversationWorkspace>;
+    /**
+     * List the worktrees for this conversation's attached project. Empty array
+     * when the conversation has no project or the project folder is gone —
+     * the "can't list" state is a UI concern, not an IPC error.
+     */
+    listWorktrees: (conversationId: string) => Promise<WorktreeInfoSummary[]>;
+    /**
+     * Ranked message-body hits, capped and archived-filtered. Any string is a
+     * legal query — it is sanitized in the main process, never parsed here.
+     */
+    searchMessages: (request: SearchMessagesRequest) => Promise<MessageSearchHit[]>;
+  };
+  projects: {
+    list: () => Promise<WorkspaceProject[]>;
+    /** Resolves to null when the native folder picker was cancelled. */
+    create: (request?: CreateWorkspaceProjectRequest) => Promise<WorkspaceProject | null>;
+    rename: (projectId: string, title: string) => Promise<WorkspaceProject>;
+    delete: (projectId: string) => Promise<void>;
+    reveal: (projectId: string) => Promise<void>;
+    setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
+    /** Editors installed on this machine, in preference order. Empty when none were found. */
+    listIdes: () => Promise<DetectedIde[]>;
+    /** Opens the project folder in `ideId`, or in the preferred editor when omitted. */
+    openInIde: (projectId: string, ideId?: string) => Promise<void>;
   };
   chat: {
     start: (request: ChatStartRequest) => Promise<ChatStartResponse>;
     abort: (requestId: string) => Promise<void>;
+    respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
+    getRuntimeState: (request: RuntimeStateRequest) => Promise<RuntimeStateSnapshot>;
+    getContextUsage: (request: GetContextUsageRequest) => Promise<ContextUsageSnapshot>;
+    recoverEvents: (request: RecoverEventsRequest) => Promise<RecoverEventsResponse>;
     openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
   };
@@ -564,6 +2064,28 @@ export type RendererApi = {
     get: (id: string) => Promise<SavedVisual | null>;
     search: (query: string, limit?: number) => Promise<SavedVisual[]>;
     delete: (id: string) => Promise<boolean>;
+  };
+  sites: {
+    list: (includeDeleted?: boolean) => Promise<SiteSummary[]>;
+    get: (siteId: string) => Promise<SiteDetail>;
+    create: (request: CreateSiteRequest) => Promise<SiteDetail>;
+    rename: (siteId: string, title: string) => Promise<SiteDetail>;
+    delete: (siteId: string) => Promise<void>;
+    restore: (siteId: string) => Promise<SiteDetail>;
+    purge: (siteId: string) => Promise<void>;
+    readFile: (request: ReadSiteFileRequest) => Promise<string>;
+    writeFile: (request: WriteSiteFileRequest) => Promise<SiteDetail>;
+    deleteFile: (request: DeleteSiteFileRequest) => Promise<SiteDetail>;
+    build: (siteId: string) => Promise<SiteDetail>;
+    review: (siteId: string) => Promise<SiteReviewChecklist>;
+    publish: (request: PublishSiteRequest) => Promise<SiteDetail>;
+    unpublish: (siteId: string) => Promise<SiteDetail>;
+    rollback: (request: RollbackSiteRequest) => Promise<SiteDetail>;
+    resetDraft: (request: RollbackSiteRequest) => Promise<SiteDetail>;
+    previewTarget: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
+    openPreviewWindow: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
+    export: (request: ExportSiteRequest) => Promise<ExportSiteResult>;
+    openInBrowser: (siteId: string, versionId?: string | null) => Promise<string>;
   };
   diagnostics: {
     getSnapshot: () => Promise<DiagnosticsSnapshot>;
@@ -578,5 +2100,105 @@ export type RendererApi = {
     getAnonymousId: () => Promise<string>;
     captureEvent: (event: string, properties?: Record<string, unknown>) => void;
     isTelemetryEnabled: () => Promise<boolean>;
+    setTelemetryEnabled: (enabled: boolean) => Promise<boolean>;
+  };
+  workspace: {
+    getContext: (conversationId: string) => Promise<ProjectContextInfo>;
+    listEnv: (projectId: string) => Promise<EnvVarItem[]>;
+    setEnv: (projectId: string, key: string, value: string) => Promise<void>;
+    deleteEnv: (projectId: string, key: string) => Promise<void>;
+    openInstructions: (conversationId: string, sourcePath: string) => Promise<void>;
+    initInstructions: (conversationId: string) => Promise<void>;
+    openFile: (filePath: string) => Promise<void>;
+    /**
+     * Reveals a conversation's working location in the OS file manager. The
+     * renderer names a *target* ('project' | 'worktree'), never a raw path —
+     * the main process resolves and validates the path against the
+     * conversation's own workspace before opening it.
+     */
+    revealPath: (request: { conversationId: string; target: 'project' | 'worktree' }) => Promise<void>;
+  };
+  git: {
+    getState: (conversationId: string) => Promise<GitStateSummary>;
+    getLog: (conversationId: string, maxCount?: number) => Promise<GitLogEntry[]>;
+    getBranches: (conversationId: string) => Promise<GitBranchInfo[]>;
+    switchBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
+    createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
+    commit: (request: GitCommitRequest) => Promise<string>;
+    review: (request: GitReviewRequest) => Promise<ReviewDiff>;
+    stage: (conversationId: string, paths: string[]) => Promise<void>;
+    unstage: (conversationId: string, paths: string[]) => Promise<void>;
+    revert: (conversationId: string, paths: string[]) => Promise<void>;
+    applyHunk: (request: GitApplyHunkRequest) => Promise<void>;
+  };
+  github: {
+    getPrStatus: (conversationId: string) => Promise<GitHubPrStatus>;
+    openPr: (url: string) => Promise<void>;
+  };
+  plugins: {
+    list: () => Promise<PluginsView>;
+    install: (sourceDir: string) => Promise<PluginsView>;
+    uninstall: (name: string) => Promise<PluginsView>;
+    setEnabled: (name: string, enabled: boolean) => Promise<PluginsView>;
+    /** Opens a directory picker and installs the chosen bundle. */
+    installFromPicker: () => Promise<PluginsView | null>;
+    /**
+     * What a pasted repository link would install. Fetches; installs nothing.
+     *
+     * Split from `installFromUrl` so the confirmation is built from the real
+     * bundle rather than from a promise about it.
+     */
+    previewUrl: (url: string) => Promise<PluginUrlPreview>;
+    installFromUrl: (url: string) => Promise<PluginsView>;
+    revealRoot: () => Promise<void>;
+    marketplaces: () => Promise<MarketplacesView>;
+    addMarketplace: (input: MarketplaceInput) => Promise<MarketplacesView>;
+    removeMarketplace: (name: string) => Promise<MarketplacesView>;
+    installFromMarketplace: (marketplace: string, plugin: string) => Promise<PluginsView>;
+    /** Re-reads every marketplace and reports what it offers. Costs a fetch. */
+    checkUpdates: () => Promise<PluginUpdateView[]>;
+    update: (plugin: string) => Promise<PluginsView>;
+    /** Every command installed plugins offer, for the composer's picker. */
+    commands: () => Promise<PluginCommandSummary[]>;
+    /** One command's expanded template, fetched when the user picks it. */
+    commandBody: (qualifiedName: string, args: string) => Promise<string>;
+    activation: (conversationId: string) => Promise<PluginActivationEntry[]>;
+    setActivated: (
+      conversationId: string,
+      plugin: string,
+      active: boolean
+    ) => Promise<PluginActivationEntry[]>;
+    setAlwaysOn: (
+      conversationId: string,
+      plugin: string,
+      alwaysOn: boolean
+    ) => Promise<PluginActivationEntry[]>;
+  };
+  mcpUi: {
+    /**
+     * Whether a finished tool call left a UI component to draw.
+     *
+     * Returns a descriptor only — the call id, the component's `ui://` name and
+     * the server that sent it. Markup never crosses IPC: the renderer points a
+     * sandboxed frame at `atlas-widget://<id>` and the protocol handler serves
+     * the bytes with a policy the widget cannot edit.
+     */
+    describe: (toolCallId: string) => Promise<McpUiDescriptor | null>;
+  };
+  fileChanges: {
+    list: (conversationId: string) => Promise<FileChangeRecord[]>;
+    revert: (conversationId: string, changeId: string) => Promise<FileChangeRecord>;
+    accept: (changeId: string) => Promise<FileChangeRecord>;
+    getSummary: (conversationId: string) => Promise<FileChangeSummary>;
+  };
+  terminal: {
+    getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
+    record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
+    /** Spawns the conversation's shell, or attaches to the running one. */
+    start: (conversationId: string, cols?: number, rows?: number) => Promise<TerminalStartResult>;
+    input: (conversationId: string, data: string) => Promise<void>;
+    resize: (conversationId: string, cols: number, rows: number) => Promise<void>;
+    kill: (conversationId: string) => Promise<void>;
+    subscribe: (listener: (event: TerminalOutputEvent) => void) => () => void;
   };
 };

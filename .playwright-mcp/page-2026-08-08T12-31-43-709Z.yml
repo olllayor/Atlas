@@ -1,0 +1,67 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - text: For the complete documentation index, see
+    - link "llms.txt" [ref=e3] [cursor=pointer]:
+      - /url: /llms.txt
+    - text: . Markdown versions of documentation pages are available by appending
+    - code [ref=e4]: .md
+    - text: to the page URL.
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - link "ChatGPT" [ref=e7] [cursor=pointer]:
+        - /url: /
+      - navigation [ref=e12]:
+        - link "Home" [ref=e14] [cursor=pointer]:
+          - /url: /
+        - link "Docs" [ref=e16] [cursor=pointer]:
+          - /url: /docs
+        - link "Use cases" [ref=e18] [cursor=pointer]:
+          - /url: /use-cases
+        - link "Resources" [ref=e20] [cursor=pointer]:
+          - /url: /resources
+      - generic [ref=e21]:
+        - link "Try ChatGPT" [ref=e25] [cursor=pointer]:
+          - /url: https://chatgpt.com/
+        - button "Toggle light and dark theme" [ref=e30] [cursor=pointer]
+        - button "Search the docs" [ref=e33] [cursor=pointer]
+  - main [ref=e39]:
+    - generic [ref=e41]:
+      - generic [ref=e42]:
+        - heading "Page not found" [level=1] [ref=e43]
+        - generic [ref=e44]:
+          - textbox "Search resources" [ref=e46]
+          - generic [ref=e47]:
+            - button "Agents" [ref=e48] [cursor=pointer]
+            - button "Vision" [ref=e49] [cursor=pointer]
+            - button "Voice" [ref=e50] [cursor=pointer]
+            - button "Fine-tuning" [ref=e51] [cursor=pointer]
+      - generic [ref=e53]:
+        - paragraph [ref=e54]: We looked everywhere but couldn’t find that page. Try searching our resource library or explore one of the options below.
+        - generic [ref=e55]:
+          - link [ref=e56] [cursor=pointer]:
+            - /url: /plugins
+            - generic [ref=e57]:
+              - heading "Extend ChatGPT" [level=3] [ref=e58]
+              - paragraph [ref=e59]: Learn how to build plugins for ChatGPT and Codex.
+            - generic [ref=e60]: Start building
+          - link [ref=e63] [cursor=pointer]:
+            - /url: /docs
+            - generic [ref=e64]:
+              - heading "Get started with Codex" [level=3] [ref=e65]
+              - paragraph [ref=e66]: Try our coding agent in the IDE, CLI, or cloud.
+            - generic [ref=e67]: Start building
+          - link [ref=e70] [cursor=pointer]:
+            - /url: /blog
+            - generic [ref=e71]:
+              - heading "Read our blog" [level=3] [ref=e72]
+              - paragraph [ref=e73]: Catch up on insights for developers using OpenAI's products and models.
+            - generic [ref=e74]: See posts
+  - generic:
+    - button "Ask AI" [ref=e77] [cursor=pointer]
+    - dialog [ref=e79]:
+      - banner [ref=e80]:
+        - heading "Docs agent" [level=2] [ref=e81]
+        - generic [ref=e82]:
+          - button "Start a new docs agent chat" [ref=e83] [cursor=pointer]
+          - button "Close docs agent" [ref=e86] [cursor=pointer]
+      - paragraph [ref=e91]: Loading docs agent...

@@ -1,5 +1,6 @@
 import type { ListModelsOptions, ProviderId, SettingsSummary } from '../../../shared/contracts';
-import { PROVIDER_ORDER } from '../../../shared/providerMetadata';
+import type { CustomProvider } from '../../../shared/customProviders';
+import type { CustomProvidersRepo } from '../../db/repositories/customProvidersRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { SettingsRepo } from '../../db/repositories/settingsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
@@ -12,43 +13,77 @@ export class ModelRegistry {
     private readonly modelsRepo: ModelsRepo,
     private readonly settingsRepo: SettingsRepo,
     private readonly keychain: KeychainStore,
-    private readonly providers: ProviderRegistry
+    private readonly providers: ProviderRegistry,
+    /**
+     * Read lazily so a provider added at runtime shows up without rebuilding
+     * the registry object graph.
+     */
+    private readonly customProvidersRepo: Pick<CustomProvidersRepo, 'list'> | null = null
   ) {}
 
+  /**
+   * The catalog the app is allowed to offer. Always scoped to configured,
+   * enabled providers: the cache outlives providers, so a removed or disabled
+   * endpoint would otherwise keep offering models that cannot be sent to.
+   */
+  /** The last picked model, or null once it is no longer selectable. */
+  private resolveLastModelId() {
+    const lastModelId = this.settingsRepo.getLastModelId();
+    if (!lastModelId) {
+      return null;
+    }
+
+    return this.list().some((model) => model.id === lastModelId) ? lastModelId : null;
+  }
+
   list(options: ListModelsOptions = {}) {
-    return this.modelsRepo.list(options);
+    return this.modelsRepo.list({ ...options, configuredOnly: true });
+  }
+
+  /** Every registered provider, in the order they were configured. */
+  private providerIds(): ProviderId[] {
+    return [...this.providers.keys()];
   }
 
   async refresh() {
     let refreshedAny = false;
     let sawProviderFailure = false;
 
-    for (const providerId of PROVIDER_ORDER) {
+    // Providers are independent, so fetch every catalog concurrently instead of
+    // paying the sum of their round trips.
+    const fetches = this.providerIds().map(async (providerId) => {
       const provider = this.providers.get(providerId);
       if (!provider) {
-        continue;
+        return null;
       }
 
       const apiKey = await this.keychain.getSecret(providerId);
-      if (!apiKey && providerId !== 'glm') {
-        continue;
+      // Adapters opt into needing a key; this used to be a hardcoded exception
+      // for one provider id.
+      if (!apiKey && provider.capabilities?.requiresApiKeyForCatalog === true) {
+        return null;
       }
 
       try {
-        const models = await provider.listModels(apiKey);
-        this.modelsRepo.upsertModels(models);
-        refreshedAny = true;
-
-        if (apiKey) {
-          this.settingsRepo.updateCredentialStatus(providerId, {
-            hasSecret: true,
-            status: 'valid',
-            validatedAt: new Date().toISOString()
-          });
-        }
+        return { providerId, provider, apiKey, models: await provider.listModels(apiKey) } as const;
       } catch (error) {
+        return { providerId, provider, apiKey, error } as const;
+      }
+    });
+
+    const outcomes = await Promise.all(fetches);
+
+    // Writes stay sequential so the SQLite transactions do not interleave.
+    for (const outcome of outcomes) {
+      if (!outcome) {
+        continue;
+      }
+
+      const { providerId, provider, apiKey } = outcome;
+
+      if ('error' in outcome) {
         sawProviderFailure = true;
-        const normalized = normalizeError(error);
+        const normalized = normalizeError(outcome.error);
         if (normalized.code === 'auth_error' && apiKey) {
           this.settingsRepo.updateCredentialStatus(providerId, {
             hasSecret: true,
@@ -56,14 +91,32 @@ export class ModelRegistry {
             validatedAt: null
           });
         }
+        continue;
+      }
+
+      this.modelsRepo.upsertModels(outcome.models, {
+        // Only archive stale rows when the adapter vouches for a full catalog.
+        pruneProviderId: provider.capabilities?.returnsCompleteCatalog ? providerId : undefined
+      });
+      refreshedAny = true;
+
+      if (apiKey) {
+        this.settingsRepo.updateCredentialStatus(providerId, {
+          hasSecret: true,
+          status: 'valid',
+          validatedAt: new Date().toISOString()
+        });
       }
     }
 
+    // A provider removed since the last refresh leaves rows behind.
+    this.modelsRepo.deleteOrphanedModels();
+
     if (refreshedAny) {
-      return this.modelsRepo.list();
+      return this.list();
     }
 
-    const cachedModels = this.modelsRepo.list({ allowStale: true });
+    const cachedModels = this.list({ allowStale: true });
     if (cachedModels.length > 0 && sawProviderFailure) {
       return cachedModels;
     }
@@ -99,16 +152,28 @@ export class ModelRegistry {
   }
 
   getSettingsSummary(): SettingsSummary {
-    const credentials = this.settingsRepo.getProviderCredentials();
+    const customRecords = this.customProvidersRepo?.list() ?? [];
+    // Credentials cover every provider the app can address: those saved in the
+    // database plus anything currently registered.
+    const credentialIds = [
+      ...new Set([...customRecords.map((record) => record.id), ...this.providerIds()])
+    ];
+    const credentials = this.settingsRepo.getProviderCredentials(credentialIds);
+    const customProviders: CustomProvider[] = customRecords.map((record) => ({
+      ...record,
+      hasApiKey:
+        credentials.find((credential) => credential.providerId === record.id)?.hasSecret ?? false
+    }));
     const catalog = this.modelsRepo.getCatalogStats();
     const staleThreshold = 12 * 60 * 60 * 1000;
     const lastSyncedAt = catalog.lastSyncedAt ? Date.parse(catalog.lastSyncedAt) : 0;
 
     return {
       providers: credentials,
+      customProviders,
       defaultProviderId:
         credentials.find((provider) => provider.hasSecret)?.providerId ??
-        PROVIDER_ORDER.find((providerId) => this.providers.has(providerId)) ??
+        this.providerIds().find((providerId) => this.providers.has(providerId)) ??
         null,
       appearance: {
         themeMode: this.settingsRepo.getThemeMode(),
@@ -116,10 +181,36 @@ export class ModelRegistry {
         uiFontSize: this.settingsRepo.getUiFontSize(),
         codeFontSize: this.settingsRepo.getCodeFontSize(),
         uiFontFamily: this.settingsRepo.getUiFontFamily(),
-        codeFontFamily: this.settingsRepo.getCodeFontFamily()
+        codeFontFamily: this.settingsRepo.getCodeFontFamily(),
+        borderRadius: this.settingsRepo.getBorderRadius(),
+        accentColor: this.settingsRepo.getThemeColor('accentColor'),
+        backgroundColor: this.settingsRepo.getThemeColor('backgroundColor'),
+        foregroundColor: this.settingsRepo.getThemeColor('foregroundColor'),
+        contrast: this.settingsRepo.getContrast(),
+        translucentSidebar: this.settingsRepo.getTranslucentSidebar(),
+        reduceMotion: this.settingsRepo.getReduceMotion(),
+        pointerCursors: this.settingsRepo.getPointerCursors(),
+        rawTranscript: this.settingsRepo.getRawTranscript(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()
+      },
+      chat: {
+        reasoningEffort: this.settingsRepo.getReasoningEffort(),
+        toolPermissionMode: this.settingsRepo.getToolPermissionMode(),
+        workspaceMode: this.settingsRepo.getWorkspaceMode(),
+        executionTarget: this.settingsRepo.getExecutionTarget(),
+        lastProjectId: this.settingsRepo.getLastProjectId(),
+        // Validated here rather than in the renderer: a stored id whose provider
+        // has since been removed or disabled must not be offered as a default.
+        lastModelId: this.resolveLastModelId(),
+        visualMode: this.settingsRepo.getVisualMode(),
+        cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
+        cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
+        // Raw token never crosses IPC — keychain holds it, the renderer only
+        // needs to know whether one is configured so the UI can afford the
+        // correct affordance (show/hide the "Clear" button, etc.).
+        cloudSandboxHasSecret: this.settingsRepo.hasCloudSandboxWorkerSecret(),
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,

@@ -1,59 +1,204 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
-import { BrowserWindow } from 'electron/main';
+import type { ModelMessage } from 'ai';
+import type { BrowserWindow } from 'electron';
 
 import type {
+  ApprovalDecision,
   ChatMessagePart,
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
+  ConversationStatus,
+  ContextUsageSnapshot,
+  GetContextUsageRequest,
   OpenVisualWindowRequest,
-  StreamEvent
+  RecoverEventsResponse,
+  RuntimeStateSnapshot,
+  StreamEvent,
+  ToolApprovalResponseRequest,
 } from '../../../shared/contracts';
+import {
+  finalizeMessageParts,
+  getReasoningContentFromParts,
+  getTextContentFromParts,
+} from '../../../shared/messageParts';
+import {
+  applyRuntimeEventToMessageParts,
+  buildApprovalScopeKey,
+  inferCanonicalToolType,
+} from '../../../shared/runtimeActivity';
 import {
   MAX_ATTACHMENT_COUNT,
   MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
   getAttachmentCapabilityError,
+  getAttachmentKind,
   getContentPreviewText,
+  normalizeAttachmentMediaType,
   sumAttachmentSize,
 } from '../../../shared/attachments';
-import {
-  applyStreamEventToParts,
-  buildFallbackMessageParts,
-  finalizeMessageParts,
-  getReasoningContentFromParts,
-  getTextContentFromParts
-} from '../../../shared/messageParts';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
-import { VisualStreamParser } from '../../../shared/visualParser';
+import {
+  deriveTitleFromUserMessage,
+  isPlaceholderSessionTitle,
+  sanitizeGeneratedTitle,
+} from '../../../shared/sessionTitles';
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
-import { shouldPersistResponseMessages } from './persistResponseMessages';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
+import type { RuntimeStateRepo } from '../../db/repositories/runtimeStateRepo';
 import type { KeychainStore } from '../../secrets/keychain';
-import { TOOL_USE_SYSTEM_PROMPT, createBuiltInTools } from '../tools/builtInTools';
-import { VISUAL_PROMPT } from './VISUAL_PROMPT';
-import { MissingCredentialError, normalizeError, sleep } from './ErrorNormalizer';
-import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
+import { logger, startTimer } from '../../observability/logger';
+import type { RejectedCapability } from './ErrorNormalizer';
+import { detectRejectedCapability, normalizeError } from './ErrorNormalizer';
+import { ToolApprovalController } from './ToolApprovalController';
+import { isMcpToolName } from '../../../shared/mcp';
+import type { AuditInput } from '../mcp/McpAuditLog';
 import type { ProviderRegistry } from './providerRegistry';
-import { getProviderOrThrow } from './providerRegistry';
+import type { ExecuteTurnResult } from './ChatSessionRuntime';
+import { ChatSessionRuntime } from './ChatSessionRuntime';
+import { SubagentRuntime } from '../agents/SubagentRuntime';
+import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
+import type { ToolStateStore } from '../tools/ToolStateStore';
+import { shouldPersistResponseMessages } from './persistResponseMessages';
+import type { TurnCheckpointHooks } from '../../workspace/CheckpointCoordinator';
+import { NOOP_TURN_CHECKPOINTS } from '../../workspace/CheckpointCoordinator';
+import { getBufferedEventKey, mergeBufferedEvents } from './streamBuffer';
 
 type ActiveRequest = {
+  requestId: string;
   controller: AbortController;
   window: BrowserWindow;
   onWindowClosed: () => void;
-  visualParser: VisualStreamParser;
+  request: ChatStartRequest;
+  turnId: string;
+  assistantMessageId: string;
+  parts: ChatMessagePart[];
+  responseMessages: ModelMessage[];
+  awaitingApproval: boolean;
+  tracker: ToolExecutionTracker | null;
 };
 
 type BufferedRequestEvents = {
   timer: ReturnType<typeof setTimeout> | null;
-  events: Map<string, StreamEvent>;
+  events: Map<string, Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>>;
 };
 
 const STREAM_BATCH_INTERVAL_MS = 33;
 
+const NOOP_RUNTIME_STATE_REPO: Pick<
+  RuntimeStateRepo,
+  | 'createTurn'
+  | 'startProviderSession'
+  | 'recordEvent'
+  | 'getLatestCheckpoint'
+  | 'getLastSequence'
+  | 'listActivitiesByConversation'
+  | 'listPendingApprovals'
+  | 'getLatestProviderSession'
+  | 'listEventsAfter'
+  | 'completeTurn'
+  | 'updateProviderSession'
+  | 'createCheckpoint'
+> = {
+  createTurn: () => undefined,
+  startProviderSession: () => 'noop-session',
+  recordEvent: (input) => ({
+    ...input,
+    occurredAt: new Date().toISOString(),
+    sequence: 0,
+  }),
+  getLatestCheckpoint: () => null,
+  getLastSequence: () => 0,
+  listActivitiesByConversation: () => [],
+  listPendingApprovals: () => [],
+  getLatestProviderSession: () => null,
+  listEventsAfter: (conversationId) => ({ conversationId, events: [], lastSequence: 0 }),
+  completeTurn: () => undefined,
+  updateProviderSession: () => undefined,
+  createCheckpoint: () => randomUUID(),
+};
+
+/**
+ * Whether the call awaiting approval asked to run without the OS sandbox.
+ *
+ * Read off the streamed part rather than threaded through the approval record:
+ * the input is already sitting there under the same `toolCallId`, and a
+ * partially-streamed call is still a plain JSON string at this point.
+ */
+function isSandboxEscalatedCall(parts: ChatMessagePart[], toolCallId: string) {
+  const part = parts.find(
+    (candidate): candidate is Extract<ChatMessagePart, { type: 'tool' }> =>
+      candidate.type === 'tool' && candidate.toolCallId === toolCallId,
+  );
+
+  if (!part) {
+    return false;
+  }
+
+  const input = part.input ?? parseJsonObject(part.rawInput);
+
+  return Boolean(
+    input && typeof input === 'object' && (input as { dangerouslyDisableSandbox?: unknown }).dangerouslyDisableSandbox === true,
+  );
+}
+
+function parseJsonObject(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    // A half-streamed argument object is not a signal either way; the caller
+    // treats it as unescalated, and the ladder still gates the call.
+    return null;
+  }
+}
+
+function formatToolNameForDeniedCopy(toolName?: string) {
+  if (!toolName) {
+    return 'Tool';
+  }
+
+  if (/search/i.test(toolName)) {
+    return 'Search';
+  }
+
+  const normalized = toolName.replace(/[_-]+/g, ' ').trim();
+  if (!normalized) {
+    return 'Tool';
+  }
+
+  return normalized
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+/**
+ * Ceiling for the naming call. Well above a reasoning model's warm-up, well
+ * below the provider stream's own 180s watchdogs.
+ */
+const TITLE_GENERATION_TIMEOUT_MS = 90_000;
+
+/**
+ * How many turns may stream at once, across all conversations.
+ *
+ * Three is what a single provider key tolerates before rate limiting turns
+ * "parallel" into "all of them slower"; the rest wait as `queued`.
+ */
+const MAX_CONCURRENT_TURNS = 3;
+
 export class ChatEngine {
   private readonly activeRequests = new Map<string, ActiveRequest>();
+  /** Requests currently holding one of the concurrency slots. */
+  private readonly runningRequestIds = new Set<string>();
+  /** Requests accepted but waiting for a slot, oldest first. */
+  private readonly queuedRequestIds: string[] = [];
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
 
   constructor(
@@ -61,7 +206,203 @@ export class ChatEngine {
     private readonly modelsRepo: ModelsRepo,
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
-    private readonly attachmentStore: AttachmentStore
+    private readonly attachmentStore: AttachmentStore,
+    private readonly runtime: Pick<ChatSessionRuntime, 'executeTurn' | 'measureContextUsage'> = new ChatSessionRuntime(
+      conversationsRepo,
+      modelsRepo,
+      keychain,
+      providers
+    ),
+    private readonly runtimeStateRepo: Pick<
+      RuntimeStateRepo,
+      | 'createTurn'
+      | 'startProviderSession'
+      | 'recordEvent'
+      | 'getLatestCheckpoint'
+      | 'getLastSequence'
+      | 'listActivitiesByConversation'
+      | 'listPendingApprovals'
+      | 'getLatestProviderSession'
+      | 'listEventsAfter'
+      | 'completeTurn'
+      | 'updateProviderSession'
+      | 'createCheckpoint'
+    > = NOOP_RUNTIME_STATE_REPO,
+    private readonly toolStateStore?: ToolStateStore,
+    private readonly approvalController = new ToolApprovalController(),
+    /**
+     * Called when a provider refuses a turn *because of* something the request
+     * carried — an attachment kind, or the tool definitions. The catalog cannot
+     * describe most endpoints, so the failed send is the only source that ever
+     * learns the answer — see
+     * `CustomProviderService.recordCapabilityRejection`.
+     */
+    private readonly onCapabilityRejected?: (input: {
+      modelId: string;
+      capability: RejectedCapability;
+    }) => void | Promise<void>,
+    /**
+     * Snapshots the project folder on either side of a turn. Failures here are
+     * swallowed by the coordinator — a repository that cannot be snapshotted is
+     * still one the user is allowed to send from.
+     */
+    private readonly checkpoints: TurnCheckpointHooks = NOOP_TURN_CHECKPOINTS,
+    /**
+     * Where approval decisions are recorded.
+     *
+     * Last, and optional, so every existing call site is unchanged — and
+     * observational, so a build that never passes one behaves identically.
+     */
+    private readonly auditLog?: { record: (input: AuditInput) => void },
+    /**
+     * Attributes a wire tool name to the installed plugin behind it, for the
+     * approval audit trail. `ChatEngine` has no registry of its own — this is
+     * built fresh from one each call, in `index.ts`, so it always answers
+     * against what is installed *now* rather than what was installed when the
+     * engine was constructed.
+     */
+    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null,
+    private readonly subagentRuntime = new SubagentRuntime({
+      runtimeStateRepo,
+      onRuntimeEvent: (envelope) => {
+        const activeReq = Array.from(this.activeRequests.values()).find(
+          (req) => req.request.conversationId === envelope.conversationId
+        );
+        if (activeReq) {
+          this.sendToWindow(activeReq.window, {
+            type: 'runtime-sync',
+            conversationId: envelope.conversationId,
+            requestId: envelope.requestId,
+            eventId: envelope.eventId,
+            sequence: envelope.sequence,
+          });
+        }
+      },
+      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth }) => {
+        const activeReq = Array.from(this.activeRequests.values()).find(
+          (req) => req.request.conversationId === conversationId
+        );
+        const parentRequest = activeReq?.request;
+        const convSummary = this.conversationsRepo.getSummary(conversationId);
+        const firstProviderId = Array.from(this.providers.keys())[0] ?? 'openrouter';
+        const providerId = parentRequest?.providerId ?? convSummary?.defaultProviderId ?? firstProviderId;
+        const modelId = model ?? parentRequest?.modelId ?? convSummary?.defaultModelId ?? 'google/gemini-2.5-flash';
+
+        const childRequestId = randomUUID();
+
+        const childStartRequest: ChatStartRequest = {
+          conversationId,
+          providerId,
+          modelId,
+          messages: [],
+          enableTools: true,
+          toolPermissionMode: parentRequest?.toolPermissionMode,
+        };
+
+        let currentMessages: ModelMessage[] = [
+          {
+            role: 'user',
+            content: role ? `[Role: ${role}]\n\n${prompt}` : prompt,
+          },
+        ];
+
+        let accumulatedParts: ChatMessagePart[] = [];
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
+
+        let turnResult: ExecuteTurnResult;
+        let loops = 0;
+        const MAX_CHILD_TURNS = 15;
+
+        while (true) {
+          loops += 1;
+          turnResult = await this.runtime.executeTurn({
+            requestId: childRequestId,
+            request: childStartRequest,
+            signal,
+            persistMessage: false,
+            messagesOverride: currentMessages,
+            initialParts: accumulatedParts,
+            subagentRuntime: this.subagentRuntime,
+            parentAgentId,
+            depth,
+            allowedTools: tools,
+            emitEvent: (evt) => {
+              onEvent(evt);
+            },
+          });
+
+          accumulatedParts = turnResult.parts ?? accumulatedParts;
+          totalInputTokens += turnResult.inputTokens ?? 0;
+          totalOutputTokens += turnResult.outputTokens ?? 0;
+
+          if (turnResult.status !== 'awaiting_approval' || !turnResult.pendingApprovals.length) {
+            break;
+          }
+
+          if (loops >= MAX_CHILD_TURNS) {
+            break;
+          }
+
+          const allAutoApproved = turnResult.pendingApprovals.every((approval) => {
+            const toolType = inferCanonicalToolType({ toolName: approval.toolName });
+            const sessionScopeKey = isSandboxEscalatedCall(accumulatedParts, approval.toolCallId)
+              ? null
+              : buildApprovalScopeKey(toolType, approval.toolName);
+            return (
+              sessionScopeKey &&
+              this.approvalController.hasConversationScopeGrant(conversationId, sessionScopeKey)
+            );
+          });
+
+          if (!allAutoApproved) {
+            break;
+          }
+
+          const approvalMessage: ModelMessage = {
+            role: 'tool',
+            content: turnResult.pendingApprovals.map((approval) => ({
+              type: 'tool-approval-response',
+              approvalId: approval.approvalId,
+              approved: true,
+            })),
+          } as ModelMessage;
+
+          currentMessages = [
+            ...currentMessages,
+            ...(turnResult.responseMessages ?? []),
+            approvalMessage,
+          ];
+        }
+
+        const text = turnResult.parts
+          .filter((p) => p.type === 'text')
+          .map((p) => (p as { text: string }).text)
+          .join('\n');
+
+        if (outputFile) {
+          try {
+            await fs.promises.mkdir(path.dirname(outputFile), { recursive: true });
+            await fs.promises.writeFile(outputFile, text, 'utf-8');
+          } catch (err) {
+            logger.error('Failed to write subagent output file', { outputFile, error: err });
+          }
+        }
+
+        const isAwaitingApproval =
+          turnResult.status === 'awaiting_approval' || turnResult.pendingApprovals.length > 0;
+
+        return {
+          content: text || (isAwaitingApproval ? 'Child task requested unapproved tool execution' : 'Completed subagent task'),
+          status: isAwaitingApproval ? 'awaiting_approval' : 'completed',
+          usage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            totalTokens: totalInputTokens + totalOutputTokens,
+          },
+        };
+      },
+    }),
   ) {}
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -94,15 +435,32 @@ export class ChatEngine {
     }
 
     const requestId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const turnId = randomUUID();
+
+    // What the turn is carrying, recorded before anything can go wrong with it.
+    // Attachment bytes are the first thing worth knowing when a send takes
+    // minutes: a 3.7 MB image becomes ~4.9 MB of base64 on the wire, which is
+    // enough to stall a gateway past the first-response watchdog.
+    logger.info('turn.started', {
+      requestId,
+      conversationId: request.conversationId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+      enableTools: request.enableTools ?? false,
+      textChars: previewContent.length,
+      attachmentCount: fileParts.length,
+      attachmentBytes: sumAttachmentSize(fileParts),
+      attachmentTypes: fileParts.map((part) => part.mediaType),
+    });
+
     const controller = new AbortController();
-    const visualParser = new VisualStreamParser();
     const onWindowClosed = () => {
+      void this.subagentRuntime.interruptAll(request.conversationId, 'Window closed');
       controller.abort();
-      this.clearBufferedEvents(requestId);
-      this.activeRequests.delete(requestId);
+      this.cleanupRequest(requestId);
     };
     window.once('closed', onWindowClosed);
-    this.activeRequests.set(requestId, { controller, window, onWindowClosed, visualParser });
 
     const persistedParts = this.persistInputParts(request.conversationId, requestId, inputParts);
     this.conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
@@ -115,12 +473,154 @@ export class ChatEngine {
       providerId: request.providerId,
       modelId: request.modelId
     });
-
-    setImmediate(() => {
-      void this.runRequest(requestId, request);
+    this.conversationsRepo.addMessage({
+      id: assistantMessageId,
+      conversationId: request.conversationId,
+      role: 'assistant',
+      content: '',
+      parts: [],
+      status: 'streaming',
+      providerId: request.providerId,
+      modelId: request.modelId,
     });
 
+    // Name the session from the prompt right now, before a single token is
+    // streamed. Waiting for the model meant every in-flight thread sat in
+    // the sidebar as `Session · <date>` — the title arrived, if at all,
+    // long after the user had stopped looking for it.
+    this.applyLocalTitle(window, request.conversationId, previewContent);
+
+    this.runtimeStateRepo.createTurn({
+      id: turnId,
+      conversationId: request.conversationId,
+      requestId,
+      assistantMessageId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+    });
+    this.runtimeStateRepo.startProviderSession({
+      conversationId: request.conversationId,
+      turnId,
+      requestId,
+      providerId: request.providerId,
+      modelId: request.modelId,
+    });
+    this.runtimeStateRepo.recordEvent({
+      eventId: randomUUID(),
+      conversationId: request.conversationId,
+      turnId,
+      requestId,
+      activityType: 'turn.started',
+      tone: 'info',
+      provider: request.providerId,
+      providerEventType: 'turn.started',
+      messageId: assistantMessageId,
+      payload: {
+        providerId: request.providerId,
+        modelId: request.modelId,
+      },
+    });
+
+    // Awaited, not fired off: the baseline has to be on disk before the first
+    // tool can touch a file, or the turn's own edits end up inside its own
+    // "before" snapshot and the diff comes out empty.
+    await this.checkpoints.captureTurnStart(request.conversationId, turnId);
+
+    this.activeRequests.set(requestId, {
+      requestId,
+      controller,
+      window,
+      onWindowClosed,
+      request,
+      turnId,
+      assistantMessageId,
+      parts: [],
+      responseMessages: [],
+      awaitingApproval: false,
+      tracker: this.toolStateStore
+        ? new ToolExecutionTracker(
+            {
+              conversationId: request.conversationId,
+              messageId: assistantMessageId,
+              requestId,
+            },
+            this.toolStateStore,
+          )
+        : null,
+    });
+
+    // Turns run in parallel across conversations, but not without a ceiling:
+    // each one holds a provider stream and a tool runtime, and a user who
+    // fires off six tasks should get four of them queued rather than six
+    // fighting for the same rate limit.
+    if (this.runningRequestIds.size >= MAX_CONCURRENT_TURNS) {
+      this.queuedRequestIds.push(requestId);
+      this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
+      return { requestId };
+    }
+
+    this.beginRun(requestId, request);
+
     return { requestId };
+  }
+
+  /** Marks a request as occupying a slot and starts it. */
+  private beginRun(requestId: string, request: ChatStartRequest, messagesOverride?: ModelMessage[]) {
+    this.runningRequestIds.add(requestId);
+    this.markConversationStatus(request.conversationId, 'running', {
+      startedAt: new Date().toISOString(),
+      lastError: null,
+    });
+
+    setImmediate(() => {
+      void this.runRequest(requestId, request, messagesOverride);
+    });
+  }
+
+  /**
+   * Hands the freed slot to the next queued turn.
+   *
+   * Requests that were aborted while queued have already been dropped from
+   * `activeRequests`, so they are skipped rather than resurrected.
+   */
+  private startNextQueuedRequest() {
+    while (this.runningRequestIds.size < MAX_CONCURRENT_TURNS) {
+      const nextId = this.queuedRequestIds.shift();
+      if (!nextId) {
+        return;
+      }
+
+      const queued = this.activeRequests.get(nextId);
+      if (queued) {
+        this.beginRun(nextId, queued.request);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Conversation-level status, which outlives the request the way a task does.
+   *
+   * The renderer already knows a turn is live from its own draft state; this
+   * exists so the fact survives a reload and so a conversation the user
+   * switched away from can still be shown as running or failed. Persisting it
+   * must never take a turn down, hence the swallow.
+   */
+  private markConversationStatus(
+    conversationId: string,
+    status: ConversationStatus,
+    fields: { startedAt?: string | null; completedAt?: string | null; lastError?: string | null } = {},
+  ) {
+    try {
+      this.conversationsRepo.updateStatus(conversationId, {
+        status,
+        startedAt: fields.startedAt ?? null,
+        completedAt: fields.completedAt ?? null,
+        lastError: fields.lastError ?? null,
+      });
+    } catch (error) {
+      logger.warn('conversation.status.persist_failed', { conversationId, status, error });
+    }
   }
 
   private persistInputParts(conversationId: string, requestId: string, parts: ChatInputPart[]): ChatMessagePart[] {
@@ -155,12 +655,195 @@ export class ChatEngine {
     return persistedParts;
   }
 
-  abort(requestId: string) {
+  async abort(requestId: string) {
     const active = this.activeRequests.get(requestId);
-    active?.controller.abort();
+    if (active) {
+      await this.subagentRuntime.interruptAll(active.request.conversationId, 'Parent turn aborted');
+      active.controller.abort();
+    }
+
+    // A turn still waiting for a slot has no stream to abort, so the signal
+    // would go nowhere: drop it from the queue and close it out here.
+    const queuedIndex = this.queuedRequestIds.indexOf(requestId);
+    if (queuedIndex >= 0) {
+      this.queuedRequestIds.splice(queuedIndex, 1);
+      if (active) {
+        this.markConversationStatus(active.request.conversationId, 'idle', {
+          completedAt: new Date().toISOString(),
+        });
+        this.conversationsRepo.updateMessage({
+          messageId: active.assistantMessageId,
+          status: 'aborted',
+        });
+        this.cleanupRequest(requestId, active);
+      }
+    }
+  }
+
+  /**
+   * Prompt size for the next request. Measured in the runtime that builds the
+   * prompt, so the ring cannot drift from what is actually sent.
+   */
+  getContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
+    return this.runtime.measureContextUsage(request);
+  }
+
+  getRuntimeState({ conversationId }: { conversationId: string }): RuntimeStateSnapshot {
+    const detail = this.conversationsRepo.get(conversationId);
+    const latestCheckpoint = this.runtimeStateRepo.getLatestCheckpoint(conversationId);
+
+    return {
+      conversationId,
+      conversation: detail.conversation,
+      lastSequence: this.runtimeStateRepo.getLastSequence(conversationId),
+      checkpointSequence: latestCheckpoint?.sequence ?? 0,
+      messages: detail.messages,
+      activities: this.runtimeStateRepo.listActivitiesByConversation(conversationId),
+      pendingApprovals: this.runtimeStateRepo.listPendingApprovals(conversationId),
+      providerSession: this.runtimeStateRepo.getLatestProviderSession(conversationId),
+      latestCheckpoint,
+    };
+  }
+
+  recoverEvents({ conversationId, afterSequence }: { conversationId: string; afterSequence: number }): RecoverEventsResponse {
+    return this.runtimeStateRepo.listEventsAfter(conversationId, afterSequence);
+  }
+
+  async respondToolApproval(request: ToolApprovalResponseRequest) {
+    const active = this.activeRequests.get(request.requestId);
+    if (!active) {
+      throw new Error('Approval target is no longer active.');
+    }
+
+    const resolved = this.approvalController.respond(request.requestId, {
+      approvalId: request.approvalId,
+      decision: request.decision,
+      reason: request.reason,
+    });
+
+    if (!resolved) {
+      throw new Error('Approval request was not found.');
+    }
+
+    const sessionScopeKey = resolved.sessionScopeKey ?? null;
+
+    // The other half of the approval correlation. Recorded here, after the
+    // decision is already resolved, so the trail can prove which request a
+    // response answered — without which a transcript shows an approval and a
+    // call with no way to tie them together. Purely observational: the branch
+    // below acts on `request.decision`, never on whether this was written.
+    if (isMcpToolName(resolved.toolName ?? '')) {
+      this.auditLog?.record({
+        requestId: request.requestId,
+        conversationId: active.request.conversationId,
+        type: 'approval_responded',
+        server: null,
+        plugin: this.pluginLookup?.(resolved.toolName ?? '') ?? null,
+        tool: resolved.toolName ?? null,
+        outcome:
+          request.decision === 'decline'
+            ? 'denied'
+            : request.decision === 'cancel'
+              ? 'cancelled'
+              : 'ok',
+        approvalId: request.approvalId,
+        toolCallId: resolved.toolCallId ?? null,
+        detail: request.reason ?? null,
+        payload: { decision: request.decision, sessionScopeKey },
+        // Keyed on the approval alone, matching `approval_requested`: a
+        // decision is made once, and a duplicate delivery of this response
+        // must not read as the approval having been decided twice.
+        idempotencyKey: `ap:${request.approvalId}`
+      });
+    }
+
+    this.recordRuntimeEnvelope(active, {
+      eventId: randomUUID(),
+      conversationId: active.request.conversationId,
+      turnId: active.turnId,
+      requestId: request.requestId,
+      activityType: 'approval.resolved',
+      tone: 'approval',
+      provider: active.request.providerId,
+      providerEventType: 'tool-approval-responded',
+      messageId: active.assistantMessageId,
+      toolCallId: resolved.toolCallId,
+      approvalId: request.approvalId,
+      toolType: resolved.toolType ? (resolved.toolType as never) : undefined,
+      payload: {
+        toolName: resolved.toolName,
+        decision: request.decision,
+        reason: request.reason,
+        sessionScopeKey,
+      },
+    });
+
+    if (request.decision === 'decline' || request.decision === 'cancel') {
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId: request.requestId,
+        activityType: 'tool.completed',
+        tone: 'tool',
+        provider: active.request.providerId,
+        providerEventType: 'tool-output-denied',
+        messageId: active.assistantMessageId,
+        toolCallId: resolved.toolCallId,
+        toolType: resolved.toolType ? (resolved.toolType as never) : undefined,
+        payload: {
+          toolName: resolved.toolName,
+          status: 'denied',
+          reason:
+            request.reason?.trim() ||
+            `${formatToolNameForDeniedCopy(resolved.toolName)} was not run because permission was denied.`,
+        },
+      });
+
+      const finalizedParts = finalizeMessageParts(active.parts);
+      this.conversationsRepo.updateMessage({
+        messageId: active.assistantMessageId,
+        content: getTextContentFromParts(finalizedParts),
+        reasoning: getReasoningContentFromParts(finalizedParts),
+        parts: finalizedParts,
+        responseMessages: shouldPersistResponseMessages(active.responseMessages, active.request.enableTools)
+          ? active.responseMessages
+          : null,
+        status: 'complete',
+        providerId: active.request.providerId,
+        modelId: active.request.modelId,
+      });
+
+      this.sendCompletionEvents(active.window, request.requestId, {
+        messageId: active.assistantMessageId,
+        status: 'completed',
+        parts: finalizedParts,
+        responseMessages: active.responseMessages,
+        pendingApprovals: [],
+      });
+      this.cleanupRequest(request.requestId, active);
+      return;
+    }
+
+    const history = this.conversationsRepo.getModelHistory(active.request.conversationId);
+    const approvalMessage: ModelMessage = {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-approval-response',
+          approvalId: request.approvalId,
+          approved: true,
+          ...(request.reason?.trim() ? { reason: request.reason.trim() } : {}),
+        },
+      ],
+    } as ModelMessage;
+
+    active.awaitingApproval = false;
+    void this.runRequest(request.requestId, active.request, [...history, ...active.responseMessages, approvalMessage]);
   }
 
   async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
+    const { BrowserWindow } = await import('electron');
     const srcdoc = buildVisualSrcDoc({
       visualId: request.visualId,
       content: request.content,
@@ -191,55 +874,147 @@ export class ChatEngine {
     window.show();
   }
 
-  private async runRequest(requestId: string, request: ChatStartRequest) {
+  private async runRequest(requestId: string, request: ChatStartRequest, messagesOverride?: ModelMessage[]) {
     const active = this.activeRequests.get(requestId);
     if (!active) {
       return;
     }
 
-    try {
-      const apiKey = await this.keychain.getSecret(request.providerId);
-      const provider = getProviderOrThrow(this.providers, request.providerId);
+    const elapsed = startTimer();
 
-      if (!apiKey) {
-        throw new MissingCredentialError('No API key is saved for the selected provider.');
+    try {
+      const result = await this.runtime.executeTurn({
+        requestId,
+        request,
+        signal: active.controller.signal,
+        assistantMessageId: active.assistantMessageId,
+        messagesOverride,
+        initialParts: active.parts,
+        subagentRuntime: this.subagentRuntime,
+        emitEvent: (event) => {
+          this.handleRuntimeStreamEvent(active, event);
+        },
+      });
+
+      active.parts = result.parts ?? active.parts;
+      if (result.responseMessages?.length) {
+        active.responseMessages.push(...result.responseMessages);
       }
 
-      const result = await this.executeWithRetry(requestId, request, provider, apiKey, active.controller.signal);
-      const messageId = this.conversationsRepo.addMessage({
-        conversationId: request.conversationId,
-        role: 'assistant',
-        content: getTextContentFromParts(result.parts) || result.content,
-        reasoning: getReasoningContentFromParts(result.parts) ?? result.reasoning ?? null,
-        parts: result.parts,
-        responseMessages: shouldPersistResponseMessages(result.responseMessages ?? null, request.enableTools)
-          ? result.responseMessages ?? null
-          : null,
-        status: 'complete',
-        providerId: request.providerId,
+      if (result.status === 'awaiting_approval') {
+        active.awaitingApproval = true;
+        const pendingApprovals = result.pendingApprovals.map((approval) => {
+          const toolType = inferCanonicalToolType({ toolName: approval.toolName });
+          return {
+            ...approval,
+            conversationId: request.conversationId,
+            toolType,
+            // A call asking to run outside the OS sandbox is a different act
+            // from the sandboxed one the user blessed for the session, and the
+            // scope key is only the tool's name — so a standing "always allow
+            // bash" would have waved it through unasked. Escalated calls carry
+            // no scope at all: they cannot match a grant, and accepting one
+            // cannot create a grant for the next.
+            sessionScopeKey: isSandboxEscalatedCall(active.parts, approval.toolCallId)
+              ? null
+              : buildApprovalScopeKey(toolType, approval.toolName),
+          };
+        });
+        this.approvalController.setPendingApprovals(requestId, pendingApprovals);
+        this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(request.conversationId), 'awaiting_approval');
+        const autoApproved = pendingApprovals.find(
+          (approval) =>
+            approval.sessionScopeKey &&
+            this.approvalController.hasConversationScopeGrant(request.conversationId, approval.sessionScopeKey),
+        );
+        if (autoApproved) {
+          void this.respondToolApproval({
+            requestId,
+            approvalId: autoApproved.approvalId,
+            decision: 'accept',
+          });
+        }
+        return;
+      }
+
+      if (shouldPersistResponseMessages(active.responseMessages, request.enableTools)) {
+        this.conversationsRepo.updateMessage({
+          messageId: active.assistantMessageId,
+          responseMessages: active.responseMessages,
+        });
+      }
+
+      logger.info('turn.completed', {
+        requestId,
         modelId: request.modelId,
+        ms: elapsed(),
         inputTokens: result.inputTokens ?? null,
         outputTokens: result.outputTokens ?? null,
         reasoningTokens: result.reasoningTokens ?? null,
-        latencyMs: result.latencyMs ?? null
+        parts: result.parts?.length ?? 0,
       });
 
-      this.sendEvent(active.window, {
-        type: 'meta',
-        requestId,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        reasoningTokens: result.reasoningTokens,
-        latencyMs: result.latencyMs
+      this.markConversationStatus(request.conversationId, 'completed', {
+        completedAt: new Date().toISOString(),
+        lastError: null,
       });
 
-      this.sendEvent(active.window, {
-        type: 'done',
-        requestId,
-        messageId
-      });
+      this.sendCompletionEvents(active.window, requestId, result);
+      this.cleanupRequest(requestId, active);
+
+      // Fire-and-forget: naming must never delay or fail the turn itself.
+      void this.maybeGenerateTitle(active).catch(() => undefined);
     } catch (error) {
       const normalized = normalizeError(error);
+      // `error` carries the raw provider text; the sanitiser in the logger
+      // keeps it from dumping a payload into the file.
+      logger.error('turn.failed', {
+        requestId,
+        modelId: request.modelId,
+        ms: elapsed(),
+        code: normalized.code,
+        retryable: normalized.retryable,
+        error,
+      });
+      this.rememberCapabilityRejection(active.request, error);
+      active.tracker?.markRequestError(normalized.code, normalized.message);
+      this.flushBufferedEvents(requestId);
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId,
+        activityType: 'runtime.error',
+        tone: 'error',
+        provider: active.request.providerId,
+        providerEventType: 'error',
+        messageId: active.assistantMessageId,
+        payload: {
+          code: normalized.code,
+          message: normalized.message,
+          retryable: normalized.retryable,
+        },
+      });
+      this.conversationsRepo.updateMessage({
+        messageId: active.assistantMessageId,
+        status: 'error',
+        errorCode: normalized.code,
+        parts: finalizeMessageParts(active.parts),
+      });
+      this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(active.request.conversationId), 'aborted');
+      this.runtimeStateRepo.updateProviderSession(requestId, { status: 'aborted' });
+      // An aborted turn can still have written files before it stopped, so it
+      // gets the same closing snapshot a completed one does.
+      await this.checkpoints.captureTurnEnd(active.request.conversationId, active.turnId);
+      // An abort is the user's own decision, not a failure of the task.
+      this.markConversationStatus(
+        active.request.conversationId,
+        normalized.code === 'aborted' ? 'idle' : 'failed',
+        {
+          completedAt: new Date().toISOString(),
+          lastError: normalized.code === 'aborted' ? null : normalized.message,
+        },
+      );
       this.sendEvent(active.window, {
         type: 'error',
         requestId,
@@ -247,257 +1022,185 @@ export class ChatEngine {
         message: normalized.message,
         retryable: normalized.retryable
       });
-    } finally {
-      active.window.removeListener('closed', active.onWindowClosed);
+      this.cleanupRequest(requestId, active);
+    }
+  }
+
+  /**
+   * Write down a capability the provider just refused.
+   *
+   * Guarded twice on purpose. The error text has to name the capability, *and*
+   * the turn has to have actually exercised it — a model complaining about
+   * images in a text-only turn is talking about something else (a tool result,
+   * its own output), and recording that would take images away from a model
+   * that supports them. Tools are guarded the same way, on whether this turn
+   * was sent with any.
+   */
+  private rememberCapabilityRejection(request: ChatStartRequest, error: unknown) {
+    if (!this.onCapabilityRejected) {
+      return;
+    }
+
+    const capability = detectRejectedCapability(error);
+    if (!capability) {
+      return;
+    }
+
+    if (!this.turnExercised(request, capability)) {
+      return;
+    }
+
+    logger.warn('capability.rejected', {
+      requestId: request.conversationId,
+      modelId: request.modelId,
+      capability,
+    });
+
+    void Promise.resolve(this.onCapabilityRejected({ modelId: request.modelId, capability })).catch(
+      () => undefined,
+    );
+  }
+
+  /** Did this turn actually use the thing the provider says it cannot do? */
+  private turnExercised(request: ChatStartRequest, capability: RejectedCapability) {
+    if (capability === 'tools') {
+      return request.enableTools === true;
+    }
+
+    const fileParts = (request.messages.at(-1)?.parts ?? []).filter(
+      (part): part is Extract<ChatInputPart, { type: 'file' }> => part.type === 'file',
+    );
+
+    return fileParts.some((part) => {
+      const kind = getAttachmentKind(normalizeAttachmentMediaType(part.mediaType, part.filename));
+      return capability === 'image' ? kind === 'image' : kind === 'document';
+    });
+  }
+
+  private sendCompletionEvents(window: BrowserWindow, requestId: string, result: ExecuteTurnResult) {
+    const active = this.activeRequests.get(requestId);
+    const finalParts = result.parts ?? active?.parts ?? [];
+    if (active) {
       this.flushBufferedEvents(requestId);
-      this.bufferedEvents.delete(requestId);
-      this.activeRequests.delete(requestId);
-    }
-  }
-
-  private async executeWithRetry(
-    requestId: string,
-    request: ChatStartRequest,
-    provider: ProviderAdapter,
-    apiKey: string,
-    signal: AbortSignal
-  ): Promise<ProviderStreamResult & { parts: ChatMessagePart[] }> {
-    let attempt = 0;
-    let streamedAnyResponse = false;
-
-    while (true) {
-      try {
-        const active = this.activeRequests.get(requestId);
-        if (!active) {
-          throw new Error('The chat request is no longer active.');
-        }
-
-        active.visualParser.reset();
-        let parts: ChatMessagePart[] = [];
-        let lastTextPartId = 'assistant-text';
-
-        const result = await provider.streamChat({
-          apiKey,
-          modelId: request.modelId,
-          messages: this.conversationsRepo.getModelHistory(request.conversationId),
-          system: request.enableTools ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${VISUAL_PROMPT}` : VISUAL_PROMPT,
-          tools: request.enableTools ? createBuiltInTools(this.modelsRepo) : undefined,
-          temperature: request.temperature,
-          maxOutputTokens: request.maxOutputTokens,
-          signal,
-          onChunk: (event) => {
-            streamedAnyResponse = true;
-            lastTextPartId = event.id;
-            parts = this.applyParsedChunks({
-              activeWindow: active.window,
-              parts,
-              parsed: active.visualParser.feed(event.delta, requestId),
-              requestId,
-              textPartId: event.id,
-              emitToRenderer: true,
-            });
-          },
-          onReasoningChunk: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-            this.sendEvent(active.window, {
-              type: 'reasoning',
-              requestId,
-              id: event.id,
-              delta: event.delta
-            });
-          },
-          onToolInputStart: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-start',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputDelta: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-delta',
-              requestId,
-              ...event
-            });
-          },
-          onToolInputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-input-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputAvailable: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-available',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputError: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-error',
-              requestId,
-              ...event
-            });
-          },
-          onToolOutputDenied: (event) => {
-            streamedAnyResponse = true;
-            parts = applyStreamEventToParts(parts, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
-            });
-            this.sendEvent(active.window, {
-              type: 'tool-output-denied',
-              requestId,
-              ...event
-            });
-          }
-        });
-        parts = this.applyParsedChunks({
-          activeWindow: active.window,
-          parts,
-          parsed: active.visualParser.flush(requestId),
-          requestId,
-          textPartId: lastTextPartId,
-          emitToRenderer: true,
-        });
-
-        parts = finalizeMessageParts(parts);
-
-        if (parts.length === 0) {
-          parts = buildFallbackMessageParts({
-            content: result.content,
-            reasoning: result.reasoning,
-            role: 'assistant'
-          });
-        }
-
-        return {
-          ...result,
-          parts
-        };
-      } catch (error) {
-        const normalized = normalizeError(error);
-        const canRetry = attempt === 0 && normalized.retryable && !streamedAnyResponse && !signal.aborted;
-
-        if (!canRetry) {
-          throw error;
-        }
-
-        attempt += 1;
-        await sleep(450 + Math.floor(Math.random() * 350));
-      }
-    }
-  }
-
-  private applyParsedChunks({
-    activeWindow,
-    parts,
-    parsed,
-    requestId,
-    textPartId,
-    emitToRenderer,
-  }: {
-    activeWindow: BrowserWindow;
-    parts: ChatMessagePart[];
-    parsed: ReturnType<VisualStreamParser['feed']>;
-    requestId: string;
-    textPartId: string;
-    emitToRenderer: boolean;
-  }) {
-    let nextParts = parts;
-
-    for (const item of parsed) {
-      if (item.type === 'text') {
-        const event: StreamEvent = {
-          type: 'chunk',
-          requestId,
-          id: textPartId,
-          delta: item.content,
-        };
-        nextParts = applyStreamEventToParts(nextParts, event);
-        if (emitToRenderer) {
-          this.sendEvent(activeWindow, event);
-        }
-        continue;
-      }
-
-      if (item.type === 'visual_start') {
-        const event: StreamEvent = {
-          type: 'visual-start',
-          requestId,
-          visualId: item.visualId!,
-          title: item.title,
-        };
-        nextParts = applyStreamEventToParts(nextParts, event);
-        if (emitToRenderer) {
-          this.sendEvent(activeWindow, event);
-        }
-        continue;
-      }
-
-      const event: StreamEvent = {
-        type: 'visual-complete',
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
         requestId,
-        visualId: item.visualId!,
-        content: item.content,
-        title: item.title,
-      };
-      nextParts = applyStreamEventToParts(nextParts, event);
-      if (emitToRenderer) {
-        this.sendEvent(activeWindow, event);
-      }
+        activityType: 'message.completed',
+        tone: 'info',
+        provider: active.request.providerId,
+        providerEventType: 'message.completed',
+        messageId: active.assistantMessageId,
+        payload: {
+          content: getTextContentFromParts(finalParts),
+          reasoning: getReasoningContentFromParts(finalParts),
+        },
+      });
+      this.recordRuntimeEnvelope(active, {
+        eventId: randomUUID(),
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        requestId,
+        activityType: 'turn.completed',
+        tone: 'info',
+        provider: active.request.providerId,
+        providerEventType: 'turn.completed',
+        messageId: active.assistantMessageId,
+        payload: {
+          inputTokens: result.inputTokens ?? null,
+          outputTokens: result.outputTokens ?? null,
+          reasoningTokens: result.reasoningTokens ?? null,
+          latencyMs: result.latencyMs ?? null,
+        },
+      });
+
+      const lastSequence = this.runtimeStateRepo.getLastSequence(active.request.conversationId);
+      this.runtimeStateRepo.completeTurn(active.turnId, lastSequence, 'completed');
+      this.runtimeStateRepo.updateProviderSession(requestId, { status: 'completed', lastSequence });
+      this.runtimeStateRepo.createCheckpoint({
+        conversationId: active.request.conversationId,
+        turnId: active.turnId,
+        sequence: lastSequence,
+        pendingApprovals: this.runtimeStateRepo.listPendingApprovals(active.request.conversationId),
+      });
+      // Not awaited: this method is synchronous and the turn is already over.
+      // The coordinator serializes per conversation, so the next turn's
+      // baseline still lands after this snapshot.
+      void this.checkpoints.captureTurnEnd(active.request.conversationId, active.turnId);
     }
 
-    return nextParts;
+    this.sendEvent(window, {
+      type: 'meta',
+      requestId,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      reasoningTokens: result.reasoningTokens,
+      latencyMs: result.latencyMs
+    });
+
+    this.sendEvent(window, {
+      type: 'done',
+      requestId,
+      messageId: result.messageId
+    });
   }
 
-  private sendEvent(window: BrowserWindow, event: StreamEvent) {
+  private cleanupRequest(requestId: string, active?: ActiveRequest) {
+    const target = active ?? this.activeRequests.get(requestId);
+    if (!target) {
+      return;
+    }
+
+    target.window.removeListener('closed', target.onWindowClosed);
+    this.flushBufferedEvents(requestId);
+    this.bufferedEvents.delete(requestId);
+    this.activeRequests.delete(requestId);
+    this.approvalController.clearRequest(requestId);
+    this.runningRequestIds.delete(requestId);
+    this.startNextQueuedRequest();
+  }
+
+  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {
+    active.tracker?.handleEvent(event);
+
+    if (
+      event.type === 'meta' ||
+      event.type === 'done' ||
+      event.type === 'error' ||
+      event.type === 'runtime-sync' ||
+      event.type === 'conversation-title'
+    ) {
+      return;
+    }
+
+    // Notices go straight to the window and are not recorded as activity: they
+    // describe the attempt, not the conversation, and a transcript replayed
+    // tomorrow should not still be announcing a retry that succeeded. Buffered
+    // deltas are flushed first so the notice cannot arrive before the text it
+    // follows.
+    if (event.type === 'notice') {
+      this.flushBufferedEvents(event.requestId);
+      this.sendEvent(active.window, event);
+      return;
+    }
+
     if (event.type === 'chunk' || event.type === 'reasoning' || event.type === 'tool-input-delta') {
       this.queueBufferedEvent(event.requestId, event);
       return;
     }
 
     this.flushBufferedEvents(event.requestId);
-    this.sendToWindow(window, event);
+    this.recordStreamEvent(active, event);
+  }
+
+  private recordStreamEvent(
+    active: ActiveRequest,
+    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' | 'notice' | 'conversation-title' }>
+  ) {
+    for (const envelope of this.normalizeStreamEvent(active, event)) {
+      this.recordRuntimeEnvelope(active, envelope);
+    }
   }
 
   private queueBufferedEvent(
@@ -513,9 +1216,9 @@ export class ChatEngine {
       this.bufferedEvents.set(requestId, buffered);
     }
 
-    const key = this.getBufferedEventKey(event);
+    const key = getBufferedEventKey(event);
     const existing = buffered.events.get(key);
-    buffered.events.set(key, this.mergeBufferedEvents(existing, event));
+    buffered.events.set(key, mergeBufferedEvents(existing, event));
 
     if (buffered.timer) {
       return;
@@ -548,6 +1251,7 @@ export class ChatEngine {
     }
 
     if (active.window.isDestroyed() || active.window.webContents.isDestroyed()) {
+      void this.subagentRuntime.interruptAll(active.request.conversationId, 'Window closed');
       active.controller.abort();
       active.window.removeListener('closed', active.onWindowClosed);
       this.clearBufferedEvents(requestId);
@@ -556,7 +1260,10 @@ export class ChatEngine {
     }
 
     for (const event of buffered.events.values()) {
-      if (!this.sendToWindow(active.window, event)) {
+      try {
+        this.recordStreamEvent(active, event);
+      } catch {
+        void this.subagentRuntime.interruptAll(active.request.conversationId, 'Window closed');
         active.controller.abort();
         active.window.removeListener('closed', active.onWindowClosed);
         this.clearBufferedEvents(requestId);
@@ -582,6 +1289,393 @@ export class ChatEngine {
     buffered.events.clear();
   }
 
+  private sendEvent(window: BrowserWindow, event: StreamEvent) {
+    this.sendToWindow(window, event);
+  }
+
+  private normalizeStreamEvent(
+    active: ActiveRequest,
+    event: Exclude<StreamEvent, { type: 'runtime-sync' | 'done' | 'meta' | 'error' | 'notice' | 'conversation-title' }>
+  ) {
+    const base = {
+      conversationId: active.request.conversationId,
+      turnId: active.turnId,
+      requestId: active.requestId ?? event.requestId,
+      provider: active.request.providerId,
+      messageId: active.assistantMessageId,
+    };
+
+    switch (event.type) {
+      case 'chunk':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: { delta: event.delta, partId: event.id },
+        }];
+      case 'reasoning':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'reasoning.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: { delta: event.delta, partId: event.id },
+        }];
+      case 'tool-input-start':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.started' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+          },
+        }];
+      case 'tool-input-delta':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.updated' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          providerEventType: event.type,
+          payload: {
+            delta: event.delta,
+            summary: event.delta,
+          },
+        }];
+      case 'tool-input-available':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.updated' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+          },
+        }];
+      case 'tool-output-available':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: event.preliminary ? 'tool.updated' : 'tool.completed',
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            output: event.output,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+            status: event.preliminary ? 'running' : 'completed',
+            summary: typeof event.output === 'string' ? event.output : undefined,
+          },
+        }];
+      case 'tool-output-error':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.completed' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName, dynamic: event.dynamic }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            input: event.input,
+            errorText: event.errorText,
+            dynamic: event.dynamic,
+            providerExecuted: event.providerExecuted,
+            title: event.title,
+            status: 'error',
+            summary: event.errorText,
+          },
+        }];
+      case 'tool-output-denied':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'tool.completed' as const,
+          tone: 'tool' as const,
+          toolCallId: event.toolCallId,
+          toolType: inferCanonicalToolType({ toolName: event.toolName }),
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            reason: event.reason,
+            status: 'denied',
+            summary: event.reason,
+          },
+        }];
+      case 'tool-approval-requested': {
+        const toolType = inferCanonicalToolType({ toolName: event.toolName });
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'approval.requested' as const,
+          tone: 'approval' as const,
+          toolCallId: event.toolCallId,
+          approvalId: event.approvalId,
+          toolType,
+          providerEventType: event.type,
+          payload: {
+            toolName: event.toolName,
+            reason: event.reason,
+            sessionScopeKey: buildApprovalScopeKey(toolType, event.toolName),
+          },
+        }];
+      }
+      case 'tool-approval-responded':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'approval.resolved' as const,
+          tone: 'approval' as const,
+          toolCallId: event.toolCallId,
+          approvalId: event.approvalId,
+          providerEventType: event.type,
+          payload: {
+            decision: event.approved ? 'accept' : 'decline',
+            reason: event.reason,
+          },
+        }];
+      case 'plugin-invocation':
+        // Recorded as a runtime envelope, not only rendered. This is the first
+        // line of the audit trail the plugin work is building toward: which
+        // plugin, which skill, which version, and whether it resolved — all
+        // captured at the moment the turn was scoped, before any tool ran.
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'turn.started' as const,
+          tone: event.outcome === 'invoked' ? ('info' as const) : ('error' as const),
+          providerEventType: event.type,
+          payload: {
+            kind: 'plugin-invocation',
+            plugin: event.plugin,
+            skill: event.skill,
+            mention: event.mention,
+            outcome: event.outcome,
+            version: event.version,
+            detail: event.detail,
+          },
+        }];
+      case 'visual-start':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.delta' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: {
+            kind: 'visual-start',
+            visualId: event.visualId,
+            title: event.title,
+          },
+        }];
+      case 'visual-complete':
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: 'message.completed' as const,
+          tone: 'info' as const,
+          providerEventType: event.type,
+          payload: {
+            kind: 'visual-complete',
+            visualId: event.visualId,
+            content: event.content,
+            title: event.title,
+          },
+        }];
+    }
+  }
+
+  private recordRuntimeEnvelope(
+    active: ActiveRequest,
+    input: {
+      eventId: string;
+      conversationId: string;
+      turnId: string;
+      requestId: string;
+      activityType: any;
+      tone: any;
+      provider: any;
+      providerEventType?: string;
+      payload: Record<string, unknown>;
+      messageId?: string;
+      toolCallId?: string;
+      approvalId?: string;
+      toolType?: any;
+    },
+  ) {
+    const envelope = this.runtimeStateRepo.recordEvent({
+      ...input,
+      messageId: input.messageId ?? active.assistantMessageId,
+    });
+
+    active.parts = applyRuntimeEventToMessageParts(active.parts, envelope);
+    this.conversationsRepo.updateMessage({
+      messageId: active.assistantMessageId,
+      content: getTextContentFromParts(active.parts),
+      reasoning: getReasoningContentFromParts(active.parts),
+      parts: active.parts,
+      providerId: active.request.providerId,
+      modelId: active.request.modelId,
+    });
+
+    this.sendToWindow(active.window, {
+      type: 'runtime-sync',
+      conversationId: active.request.conversationId,
+      requestId: active.requestId ?? active.assistantMessageId,
+      eventId: envelope.eventId,
+      sequence: envelope.sequence,
+    });
+  }
+
+  /**
+   * True while a title is ours to change: either the untouched
+   * `Session · <date>` placeholder, or an earlier automatic name. A title
+   * the user typed is final and never overwritten.
+   */
+  private canAutoTitle(conversationId: string): boolean {
+    const state = this.conversationsRepo.getTitleState(conversationId);
+    if (!state) {
+      return false;
+    }
+
+    return state.auto || isPlaceholderSessionTitle(state.title);
+  }
+
+  /**
+   * Immediate, offline naming from the user's own words. Runs inside
+   * `start()` so the sidebar row is named the moment the message is sent.
+   */
+  private applyLocalTitle(window: BrowserWindow, conversationId: string, userText: string) {
+    try {
+      if (!this.canAutoTitle(conversationId)) {
+        return;
+      }
+
+      const title = deriveTitleFromUserMessage(userText);
+      if (!title) {
+        return;
+      }
+
+      const renamed = this.conversationsRepo.rename(conversationId, title, { auto: true });
+      this.sendToWindow(window, {
+        type: 'conversation-title',
+        conversationId,
+        title: renamed.title,
+      });
+    } catch (error) {
+      // Naming must never be able to break sending a message.
+      console.warn('[titles] local naming failed; keeping the placeholder.', error);
+    }
+  }
+
+  /**
+   * Improve on the local name once the model has answered, using the full
+   * exchange. Runs after the turn's `done` event and never blocks it.
+   */
+  private async maybeGenerateTitle(active: ActiveRequest) {
+    const conversationId = active.request.conversationId;
+
+    if (!this.canAutoTitle(conversationId)) {
+      return;
+    }
+
+    const lastUserMessage = [...active.request.messages].reverse().find((message) => message.role === 'user');
+    const userText = lastUserMessage?.content?.trim().slice(0, 600);
+    if (!userText) {
+      return;
+    }
+    const assistantText = getTextContentFromParts(active.parts).trim().slice(0, 600);
+
+    // The local name is already on screen; the model only replaces it if it
+    // produces something usable. A provider hiccup leaves the session named.
+    let title: string | null = null;
+
+    const adapter = this.providers.get(active.request.providerId);
+    const apiKey = adapter ? await this.keychain.getSecret(active.request.providerId) : null;
+
+    if (adapter && apiKey) {
+      try {
+        const result = await adapter.streamChat({
+          apiKey,
+          modelId: active.request.modelId,
+          // Same catalog facts the turn itself uses. Without them the
+          // request carries a default temperature, which reasoning models
+          // reject with a hard 400 (see `resolveTemperature`).
+          modelHints: this.modelsRepo.getRuntimeHints(active.request.modelId),
+          // A title needs no deliberation, and on a reasoning model the
+          // thinking tokens come out of the same budget as the answer —
+          // leaving the reply empty if the model is allowed to ruminate.
+          reasoningEffort: 'minimal',
+          system:
+            'Generate a short title for a chat session based on its opening exchange. ' +
+            'Reply with the title only: 3-6 words, no quotes, no trailing punctuation, ' +
+            'same language as the conversation.',
+          messages: [
+            {
+              role: 'user',
+              content: `User message:\n${userText}\n\nAssistant reply:\n${assistantText || '(none)'}`,
+            },
+          ],
+          maxOutputTokens: 1_000,
+          // No private deadline here: the provider stream has its own
+          // first-response and idle watchdogs, and a tighter timer just
+          // killed slow-but-healthy models before they answered.
+          signal: AbortSignal.timeout(TITLE_GENERATION_TIMEOUT_MS),
+          onChunk: () => {},
+        });
+
+        title = sanitizeGeneratedTitle(result.content) ?? title;
+      } catch (error) {
+        // Never fatal — but never silent either. Swallowing this is what
+        // made the feature look like it simply did not run.
+        console.warn(
+          `[titles] model naming failed for ${active.request.modelId}; keeping the local title.`,
+          error
+        );
+      }
+    }
+
+    if (!title) {
+      return;
+    }
+
+    // Re-check: the user may have renamed while the model was working.
+    if (!this.canAutoTitle(conversationId)) {
+      return;
+    }
+
+    const renamed = this.conversationsRepo.rename(conversationId, title, { auto: true });
+    this.sendToWindow(active.window, {
+      type: 'conversation-title',
+      conversationId,
+      title: renamed.title,
+    });
+  }
+
   private sendToWindow(window: BrowserWindow, event: StreamEvent) {
     if (window.isDestroyed() || window.webContents.isDestroyed()) {
       return false;
@@ -594,44 +1688,5 @@ export class ChatEngine {
       return false;
     }
   }
-
-  private getBufferedEventKey(event: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>) {
-    if (event.type === 'tool-input-delta') {
-      return `${event.type}:${event.toolCallId}`;
-    }
-
-    return `${event.type}:${event.id}`;
-  }
-
-  private mergeBufferedEvents(
-    existing: StreamEvent | undefined,
-    next: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>
-  ): StreamEvent {
-    if (!existing) {
-      return next;
-    }
-
-    if (existing.type === 'chunk' && next.type === 'chunk') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    if (existing.type === 'reasoning' && next.type === 'reasoning') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    if (existing.type === 'tool-input-delta' && next.type === 'tool-input-delta') {
-      return {
-        ...existing,
-        delta: `${existing.delta}${next.delta}`
-      };
-    }
-
-    return next;
-  }
 }
+

@@ -10,6 +10,7 @@
   --bg-panel: #0b0d12;
   --bg-surface: #101319;
   --bg-elevated: #151922;
+  --bg-overlay: #1a1e29; /* Opaque surface for popovers, dialogs, menus */
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -29,8 +30,15 @@
   --text-primary: #ffffff;
   --text-secondary: #cbd5e1;
   --text-tertiary: #94a3b8;
-  --text-muted: #64748b;
-  --text-faint: #475569;
+  /*
+   * Contrast on --bg-base (#07080b). --text-muted backs
+   * `text-muted-foreground` (placeholders, dialog descriptions, menu
+   * shortcuts), so it must clear WCAG AA 4.5:1; it was #64748b = 4.20:1.
+   * --text-faint was #475569 = 2.64:1, illegible wherever it carried real
+   * text. The whole scale moved up one step.
+   */
+  --text-muted: #7d8b9e; /* 5.78:1 */
+  --text-faint: #6b7a90; /* 4.59:1 */
   --text-inverse: #000000;
 
   /* Semantic */
@@ -53,6 +61,10 @@
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
   --accent-text: #ffffff;
+  /* Part of the theme contract: every theme owes a tinted accent surface
+     and a focus ring matched to its own accent. */
+  --accent-surface: rgba(59, 130, 246, 0.14);
+  --ring: rgba(59, 130, 246, 0.7);
 
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);
@@ -73,12 +85,16 @@
   --font-code-sans: var(--font-ui-family);
   --font-code-mono: var(--font-mono-system);
 
-  /* Border radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
+  /* Border radius — the contract defaults, restated in full. */
+  --radius-2xs: 0.125rem; /* 2px */
+  --radius-xs: 0.25rem; /* 4px */
+  --radius-sm: 0.375rem; /* 6px */
+  --radius-md: 0.5rem; /* 8px */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-xl: 1rem; /* 16px */
+  --radius-2xl: 1.25rem; /* 20px */
+  --radius-3xl: 1.5rem; /* 24px */
+  --radius-4xl: 2rem; /* 32px */
   --radius-subtle: 4px;
   --radius-full: 9999px;
 

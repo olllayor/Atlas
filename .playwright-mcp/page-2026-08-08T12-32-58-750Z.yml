@@ -1,0 +1,257 @@
+- generic [active] [ref=f2e1]:
+  - generic [ref=f2e2]:
+    - text: For the complete documentation index, see
+    - link "llms.txt" [ref=f2e3] [cursor=pointer]:
+      - /url: /llms.txt
+    - text: . Markdown versions of documentation pages are available by appending
+    - code [ref=f2e4]: .md
+    - text: to the page URL.
+  - banner [ref=f2e5]:
+    - generic [ref=f2e6]:
+      - link "ChatGPT" [ref=f2e7] [cursor=pointer]:
+        - /url: /
+      - navigation [ref=f2e12]:
+        - link "Home" [ref=f2e14] [cursor=pointer]:
+          - /url: /
+        - link "Docs" [ref=f2e16] [cursor=pointer]:
+          - /url: /docs
+        - link "Use cases" [ref=f2e18] [cursor=pointer]:
+          - /url: /use-cases
+        - link "Resources" [ref=f2e20] [cursor=pointer]:
+          - /url: /resources
+      - generic [ref=f2e21]:
+        - link "Try ChatGPT" [ref=f2e25] [cursor=pointer]:
+          - /url: https://chatgpt.com/
+        - button "Toggle light and dark theme" [ref=f2e30] [cursor=pointer]
+        - button "Search the docs" [ref=f2e33] [cursor=pointer]
+  - navigation "Docs sections" [ref=f2e38]:
+    - link "Overview" [ref=f2e39] [cursor=pointer]:
+      - /url: /docs
+    - link "Features" [ref=f2e42] [cursor=pointer]:
+      - /url: /docs/features
+    - link "Configuration" [ref=f2e44] [cursor=pointer]:
+      - /url: /docs/configuration
+    - link "Developers" [ref=f2e46] [cursor=pointer]:
+      - /url: /docs/developers
+    - link "Security" [ref=f2e48] [cursor=pointer]:
+      - /url: /docs/security-administration
+    - link "Administration" [ref=f2e50] [cursor=pointer]:
+      - /url: /docs/administration
+  - generic [ref=f2e53]:
+    - navigation [ref=f2e55]:
+      - list [ref=f2e57]:
+        - listitem [ref=f2e58]:
+          - link "Home" [ref=f2e59] [cursor=pointer]:
+            - /url: /docs
+      - generic [ref=f2e61]:
+        - heading "Get started" [level=3] [ref=f2e62]
+        - list [ref=f2e63]:
+          - listitem [ref=f2e64]:
+            - link "Quickstart" [ref=f2e65] [cursor=pointer]:
+              - /url: /docs/quickstart
+          - listitem [ref=f2e67]:
+            - link "Use ChatGPT" [ref=f2e68] [cursor=pointer]:
+              - /url: /docs/use-chatgpt
+          - listitem [ref=f2e70]:
+            - link "Get started with Work" [ref=f2e71] [cursor=pointer]:
+              - /url: /docs/get-started-with-work
+          - listitem [ref=f2e73]:
+            - link "Import from another agent" [ref=f2e74] [cursor=pointer]:
+              - /url: /docs/import
+      - generic [ref=f2e76]:
+        - heading "Foundations" [level=3] [ref=f2e77]
+        - list [ref=f2e78]:
+          - listitem [ref=f2e79]:
+            - link "Prompting" [ref=f2e80] [cursor=pointer]:
+              - /url: /docs/prompting
+          - listitem [ref=f2e82]:
+            - link "Personalize ChatGPT" [ref=f2e83] [cursor=pointer]:
+              - /url: /docs/personalize
+          - listitem [ref=f2e85]:
+            - link "Skills & Plugins" [ref=f2e86] [cursor=pointer]:
+              - /url: /docs/skills-and-plugins
+          - listitem [ref=f2e88]:
+            - link "Permissions" [ref=f2e89] [cursor=pointer]:
+              - /url: /docs/permission-modes
+      - generic [ref=f2e91]:
+        - heading "Explore" [level=3] [ref=f2e92]
+        - list [ref=f2e93]:
+          - listitem [ref=f2e94]:
+            - link "What's new" [ref=f2e95] [cursor=pointer]:
+              - /url: /docs/whats-new
+          - listitem [ref=f2e97]:
+            - link "Models" [ref=f2e98] [cursor=pointer]:
+              - /url: /docs/models
+          - listitem [ref=f2e100]:
+            - link "Pricing" [ref=f2e101] [cursor=pointer]:
+              - /url: /docs/pricing
+          - listitem [ref=f2e103]:
+            - link "Glossary" [ref=f2e104] [cursor=pointer]:
+              - /url: /docs/glossary
+      - generic [ref=f2e106]:
+        - heading "Available on" [level=3] [ref=f2e107]
+        - list [ref=f2e108]:
+          - listitem [ref=f2e109]:
+            - link "ChatGPT desktop app" [ref=f2e110] [cursor=pointer]:
+              - /url: /docs/app
+          - listitem [ref=f2e112]:
+            - link "Remote" [ref=f2e113] [cursor=pointer]:
+              - /url: /docs/remote
+          - listitem [ref=f2e115]:
+            - link "ChatGPT on the web" [ref=f2e116] [cursor=pointer]:
+              - /url: /docs/web
+          - listitem [ref=f2e118]:
+            - link "Codex CLI" [ref=f2e119] [cursor=pointer]:
+              - /url: /docs/codex/cli
+          - listitem [ref=f2e121]:
+            - link "Codex IDE extension" [ref=f2e122] [cursor=pointer]:
+              - /url: /docs/codex/ide
+          - listitem [ref=f2e124]:
+            - link "Codex cloud" [ref=f2e125] [cursor=pointer]:
+              - /url: /docs/cloud
+      - generic [ref=f2e127]:
+        - heading "Releases" [level=3] [ref=f2e128]
+        - list [ref=f2e129]:
+          - listitem [ref=f2e130]:
+            - link "Changelog" [ref=f2e131] [cursor=pointer]:
+              - /url: /docs/changelog
+          - listitem [ref=f2e133]:
+            - link "Feature Maturity" [ref=f2e134] [cursor=pointer]:
+              - /url: /docs/feature-maturity
+          - listitem [ref=f2e136]:
+            - link "Open Source" [ref=f2e137] [cursor=pointer]:
+              - /url: /docs/open-source
+    - main [ref=f2e139]:
+      - generic [ref=f2e142]:
+        - generic [ref=f2e144]:
+          - heading "Permissions" [level=1] [ref=f2e146]
+          - paragraph [ref=f2e147]: Choose what ChatGPT can do on your computer and when it asks for approval
+          - button "Copy Page" [ref=f2e151] [cursor=pointer]
+        - article [ref=f2e156]:
+          - heading "Permission modes Copy link to permission modes" [level=2] [ref=f2e157]:
+            - generic [ref=f2e158]: Permission modes
+            - button "Copy link to permission modes" [ref=f2e159] [cursor=pointer]
+          - paragraph [ref=f2e162]: Permissions control how ChatGPT (in the desktop app) and Codex (in the CLI or IDE) handle local actions, such as editing files, running commands, and using the internet. The mode you choose sets the boundary for what ChatGPT can do on its own and what needs review.
+          - paragraph [ref=f2e163]:
+            - text: For most work, start with
+            - strong [ref=f2e164]: Ask for approval
+            - text: . It lets ChatGPT work within the current workspace and pauses before reaching beyond that boundary.
+          - paragraph [ref=f2e165]: Select different modes below to understand how each one works.
+          - generic [ref=f2e169]:
+            - generic [ref=f2e171]:
+              - generic [ref=f2e172]: Ask Codex anything.
+              - generic [ref=f2e173]:
+                - generic [ref=f2e174]:
+                  - button "Add attachment" [ref=f2e175] [cursor=pointer]
+                  - generic [ref=f2e178]:
+                    - button "Ask for approval" [expanded] [ref=f2e179] [cursor=pointer]
+                    - generic [ref=f2e184]:
+                      - menuitemradio "Ask for approval" [checked] [ref=f2e185] [cursor=pointer]
+                      - menuitemradio "Approve for me" [ref=f2e191] [cursor=pointer]
+                      - menuitemradio "Full access" [ref=f2e196] [cursor=pointer]
+                      - menuitemradio "Custom (config.toml)" [ref=f2e202] [cursor=pointer]
+                - generic [ref=f2e207]:
+                  - button "Model and reasoning settings" [ref=f2e208] [cursor=pointer]:
+                    - generic [ref=f2e209]: 5.6 Sol Medium
+                  - button "Voice input" [ref=f2e212] [cursor=pointer]
+                  - button "Send" [ref=f2e216] [cursor=pointer]
+            - generic [ref=f2e219]:
+              - heading "Ask for approval" [level=4] [ref=f2e223]
+              - paragraph [ref=f2e224]: Codex can read and edit files in the current workspace and run routine local commands. It asks before using the internet or going beyond the workspace boundary.
+              - generic [ref=f2e225]:
+                - generic [ref=f2e226]:
+                  - term [ref=f2e227]: Sandbox
+                  - definition [ref=f2e228]:
+                    - code [ref=f2e229]: workspace-write
+                - generic [ref=f2e230]:
+                  - term [ref=f2e231]: Approvals policy
+                  - definition [ref=f2e232]:
+                    - code [ref=f2e233]: on-request
+                - generic [ref=f2e234]:
+                  - term [ref=f2e235]: Reviewer
+                  - definition [ref=f2e236]:
+                    - code [ref=f2e237]: user
+          - heading "Enable modes Copy link to enable modes" [level=2] [ref=f2e238]:
+            - generic [ref=f2e239]: Enable modes
+            - button "Copy link to enable modes" [ref=f2e240] [cursor=pointer]
+          - paragraph [ref=f2e243]: When you’re using the ChatGPT desktop app for the first time, you need to enable modes in application settings.
+          - paragraph [ref=f2e244]:
+            - strong [ref=f2e245]: Ask for approval
+            - text: is always available. To add
+            - strong [ref=f2e246]: Approve for me
+            - text: (called
+            - strong [ref=f2e247]: Auto-review
+            - text: in settings) or
+            - strong [ref=f2e248]: Full access
+            - text: to the permissions menu, open
+            - strong [ref=f2e249]: Settings > General
+            - text: in the ChatGPT desktop app, then turn on the mode under
+            - strong [ref=f2e250]: Permissions
+            - text: . Enabling a mode makes it available in the menu; it doesn’t select the mode or change an existing chat.
+          - group "Permission visibility controls showing Default permissions, automatic review, and Full access." [ref=f2e252]:
+            - generic [ref=f2e253]:
+              - generic [ref=f2e254]: Permissions
+              - generic [ref=f2e255]:
+                - generic [ref=f2e256]:
+                  - generic [ref=f2e257]:
+                    - paragraph [ref=f2e258]: Default permissions
+                    - paragraph [ref=f2e259]: By default, ChatGPT can read and edit files in its workspace. It can ask for additional access when needed
+                  - switch "Default permissions" [checked] [disabled] [ref=f2e261]: ✔︎
+                - generic [ref=f2e262]:
+                  - generic [ref=f2e263]:
+                    - paragraph [ref=f2e264]: Auto-review
+                    - paragraph [ref=f2e265]: ChatGPT can read and edit files in its workspace. ChatGPT automatically reviews requests for additional access. Auto-review can make mistakes. Learn more about elevated risks.
+                  - switch "Auto-review" [checked] [ref=f2e267] [cursor=pointer]: ✔︎
+                - generic [ref=f2e268]:
+                  - generic [ref=f2e269]:
+                    - paragraph [ref=f2e270]: Full access
+                    - paragraph [ref=f2e271]: When ChatGPT runs with full access, it can edit any file on your computer and run commands with network, without your approval. This significantly increases the risk of data loss, leaks, or unexpected behavior. Learn more about elevated risks.
+                  - switch "Full access" [checked] [ref=f2e273] [cursor=pointer]: ✔︎
+          - paragraph [ref=f2e282]: The available modes can depend on your local configuration and your organization’s requirements. A mode that isn’t allowed appears disabled.
+          - heading "How permissions work Copy link to how permissions work" [level=2] [ref=f2e283]:
+            - generic [ref=f2e284]: How permissions work
+            - button "Copy link to how permissions work" [ref=f2e285] [cursor=pointer]
+          - paragraph [ref=f2e288]: "Two controls work together:"
+          - list [ref=f2e289]:
+            - listitem [ref=f2e290]:
+              - text: The
+              - strong [ref=f2e291]: sandbox
+              - text: defines which files and network resources ChatGPT can access.
+            - listitem [ref=f2e292]:
+              - strong [ref=f2e293]: Approvals
+              - text: determine when ChatGPT pauses before an action or sends the request to automatic review.
+          - paragraph [ref=f2e294]:
+            - text: Changing who reviews a request doesn’t expand the sandbox. For example,
+            - strong [ref=f2e295]: Approve for me
+            - text: keeps the same workspace boundary as
+            - strong [ref=f2e296]: Ask for approval
+            - text: ; it sends requests to cross that boundary to automatic review.
+          - paragraph [ref=f2e297]: Use the permissions control below the composer in the ChatGPT desktop app or IDE extension.
+          - paragraph [ref=f2e298]:
+            - text: In the CLI, enter
+            - code [ref=f2e299]: /permissions
+            - text: . For technical details, see
+            - link "Sandbox" [ref=f2e300] [cursor=pointer]:
+              - /url: /docs/sandboxing
+            - text: ","
+            - link "automatic review" [ref=f2e301] [cursor=pointer]:
+              - /url: /docs/sandboxing/auto-review
+            - text: ", or"
+            - link "permission profiles" [ref=f2e302] [cursor=pointer]:
+              - /url: /docs/permissions
+            - text: .
+      - navigation [ref=f2e305]:
+        - link "Previous Skills & Plugins" [ref=f2e307] [cursor=pointer]:
+          - /url: /docs/skills-and-plugins
+          - generic [ref=f2e310]:
+            - generic [ref=f2e311]: Previous
+            - generic [ref=f2e312]: Skills & Plugins
+  - generic:
+    - button "Ask AI" [ref=f2e313] [cursor=pointer]
+    - dialog [ref=f2e315]:
+      - banner [ref=f2e316]:
+        - heading "Docs agent" [level=2] [ref=f2e317]
+        - generic [ref=f2e318]:
+          - button "Start a new docs agent chat" [ref=f2e319] [cursor=pointer]
+          - button "Close docs agent" [ref=f2e322] [cursor=pointer]
+      - paragraph [ref=f2e327]: Loading docs agent...

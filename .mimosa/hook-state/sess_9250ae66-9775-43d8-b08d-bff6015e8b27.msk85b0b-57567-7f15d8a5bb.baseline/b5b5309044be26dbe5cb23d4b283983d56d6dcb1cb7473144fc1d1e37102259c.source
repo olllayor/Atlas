@@ -1,0 +1,1574 @@
+import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
+
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
+import type {
+  ChatInputMessage,
+  ChatMessagePart,
+  ChatStartRequest,
+  ContextUsageSnapshot,
+  GetContextUsageRequest,
+  StreamEvent,
+  StreamPluginInvocationEvent,
+} from '../../../shared/contracts';
+import type { MentionId } from '../../../shared/mentions';
+import type { PluginMentionEntry, PluginMentionTarget } from '../../../shared/pluginMentions';
+import { describePluginMention, parsePluginMentions } from '../../../shared/pluginMentions';
+import { isMcpToolName } from '../../../shared/mcp';
+import { pluginServerName } from '../../../shared/plugins';
+import { resolveMcpToolProvenance } from '../mcp/mcpToolProvenance';
+import type { AuditInput } from '../mcp/McpAuditLog';
+import {
+  applyStreamEventToParts,
+  buildFallbackMessageParts,
+  finalizeMessageParts,
+  getReasoningContentFromParts,
+  getTextContentFromParts,
+} from '../../../shared/messageParts';
+import { estimateImageTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
+import type { VisualMode } from '../../../shared/visualIntent';
+import { DEFAULT_VISUAL_MODE, resolveVisualGate } from '../../../shared/visualIntent';
+import { VisualStreamParser } from '../../../shared/visualParser';
+import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
+import type { ModelsRepo } from '../../db/repositories/modelsRepo';
+import type { KeychainStore } from '../../secrets/keychain';
+import { DEFAULT_TOOL_PERMISSION_MODE } from '../../../shared/chatParameters';
+import {
+  PLAN_TOOL_SYSTEM_PROMPT,
+  TOOL_USE_SYSTEM_PROMPT,
+  createBuiltInTools,
+  describeAgentInstructionsForPrompt,
+  describeToolPermissionsForPrompt,
+  describeWorkspaceModeForPrompt
+} from '../tools/builtInTools';
+import type { SkillsService } from '../../plugins/SkillsService';
+import { createSkillTools } from '../../plugins/skillTools';
+import type { ToolWorkspace } from '../tools/toolWorkspace';
+import type { SubagentRuntime } from '../agents/SubagentRuntime';
+import { DEFAULT_TOOL_WORKSPACE } from '../tools/toolWorkspace';
+import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
+import { formatToolError } from '../tools/ToolErrorFormatter';
+import { logger, startTimer } from '../../observability/logger';
+import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
+import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
+import type { ProviderRegistry } from './providerRegistry';
+import { getProviderOrThrow } from './providerRegistry';
+import { DEFAULT_STREAM_CORE_CONFIG, resolveMaxOutputTokens } from '../providers/streamCore';
+import { shouldPersistResponseMessages } from './persistResponseMessages';
+import { VISUAL_PROMPT } from './VISUAL_PROMPT';
+import type { ContextBuildMode } from './ContextManager';
+import { ContextManager } from './ContextManager';
+
+/** What a turn's Sites gate is evaluated against. */
+export type SiteToolContext = {
+  conversationId: string;
+  mentions: MentionId[];
+};
+
+/**
+ * Supplies MCP tools to a turn.
+ *
+ * `loadTools` may connect and is awaited on the send path; `peekTools` answers
+ * from cache for the synchronous context meter.
+ */
+/** Which turn an audit record belongs to, and whose plugin produced it. */
+export type McpAuditContext = {
+  requestId: string;
+  conversationId: string;
+  pluginFor?: (serverName: string) => { name: string; version: string | null } | null;
+};
+
+export type McpToolsProvider = {
+  loadTools: (conversationId?: string, audit?: McpAuditContext) => Promise<ToolSet>;
+  peekTools: () => ToolSet;
+};
+
+export type PendingToolApproval = {
+  approvalId: string;
+  toolCallId: string;
+  toolName?: string;
+  reason?: string;
+};
+
+export type ExecuteTurnRequest = {
+  requestId: string;
+  request: ChatStartRequest;
+  signal: AbortSignal;
+  emitEvent: (event: StreamEvent) => void;
+  assistantMessageId?: string;
+  messagesOverride?: ModelMessage[];
+  initialParts?: ChatMessagePart[];
+  subagentRuntime?: SubagentRuntime;
+  persistMessage?: boolean;
+  parentAgentId?: string;
+  allowedTools?: string[];
+};
+
+export type ExecuteTurnResult = {
+  messageId: string;
+  status: 'completed' | 'awaiting_approval';
+  parts: ChatMessagePart[];
+  responseMessages: ModelMessage[] | null;
+  pendingApprovals: PendingToolApproval[];
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  latencyMs?: number;
+};
+
+type TurnState = {
+  parts: ChatMessagePart[];
+  lastTextPartId: string;
+  /**
+   * Bumped every time a tool call starts, and mixed into the id of the text
+   * and reasoning parts that follow.
+   *
+   * Providers are free to reuse one part id across the steps of a tool loop
+   * (several of the OpenRouter free models do). Without this, the text a model
+   * writes *after* a search appends to the part it wrote *before* the search,
+   * so the transcript shows one run-on paragraph with every tool row stranded
+   * below it — the model appears to have kept working after it answered. The
+   * step number makes each stretch of prose its own part, in the order it was
+   * actually produced.
+   */
+  stepIndex: number;
+  /** Tool calls already counted, so one call cannot bump the step twice. */
+  steppedToolCallIds: Set<string>;
+  visualParser: VisualStreamParser;
+  pendingApprovals: Map<string, PendingToolApproval>;
+};
+
+/**
+ * Namespace a provider's text/reasoning part id by the step it belongs to.
+ *
+ * Step 0 keeps the raw id so nothing about single-step turns changes — including
+ * the ids already written to the database.
+ */
+export function stepScopedPartId(partId: string, stepIndex: number) {
+  return stepIndex === 0 ? partId : `${partId}#${stepIndex}`;
+}
+
+/**
+ * The text of the message this turn is answering.
+ *
+ * Attachments are skipped on purpose: a pasted screenshot is context, not a
+ * request to draw one.
+ */
+export function latestUserText(messages: ChatInputMessage[] | undefined): string {
+  if (!messages?.length) {
+    return '';
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') {
+      continue;
+    }
+
+    const fromParts = (message.parts ?? [])
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .filter((text) => text.length > 0)
+      .join('\n');
+
+    return (fromParts || message.content || '').trim();
+  }
+
+  return '';
+}
+
+/** Open a new step the first time a given tool call is seen. */
+function beginToolStep(turnState: Pick<TurnState, 'stepIndex' | 'steppedToolCallIds'>, toolCallId: string) {
+  if (turnState.steppedToolCallIds.has(toolCallId)) {
+    return;
+  }
+
+  turnState.steppedToolCallIds.add(toolCallId);
+  turnState.stepIndex += 1;
+}
+
+/**
+ * Retries only ever fire before the first token reaches the user, so raising
+ * the ceiling costs nothing visible and rides out transient 429s and dropped
+ * connections that a single attempt used to surface as a hard failure.
+ */
+const MAX_STREAM_RETRIES = 3;
+
+/**
+ * Per-tool allowance for the JSON schema the SDK derives from each tool's zod
+ * definition. The schema is not materialised until request time, so its exact
+ * size is unavailable here; a flat allowance keeps the fixed floor honest
+ * instead of reporting tools as free, which is what counting nothing did.
+ */
+const TOOL_SCHEMA_ALLOWANCE_TOKENS = 80;
+
+function estimateToolDefinitionTokens(tools: Record<string, unknown>): number {
+  let total = 0;
+
+  for (const [name, definition] of Object.entries(tools)) {
+    total += estimateTextTokens(name) + TOOL_SCHEMA_ALLOWANCE_TOKENS;
+    const description = (definition as { description?: unknown } | null)?.description;
+    if (typeof description === 'string') {
+      total += estimateTextTokens(description);
+    }
+  }
+
+  return total;
+}
+
+function estimatePendingTokens(request: GetContextUsageRequest): number {
+  let total = request.pendingText ? estimateTextTokens(request.pendingText) : 0;
+
+  for (const attachment of request.pendingAttachments ?? []) {
+    if (attachment.mediaType?.startsWith('image/')) {
+      total += estimateImageTokens({
+        width: attachment.previewWidth,
+        height: attachment.previewHeight,
+      });
+      continue;
+    }
+    // Non-image attachments are referenced rather than inlined.
+    total += 16;
+  }
+
+  return total;
+}
+
+/**
+ * What the transcript says while a turn is being retried.
+ *
+ * Names the reason, because "retrying" alone leaves the reader guessing whether
+ * to wait or to give up — and the two common reasons call for opposite
+ * decisions. The attempt count is included so a second silence is legible as
+ * progress through a bounded sequence rather than an open-ended one.
+ */
+export function buildRetryNotice(code: string, attempt: number, budget: number): string {
+  const progress = `Attempt ${attempt + 1} of ${budget + 1}.`;
+
+  switch (code) {
+    case 'timeout':
+      return `The provider did not respond in time. Retrying — ${progress}`;
+    case 'rate_limited':
+      return `The provider is rate limiting this key. Waiting, then retrying — ${progress}`;
+    case 'network_error':
+      return `The connection to the provider dropped. Retrying — ${progress}`;
+    case 'upstream_unavailable':
+      return `The provider is temporarily unavailable. Retrying — ${progress}`;
+    case 'stream_stalled':
+      return `The model stopped mid-answer. Retrying — ${progress}`;
+    default:
+      return `The request failed and is being retried — ${progress}`;
+  }
+}
+
+function positiveOrNull(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function extractLatestUserText(request: ChatStartRequest) {
+  const latestUserMessage = [...request.messages].reverse().find((message) => message.role === 'user');
+  if (!latestUserMessage) {
+    return '';
+  }
+
+  const partsText = latestUserMessage.parts
+    ?.filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n')
+    .trim();
+
+  return (partsText || latestUserMessage.content || '').trim();
+}
+
+function inferToolChoice(request: ChatStartRequest): ToolChoice<ToolSet> | undefined {
+  if (!request.enableTools) {
+    return undefined;
+  }
+
+  const text = extractLatestUserText(request).toLowerCase();
+  if (!text) {
+    return undefined;
+  }
+
+  const explicitlyRequestsShellExecution =
+    /(use|run|execute)\b[\s\S]{0,60}\b(shell|bash|terminal)\b/.test(text) ||
+    /\bgit status\b/.test(text);
+
+  if (explicitlyRequestsShellExecution) {
+    return {
+      type: 'tool',
+      toolName: 'bash',
+    };
+  }
+
+  return undefined;
+}
+
+function collectPendingApprovalsFromResponseMessages(responseMessages: ModelMessage[] | undefined) {
+  if (!responseMessages?.length) {
+    return [];
+  }
+
+  const approvals: PendingToolApproval[] = [];
+  const toolNameByCallId = new Map<string, string>();
+
+  for (const message of responseMessages) {
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const part of content) {
+      if (!part || typeof part !== 'object') {
+        continue;
+      }
+
+      const candidate = part as {
+        type?: unknown;
+        toolCallId?: unknown;
+        toolName?: unknown;
+        approvalId?: unknown;
+        reason?: unknown;
+        toolCall?: { toolCallId?: unknown; toolName?: unknown };
+      };
+
+      if (
+        candidate.type === 'tool-call' &&
+        typeof candidate.toolCallId === 'string' &&
+        typeof candidate.toolName === 'string'
+      ) {
+        toolNameByCallId.set(candidate.toolCallId, candidate.toolName);
+        continue;
+      }
+
+      if (candidate.type !== 'tool-approval-request' || typeof candidate.approvalId !== 'string') {
+        continue;
+      }
+
+      const toolCallId =
+        typeof candidate.toolCallId === 'string'
+          ? candidate.toolCallId
+          : typeof candidate.toolCall?.toolCallId === 'string'
+            ? candidate.toolCall.toolCallId
+            : null;
+
+      if (!toolCallId) {
+        continue;
+      }
+
+      const toolName =
+        typeof candidate.toolName === 'string'
+          ? candidate.toolName
+          : typeof candidate.toolCall?.toolName === 'string'
+            ? candidate.toolCall.toolName
+            : toolNameByCallId.get(toolCallId);
+
+      approvals.push({
+        approvalId: candidate.approvalId,
+        toolCallId,
+        toolName,
+        reason: typeof candidate.reason === 'string' ? candidate.reason : undefined,
+      });
+    }
+  }
+
+  return approvals;
+}
+
+export class ChatSessionRuntime {
+  constructor(
+    private readonly conversationsRepo: ConversationsRepo,
+    private readonly modelsRepo: ModelsRepo,
+    private readonly keychain: KeychainStore,
+    private readonly providers: ProviderRegistry,
+    private readonly contextManager: Pick<ContextManager, 'buildModelInput'> = new ContextManager(),
+    /**
+     * Supplies the Sites toolset for a turn, or null when the user has not
+     * opted in. Kept as a provider so tools close over the live service and
+     * the gate is evaluated per turn rather than per process.
+     */
+    private readonly siteToolsProvider: ((context: SiteToolContext) => Record<string, unknown> | null) | null =
+      null,
+    /**
+     * Resolves the conversation's workspace mode and project root.
+     *
+     * A resolver rather than a request field on purpose: the writable root is a
+     * security boundary, so it is read from the conversation row in the main
+     * process and never accepted from the renderer.
+     */
+    private readonly workspaceResolver: (conversationId: string) => ToolWorkspace = () => DEFAULT_TOOL_WORKSPACE,
+    /**
+     * The user's visual preference, read per turn so a change in Settings
+     * applies to the next message rather than to the next restart.
+     */
+    private readonly visualModeResolver: () => VisualMode = () => DEFAULT_VISUAL_MODE,
+    /**
+     * Supplies tools from the user's MCP servers.
+     *
+     * Two entry points because the two callers differ: the send path can await
+     * a connection, while the context meter is synchronous and settles for the
+     * last known catalog. The meter being a token estimate makes that trade
+     * safe — the worst case is a slightly low estimate on the first turn after
+     * a server is added, never a different tool set than the one that runs.
+     */
+    private readonly mcpToolsProvider: McpToolsProvider | null = null,
+    /**
+     * Installed plugins' skills.
+     *
+     * Read synchronously on both the send path and the context meter, like the
+     * workspace and the instructions: what the prompt lists and what the meter
+     * counts must be the same set, or the ring drifts from the request.
+     */
+    private readonly skillsService: SkillsService | null = null,
+    /**
+     * Turns on a plugin's servers when one of its skills is opened.
+     *
+     * Only wired on the send path. The context meter builds the same tool set
+     * to measure it, and measuring must not activate anything.
+     */
+    private readonly onSkillLoaded:
+      | ((conversationId: string, pluginName: string, requiredServers: string[]) => boolean)
+      | null = null,
+    /**
+     * Turns on the plugins a message named with `@`.
+     *
+     * Distinct from `onSkillLoaded` in the one way that matters: this runs
+     * *before* the turn's tool set is resolved, because the mention is read off
+     * text the user already sent. `load_skill` fires mid-stream and so can only
+     * affect the next turn; an `@` mention affects this one.
+     *
+     * Like `onSkillLoaded`, absent on the context-measuring path — an estimate
+     * must not change what the next turn is allowed to do.
+     */
+    private readonly onPluginMentioned:
+      | ((conversationId: string, targets: PluginMentionTarget[]) => void)
+      | null = null,
+    /**
+     * Where plugin activity is recorded.
+     *
+     * Observational throughout: nothing in this class reads back from it, so a
+     * missing log changes what is *known* about a turn and never what the turn
+     * does.
+     */
+    private readonly audit: { record: (input: AuditInput) => void } | null = null,
+  ) {}
+
+  /** The server behind a namespaced tool name, for an audit record. */
+  /**
+   * The real installed server and plugin behind a wire tool name, for an
+   * approval audit record.
+   *
+   * Exact, not guessed: matches the sanitised segment against every server
+   * every installed plugin declares, rather than re-deriving a label from the
+   * name's shape. Both fields come back `null` together when nothing matches
+   * — a plugin uninstalled since the call, or a name truncated past the point
+   * this can read — because a guessed attribution is worse than an absent one.
+   */
+  private describeAuditServer(toolName: string): {
+    server: { name: string; transport: string; endpoint: string | null } | null;
+    plugin: { name: string; version: string | null } | null;
+  } {
+    const plugins = this.skillsService?.snapshot().plugins ?? [];
+    const found = resolveMcpToolProvenance(toolName, plugins);
+
+    if (!found) {
+      return { server: null, plugin: null };
+    }
+
+    const plugin = plugins.find((candidate) => candidate.manifest.name === found.pluginName);
+    const server = plugin?.mcpServers.find((candidate) => candidate.key === found.serverKey);
+
+    return {
+      plugin: plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null,
+      server: server
+        ? {
+            name: pluginServerName(found.pluginName, server.key),
+            transport: server.transport,
+            endpoint: server.transport === 'stdio' ? null : server.url
+          }
+        : null
+    };
+  }
+
+  /**
+   * The plugins and skills a message named explicitly.
+   *
+   * Resolved against the registry rather than by shape: `@github pr-review` and
+   * `@github fix this` are syntactically identical, and only the installed set
+   * says which second word is a skill.
+   */
+  private resolvePluginMentions(text: string): PluginMentionTarget[] {
+    const snapshot = this.skillsService?.snapshot();
+
+    if (!snapshot || !text) {
+      return [];
+    }
+
+    // Disabled and revoked bundles are deliberately included. A mention of one
+    // must produce "that plugin is switched off", not silence — silence is
+    // indistinguishable from a typo, and the user is left retyping a name that
+    // was right all along.
+    const catalog: PluginMentionEntry[] = [
+      ...snapshot.plugins.map((plugin) => ({
+        name: plugin.manifest.name,
+        description: plugin.manifest.description,
+        skills: plugin.skills.map((skill) => skill.name),
+        available: true
+      })),
+      ...snapshot.disabled.map((plugin) => ({
+        name: plugin.manifest.name,
+        description: plugin.manifest.description,
+        skills: plugin.skills.map((skill) => skill.name),
+        available: false,
+        unavailableReason: 'This plugin is switched off. Enable it in Plugins to use it.'
+      })),
+      ...snapshot.blocked.map((entry) => ({
+        name: entry.plugin.manifest.name,
+        description: entry.plugin.manifest.description,
+        skills: entry.plugin.skills.map((skill) => skill.name),
+        available: false,
+        unavailableReason: entry.reason
+      }))
+    ];
+
+    return parsePluginMentions(text, catalog);
+  }
+
+  /**
+   * What an explicitly named plugin contributes to the prompt.
+   *
+   * Two jobs. It tells the model which plugin the user scoped the turn to, so
+   * a turn that named one does not wander off into unrelated tools. And when a
+   * skill was named, its body is inlined rather than left for `load_skill` —
+   * the user already chose it, so spending a tool round trip re-deciding would
+   * be asking the model to second-guess an explicit instruction.
+   *
+   * Inlining is also the only route to a skill whose sidecar sets
+   * `allow_implicit_invocation: false`: those are withheld from the index
+   * precisely so the model cannot pick them, and naming one is the whole point
+   * of the syntax.
+   */
+  private describePluginMentionsForPrompt(targets: PluginMentionTarget[]): string | null {
+    if (targets.length === 0 || !this.skillsService) {
+      return null;
+    }
+
+    const lines: string[] = [];
+
+    for (const target of targets) {
+      const unavailable = this.describeUnavailablePlugin(target.plugin);
+
+      if (unavailable) {
+        // Said out loud rather than dropped. The model needs to be able to tell
+        // the user why the thing they asked for did not happen.
+        lines.push(`- ${describePluginMention(target)} — unavailable. ${unavailable}`);
+        continue;
+      }
+
+      if (!target.skill) {
+        lines.push(`- ${describePluginMention(target)} — the user scoped this turn to this plugin.`);
+        continue;
+      }
+
+      const skill = this.skillsService.find(`${target.plugin}:${target.skill}`);
+
+      lines.push(
+        skill
+          ? `- ${describePluginMention(target)} — the user asked for this skill. Its instructions follow.`
+          : `- ${describePluginMention(target)} — no skill by that name; use the plugin's other capabilities.`
+      );
+
+      if (skill) {
+        lines.push(this.skillsService.read(skill.qualifiedName));
+      }
+    }
+
+    return [
+      '<invoked_plugins>',
+      'The user named these plugins directly. Prefer them over other tools for this turn.',
+      ...lines,
+      '</invoked_plugins>'
+    ].join('\n');
+  }
+
+  /**
+   * One resolved mention, as the transcript and the audit record will see it.
+   *
+   * Descriptive only. Nothing here activates a server or widens a tool set —
+   * `onPluginMentioned` does the activating, separately, and an MCP call this
+   * describes still stops at the same per-call approval as any other
+   * third-party tool. The event exists so attribution has one source of truth
+   * rather than each surface re-deriving it from the message text.
+   */
+  private describeInvocation(
+    target: PluginMentionTarget
+  ): Pick<StreamPluginInvocationEvent, 'plugin' | 'skill' | 'mention' | 'outcome' | 'version' | 'detail'> {
+    const snapshot = this.skillsService?.snapshot();
+    const mention = describePluginMention(target);
+    const base = { plugin: target.plugin, skill: target.skill, mention };
+
+    const installed = [
+      ...(snapshot?.plugins ?? []),
+      ...(snapshot?.disabled ?? []),
+      ...(snapshot?.blocked ?? []).map((entry) => entry.plugin)
+    ].find((plugin) => plugin.manifest.name === target.plugin);
+
+    // Captured at resolution rather than looked up later: a plugin can be
+    // updated between this turn and anyone reading it back, and a record that
+    // reported the version as of *reading* would answer a different question.
+    const version = installed?.manifest.version ?? null;
+
+    const blocked = snapshot?.blocked.find((entry) => entry.plugin.manifest.name === target.plugin);
+
+    if (blocked) {
+      return { ...base, outcome: 'plugin-blocked', version, detail: blocked.reason };
+    }
+
+    if (snapshot?.disabled.some((plugin) => plugin.manifest.name === target.plugin)) {
+      return {
+        ...base,
+        outcome: 'plugin-disabled',
+        version,
+        detail: 'Switched off. Enable it in Plugins.'
+      };
+    }
+
+    if (!snapshot?.plugins.some((plugin) => plugin.manifest.name === target.plugin)) {
+      return { ...base, outcome: 'plugin-not-installed', version, detail: 'Not installed.' };
+    }
+
+    if (target.skill && !this.skillsService?.find(`${target.plugin}:${target.skill}`)) {
+      // The plugin is fine; the skill is not. Reporting this as a plugin
+      // failure would send the user to the wrong place to fix it.
+      return {
+        ...base,
+        outcome: 'skill-not-found',
+        version,
+        detail: `No skill named "${target.skill}".`
+      };
+    }
+
+    return { ...base, outcome: 'invoked', version, detail: null };
+  }
+
+  /** Why a named plugin cannot be used, or `null` when it can. */
+  private describeUnavailablePlugin(name: string): string | null {
+    const snapshot = this.skillsService?.snapshot();
+
+    if (!snapshot) {
+      return null;
+    }
+
+    if (snapshot.plugins.some((plugin) => plugin.manifest.name === name)) {
+      return null;
+    }
+
+    const blocked = snapshot.blocked.find((entry) => entry.plugin.manifest.name === name);
+
+    if (blocked) {
+      return blocked.reason;
+    }
+
+    return snapshot.disabled.some((plugin) => plugin.manifest.name === name)
+      ? 'It is switched off. Enable it in Plugins to use it.'
+      : 'It is not installed.';
+  }
+
+  /**
+   * Whether this turn may produce a visual.
+   *
+   * Gated on the user's own words: the ~2k-token visual spec used to ship with
+   * every request, which both paid for itself on turns nobody wanted a diagram
+   * for and pushed the model into drawing one anyway. The same answer decides
+   * whether the stream parser looks for visual markup, so a turn that was never
+   * told how to emit a visual cannot have one parsed out of it either.
+   */
+  private resolveVisualsEnabled(conversationId: string, userText: string): boolean {
+    const mode = (() => {
+      try {
+        return this.visualModeResolver();
+      } catch {
+        return DEFAULT_VISUAL_MODE;
+      }
+    })();
+
+    if (mode !== 'auto') {
+      return resolveVisualGate({ mode, userText }).enabled;
+    }
+
+    // Only consulted for `auto`, and only to keep "make it wider" attached to
+    // the diagram it is about.
+    const hadRecentVisual = (() => {
+      try {
+        return this.conversationsRepo.hasRecentVisual?.(conversationId) ?? false;
+      } catch {
+        return false;
+      }
+    })();
+
+    return resolveVisualGate({ mode, userText, hadRecentVisual }).enabled;
+  }
+
+  private resolveWorkspace(conversationId: string): ToolWorkspace {
+    try {
+      return this.workspaceResolver(conversationId);
+    } catch {
+      // A missing or unreadable project must not take the turn down with it:
+      // fall back to the mode that grants the least.
+      return DEFAULT_TOOL_WORKSPACE;
+    }
+  }
+
+  async executeTurn({
+    requestId,
+    request,
+    signal,
+    emitEvent,
+    assistantMessageId,
+    messagesOverride,
+    initialParts,
+    subagentRuntime,
+    persistMessage = true,
+    parentAgentId,
+    allowedTools,
+  }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
+    const apiKey = await this.keychain.getSecret(request.providerId);
+    const provider = getProviderOrThrow(this.providers, request.providerId);
+
+    if (!apiKey) {
+      throw new MissingCredentialError('No API key is saved for the selected provider.');
+    }
+
+    const result = await this.executeWithRetry({
+      requestId,
+      request,
+      provider,
+      apiKey,
+      signal,
+      emitEvent,
+      messagesOverride,
+      initialParts,
+      assistantMessageId,
+      subagentRuntime,
+      parentAgentId,
+      allowedTools,
+    });
+
+    const status: ExecuteTurnResult['status'] = result.pendingApprovals.length > 0 ? 'awaiting_approval' : 'completed';
+    const persistedResponseMessages =
+      status === 'completed' && shouldPersistResponseMessages(result.responseMessages, request.enableTools)
+        ? result.responseMessages ?? null
+        : null;
+
+    const content = getTextContentFromParts(result.parts) || result.content;
+    const reasoning = getReasoningContentFromParts(result.parts) ?? result.reasoning ?? null;
+
+    const messageId =
+      assistantMessageId ??
+      (persistMessage
+        ? this.conversationsRepo.addMessage({
+            conversationId: request.conversationId,
+            role: 'assistant',
+            content,
+            reasoning,
+            parts: result.parts,
+            responseMessages: persistedResponseMessages,
+            status: status === 'completed' ? 'complete' : 'streaming',
+            providerId: request.providerId,
+            modelId: request.modelId,
+            inputTokens: result.inputTokens ?? null,
+            outputTokens: result.outputTokens ?? null,
+            reasoningTokens: result.reasoningTokens ?? null,
+            latencyMs: result.latencyMs ?? null,
+          })
+        : requestId);
+
+    if (persistMessage && assistantMessageId) {
+      this.conversationsRepo.updateMessage({
+        messageId: assistantMessageId,
+        content,
+        reasoning,
+        parts: result.parts,
+        responseMessages: persistedResponseMessages,
+        status: status === 'completed' ? 'complete' : 'streaming',
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: result.inputTokens ?? null,
+        outputTokens: result.outputTokens ?? null,
+        reasoningTokens: result.reasoningTokens ?? null,
+        latencyMs: result.latencyMs ?? null,
+        errorCode: null,
+      });
+    }
+
+    return {
+      messageId,
+      status,
+      parts: result.parts,
+      responseMessages: result.responseMessages ?? null,
+      pendingApprovals: result.pendingApprovals,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      reasoningTokens: result.reasoningTokens,
+      latencyMs: result.latencyMs,
+    };
+  }
+
+  protected selectModelHistory(conversationId: string) {
+    return this.conversationsRepo.getModelHistory(conversationId);
+  }
+
+  /**
+   * Measures the prompt that would be sent right now, without sending it.
+   *
+   * Deliberately built from the same three pieces `executeWithRetry` uses —
+   * `selectModelHistory`, `buildSystemPrompt`, `createBuiltInTools` — so the
+   * displayed number cannot drift from the request. Anything that changes what
+   * is actually sent changes this too.
+   */
+  measureContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+    const maxTokens = positiveOrNull(modelHints.contextWindow);
+
+    const toolPermissionMode =
+      request.toolPermissionMode ??
+      this.conversationsRepo.getToolPermissionMode(request.conversationId) ??
+      DEFAULT_TOOL_PERMISSION_MODE;
+    const workspace = this.resolveWorkspace(request.conversationId);
+    const siteTools = this.resolveSiteTools(request);
+    const tools = request.enableTools
+      ? {
+          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
+          ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          // Deliberately no activation hook here — see the constructor.
+          // Last known catalog: this path cannot await a connection, and an
+          // estimate is what it exists to produce.
+          ...(this.mcpToolsProvider?.peekTools() ?? {}),
+        }
+      : undefined;
+    const toolTokens = tools ? estimateToolDefinitionTokens(tools) : 0;
+
+    // The system prompt is measured without the summary addendum first: the
+    // addendum's size depends on how much history gets compressed, which is
+    // what the budget below decides.
+    // Measured against the unsent composer text, which is what the gate will
+    // see when the message is actually sent: the ring must not drop 2k tokens
+    // the moment the user types the word "diagram".
+    const visualsEnabled = this.resolveVisualsEnabled(
+      request.conversationId,
+      request.pendingText ?? ''
+    );
+    const baseSystemPrompt = this.buildSystemPrompt(
+      request.enableTools,
+      null,
+      siteTools != null,
+      toolPermissionMode,
+      workspace,
+      visualsEnabled,
+      // Measured off the *unsent* composer text, exactly like the visual gate
+      // above and for the same reason: a named skill's body is inlined into the
+      // prompt, so the ring has to account for it while the user is still
+      // typing rather than dropping several thousand tokens at send time.
+      // Resolution only — `onPluginMentioned` is deliberately not wired on this
+      // path, so measuring cannot activate a server.
+      this.resolvePluginMentions(request.pendingText ?? '')
+    );
+    const systemTokens = estimateTextTokens(baseSystemPrompt);
+    const pendingTokens = estimatePendingTokens(request);
+
+    // Same helper the send path uses, so the ring is sized against the same
+    // window the request will be. Unsent composer text joins the floor here but
+    // not there: by send time it is already part of the history being measured.
+    const { reservedOutputTokens, budget } = this.resolveContextBudget({
+      modelHints,
+      requestedMaxOutputTokens: undefined,
+      fixedFloorTokens: systemTokens + toolTokens + pendingTokens,
+    });
+
+    const history = this.selectModelHistory(request.conversationId);
+    const modelInput = this.contextManager.buildModelInput({
+      conversationId: request.conversationId,
+      history,
+      mode: 'standard',
+      budget,
+    });
+
+    const lastTurn = this.conversationsRepo.getLatestUsage?.(request.conversationId) ?? null;
+    const summaryTokens = modelInput.usage.addendumTokens;
+    const historyTokens = modelInput.usage.historyTokens;
+    const promptTokens = systemTokens + toolTokens + summaryTokens + historyTokens + pendingTokens;
+
+    return {
+      maxTokens,
+      promptTokens,
+      // The prompt minus the fixed floor: what the conversation itself occupies.
+      conversationTokens: summaryTokens + historyTokens + pendingTokens,
+      systemTokens,
+      toolTokens,
+      historyTokens,
+      summaryTokens,
+      pendingTokens,
+      reservedOutputTokens,
+      droppedTurnCount: modelInput.usage.droppedTurnCount,
+      keptTurnCount: modelInput.usage.keptTurnCount,
+      overflow: maxTokens != null && promptTokens > maxTokens - reservedOutputTokens,
+      lastTurn,
+    };
+  }
+
+  /**
+   * The completion reservation, and the window left for history once it and the
+   * fixed system/tool floor are taken out.
+   *
+   * Shared by the send path and by `measureContextUsage` on purpose: two copies
+   * of this arithmetic is how a displayed number starts disagreeing with the
+   * request it claims to describe. `budget` is `undefined` when the catalog does
+   * not know the model's window, which leaves compaction on turn counts.
+   */
+  private resolveContextBudget({
+    modelHints,
+    requestedMaxOutputTokens,
+    fixedFloorTokens,
+  }: {
+    modelHints: ReturnType<ModelsRepo['getRuntimeHints']>;
+    requestedMaxOutputTokens: number | undefined;
+    fixedFloorTokens: number;
+  }) {
+    const reservedOutputTokens = resolveMaxOutputTokens(
+      requestedMaxOutputTokens,
+      modelHints,
+      DEFAULT_STREAM_CORE_CONFIG
+    );
+    const contextWindow = positiveOrNull(modelHints.contextWindow);
+
+    return {
+      reservedOutputTokens,
+      budget:
+        contextWindow == null
+          ? undefined
+          : {
+              totalTokens: Math.max(1, contextWindow - reservedOutputTokens),
+              reservedTokens: fixedFloorTokens,
+            },
+    };
+  }
+
+  private buildSystemPrompt(
+    enableTools: boolean | undefined,
+    contextAddendum: string | null,
+    siteToolsActive: boolean,
+    toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
+    workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
+    visualsEnabled = false,
+    /**
+     * Plugins the user named with `@`.
+     *
+     * Counted by the context meter as well as sent, because a named skill's
+     * body is inlined here — that is real tokens, and a ring that ignored them
+     * would under-report exactly the turns that spend the most.
+     */
+    pluginMentions: PluginMentionTarget[] = [],
+  ) {
+    // The Sites instructions only ship when the Sites tools do, so a turn that
+    // did not opt in is not nudged toward building one.
+    const basePrompt = siteToolsActive
+      ? `${TOOL_USE_SYSTEM_PROMPT}\n\n${SITE_TOOL_SYSTEM_PROMPT}`
+      : TOOL_USE_SYSTEM_PROMPT;
+    // The project's own instructions go last, after the statements Atlas
+    // enforces: what the model may do is settled before anything a file on disk
+    // gets to say, and the block is bracketed so its edges are unambiguous.
+    const agentInstructionsPrompt = workspace.instructions
+      ? describeAgentInstructionsForPrompt(workspace.instructions)
+      : null;
+    // Tell the model what it may actually do, so it does not plan around a tool
+    // that was withheld from its tool set.
+    // Listed only when the tools are, because `load_skill` is the only way to
+    // act on the list and it ships with the rest of the tool set.
+    const skillsPrompt =
+      this.skillsService?.describeForPrompt({
+        mode: workspace.mode,
+        hasProject: workspace.root != null
+      }) ?? null;
+    const invokedPluginsPrompt = this.describePluginMentionsForPrompt(pluginMentions);
+    const toolPrompt = [
+      basePrompt,
+      PLAN_TOOL_SYSTEM_PROMPT,
+      describeWorkspaceModeForPrompt(workspace.mode, workspace),
+      describeToolPermissionsForPrompt(toolPermissionMode),
+      ...(skillsPrompt ? [skillsPrompt] : []),
+      // After the index and before the project's own instructions: an explicit
+      // mention outranks what the model might have chosen for itself, and is
+      // still subject to everything Atlas enforces above it.
+      ...(invokedPluginsPrompt ? [invokedPluginsPrompt] : []),
+      ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
+    ].join('\n\n');
+    // The visual spec goes last of the Atlas-owned blocks and only when this
+    // turn asked for a visual, so an ordinary question is not carrying two
+    // thousand tokens of SVG instructions it will never use.
+    const sections = [
+      ...(enableTools ? [toolPrompt] : []),
+      ...(visualsEnabled ? [VISUAL_PROMPT] : []),
+      ...(contextAddendum ? [contextAddendum] : []),
+    ];
+
+    return sections.join('\n\n');
+  }
+
+  private resolveSiteTools(request: {
+    conversationId: string;
+    enableTools?: boolean;
+    mentions?: MentionId[];
+  }) {
+    if (!request.enableTools || !this.siteToolsProvider) {
+      return null;
+    }
+
+    return this.siteToolsProvider({
+      conversationId: request.conversationId,
+      mentions: request.mentions ?? [],
+    });
+  }
+
+  private async executeWithRetry({
+    requestId,
+    request,
+    provider,
+    apiKey,
+    signal,
+    emitEvent,
+    messagesOverride,
+    initialParts,
+    assistantMessageId,
+    subagentRuntime,
+    parentAgentId,
+    allowedTools,
+  }: {
+    requestId: string;
+    request: ChatStartRequest;
+    provider: ProviderAdapter;
+    apiKey: string;
+    signal: AbortSignal;
+    emitEvent: (event: StreamEvent) => void;
+    messagesOverride?: ModelMessage[];
+    initialParts?: ChatMessagePart[];
+    /** Present on a resumed turn; absent on a first send, where no row exists yet. */
+    assistantMessageId?: string;
+    subagentRuntime?: SubagentRuntime;
+    parentAgentId?: string;
+    allowedTools?: string[];
+  }): Promise<ProviderStreamResult & { parts: ChatMessagePart[]; pendingApprovals: PendingToolApproval[] }> {
+    let attempt = 0;
+    let streamedAnyResponse = false;
+    let compactionMode: ContextBuildMode = 'standard';
+
+    // Resolve once per turn: retries must not change which tools are offered.
+    const siteTools = this.resolveSiteTools(request);
+    const toolPermissionMode =
+      request.toolPermissionMode ??
+      this.conversationsRepo.getToolPermissionMode(request.conversationId) ??
+      DEFAULT_TOOL_PERMISSION_MODE;
+    // Resolved once per turn, like the tool set: a mode switch mid-stream must
+    // not change what this turn was allowed to do.
+    const workspace = this.resolveWorkspace(request.conversationId);
+    // Same reasoning: the gate is evaluated once so a retry cannot answer the
+    // same message with a different set of instructions.
+    const visualsEnabled = this.resolveVisualsEnabled(
+      request.conversationId,
+      latestUserText(request.messages)
+    );
+    // Read before the tool set is resolved, which is the whole reason `@github`
+    // works on the turn that types it: the mention is already in the user's
+    // text, so the servers it implies can be activated while there is still
+    // time for `loadTools` below to see them. `load_skill` cannot do this — it
+    // fires mid-stream, after the tool set is fixed.
+    const pluginMentions = this.resolvePluginMentions(latestUserText(request.messages));
+
+    if (pluginMentions.length > 0) {
+      this.onPluginMentioned?.(request.conversationId, pluginMentions);
+
+      // Announced before the stream opens, so the row states what the turn was
+      // scoped to rather than reporting it afterwards. Emitted for failures
+      // too: a mention that resolved to nothing is the case most worth telling
+      // the user about.
+      for (const target of pluginMentions) {
+        const invocation = this.describeInvocation(target);
+
+        emitEvent({
+          type: 'plugin-invocation',
+          requestId,
+          messageId: assistantMessageId ?? null,
+          ...invocation
+        });
+
+        // The durable half of the same fact the transcript row shows. Recorded
+        // even when the outcome is not `invoked` — a mention that resolved to
+        // nothing is exactly the kind of thing an audit trail should be able
+        // to answer for later, same as it is exactly what the user needed told
+        // about at the time.
+        this.audit?.record({
+          requestId,
+          conversationId: request.conversationId,
+          type: 'plugin_invocation',
+          server: null,
+          plugin: invocation.plugin ? { name: invocation.plugin, version: invocation.version } : null,
+          tool: null,
+          outcome: invocation.outcome === 'invoked' ? 'ok' : 'error',
+          approvalId: null,
+          toolCallId: null,
+          detail: invocation.detail,
+          payload: { mention: invocation.mention, skill: invocation.skill, outcome: invocation.outcome },
+          // One row per (turn, plugin, skill): a resumed turn re-announcing the
+          // same mention has nothing new to say about it.
+          idempotencyKey: `pi:${requestId}:${target.plugin}:${target.skill ?? ''}`
+        });
+      }
+    }
+
+    // Resolved once per turn alongside the rest: a server coming up mid-stream
+    // must not change what this turn was offered. A provider that throws is
+    // treated as contributing nothing rather than failing the send.
+    const mcpTools = request.enableTools
+      ? await (
+          this.mcpToolsProvider?.loadTools(request.conversationId, {
+            requestId,
+            conversationId: request.conversationId,
+            // Exact, by the configured server name: `pluginServerName` joins
+            // `<plugin>/<key>` with a separator the plugin name cannot itself
+            // contain, so splitting on the first `/` cannot be ambiguous the
+            // way parsing a *wire* tool name is.
+            pluginFor: (serverName) => {
+              const [pluginName] = serverName.split('/');
+              const plugin = this.skillsService
+                ?.snapshot()
+                .plugins.find((candidate) => candidate.manifest.name === pluginName);
+
+              return plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null;
+            }
+          }) ?? Promise.resolve({})
+        ).catch(() => ({}))
+      : {};
+    const subagentContext = subagentRuntime
+      ? {
+          conversationId: request.conversationId,
+          turnId: assistantMessageId ?? requestId,
+          parentSignal: signal,
+          ...(parentAgentId ? { parentAgentId } : {}),
+        }
+      : undefined;
+
+    let tools = request.enableTools
+      ? {
+          ...createBuiltInTools(
+            this.modelsRepo,
+            siteTools,
+            toolPermissionMode,
+            workspace,
+            subagentRuntime,
+            subagentContext
+          ),
+          ...(this.skillsService
+            ? createSkillTools(
+                this.skillsService,
+                (pluginName, requiredServers) =>
+                  this.onSkillLoaded?.(request.conversationId, pluginName, requiredServers) ?? false,
+              )
+            : {}),
+          ...mcpTools,
+        }
+      : undefined;
+
+    if (tools && allowedTools !== undefined) {
+      const allowedSet = new Set(allowedTools);
+      const filtered: Record<string, unknown> = {};
+      for (const [name, toolDef] of Object.entries(tools)) {
+        if (allowedSet.has(name)) {
+          filtered[name] = toolDef;
+        }
+      }
+      tools = filtered as any;
+    }
+    // Catalog-derived limits so the adapter can size the request to this model
+    // rather than to a provider-wide constant.
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+
+    while (true) {
+      const attemptElapsed = startTimer();
+      const turnState: TurnState = {
+        parts: [...(initialParts ?? [])],
+        lastTextPartId: 'assistant-text',
+        stepIndex: 0,
+        steppedToolCallIds: new Set<string>(),
+        visualParser: new VisualStreamParser({ enabled: visualsEnabled }),
+        pendingApprovals: new Map<string, PendingToolApproval>(),
+      };
+      // Same budget the ring displays, so what is shown is what is sent.
+      const history = messagesOverride ?? this.selectModelHistory(request.conversationId);
+      const modelInput = this.contextManager.buildModelInput({
+        conversationId: request.conversationId,
+        history,
+        mode: compactionMode,
+        budget: this.resolveContextBudget({
+          modelHints,
+          requestedMaxOutputTokens: request.maxOutputTokens,
+          fixedFloorTokens:
+            estimateTextTokens(
+              this.buildSystemPrompt(
+                request.enableTools,
+                null,
+                siteTools != null,
+                toolPermissionMode,
+                workspace,
+                visualsEnabled,
+                pluginMentions
+              )
+            ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
+        }).budget,
+      });
+
+      logger.info('turn.attempt', {
+        requestId,
+        providerId: request.providerId,
+        modelId: request.modelId,
+        attempt,
+        compactionMode,
+        historyMessages: modelInput.recentMessages.length,
+        historyTokens: modelInput.usage.historyTokens,
+        summaryTokens: modelInput.usage.addendumTokens,
+        droppedTurns: modelInput.usage.droppedTurnCount,
+        toolCount: tools ? Object.keys(tools).length : 0,
+      });
+
+      try {
+        const result = await provider.streamChat({
+          apiKey,
+          modelId: request.modelId,
+          messages: modelInput.recentMessages,
+          system:
+            this.buildSystemPrompt(
+              request.enableTools,
+              modelInput.systemContextAddendum,
+              siteTools != null,
+              toolPermissionMode,
+              workspace,
+              visualsEnabled,
+              pluginMentions,
+            ) || undefined,
+          tools,
+          toolChoice: inferToolChoice(request),
+          temperature: request.temperature,
+          maxOutputTokens: request.maxOutputTokens,
+          modelHints,
+          reasoningEffort: request.reasoningEffort,
+          signal,
+          onChunk: (event) => {
+            streamedAnyResponse = true;
+            turnState.lastTextPartId = stepScopedPartId(event.id, turnState.stepIndex);
+            this.applyParsedChunks(turnState, turnState.visualParser.feed(event.delta, requestId), requestId, emitEvent);
+          },
+          onReasoningChunk: (event) => {
+            streamedAnyResponse = true;
+            this.applyEvent(
+              turnState,
+              {
+                type: 'reasoning',
+                requestId,
+                id: stepScopedPartId(event.id, turnState.stepIndex),
+                delta: event.delta,
+              },
+              emitEvent,
+            );
+          },
+          onToolInputStart: (event) => {
+            streamedAnyResponse = true;
+            beginToolStep(turnState, event.toolCallId);
+            this.applyEvent(turnState, { type: 'tool-input-start', requestId, ...event }, emitEvent);
+          },
+          onToolInputDelta: (event) => {
+            streamedAnyResponse = true;
+            this.applyEvent(turnState, { type: 'tool-input-delta', requestId, ...event }, emitEvent);
+          },
+          onToolInputAvailable: (event) => {
+            streamedAnyResponse = true;
+            beginToolStep(turnState, event.toolCallId);
+            this.applyEvent(turnState, { type: 'tool-input-available', requestId, ...event }, emitEvent);
+          },
+          onToolOutputAvailable: (event) => {
+            streamedAnyResponse = true;
+            // Provider-executed tools (hosted web search) can surface only an
+            // output event, with no input phase to notice.
+            beginToolStep(turnState, event.toolCallId);
+            this.applyEvent(turnState, { type: 'tool-output-available', requestId, ...event }, emitEvent);
+          },
+          onToolOutputError: (event) => {
+            streamedAnyResponse = true;
+            const formatted = formatToolError(event.errorText);
+            const formattedErrorText = formatted.technicalDetails
+              ? `${formatted.summary}\n${formatted.technicalDetails}${formatted.nextStep ? `\n${formatted.nextStep}` : ''}`
+              : `${formatted.summary}${formatted.nextStep ? `\n${formatted.nextStep}` : ''}`;
+            this.applyEvent(
+              turnState,
+              { type: 'tool-output-error', requestId, ...event, errorText: formattedErrorText },
+              emitEvent
+            );
+          },
+          onToolOutputDenied: (event) => {
+            streamedAnyResponse = true;
+            this.applyEvent(turnState, { type: 'tool-output-denied', requestId, ...event }, emitEvent);
+          },
+          onToolApprovalRequested: (event) => {
+            streamedAnyResponse = true;
+            turnState.pendingApprovals.set(event.approvalId, {
+              approvalId: event.approvalId,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              reason: event.reason,
+            });
+            // Observational, and placed after the state change it describes so
+            // it can never be mistaken for part of the decision. Only MCP calls
+            // are recorded here: a built-in tool's approval is not data leaving
+            // the machine, which is what this trail exists to account for.
+            if (isMcpToolName(event.toolName ?? '')) {
+              const provenance = this.describeAuditServer(event.toolName ?? '');
+
+              this.audit?.record({
+                requestId,
+                conversationId: request.conversationId,
+                type: 'approval_requested',
+                server: provenance.server,
+                plugin: provenance.plugin,
+                tool: event.toolName ?? null,
+                outcome: 'ok',
+                approvalId: event.approvalId,
+                toolCallId: event.toolCallId,
+                detail: event.reason ?? null,
+                // Keyed on the approval alone: a request is asked once, and a
+                // duplicate delivery of the same event must not read as a
+                // second, distinct approval being opened.
+                idempotencyKey: `ar:${event.approvalId}`
+              });
+            }
+
+            this.applyEvent(turnState, { type: 'tool-approval-requested', requestId, ...event }, emitEvent);
+          },
+        });
+
+        this.applyParsedChunks(turnState, turnState.visualParser.flush(requestId), requestId, emitEvent);
+
+        // Fallback: some providers may only surface approval requests in responseMessages.
+        for (const approval of collectPendingApprovalsFromResponseMessages(result.responseMessages)) {
+          if (turnState.pendingApprovals.has(approval.approvalId)) {
+            continue;
+          }
+
+          turnState.pendingApprovals.set(approval.approvalId, approval);
+          this.applyEvent(
+            turnState,
+            {
+              type: 'tool-approval-requested',
+              requestId,
+              approvalId: approval.approvalId,
+              toolCallId: approval.toolCallId,
+              toolName: approval.toolName,
+              reason: approval.reason,
+            },
+            emitEvent,
+          );
+        }
+
+        let parts: ChatMessagePart[] = finalizeMessageParts(turnState.parts);
+        if (parts.length === 0) {
+          parts = buildFallbackMessageParts({
+            content: result.content,
+            reasoning: result.reasoning,
+            role: 'assistant',
+          });
+        }
+
+        return {
+          ...result,
+          parts,
+          pendingApprovals: [...turnState.pendingApprovals.values()],
+        };
+      } catch (error) {
+        const normalized = normalizeError(error);
+        const shouldRetryWithCompaction =
+          compactionMode === 'standard' &&
+          !streamedAnyResponse &&
+          !signal.aborted &&
+          this.isPromptTooLongError(error, normalized.message);
+
+        if (shouldRetryWithCompaction) {
+          compactionMode = 'aggressive';
+          logger.warn('turn.compacting', {
+            requestId,
+            modelId: request.modelId,
+            attempt,
+            historyTokens: modelInput.usage.historyTokens,
+            code: normalized.code,
+          });
+          emitEvent({
+            type: 'notice',
+            requestId,
+            code: 'compacting',
+            level: 'info',
+            message: 'The conversation was too long for this model. Summarising older turns and retrying.',
+            });
+          continue;
+        }
+
+        // A timeout is not a blip. Every other retryable failure comes back in
+        // milliseconds, so three of them cost seconds; a first-response timeout
+        // costs `firstResponseTimeoutMs` each, and four attempts of that is
+        // twelve minutes of a transcript that says nothing but "Thinking"
+        // before the user is told anything at all. One retry covers the genuine
+        // hiccup; past that the honest answer is the error.
+        const retryBudget = normalized.code === 'timeout' ? 1 : MAX_STREAM_RETRIES;
+        const canRetry =
+          attempt < retryBudget && normalized.retryable && !streamedAnyResponse && !signal.aborted;
+
+        if (!canRetry) {
+          throw error;
+        }
+
+        // Honour the provider's own Retry-After when it sent one, otherwise
+        // back off exponentially instead of hammering with a fixed short delay.
+        const delayMs = computeRetryDelayMs(attempt, normalized.retryAfterMs);
+        attempt += 1;
+
+        logger.warn('turn.retrying', {
+          requestId,
+          modelId: request.modelId,
+          providerId: request.providerId,
+          attempt,
+          retryBudget,
+          code: normalized.code,
+          delayMs,
+          attemptMs: attemptElapsed(),
+          error,
+        });
+
+        // Said out loud, because the alternative is what shipped: a retry after
+        // a 180s timeout is three silent minutes in which the transcript claims
+        // the model is thinking.
+        emitEvent({
+          type: 'notice',
+          requestId,
+          code: 'retrying',
+          level: 'warning',
+          message: buildRetryNotice(normalized.code, attempt, retryBudget),
+        });
+
+        await sleep(delayMs);
+
+        if (signal.aborted) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private isPromptTooLongError(error: unknown, normalizedMessage: string) {
+    const status = this.readErrorStatus(error);
+    if (status != null && status !== 400 && status !== 413 && status !== 422) {
+      return false;
+    }
+
+    const message = `${normalizedMessage} ${this.readErrorMessage(error)}`.toLowerCase();
+    if (!message) {
+      return false;
+    }
+
+    return (
+      message.includes('maximum context length') ||
+      message.includes('max context length') ||
+      message.includes('context length exceeded') ||
+      message.includes('context window') ||
+      message.includes('prompt is too long') ||
+      message.includes('input is too long') ||
+      message.includes('request is too large') ||
+      message.includes('too many tokens') ||
+      message.includes('token limit exceeded') ||
+      message.includes('prompt tokens') ||
+      message.includes('context overflow')
+    );
+  }
+
+  private readErrorStatus(error: unknown) {
+    if (error == null || typeof error !== 'object') {
+      return null;
+    }
+
+    const candidate = (error as { status?: unknown; statusCode?: unknown }).statusCode
+      ?? (error as { status?: unknown; statusCode?: unknown }).status;
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    return null;
+  }
+
+  private readErrorMessage(error: unknown) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (error == null || typeof error !== 'object') {
+      return '';
+    }
+
+    const message = (error as { message?: unknown }).message;
+    return typeof message === 'string' ? message : '';
+  }
+
+  private applyEvent(turnState: TurnState, event: StreamEvent, emitEvent: (event: StreamEvent) => void) {
+    turnState.parts = applyStreamEventToParts(turnState.parts, event);
+    emitEvent(event);
+  }
+
+  private applyParsedChunks(
+    turnState: TurnState,
+    parsed: ReturnType<VisualStreamParser['feed']>,
+    requestId: string,
+    emitEvent: (event: StreamEvent) => void,
+  ) {
+    for (const item of parsed) {
+      if (item.type === 'text') {
+        this.applyEvent(
+          turnState,
+          {
+            type: 'chunk',
+            requestId,
+            id: turnState.lastTextPartId,
+            delta: item.content,
+          },
+          emitEvent,
+        );
+        continue;
+      }
+
+      if (item.type === 'visual_start') {
+        this.applyEvent(
+          turnState,
+          {
+            type: 'visual-start',
+            requestId,
+            visualId: item.visualId!,
+            title: item.title,
+          },
+          emitEvent,
+        );
+        continue;
+      }
+
+      this.applyEvent(
+        turnState,
+        {
+          type: 'visual-complete',
+          requestId,
+          visualId: item.visualId!,
+          content: item.content,
+          title: item.title,
+        },
+        emitEvent,
+      );
+    }
+  }
+}

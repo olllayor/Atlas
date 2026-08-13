@@ -1,0 +1,960 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260808T103814966Z-15505-690ae19ae3c3",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "candidate-select",
+      "target": "src/main/ai/tools/sandbox/types.ts",
+      "reason": "candidate_limit_exceeded: 2 changed reviewable file(s) were not scanned because the limit is 20"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "workers/cloud-sandbox/package.json",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "workers/cloud-sandbox/src/SandboxDO.ts",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "workers/cloud-sandbox/src/index.ts",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "src/main/workspace/WorktreeService.ts",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": "src/main/ai/tools/sandbox/cloudflareComputer.ts",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 525,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 17
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 22,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 22,
+      "selected_files": 20,
+      "limit": 20,
+      "truncated": true
+    },
+    "scanning": {
+      "required_files": 19,
+      "scanned_files": 19,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 1,
+      "project_checks_completed": 1
+    },
+    "notification": {
+      "eligible_findings": 5,
+      "detailed_findings": 1,
+      "detail_limit": 3,
+      "truncated": true
+    },
+    "reason_counts": {
+      "candidate_limit_exceeded": 1,
+      "baseline_snapshot_unreadable": 5,
+      "project_check_failed": 6
+    },
+    "reasons": [
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "src/main/ai/tools/sandbox/types.ts",
+        "detail": "2 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/package.json",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/src/SandboxDO.ts",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/src/index.ts",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "src/main/workspace/WorktreeService.ts",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": "src/main/ai/tools/sandbox/cloudflareComputer.ts",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "src/main/ai/tools/sandbox/types.ts",
+        "detail": "candidate_limit_exceeded: 2 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/package.json",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/src/SandboxDO.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "workers/cloud-sandbox/src/index.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "src/main/workspace/WorktreeService.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": "src/main/ai/tools/sandbox/cloudflareComputer.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-08-08T10:38:14.966Z",
+  "session_id": "sess_ddefee49-186a-40f2-9d3b-283ac1e84479",
+  "target": ".",
+  "revision": "f11b08440b01c70f52ab0b90f419b7bcbedcff38",
+  "rules_version": "unavailable",
+  "diff_hash": "d48b7df48da59c2385447a95bd21a0e9aa30c79ddd01f233c908fd98de0dc016",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 20,
+    "changed_files": [
+      {
+        "file": "src/main/ai/tools/sandbox/cloudflareComputer.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 122
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "bb12d7b5c076613bd29172413f96cff539611dde4ab86cb4bdea679733e395f2"
+      },
+      {
+        "file": "src/main/ai/tools/toolRuntime.ts",
+        "ranges": [
+          {
+            "start": 24,
+            "end": 24
+          },
+          {
+            "start": 889,
+            "end": 903
+          }
+        ],
+        "before_hash": "98c3efc44634aba5e5d4f84165fc55dceeaa341e0edca9fe0393ba5b26862b7c",
+        "after_hash": "22a70d0fe48456be334e8f0227d1c5a51117d9a373449b35ee0e0c72f4e25245"
+      },
+      {
+        "file": "src/main/ai/tools/toolWorkspace.ts",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 6
+          },
+          {
+            "start": 16,
+            "end": 16
+          },
+          {
+            "start": 19,
+            "end": 24
+          },
+          {
+            "start": 27,
+            "end": 28
+          },
+          {
+            "start": 62,
+            "end": 62
+          },
+          {
+            "start": 74,
+            "end": 74
+          },
+          {
+            "start": 79,
+            "end": 80
+          },
+          {
+            "start": 101,
+            "end": 102
+          },
+          {
+            "start": 113,
+            "end": 113
+          }
+        ],
+        "before_hash": "6bd2893aad9e07ab23b9b9147baafbf5274478ef41da41635cd14f0ed1a845c1",
+        "after_hash": "21d311fd9de21df1a96ec9d4435e9f324b22dc4cf98630bcacaad8633629e832"
+      },
+      {
+        "file": "src/main/db/repositories/conversationFork.ts",
+        "ranges": [
+          {
+            "start": 590,
+            "end": 594
+          }
+        ],
+        "before_hash": "b264e504d58f704b7220fc1dd9a3390661b7e95fea49b7b8ba4dcf06ef5d7038",
+        "after_hash": "9d25b25e686d59fc42d875386286554a4c9f643e31cd63c0228753690a437c3b"
+      },
+      {
+        "file": "src/main/db/repositories/conversationsRepo.ts",
+        "ranges": [
+          {
+            "start": 22,
+            "end": 22
+          }
+        ],
+        "before_hash": "327a5cf9cc693021eeb079b7bf88b7ad4063359a8a8392dd630803c0e1dfd1bf",
+        "after_hash": "0b841f5f83247bb25ebeb1b03758c5d6941a6ac21ca3ebeb83e5ea93c1cbce64"
+      },
+      {
+        "file": "src/main/db/repositories/settingsRepo.ts",
+        "ranges": [
+          {
+            "start": 19,
+            "end": 20
+          },
+          {
+            "start": 269,
+            "end": 304
+          }
+        ],
+        "before_hash": "4077240bdae610e5807e9a9a7487009c3eb8ad361a12756508e98c224dcdca70",
+        "after_hash": "628b445a87a013e6ef2e7cc95e9ad752b6b0157bbfa95553bea9f384fac8be20"
+      },
+      {
+        "file": "src/main/ipc/conversations.ts",
+        "ranges": [
+          {
+            "start": 16,
+            "end": 19
+          },
+          {
+            "start": 143,
+            "end": 143
+          },
+          {
+            "start": 150,
+            "end": 162
+          },
+          {
+            "start": 171,
+            "end": 186
+          },
+          {
+            "start": 189,
+            "end": 191
+          },
+          {
+            "start": 198,
+            "end": 201
+          },
+          {
+            "start": 210,
+            "end": 223
+          }
+        ],
+        "before_hash": "093118e9884cff6ec0ddc1865cd0bb49bdd37dd40719893ad1d5e1ae7e7f733c",
+        "after_hash": "795e9b4cf624655412a552f48d9684b68f1b4259d05f86b5f3e499650d2927cc"
+      },
+      {
+        "file": "src/main/ipc/settings.ts",
+        "ranges": [
+          {
+            "start": 166,
+            "end": 181
+          }
+        ],
+        "before_hash": "0bceaaf2bd0618e9518afe7d51d7a5841ed0cf630a66bc746a6c632750cf6827",
+        "after_hash": "34fd7cc7e9e072c5673a35ed827985a013e96579be0f2d04f4dda49a7619e1da"
+      },
+      {
+        "file": "src/main/workspace/conversationWorkspace.ts",
+        "ranges": [
+          {
+            "start": 20,
+            "end": 20
+          },
+          {
+            "start": 27,
+            "end": 27
+          },
+          {
+            "start": 30,
+            "end": 30
+          },
+          {
+            "start": 77,
+            "end": 77
+          },
+          {
+            "start": 87,
+            "end": 87
+          },
+          {
+            "start": 89,
+            "end": 93
+          }
+        ],
+        "before_hash": "9975d1061f88d9aa0f17d3bd575c3c107cf3418d0c4bdf46749d04d6aa5a140e",
+        "after_hash": "b1d1014c0c8863e45c86dd5fc97f172e7a4f7faa4fb3c9ccc2c2c8e2a2124355"
+      },
+      {
+        "file": "src/main/workspace/WorktreeService.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 194
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "103a00368cc1d47a4d065f8ab5ed3851742f56086852722e7be7df126055989f"
+      },
+      {
+        "file": "src/renderer/App.tsx",
+        "ranges": [
+          {
+            "start": 13,
+            "end": 14
+          },
+          {
+            "start": 418,
+            "end": 418
+          },
+          {
+            "start": 471,
+            "end": 477
+          },
+          {
+            "start": 1310,
+            "end": 1312
+          },
+          {
+            "start": 1315,
+            "end": 1315
+          },
+          {
+            "start": 1500,
+            "end": 1500
+          }
+        ],
+        "before_hash": "a4708c0ef49423f61dcc552b3deb825a413331aa2a24abb277d956d20bedfcec",
+        "after_hash": "40283d5d9d2e0e49aba374c850887a2ca7f776228d3a41183d2ad5cb546762bf"
+      },
+      {
+        "file": "src/renderer/components/SettingsWorkspace.tsx",
+        "ranges": [
+          {
+            "start": 2,
+            "end": 2
+          },
+          {
+            "start": 10,
+            "end": 10
+          },
+          {
+            "start": 13,
+            "end": 13
+          },
+          {
+            "start": 113,
+            "end": 113
+          },
+          {
+            "start": 118,
+            "end": 118
+          },
+          {
+            "start": 265,
+            "end": 266
+          },
+          {
+            "start": 275,
+            "end": 292
+          },
+          {
+            "start": 294,
+            "end": 294
+          },
+          {
+            "start": 296,
+            "end": 298
+          },
+          {
+            "start": 300,
+            "end": 303
+          },
+          {
+            "start": 305,
+            "end": 314
+          },
+          {
+            "start": 316,
+            "end": 321
+          },
+          {
+            "start": 323,
+            "end": 361
+          },
+          {
+            "start": 363,
+            "end": 383
+          }
+        ],
+        "before_hash": "b3806188a15d357a5dceef8a19eb1283cf71d289790ef44f13ef9cf4882f74a6",
+        "after_hash": "5e44fb1c30f958f4c83d747e78601ac6b2bfaf2c84d940908b62fa59b705b439"
+      },
+      {
+        "file": "src/renderer/components/workspace/WorkspaceContextBar.tsx",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 5
+          },
+          {
+            "start": 12,
+            "end": 12
+          },
+          {
+            "start": 28,
+            "end": 28
+          },
+          {
+            "start": 92,
+            "end": 92
+          },
+          {
+            "start": 94,
+            "end": 96
+          },
+          {
+            "start": 103,
+            "end": 103
+          },
+          {
+            "start": 107,
+            "end": 107
+          },
+          {
+            "start": 109,
+            "end": 111
+          },
+          {
+            "start": 118,
+            "end": 119
+          },
+          {
+            "start": 182,
+            "end": 198
+          },
+          {
+            "start": 200,
+            "end": 213
+          },
+          {
+            "start": 217,
+            "end": 221
+          }
+        ],
+        "before_hash": "963e5ba8f9aad2ee57779f659535e0afebe560ac0677e72044ca702dcfc235c0",
+        "after_hash": "92f01aa08391aae135e6b6bcc7d9bb27c46e6bbe5cb9d07ebbfb5f6882dde5b8"
+      },
+      {
+        "file": "src/renderer/components/workspace/WorkspaceModeSwitch.tsx",
+        "ranges": [
+          {
+            "start": 15,
+            "end": 16
+          },
+          {
+            "start": 43,
+            "end": 45
+          },
+          {
+            "start": 48,
+            "end": 48
+          },
+          {
+            "start": 68,
+            "end": 70
+          },
+          {
+            "start": 73,
+            "end": 73
+          },
+          {
+            "start": 163,
+            "end": 203
+          },
+          {
+            "start": 228,
+            "end": 231
+          },
+          {
+            "start": 249,
+            "end": 252
+          },
+          {
+            "start": 326,
+            "end": 328
+          },
+          {
+            "start": 331,
+            "end": 331
+          },
+          {
+            "start": 352,
+            "end": 354
+          },
+          {
+            "start": 357,
+            "end": 357
+          },
+          {
+            "start": 364,
+            "end": 366
+          },
+          {
+            "start": 369,
+            "end": 369
+          },
+          {
+            "start": 427,
+            "end": 429
+          },
+          {
+            "start": 432,
+            "end": 432
+          }
+        ],
+        "before_hash": "1687dfb12ddfdccf781e2673df8f843eebbe80f5c7571091a6f9911a7570df5a",
+        "after_hash": "f92a4ee65321e1285865e78323a4e4d9e2aba111439462f159be0fd865a6f06a"
+      },
+      {
+        "file": "src/renderer/stores/useAppStore.ts",
+        "ranges": [
+          {
+            "start": 174,
+            "end": 174
+          },
+          {
+            "start": 1118,
+            "end": 1118
+          }
+        ],
+        "before_hash": "ba748e712e1ed426f7532826562af030ab01b37ab78e7da06306f4138015968e",
+        "after_hash": "c3e5d6a3be458cfce99e7b99887adc5705eee1ebbcf480f6b8fd8f77a1070b55"
+      },
+      {
+        "file": "src/shared/contracts.ts",
+        "ranges": [
+          {
+            "start": 1043,
+            "end": 1043
+          },
+          {
+            "start": 1883,
+            "end": 1883
+          },
+          {
+            "start": 1886,
+            "end": 1886
+          },
+          {
+            "start": 1888,
+            "end": 1890
+          }
+        ],
+        "before_hash": "c26e727eaa3c9c6bcdb4d1fb336acba6d36e2cc57b301decd66a3590ff6b8b8c",
+        "after_hash": "5b4d229312776faa475f574164276067d67674545b8b82a0f6500ed82c27348f"
+      },
+      {
+        "file": "tests/sandboxPolicy.test.ts",
+        "ranges": [
+          {
+            "start": 94,
+            "end": 95
+          }
+        ],
+        "before_hash": "9d962902e593ebda4ee20e1fcb457eb4bb3339251130f97c44da1f4a46eb8689",
+        "after_hash": "d4e1c3d9f925c60dfb48672ec96707645bb1291ddff9da4251ff1b8cc883ed48"
+      },
+      {
+        "file": "workers/cloud-sandbox/package.json",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 18
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "025c190120b6436015e430da19a23d68e9c889d93152c5836b0b9d5f7d59d53a"
+      },
+      {
+        "file": "workers/cloud-sandbox/src/index.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 65
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "07c46aa8a1ea829a625e340d863161df4863888a2e6b2952f92e858f3d519a2d"
+      },
+      {
+        "file": "workers/cloud-sandbox/src/SandboxDO.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 63
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "a2deda425b210ad4d98b1a069dee8b5b4b9564bd5ba35f69ec8958e1b9288a71"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-08-08T10:38:13.518Z",
+    "completed_at": "2026-08-08T10:38:14.966Z",
+    "duration_ms": 1448,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 1448,
+    "peakMemoryBytes": 222199808,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 19,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 5,
+  "rewake_finding_count": 1,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-337fa3ba13c48a55d4f68dec",
+      "file": "workers/cloud-sandbox/src/SandboxDO.ts",
+      "line": 41,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-08-08T10:38:14.966Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "b1e06dc8eb2fa39ca94ef59a66b9ac3cd0d7c612d7b75518bfbc4869b44b3791",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-cf13cc4b2d884f747c525796",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 11,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-08-08T10:38:14.966Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "042259b4d3b449a25a3b2d1ad8da033648e7d8d863c9e74f7ba33d46b802a568",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-e3dea4b25428674bfe62aa11",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 14,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-08-08T10:38:14.966Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "aba7c1033674f40ec817c51ba791efb21fb2e726ce8b576a799fa6fc6c386838",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-7da4c1d6532d5f757a7a0b9b",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 15,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-08-08T10:38:14.966Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "9de1e91f33b1387d2320eaffc03ec0439a226d84b0219cc8fa824bc31cd24993",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c03e53f9fd2bed722bb2fc46",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 16,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-08-08T10:38:14.966Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "d5b51473da6ecfc7aa8481f2cf8d7ca2e1351c8e90fa1dcd4620d0fe69cc8f13",
+        "runtime_oracle": false
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "mimosa-337fa3ba13c48a55d4f68dec",
+      "file": "workers/cloud-sandbox/src/SandboxDO.ts",
+      "line": 41,
+      "end_line": 41,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "workers/cloud-sandbox/src/SandboxDO.ts",
+          "line": 41,
+          "evidence_hash": "b1e06dc8eb2fa39ca94ef59a66b9ac3cd0d7c612d7b75518bfbc4869b44b3791",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    },
+    {
+      "finding_id": "mimosa-cf13cc4b2d884f747c525796",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 11,
+      "end_line": 11,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "workers/cloud-sandbox/package.json",
+          "line": 11,
+          "evidence_hash": "042259b4d3b449a25a3b2d1ad8da033648e7d8d863c9e74f7ba33d46b802a568",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-e3dea4b25428674bfe62aa11",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 14,
+      "end_line": 14,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "workers/cloud-sandbox/package.json",
+          "line": 14,
+          "evidence_hash": "aba7c1033674f40ec817c51ba791efb21fb2e726ce8b576a799fa6fc6c386838",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-7da4c1d6532d5f757a7a0b9b",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 15,
+      "end_line": 15,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "workers/cloud-sandbox/package.json",
+          "line": 15,
+          "evidence_hash": "9de1e91f33b1387d2320eaffc03ec0439a226d84b0219cc8fa824bc31cd24993",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-c03e53f9fd2bed722bb2fc46",
+      "file": "workers/cloud-sandbox/package.json",
+      "line": 16,
+      "end_line": 16,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "workers/cloud-sandbox/package.json",
+          "line": 16,
+          "evidence_hash": "d5b51473da6ecfc7aa8481f2cf8d7ca2e1351c8e90fa1dcd4620d0fe69cc8f13",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    }
+  ],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_ddefee49-186a-40f2-9d3b-283ac1e84479-20260808T103814966Z-15505-690ae19ae3c3.json",
+    "latest_report": ".mimosa/reports/task-review-sess_ddefee49-186a-40f2-9d3b-283ac1e84479.json",
+    "history_summary": ".mimosa/history/run-20260808T103814966Z-15505-690ae19ae3c3.json"
+  }
+}

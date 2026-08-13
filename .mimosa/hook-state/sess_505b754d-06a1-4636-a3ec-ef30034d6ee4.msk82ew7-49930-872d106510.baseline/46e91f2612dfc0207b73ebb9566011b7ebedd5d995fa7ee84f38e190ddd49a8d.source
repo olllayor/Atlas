@@ -1,0 +1,177 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useEffect, useEffectEvent, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { ChatWindow } from './components/ChatWindow';
+import { Composer } from './components/Composer';
+import { OnboardingFlow } from './components/OnboardingFlow';
+import { AppUpdateButton } from './components/AppUpdateButton';
+import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
+import { Sidebar } from './components/Sidebar';
+import { buildSidebarConversationItems } from './components/sidebarViewModel';
+import { prewarmMessageRendering } from './lib/messageRendering';
+import { selectDiagnosticsSummary, selectLoadedConversationMetrics, useAppStore } from './stores/useAppStore';
+function LoadingScreen() {
+    return (_jsx("div", { className: "flex min-h-screen items-center justify-center", children: _jsxs("div", { className: "flex items-center gap-2 text-text-muted", children: [_jsxs("svg", { className: "h-4 w-4 animate-spin", viewBox: "0 0 24 24", fill: "none", children: [_jsx("circle", { className: "opacity-25", cx: "12", cy: "12", r: "10", stroke: "currentColor", strokeWidth: "4" }), _jsx("path", { className: "opacity-75", fill: "currentColor", d: "M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" })] }), _jsx("span", { className: "text-sm", children: "Loading..." })] }) }));
+}
+function ErrorScreen({ message, onRetry }) {
+    return (_jsx("div", { className: "flex min-h-screen items-center justify-center px-6", children: _jsxs("div", { className: "w-full max-w-md rounded-xl border border-error-border bg-bg-elevated p-8 text-center shadow-elevated", children: [_jsx("h1", { className: "text-xl font-semibold text-text-primary", children: "Something went wrong" }), _jsx("p", { className: "mt-2 text-sm text-text-tertiary", children: message }), _jsx("button", { type: "button", onClick: onRetry, className: "btn-secondary mt-6 border-error-border bg-error-bg px-4 py-2 text-sm text-error-text", children: "Retry" })] }) }));
+}
+function resolveThemeMode(mode, prefersDark) {
+    if (mode === 'system') {
+        return prefersDark ? 'dark' : 'light';
+    }
+    return mode;
+}
+export default function App() {
+    const [composerValue, setComposerValue] = useState('');
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [showOnboarding, setShowOnboarding] = useState(false);
+    const [onboardingDone, setOnboardingDone] = useState(false);
+    const { bootstrapping, initialized, bootstrapError, activeView, settingsSection, keyDraft, isSavingKey, isValidatingKey, isRefreshingModels, settings, models, conversations, conversationDetails, isLoadingOlderByConversation, selectedConversationId, selectedModelIdByConversation, draftsByConversation, conversationStats, diagnostics, notice, updateState, bootstrap, refreshModels, loadConversation, loadOlderMessages, createConversation, openSettings, closeSettings, setSettingsSection, setKeyDraft, saveOpenRouterKey, validateOpenRouterKey, updatePreferences, setUpdateState, checkForUpdates, performUpdatePrimaryAction, setSelectedModel, sendMessage, abortConversation, deleteConversation, handleStreamEvent, dismissNotice, } = useAppStore(useShallow((state) => ({
+        bootstrapping: state.bootstrapping,
+        initialized: state.initialized,
+        bootstrapError: state.bootstrapError,
+        activeView: state.activeView,
+        settingsSection: state.settingsSection,
+        keyDraft: state.keyDraft,
+        isSavingKey: state.isSavingKey,
+        isValidatingKey: state.isValidatingKey,
+        isRefreshingModels: state.isRefreshingModels,
+        settings: state.settings,
+        models: state.models,
+        conversations: state.conversations,
+        conversationDetails: state.conversationDetails,
+        conversationStats: state.conversationStats,
+        diagnostics: state.diagnostics,
+        isLoadingOlderByConversation: state.isLoadingOlderByConversation,
+        selectedConversationId: state.selectedConversationId,
+        selectedModelIdByConversation: state.selectedModelIdByConversation,
+        draftsByConversation: state.draftsByConversation,
+        notice: state.notice,
+        updateState: state.updateState,
+        bootstrap: state.bootstrap,
+        refreshModels: state.refreshModels,
+        loadConversation: state.loadConversation,
+        loadOlderMessages: state.loadOlderMessages,
+        createConversation: state.createConversation,
+        openSettings: state.openSettings,
+        closeSettings: state.closeSettings,
+        setSettingsSection: state.setSettingsSection,
+        setKeyDraft: state.setKeyDraft,
+        saveOpenRouterKey: state.saveOpenRouterKey,
+        validateOpenRouterKey: state.validateOpenRouterKey,
+        updatePreferences: state.updatePreferences,
+        setUpdateState: state.setUpdateState,
+        checkForUpdates: state.checkForUpdates,
+        performUpdatePrimaryAction: state.performUpdatePrimaryAction,
+        setSelectedModel: state.setSelectedModel,
+        sendMessage: state.sendMessage,
+        abortConversation: state.abortConversation,
+        deleteConversation: state.deleteConversation,
+        handleStreamEvent: state.handleStreamEvent,
+        dismissNotice: state.dismissNotice,
+    })));
+    const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
+    const diagnosticsSummary = useAppStore(useShallow(selectDiagnosticsSummary));
+    const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
+    const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+    const isLoadingOlder = selectedConversationId ? Boolean(isLoadingOlderByConversation[selectedConversationId]) : false;
+    const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
+    const openRouterCredential = settings?.providers.find((p) => p.providerId === 'openrouter') ?? null;
+    const hasCredential = Boolean(openRouterCredential?.hasSecret);
+    const themeMode = settings?.appearance.themeMode ?? 'dark';
+    const sidebarItems = buildSidebarConversationItems({
+        conversations,
+        draftsByConversation,
+        now: Date.now(),
+    });
+    const onStreamEvent = useEffectEvent((event) => {
+        void handleStreamEvent(event);
+    });
+    const onUpdateState = useEffectEvent((snapshot) => {
+        setUpdateState(snapshot);
+    });
+    useEffect(() => {
+        void bootstrap();
+    }, [bootstrap]);
+    useEffect(() => prewarmMessageRendering(), []);
+    useEffect(() => {
+        const unsubscribe = window.atlasChat.chat.subscribe((event) => {
+            onStreamEvent(event);
+        });
+        return unsubscribe;
+    }, [onStreamEvent]);
+    useEffect(() => {
+        const unsubscribe = window.atlasChat.updates.subscribe((snapshot) => {
+            onUpdateState(snapshot);
+        });
+        return unsubscribe;
+    }, [onUpdateState]);
+    useEffect(() => {
+        if (initialized && !hasCredential && conversations.length === 0) {
+            setShowOnboarding(true);
+        }
+    }, [initialized, hasCredential, conversations.length]);
+    useEffect(() => {
+        if (onboardingDone && hasCredential) {
+            void refreshModels();
+            setOnboardingDone(false);
+        }
+    }, [onboardingDone, hasCredential, refreshModels]);
+    useEffect(() => {
+        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        const applyTheme = () => {
+            const resolved = resolveThemeMode(themeMode, mediaQuery.matches);
+            document.documentElement.dataset.theme = resolved;
+            document.documentElement.style.colorScheme = resolved;
+        };
+        applyTheme();
+        mediaQuery.addEventListener('change', applyTheme);
+        return () => {
+            mediaQuery.removeEventListener('change', applyTheme);
+        };
+    }, [themeMode]);
+    if (bootstrapping)
+        return _jsx(LoadingScreen, {});
+    if (!initialized || bootstrapError) {
+        return _jsx(ErrorScreen, { message: bootstrapError ?? 'Unknown error', onRetry: () => void bootstrap() });
+    }
+    if (activeView === 'settings') {
+        const usageSummary = buildUsageSummary({
+            settings,
+            conversationPages: conversationDetails,
+            conversationStats,
+            diagnostics,
+            rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
+        });
+        return (_jsx(SettingsWorkspace, { settings: settings, updateState: updateState, usageSummary: usageSummary, notice: notice, keyDraft: keyDraft, isSaving: isSavingKey, isValidating: isValidatingKey, isRefreshingModels: isRefreshingModels, activeSection: settingsSection, onBack: closeSettings, onNavigate: setSettingsSection, onDismissNotice: dismissNotice, onKeyDraftChange: setKeyDraft, onSaveKey: () => void saveOpenRouterKey(), onValidateKey: () => void validateOpenRouterKey(), onThemeModeChange: (mode) => void updatePreferences({ appearance: { themeMode: mode } }), onToggleFreeModels: (value) => void updatePreferences({ showFreeOnlyByDefault: value }), onUpdateAction: () => {
+                if (updateState.status === 'available' || updateState.status === 'downloaded') {
+                    void performUpdatePrimaryAction();
+                    return;
+                }
+                void checkForUpdates({ manual: true });
+            }, onRefreshModels: () => void refreshModels() }));
+    }
+    if (showOnboarding && !hasCredential) {
+        return (_jsx(OnboardingFlow, { hasCredential: hasCredential, isSavingKey: isSavingKey, isValidatingKey: isValidatingKey, keyDraft: keyDraft, onKeyDraftChange: setKeyDraft, onSaveKey: () => void saveOpenRouterKey(), onValidateKey: () => void validateOpenRouterKey(), onContinue: () => {
+                setShowOnboarding(false);
+                setOnboardingDone(true);
+            } }));
+    }
+    return (_jsxs("div", { className: "flex h-screen overflow-hidden bg-bg-base", children: [_jsx(Sidebar, { items: sidebarItems, selectedConversationId: selectedConversationId, collapsed: sidebarCollapsed, settings: settings, updateState: updateState, isRefreshingModels: isRefreshingModels, conversationStats: conversationStats, loadedMessageCount: loadedMetrics.loadedMessageCount, onSelect: (id) => void loadConversation(id), onCreate: () => void createConversation(), onDelete: (id) => void deleteConversation(id), onOpenSettings: openSettings, onRefreshModels: () => void refreshModels(), onCheckForUpdates: () => void checkForUpdates({ manual: true }), onToggleCollapsed: () => setSidebarCollapsed(!sidebarCollapsed) }), _jsxs("div", { className: "relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(87,104,173,0.13),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_18%)]", children: [_jsx("div", { className: "pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.02),transparent_18%,transparent_82%,rgba(255,255,255,0.02))]" }), _jsx("div", { className: "relative h-[52px] shrink-0 border-b border-white/6", style: { WebkitAppRegion: 'drag' }, children: _jsx(AppUpdateButton, { updateState: updateState, onClick: () => void performUpdatePrimaryAction() }) }), notice && (_jsxs("div", { className: `flex items-center justify-between border-b px-4 py-2 text-sm ${notice.tone === 'error'
+                            ? 'border-error-border bg-error-bg text-error-text'
+                            : notice.tone === 'success'
+                                ? 'border-success-border bg-success-bg text-success-text'
+                                : 'border-warning-border bg-warning-bg text-warning-text'}`, style: { WebkitAppRegion: 'no-drag' }, children: [_jsx("span", { children: notice.message }), _jsx("button", { onClick: dismissNotice, className: "ml-3 text-text-muted hover:text-text-primary", children: "\u2715" })] })), _jsx(ChatWindow, { detail: activeConversation, draft: activeDraft, hasCredential: hasCredential, isLoadingOlder: isLoadingOlder, onOpenSettings: openSettings, onSuggestionClick: (prompt) => setComposerValue(prompt), onLoadOlderMessages: (conversationId) => loadOlderMessages(conversationId) }), _jsx(Composer, { value: composerValue, disabled: !selectedConversationId, isStreaming: activeDraft?.status === 'streaming', models: models, selectedModelId: selectedModelId, detail: activeConversation, draft: activeDraft, onChange: setComposerValue, onSend: () => {
+                            const payload = composerValue;
+                            void sendMessage(payload)
+                                .then(() => setComposerValue(''))
+                                .catch(() => setComposerValue(payload));
+                        }, onAbort: () => {
+                            if (selectedConversationId)
+                                void abortConversation(selectedConversationId);
+                        }, onSelectModel: (modelId) => {
+                            if (selectedConversationId)
+                                setSelectedModel(selectedConversationId, modelId);
+                        }, onRefreshModels: () => void refreshModels(), isRefreshingModels: isRefreshingModels })] })] }));
+}

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engineering Performance Audit — Atlas</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:      #0a0a0b;
+    --surface: #131315;
+    --raised:  #1a1a1d;
+    --ink:     #f4f4f5;
+    --muted:   #8f8f98;
+    --rule:    #26262a;
+    --accent:  #22d3ee;
+    --s1: #ff6b6b;  --s1-bg: #2a1315;
+    --s2: #ff9a62;  --s2-bg: #2a1a12;
+    --s3: #ffc857;  --s3-bg: #2a2413;
+    --s4: #5b9cf8;  --s4-bg: #121c2a;
+    --s5: #a78bfa;  --s5-bg: #1c162a;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+            "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono",
+            Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 16.5px; line-height: 1.6; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  ::selection { background: #2a3f45; }
+  .sheet { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem; }
+  .masthead { padding: 4rem 0 0; }
+  .eyebrow { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--accent); margin: 0 0 1.4rem; }
+  h1 { font-size: clamp(2.4rem, 7vw, 4.2rem); font-weight: 800; letter-spacing: -0.035em; line-height: 1.04; margin: 0 0 1.4rem; max-width: 20ch; text-wrap: balance; }
+  .lede { font-size: 1.12rem; line-height: 1.55; color: #c9c9d0; margin: 0 0 2rem; max-width: 46rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 2.5rem; }
+  .meta .pill { display: inline-flex; align-items: center; gap: 0.45rem; border: 1px solid var(--rule); border-radius: 999px; padding: 0.3rem 0.75rem; font-size: 0.78rem; color: var(--muted); }
+  .meta .pill b { color: var(--ink); font-weight: 600; }
+  .meta .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--s4); flex: none; }
+  .meta .pill.ok::before   { background: #4ade80; }
+  .meta .pill.warn::before { background: var(--s2); }
+  .nav { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin-bottom: 3.5rem; }
+  .nav ul { display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; list-style: none; margin: 0; padding: 0.9rem 0; font-size: 0.85rem; }
+  .nav a { color: var(--muted); text-decoration: none; }
+  .nav a:hover { color: var(--ink); }
+  section { margin-bottom: 4rem; }
+  section + section { border-top: 1px solid var(--rule); padding-top: 3rem; }
+  h2 { font-size: clamp(1.5rem, 3vw, 1.95rem); font-weight: 700; letter-spacing: -0.022em; line-height: 1.15; margin: 0 0 1rem; }
+  h3 { font-size: 1.02rem; font-weight: 650; letter-spacing: -0.008em; margin: 2rem 0 0.6rem; }
+  p { margin: 0 0 1rem; max-width: 46rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  strong { font-weight: 650; color: #fff; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.2rem; max-width: 46rem; }
+  li { margin-bottom: 0.35rem; }
+
+  .verdict { display: flex; gap: 1.5rem; align-items: flex-start; justify-content: space-between; border-left: 3px solid var(--s3); background: linear-gradient(90deg, var(--s3-bg), var(--surface) 70%); border-radius: 0 4px 4px 0; padding: 1.3rem 1.5rem; margin: 0 0 1.5rem; }
+  .verdict h3 { margin: 0 0 0.6rem; font-size: 1.05rem; }
+  .verdict > div > :last-child { margin-bottom: 0; }
+  .risk { text-align: right; flex: none; }
+  .risk .lvl { display: block; font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em; color: var(--s3); line-height: 1; }
+  .risk .what { font-size: 0.72rem; color: var(--muted); }
+  @media (max-width: 620px) { .verdict { flex-direction: column; } .risk { text-align: left; } }
+  .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; margin: 0 0 1.5rem; }
+  .tier { background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; padding: 1.1rem 1.2rem; }
+  .tier h4 { margin: 0 0 0.5rem; font-size: 0.98rem; font-weight: 700; }
+  .tier p  { margin: 0; font-size: 0.9rem; color: #c2c2ca; }
+  .tier:nth-child(1) h4 { color: var(--s1); }
+  .tier:nth-child(2) h4 { color: var(--s2); }
+  .tier:nth-child(3) h4 { color: var(--s3); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.8rem; margin: 0 0 1.5rem; }
+  .stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; padding: 1rem 1.1rem; }
+  .stat .k { display: block; font-size: 0.68rem; font-weight: 650; letter-spacing: 0.11em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem; }
+  .stat .v { display: block; font-size: 1.9rem; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.05; margin-bottom: 0.5rem; color: var(--ink); }
+  .stat.s1 .v { color: var(--s1); }
+  .stat.s2 .v { color: var(--s2); }
+  .stat.s3 .v { color: var(--s3); }
+  .stat.s4 .v { color: var(--s4); }
+  .stat .read { display: block; font-size: 0.82rem; color: var(--muted); line-height: 1.45; }
+  .comp { background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; padding: 1.2rem 1.3rem; margin: 0 0 1.5rem; }
+  .comp h4 { margin: 0 0 1rem; font-size: 0.95rem; font-weight: 650; }
+  .comp .row { display: grid; grid-template-columns: 8rem 1fr 4.5rem; align-items: center; gap: 0.8rem; margin-bottom: 0.6rem; font-size: 0.88rem; }
+  .comp .track { background: var(--raised); border-radius: 999px; height: 7px; }
+  .comp .fill  { height: 7px; border-radius: 999px; width: var(--w); background: var(--s4); }
+  .comp .row.s1 .fill { background: var(--s1); }
+  .comp .row.s2 .fill { background: var(--s2); }
+  .comp .row.s3 .fill { background: var(--s3); }
+  .comp .row.s5 .fill { background: var(--s5); }
+  .comp .val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .comp .foot { font-size: 0.8rem; color: var(--muted); margin: 1rem 0 0; }
+  @media (max-width: 560px) { .comp .row { grid-template-columns: 6rem 1fr 3.5rem; font-size: 0.8rem; } }
+
+  .sev { display: inline-block; font-size: 0.7rem; font-weight: 650; padding: 0.15rem 0.5rem; border-radius: 3px; white-space: nowrap; }
+  .sev.s1 { background: var(--s1-bg); color: var(--s1); }
+  .sev.s2 { background: var(--s2-bg); color: var(--s2); }
+  .sev.s3 { background: var(--s3-bg); color: var(--s3); }
+  .sev.s4 { background: var(--s4-bg); color: var(--s4); }
+  .sev.s5 { background: var(--raised);  color: var(--muted); }
+  .scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; margin: 0 0 1.5rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 0.66rem; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); padding: 0.9rem 1rem; background: var(--raised); white-space: nowrap; }
+  td { padding: 0.85rem 1rem; border-top: 1px solid var(--rule); vertical-align: top; }
+  td.num, th.num { text-align: right; }
+  tbody tr td:first-child { font-weight: 600; }
+  .finding { border-top: 1px solid var(--rule); padding: 1.6rem 0; }
+  .finding-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+  .finding-head .id { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+  .finding h3 { margin: 0 0 0.7rem; font-size: 1.1rem; font-weight: 650; letter-spacing: -0.012em; }
+  .finding dl { margin: 1rem 0 0; }
+  .finding dt { font-size: 0.66rem; letter-spacing: 0.11em; text-transform: uppercase; color: var(--accent); font-weight: 650; margin-top: 0.9rem; }
+  .finding dd { margin: 0.2rem 0 0; color: #c9c9d0; font-size: 0.92rem; }
+  .flow { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin: 0 0 1.5rem; }
+  .opt { background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; padding: 1.1rem 1.2rem; }
+  .opt h4 { margin: 0 0 0.5rem; font-size: 0.98rem; font-weight: 650; }
+  .opt h4 .n { font-family: var(--mono); font-size: 0.75rem; font-weight: 400; color: var(--accent); margin-right: 0.4rem; }
+  .opt p { font-size: 0.88rem; margin-bottom: 0.6rem; }
+  .opt ul { font-size: 0.86rem; margin-bottom: 0; padding-left: 1.1rem; }
+  .opt .con::marker { color: var(--s2); }
+  .note, .warn, .caveat { border-left: 3px solid; border-radius: 0 4px 4px 0; padding: 1rem 1.2rem; margin: 0 0 1.5rem; font-size: 0.92rem; }
+  .note   { border-color: var(--s4); background: var(--s4-bg); }
+  .warn   { border-color: var(--s1); background: var(--s1-bg); }
+  .caveat { border-color: var(--s3); background: var(--s3-bg); }
+  .note > :last-child, .warn > :last-child, .caveat > :last-child { margin-bottom: 0; }
+  .note h4, .warn h4, .caveat h4 { margin: 0 0 0.4rem; font-size: 0.95rem; font-weight: 650; }
+  .caveat h4 { color: var(--s3); }
+  .warn h4   { color: var(--s1); }
+  .tl { list-style: none; padding: 0; margin: 0 0 1.5rem; }
+  .tl li { position: relative; padding: 0 0 1rem 1.4rem; border-left: 1px solid var(--rule); }
+  .tl li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .tl li::before { content: ""; position: absolute; left: -4px; top: 0.5rem; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .tl .when { display: block; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+  details { border-top: 1px solid var(--rule); padding: 0.75rem 0; }
+  details:last-of-type { border-bottom: 1px solid var(--rule); margin-bottom: 1.5rem; }
+  summary { cursor: pointer; font-weight: 600; font-size: 0.94rem; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "+"; font-family: var(--mono); color: var(--accent); margin-right: 0.6rem; }
+  details[open] > summary::before { content: "–"; }
+  details > :not(summary) { margin-top: 0.6rem; font-size: 0.92rem; }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--raised); padding: 0.12em 0.38em; border-radius: 3px; }
+  pre { font-family: var(--mono); font-size: 0.8rem; line-height: 1.55; background: #08080a; color: #d5d5dd; border: 1px solid var(--rule); padding: 1rem 1.1rem; border-radius: 5px; overflow-x: auto; margin: 0 0 1.5rem; }
+  pre code { background: none; padding: 0; font-size: inherit; color: inherit; }
+  img { max-width: 100%; height: auto; border-radius: 4px; }
+  img.chip { background: #fff; padding: 0.75rem; }
+  footer { border-top: 1px solid var(--rule); padding: 1.5rem 0 4rem; font-size: 0.78rem; color: var(--muted); }
+  @media (max-width: 640px) { .sheet { padding: 0 1.1rem; } .masthead { padding-top: 2.5rem; } body { font-size: 16px; } }
+  @media print {
+    :root { color-scheme: light; --bg: #fff; --surface: #fafafa; --raised: #f0f0f0; --ink: #000; --muted: #444; --rule: #bbb; --accent: #06697d; --s1: #b3261e; --s1-bg: #fdeceb; --s2: #92400e; --s2-bg: #fdf3e7; --s3: #7a5b00; --s3-bg: #fdf8e7; --s4: #1e4fa3; --s4-bg: #eaf0fb; --s5: #5b3fa8; --s5-bg: #f0ecfb; }
+    html, body { background: #fff; color: #000; font-size: 10.5pt; }
+    .sheet { max-width: none; padding: 0; }
+    .nav { display: none; }
+    section, .finding, .stat { page-break-inside: avoid; }
+    .verdict { background: var(--s3-bg); }
+    strong { color: #000; }
+    img.chip { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="eyebrow">ENGINEERING PERFORMANCE AUDIT</p>
+    <h1>The feedback loop is fast; the renderer bundle and one failing path are the costs to clear.</h1>
+    <p class="lede">A measured audit of Atlas: build, test and typecheck latency, bundle composition, dependency
+      weight and code concentration. Every number here comes from a local run on 6 August 2026. Inference is labelled
+      as inference; nothing is padded with placeholders.</p>
+    <div class="meta">
+      <span class="pill"><b>6 August 2026</b></span>
+      <span class="pill">Commit <b>4e2b169</b> · dev</span>
+      <span class="pill warn">1 failing test</span>
+      <span class="pill ok">Typecheck clean</span>
+    </div>
+  </header>
+
+  <nav class="nav">
+    <ul>
+      <li><a href="#summary">Verdict</a></li>
+      <li><a href="#evidence">Observed data</a></li>
+      <li><a href="#findings">Findings</a></li>
+      <li><a href="#plan">Plan</a></li>
+    </ul>
+  </nav>
+
+  <section id="summary">
+    <h2>Verdict</h2>
+    <div class="verdict">
+      <div>
+        <h3>Health is good and the loop is fast — but the build is not green and the renderer is heavy.</h3>
+        <p>Typecheck passes clean and the whole suite runs in <strong>6.8 s</strong>, which keeps iteration velocity high.
+          Against that, <strong>1 of 882 tests fails</strong> — a runtime error thrown only on the plugin-uninstall path —
+          and the renderer ships a <strong>4.6 MB</strong> entry chunk plus several multi-hundred-KB visualisation bundles.
+          Neither is blocking launch; both should be cleared before they compound.</p>
+      </div>
+      <div class="risk"><span class="lvl">MEDIUM</span><span class="what">overall engineering risk</span></div>
+    </div>
+    <div class="tiers">
+      <div class="tier"><h4>First</h4><p>Fix the failing uninstall path — the suite must be green before it is a source of truth.</p></div>
+      <div class="tier"><h4>Then</h4><p>Shrink and split the renderer bundle; lazy-load the heavy diagram libraries.</p></div>
+      <div class="tier"><h4>Then optimise</h4><p>Break down the god-files and prune the dependency surface.</p></div>
+    </div>
+  </section>
+  <section id="evidence">
+    <h2>Observed data</h2>
+    <div class="note"><h4 style="margin:0 0 0.4rem;font-size:0.95rem;font-weight:650;color:var(--s4)">How this was measured</h4>
+      All figures measured on this machine against commit <code>4e2b169</code> on <code>dev</code>, 6 Aug 2026:
+      <code>pnpm test</code>, <code>npx tsc --noEmit</code>, and inspection of the <code>out/</code> build directory and
+      <code>package.json</code>. CI time was not measured — no CI run was executed for this audit.</div>
+
+    <div class="stats">
+      <div class="stat s1"><span class="k">Failing tests</span><span class="v">1 / 882</span>
+        <span class="read">A ReferenceError on the plugin-uninstall path. 880 pass, 1 skipped.</span></div>
+      <div class="stat s2"><span class="k">Renderer entry chunk</span><span class="v">4.6 MB</span>
+        <span class="read">Single <code>index-*.js</code> asset — the whole renderer in one eagerly-loaded file.</span></div>
+      <div class="stat s2"><span class="k">Full suite time</span><span class="v">6.8 s</span>
+        <span class="read">Fast — but it currently ends red.</span></div>
+      <div class="stat s4"><span class="k">Typecheck</span><span class="v">1.5 s</span>
+        <span class="read">Clean with zero errors. Excellent feedback.</span></div>
+      <div class="stat s3"><span class="k">Source size</span><span class="v">70,697 LOC</span>
+        <span class="read">TS/TSX across 285 files (180 ts + 97 tsx + 8 css/js).</span></div>
+      <div class="stat s4"><span class="k">node_modules</span><span class="v">1.2 GB</span>
+        <span class="read">51 prod + 19 dev deps for a desktop chat client.</span></div>
+    </div>
+
+    <div class="comp">
+      <h4>Renderer bundle — largest emitted assets (out/renderer/assets)</h4>
+      <div class="row s2"><span>index-*.js</span><span class="track"><span class="fill" style="--w:100%"></span></span><span class="val num">4.6 MB</span></div>
+      <div class="row s2"><span>mermaid</span><span class="track"><span class="fill" style="--w:57%"></span></span><span class="val num">2.6 MB</span></div>
+      <div class="row s3"><span>cytoscape.esm</span><span class="track"><span class="fill" style="--w:20%"></span></span><span class="val num">936 KB</span></div>
+      <div class="row s3"><span>treemap</span><span class="track"><span class="fill" style="--w:19%"></span></span><span class="val num">880 KB</span></div>
+      <div class="row s4"><span>emacs-lisp</span><span class="track"><span class="fill" style="--w:16%"></span></span><span class="val num">764 KB</span></div>
+      <div class="row s4"><span>cpp</span><span class="track"><span class="fill" style="--w:13%"></span></span><span class="val num">612 KB</span></div>
+      <p class="foot">Total <code>out/</code> build is 23 MB. Mermaid, cytoscape and treemap are separate chunks, so
+        they can already load lazily — the 4.6 MB main entry is the one loaded on every startup.</p>
+    </div>
+
+    <div class="comp">
+      <h4>Source concentration — top ten files by LOC</h4>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>File</th><th class="num">LOC</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>useAppStore.ts</td><td class="num">2011</td><td>renderer/stores</td></tr>
+          <tr><td>contracts.ts</td><td class="num">1827</td><td>shared</td></tr>
+          <tr><td>SettingsWorkspace.tsx</td><td class="num">1655</td><td>renderer/components</td></tr>
+          <tr><td>App.tsx</td><td class="num">1648</td><td>renderer</td></tr>
+          <tr><td>conversationsRepo.ts</td><td class="num">1648</td><td>main/db/repositories</td></tr>
+          <tr><td>Sidebar.tsx</td><td class="num">1553</td><td>renderer/components</td></tr>
+          <tr><td>ChatWindow.tsx</td><td class="num">1525</td><td>renderer/components</td></tr>
+          <tr><td>ChatEngine.ts</td><td class="num">1510</td><td>main/ai/core</td></tr>
+          <tr><td>Composer.tsx</td><td class="num">1208</td><td>renderer/components</td></tr>
+          <tr><td>ChatSessionRuntime.ts</td><td class="num">1154</td><td>main/ai/core</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="foot">Ten files hold ~12.8k of ~70.7k LOC. Five are over 1.5k lines each — the long tail of small,
+        single-purpose files is healthy, but these five concentrate ownership and merge churn.</p>
+    </div>
+
+    <div class="comp">
+      <h4>Test suite composition</h4>
+      <div class="row s1"><span>Fail</span><span class="track"><span class="fill" style="--w:3%"></span></span><span class="val num">1</span></div>
+      <div class="row"><span>Pass</span><span class="track"><span class="fill" style="--w:100%"></span></span><span class="val num">880</span></div>
+      <div class="row s5"><span>Skipped</span><span class="track"><span class="fill" style="--w:1%"></span></span><span class="val num">1</span></div>
+      <p class="foot">96 test files, 882 cases. The single failure is in <code>tests/pluginInstaller.test.ts</code>,
+        so the plugin lifecycle — a headline feature of the current dev cycle — is partly unverified.</p>
+    </div>
+
+    <div class="caveat"><h4>Boundary of the evidence</h4>
+      <p>Bundle→startup impact is <strong>inference</strong>, not a measured frame profile: I inspected emitted asset
+        sizes but did not run an instrumented cold-start on a low-end machine. CI wall-clock, clean-install time and
+        runtime memory were not measured. The exact mechanism behind the tooling <code>ReferenceError</code> is inferred
+        from source — reproducing it is the first step in the plan.</p></div>
+  </section>
+
+  <section id="findings">
+    <h2>Findings</h2>
+
+    <div class="flow">
+      <div class="step"><b>Install path</b><span class="cost">works</span><span class="sub">covered by tests</span></div>
+      <div class="step hot"><b>Uninstall path</b><span class="cost">throws</span><span class="sub">ReferenceError, not covered</span></div>
+      <div class="step"><b>Install path</b><span class="cost">works</span><span class="sub">same function, covered</span></div>
+    </div>
+    <div class="finding">
+      <div class="finding-head"><span class="id">01</span><span class="sev s2">High</span></div>
+      <h3>The suite is red: plugin uninstall throws a runtime error that install does not.</h3>
+      <p>Measured directly: <code>pnpm test</code> on commit <code>4e2b169</code> ends with one failure —
+        <em>“uninstalling removes the bundle and nothing else”</em> in <code>tests/pluginInstaller.test.ts</code>.
+        The thrown error is <code>ReferenceError: readInstalledVersion is not defined</code> from
+        <code>PluginInstaller.uninstall</code> (<code>src/main/plugins/PluginInstaller.ts:164</code>).</p>
+      <dl>
+        <dt>What is confidently known</dt><dd>Reproducible on every run; 880 other cases pass (1 skipped). The failure is
+          path-specific: the install path calls the same function at line 79 and its tests are green.</dd>
+        <dt>What is inferred</dt><dd>Static reading shows <code>readInstalledVersion</code> is present at module scope
+          (line 282), so a “not defined” raise is unexpected. The cause is likely a transpile/hoisting artifact under
+          the <code>tsx</code> test loader with TypeScript 7 — but that is <strong>not confirmed</strong>.</dd>
+        <dt>Fix</dt><dd>Reproduce in isolation (run that one file, bisect install vs uninstall). If it is a loader/transpile
+          artifact, restructure so the helper is reachable on every path; if it is a real scope error, move the helper
+          into the class.</dd>
+        <dt>Acceptance</dt><dd><code>pnpm test</code> exits 0 with <code>882/882</code> passing.</dd>
+      </dl>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head"><span class="id">02</span><span class="sev s2">High</span></div>
+      <h3>A 4.6 MB renderer entry chunk is loaded on every launch.</h3>
+      <p>Measured in <code>out/renderer/assets</code>: the main entry <code>index-*.js</code> is 4.6 MB, with mermaid
+        (2.6 MB), cytoscape (936 KB) and treemap (880 KB) emitted as separate, already-splittable chunks. For a desktop
+        chat client, the cold-open cost on slower machines is the user-visible price of that single blob.</p>
+      <dl>
+        <dt>Evidence</dt><dd>Asset inspection — the size split is exact; the time-to-interactive effect is inferred from
+          size alone, no frame profile was taken.</dd>
+        <dt>Fix</dt><dd>Lazy-load mermaid/cytoscape/treemap behind the diagram feature entry points (they are already
+          separate chunks, so the loading boundary likely exists), then profile the main entry with a bundle analyser
+          and code-split the startup hot path away from the rest.</dd>
+        <dt>Acceptance</dt><dd>Main entry under 2 MB, or the heavy diagram libs visibly lazy-loaded; no diagram-feature
+          regression.</dd>
+      </dl>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head"><span class="id">03</span><span class="sev s3">Medium</span></div>
+      <h3>Five source files each exceed 1.5k lines and concentrate ~12.8k LOC.</h3>
+      <p><code>useAppStore.ts</code> (2011), <code>contracts.ts</code> (1827), <code>SettingsWorkspace.tsx</code> (1655),
+        <code>App.tsx</code> (1648) and <code>conversationsRepo.ts</code> (1648) dominate the tree. This is an
+        engineering-health cost, not a runtime one — it raises merge churn, makes parallel work harder, and grows the
+        blast radius of any single change.</p>
+      <dl>
+        <dt>Evidence</dt><dd>Measured LOC per file; the maintenance cost is inferred from the size and structure.</dd>
+        <dt>Fix</dt><dd>Split the two stores/contracts files by domain slice; this is incremental, low-risk refactoring
+          best done opportunistically in feature branches so changes stay reviewable.</dd>
+        <dt>Acceptance</dt><dd>No file over ~1.2k lines unless it is a generated or contract surface, with review
+          pressure on further growth.</dd>
+      </dl>
+    </div>
+
+    <div class="finding">
+      <div class="finding-head"><span class="id">04</span><span class="sev s4">Low</span></div>
+      <h3>1.2 GB of node_modules from 51 prod + 19 dev dependencies.</h3>
+      <p>Mostly native and tooling weight (Electron, better-sqlite3, keytar, node-pty, electron-builder) that is
+        tree-shaken or dev-only — so this is an install and supply-chain surface, not a shipped-binary cost. Worth
+        pruning, but not a launch blocker.</p>
+      <dl>
+        <dt>Evidence</dt><dd><code>du -sh node_modules</code> and <code>package.json</code> counts.</dd>
+        <dt>Fix</dt><dd>Confirm each dependency is actually imported; drop owned-lockfile stragglers; document the native
+          rebuild set so it is not re-added by accident.</dd>
+        <dt>Acceptance</dt><dd>No runtime import currently unused; lockfile prune kept green on a clean install.</dd>
+      </dl>
+    </div>
+
+    <div class="note"><h4 style="margin:0 0 0.4rem;font-size:0.95rem;font-weight:650;color:var(--s4)">Strength to protect — the feedback loop</h4>
+      <p>The loop is the best thing here: typecheck is <strong>1.5 s</strong> clean and the full 882-case suite runs in
+        <strong>6.8 s</strong>. That is a genuinely fast inner loop for a codebase this size, and it is why velocity on
+        this branch stays high. Any restructuring in findings 02–04 must not trade that away — it is the constraint the
+        whole plan is optimised against.</p></div>
+  </section>
+
+  <section id="plan">
+    <h2>Plan</h2>
+    <ul class="tl">
+      <li><span class="when">Step 1 · correctness</span>Reproduce finding 01 in isolation and get the uninstall path
+        green. The suite must be a trustworthy gate before anything else is optimised.</li>
+      <li><span class="when">Step 2 · runtime</span>Lazy-load the diagram libraries and cut the main entry toward
+        &lt;2 MB; verify with a real cold-start profile, not size alone.</li>
+      <li><span class="when">Step 3 · health</span>Split the top god-files by domain slice and prune unused
+        dependencies in the same branches as feature work.</li>
+      <li><span class="when">Ongoing</span>Keep the 1.5 s typecheck / 6.8 s suite budget; add it to CI once the existing
+        run is green so regressions surface, not just consumers.</li>
+    </ul>
+
+    <details><summary>What to keep as is</summary>
+      <p>The main/preload/renderer/shared process separation and the fast, zero-config test and typecheck setup.
+        The directory layout is clean and the long tail of small single-purpose files is healthy. Keep those while
+        breaking down only the five oversized files.</p></details>
+  </section>
+
+  <footer>
+    <p>Prepared 6 Aug 2026 against commit 4e2b169 (dev). All figures are measured from a local run except where the
+      text explicitly marks an inference — chiefly bundle-size to startup-impact and the exact root cause of the
+      uninstall ReferenceError. No figures were fabricated; the one implausible-looking number (a “not defined” error
+      for a function that exists) is reproduced as-is and flagged for step 1. Internal draft — not for external
+      distribution.</p>
+  </footer>
+
+</div>
+</body>
+</html>
+

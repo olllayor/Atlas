@@ -1,0 +1,14 @@
+{
+  "name": "plugin-authoring",
+  "version": "1.0.0",
+  "description": "Write plugins for Atlas: manifests, skills, and MCP server configuration.",
+  "author": { "name": "Atlas" },
+  "license": "MIT",
+  "keywords": ["plugin", "authoring", "skills", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Plugin authoring",
+    "shortDescription": "Write plugins for Atlas",
+    "category": "Developer Tools"
+  }
+}

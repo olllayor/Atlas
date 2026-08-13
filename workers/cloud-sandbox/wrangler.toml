@@ -1,0 +1,24 @@
+name = "atlas-cloud-sandbox"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "SANDBOX_DO", class_name = "SandboxDO" }
+]
+
+[worker_loaders]
+bindings = [
+  { name = "LOADER" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SandboxDO"]
+
+# To set the auth secret (required if you want Bearer token auth):
+#   wrangler secret put CF_API_SECRET
+# This prompts you to enter the secret value, which is then stored
+# securely in Cloudflare and available to the Worker as env.CF_API_SECRET.
+# The value you set here must match what you configure in Atlas Settings → Beta.

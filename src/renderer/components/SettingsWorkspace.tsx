@@ -1,15 +1,21 @@
 import {
-  ArrowLeftIcon,
-  ChevronRightIcon,
+  BoxIcon,
   DesktopIcon,
   GearIcon,
+  KeyboardIcon,
+  LockClosedIcon,
+  MinusIcon,
+  MixerHorizontalIcon,
   MoonIcon,
+  PersonIcon,
+  PlusIcon,
   ReloadIcon,
+  RocketIcon,
   SunIcon,
   TimerIcon,
   UpdateIcon,
 } from '@radix-ui/react-icons';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   CSSProperties,
@@ -34,17 +40,31 @@ import type {
   ThemeMode,
   UsageProviderSummary,
   UsageSummary,
+  VisualMode,
 } from '../../shared/contracts';
 import {
   CODE_FONT_SIZE_MAX,
   CODE_FONT_SIZE_MIN,
+  CONTRAST_MAX,
+  CONTRAST_MIN,
   DEFAULT_SETTINGS_APPEARANCE,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
+  designThemeSupportsLight,
+  normalizeThemeColor,
 } from '../../shared/contracts';
+import { exportTheme, parseThemeImport } from '../lib/themeOverrides';
+import { notify } from '../lib/notify';
+import { isMacPlatform } from '../lib/platform';
+import { RailBackButton } from './railPrimitives';
 import { getDefaultKeybindingRules } from '../../shared/keybindings';
-import { PROVIDER_METADATA } from '../../shared/providerMetadata';
+import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
+import { ModelSettingsPage } from './providers/ModelSettingsPage';
+import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
+import { SlotLabel } from './ui/slot-label';
+import { Switch as UiSwitch } from './ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import type { ShortcutPlatform } from '../lib/keybindings';
 import {
   createShortcutFromKeyboardEvent,
@@ -53,33 +73,33 @@ import {
   serializeShortcut,
 } from '../lib/keybindings';
 
+type AppearancePatch = NonNullable<import('../../shared/contracts').SettingsUpdateRequest['appearance']>;
+
 type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
   usageSummary: UsageSummary;
-  activeCredentialProviderId: ProviderId;
-  keyDraft: string;
-  isSaving: boolean;
-  isValidating: boolean;
   isRefreshingModels: boolean;
   activeSection: SettingsSection;
   shortcutPlatform: ShortcutPlatform;
   onBack: () => void;
   onNavigate: (section: SettingsSection) => void;
-  onSelectProvider: (providerId: ProviderId) => void;
-  onKeyDraftChange: (value: string) => void;
-  onSaveKey: () => void;
-  onValidateKey: () => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onDesignThemeChange: (theme: DesignTheme) => void;
+  onBorderRadiusChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
   onCodeFontFamilyChange: (value: FontFamilyOverride) => void;
+  onAppearancePatch: (patch: AppearancePatch) => void;
   onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
+  telemetryEnabled: boolean;
+  onTelemetryChange: (enabled: boolean) => void;
+  onUpdatePreferences?: (patch: import('../../shared/contracts').SettingsUpdateRequest) => Promise<void>;
 };
 
 type NavItem = {
@@ -88,73 +108,61 @@ type NavItem = {
   icon: typeof GearIcon;
 };
 
-type FutureNavItem = {
-  label: string;
-  icon: typeof GearIcon;
-};
-
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
+  { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
+  { key: 'plugins', label: 'Plugins', icon: BoxIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
-  { key: 'keyboard', label: 'Keyboard', icon: GearIcon },
+  { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
+  { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
   { key: 'usage', label: 'Usage', icon: TimerIcon },
-];
-
-const futureNavItems: FutureNavItem[] = [
-  { label: 'Configuration', icon: ChevronRightIcon },
-  { label: 'Personalization', icon: ChevronRightIcon },
-  { label: 'MCP servers', icon: ChevronRightIcon },
-  { label: 'Git', icon: ChevronRightIcon },
-  { label: 'Environments', icon: ChevronRightIcon },
-  { label: 'Worktrees', icon: ChevronRightIcon },
-  { label: 'Archived threads', icon: ChevronRightIcon },
+  { key: 'beta', label: 'Beta', icon: RocketIcon },
 ];
 
 export function SettingsWorkspace({
   settings,
   updateState,
   usageSummary,
-  activeCredentialProviderId,
-  keyDraft,
-  isSaving,
-  isValidating,
   isRefreshingModels,
   activeSection,
   shortcutPlatform,
   onBack,
   onNavigate,
-  onSelectProvider,
-  onKeyDraftChange,
-  onSaveKey,
-  onValidateKey,
   onThemeModeChange,
   onDesignThemeChange,
+  onBorderRadiusChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
   onCodeFontFamilyChange,
+  onAppearancePatch,
   onUpdateKeybindings,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
+  telemetryEnabled,
+  onTelemetryChange,
+  onUpdatePreferences,
 }: SettingsWorkspaceProps) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  // Sections have wildly different lengths; a carried-over scrollTop lands the
+  // user on blank space.
+  useEffect(() => {
+    scrollerRef.current?.scrollTo({ top: 0 });
+  }, [activeSection]);
+
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      <aside className="relative flex w-[292px] shrink-0 flex-col border-r border-border-subtle bg-bg-base">
+    <div className="app-shell flex h-screen overflow-hidden bg-bg-base text-text-primary">
+      <aside className="sidebar-surface relative flex w-sidebar-width shrink-0 flex-col">
         <div
-          className="relative h-[52px] shrink-0 border-b border-border-subtle"
+          className="relative h-titlebar-height shrink-0"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         />
 
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-3 py-4">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex h-9 w-full items-center gap-2 px-3 text-left text-[13px] font-normal text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
-          >
-            <ArrowLeftIcon className="h-4 w-4 shrink-0" />
-            <span>Back to app</span>
-          </button>
+        <div className="scroll-container relative min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          <RailBackButton label="Back to app" onClick={onBack} />
 
           <nav className="mt-5 space-y-1">
             {activeNavItems.map((item) => {
@@ -166,9 +174,13 @@ export function SettingsWorkspace({
                   key={item.key}
                   type="button"
                   onClick={() => onNavigate(item.key)}
-                  className={`flex h-9 w-full items-center gap-2.5 px-3 text-left text-[13px] font-normal transition ${
+                  // Selected uses --bg-active and hover --bg-hover, the same
+                  // two-step fill the chat list uses; this rail had both on
+                  // --bg-hover, so the current section was indistinguishable
+                  // from whichever row the pointer happened to be over.
+                  className={`flex h-9 w-full items-center gap-2.5 rounded-md px-3 text-left text-md font-normal transition-colors ${
                     isActive
-                      ? 'border-l-2 border-[var(--border-strong)] bg-[var(--bg-ghost)] text-text-primary'
+                      ? 'bg-bg-active text-text-primary'
                       : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
                   }`}
                 >
@@ -178,71 +190,61 @@ export function SettingsWorkspace({
               );
             })}
           </nav>
-
-          <div className="mt-6 border-t border-border-subtle pt-4">
-            <div className="mb-2 px-3 text-[10px] font-normal uppercase tracking-[0.16em] text-text-faint">
-              Soon
-            </div>
-            <div className="space-y-1">
-              {futureNavItems.map((item) => {
-                const Icon = item.icon;
-
-                return (
-                  <div
-                    key={item.label}
-                    className="flex h-9 items-center gap-2.5 px-3 text-[13px] text-text-faint/75"
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span>{item.label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
         </div>
       </aside>
 
       <main className="relative min-w-0 flex-1 bg-bg-base">
         <div
-          className="relative h-[52px] shrink-0 border-b border-border-subtle"
+          className="relative h-titlebar-height shrink-0"
           style={{ WebkitAppRegion: 'drag' } as CSSProperties}
         />
 
-        <div className="relative h-[calc(100vh-52px)] overflow-y-auto">
-          <div className="mx-auto w-full max-w-[760px] px-10 pb-16 pt-8">
-            <h1 className="text-[20px] font-normal tracking-[-0.025em] text-text-primary">
-              {sectionTitle(activeSection)}
-            </h1>
+        <div
+          ref={scrollerRef}
+          className="relative h-[calc(100vh-var(--titlebar-height))] overflow-y-auto scroll-container"
+        >
+          <div className="mx-auto w-full max-w-[760px] px-10 pb-16">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-4 bg-bg-base pb-4 pt-8">
+              <h1 className="text-xl font-normal tracking-[-0.025em] text-text-primary">
+                {sectionTitle(activeSection)}
+              </h1>
+              {activeSection === 'providers' ? (
+                <ActionButton onClick={onRefreshModels} disabled={isRefreshingModels}>
+                  <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshingModels ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshingModels ? 'Refreshing…' : 'Refresh catalog'}</span>
+                </ActionButton>
+              ) : null}
+            </div>
 
-            <div className="mt-8 space-y-8">
+            <div className="mt-4 space-y-8">
               {activeSection === 'general' ? (
                 <GeneralPage
                   settings={settings}
                   updateState={updateState}
-                  activeCredentialProviderId={activeCredentialProviderId}
-                  keyDraft={keyDraft}
-                  isSaving={isSaving}
-                  isValidating={isValidating}
                   isRefreshingModels={isRefreshingModels}
-                  onSelectProvider={onSelectProvider}
-                  onKeyDraftChange={onKeyDraftChange}
-                  onSaveKey={onSaveKey}
-                  onValidateKey={onValidateKey}
+                  onOpenProviders={() => onNavigate('providers')}
                   onToggleFreeModels={onToggleFreeModels}
+                  onVisualModeChange={onVisualModeChange}
                   onUpdateAction={onUpdateAction}
                   onRefreshModels={onRefreshModels}
                 />
               ) : null}
+
+              {activeSection === 'providers' ? <ModelSettingsPage /> : null}
+
+              {activeSection === 'plugins' ? <PluginsSettingsPage /> : null}
 
               {activeSection === 'appearance' ? (
                 <AppearancePage
                   settings={settings}
                   onThemeModeChange={onThemeModeChange}
                   onDesignThemeChange={onDesignThemeChange}
+                  onBorderRadiusChange={onBorderRadiusChange}
                   onUiFontSizeChange={onUiFontSizeChange}
                   onCodeFontSizeChange={onCodeFontSizeChange}
                   onUiFontFamilyChange={onUiFontFamilyChange}
                   onCodeFontFamilyChange={onCodeFontFamilyChange}
+                  onAppearancePatch={onAppearancePatch}
                 />
               ) : null}
 
@@ -255,6 +257,17 @@ export function SettingsWorkspace({
               ) : null}
 
               {activeSection === 'usage' ? <UsagePage usageSummary={usageSummary} /> : null}
+
+              {activeSection === 'privacy' ? (
+                <PrivacyPage
+                  telemetryEnabled={telemetryEnabled}
+                  onTelemetryChange={onTelemetryChange}
+                />
+              ) : null}
+
+              {activeSection === 'beta' ? (
+                <BetaPage settings={settings} onUpdatePreferences={onUpdatePreferences} />
+              ) : null}
             </div>
           </div>
         </div>
@@ -263,117 +276,326 @@ export function SettingsWorkspace({
   );
 }
 
-function sectionTitle(section: SettingsSection) {
-  if (section === 'appearance') {
-    return 'Appearance';
+function sectionTitle(section: SettingsSection): string {
+  switch (section) {
+    case 'general':
+      return 'General';
+    case 'providers':
+      return 'Model settings';
+    case 'plugins':
+      return 'Plugins';
+    case 'appearance':
+      return 'Appearance';
+    case 'keyboard':
+      return 'Keyboard';
+    case 'usage':
+      return 'Usage';
+    case 'privacy':
+      return 'Privacy';
+    case 'beta':
+      return 'Beta features';
   }
+}
 
-  if (section === 'keyboard') {
-    return 'Keyboard';
-  }
+function BetaPage({
+  settings,
+  onUpdatePreferences,
+}: {
+  settings: SettingsSummary | null;
+  onUpdatePreferences?: (patch: import('../../shared/contracts').SettingsUpdateRequest) => Promise<void>;
+}) {
+  const [workerUrl, setWorkerUrl] = useState(settings?.chat.cloudSandboxWorkerUrl ?? '');
+  // Secret is never seeded from settings: the renderer only learns whether one
+  // exists via `cloudSandboxHasSecret`. Local state holds only what the user
+  // has typed since open, which is what gets saved.
+  const [workerSecret, setWorkerSecret] = useState('');
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; text: string } | null>(null);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployStep, setDeployStep] = useState<string | null>(null);
 
-  if (section === 'usage') {
-    return 'Usage';
-  }
+  useEffect(() => {
+    setWorkerUrl(settings?.chat.cloudSandboxWorkerUrl ?? '');
+  }, [settings?.chat.cloudSandboxWorkerUrl]);
 
-  return 'General';
+  const updatePref = (patch: import('../../shared/contracts').SettingsUpdateRequest) => {
+    if (onUpdatePreferences) {
+      void onUpdatePreferences(patch);
+    } else if (window.atlasChat?.settings?.updatePreferences) {
+      void window.atlasChat.settings.updatePreferences(patch);
+    }
+  };
+
+  const handleToggleEnabled = (enabled: boolean) => {
+    updatePref({
+      chat: {
+        cloudSandboxEnabled: enabled,
+        ...(!enabled && settings?.chat.executionTarget === 'cloud' ? { executionTarget: 'local' } : {}),
+      },
+    });
+    notify({
+      tone: 'success',
+      title: enabled ? 'Cloud Sandbox enabled' : 'Cloud Sandbox disabled',
+      description: enabled ? 'Select Send to cloud in the execution target picker.' : 'Returned to local execution.',
+    });
+  };
+
+  const handleSaveUrl = () => {
+    updatePref({
+      chat: { cloudSandboxWorkerUrl: workerUrl.trim() || null },
+    });
+    notify({ tone: 'success', title: 'Worker URL updated', description: 'Cloud Sandbox endpoint saved.' });
+  };
+
+  const handleSaveSecret = () => {
+    const trimmed = workerSecret.trim();
+    if (!trimmed) return;
+    updatePref({
+      chat: { cloudSandboxWorkerSecret: trimmed },
+    });
+    setWorkerSecret('');
+    notify({ tone: 'success', title: 'Worker Secret updated', description: 'Auth secret saved to OS keychain.' });
+  };
+
+  const handleClearSecret = () => {
+    updatePref({
+      chat: { cloudSandboxWorkerSecret: null },
+    });
+    setWorkerSecret('');
+    notify({ tone: 'success', title: 'Worker Secret cleared', description: 'Cloud Sandbox auth secret removed.' });
+  };
+
+  const handleGenerateSecret = async () => {
+    try {
+      const secret = await window.atlasChat?.settings?.generateCloudSandboxSecret?.();
+      if (secret) {
+        setWorkerSecret(secret);
+        notify({ tone: 'info', title: 'Auth Secret generated', description: 'Random Bearer secret generated — press Enter or blur to save to keychain.' });
+      }
+    } catch (err: any) {
+      notify({ tone: 'error', title: 'Generation failed', description: err.message || String(err) });
+    }
+  };
+
+  const handleAutoDeploy = async () => {
+    setIsDeploying(true);
+    setDeployStep('Checking Cloudflare login & deploying worker isolate…');
+    try {
+      const result = await window.atlasChat?.settings?.deployCloudSandbox?.();
+      if (result?.success && result.url) {
+        setWorkerUrl(result.url);
+        // The deployer already wrote the token to the keychain — never bounce
+        // it back through updatePref or the settings summary round-trip would
+        // re-expose it to the renderer.
+        updatePref({
+          chat: {
+            cloudSandboxEnabled: true,
+            cloudSandboxWorkerUrl: result.url,
+          },
+        });
+        if (result.secret) setWorkerSecret(result.secret);
+        // Leave the token visible in the field so the user can copy it for
+        // safekeeping; suggest doing so explicitly in the toast.
+        setDeployStep(null);
+        setTestResult({ success: true, text: 'Worker deployed & connected!' });
+        notify({
+          tone: 'success',
+          title: 'Cloud Sandbox deployed — auth secret saved to keychain',
+          description: result.secret
+            ? 'Copy the token from the field if you want a backup — you won\'t see it again after you save.'
+            : `Worker published to ${result.url}. Cloud execution enabled.`,
+        });
+      } else {
+        const errorMsg = result?.error || 'Deployment failed.';
+        setDeployStep(null);
+        notify({ tone: 'error', title: 'Deployment failed', description: errorMsg });
+      }
+    } catch (err: any) {
+      setDeployStep(null);
+      notify({ tone: 'error', title: 'Deployment error', description: err.message || String(err) });
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await window.atlasChat?.settings?.testCloudSandbox?.(workerUrl.trim() || undefined, workerSecret.trim() || undefined);
+      if (res?.success) {
+        const text = `Connected (${res.latencyMs ?? 0}ms)`;
+        setTestResult({ success: true, text });
+        notify({ tone: 'success', title: 'Connection successful', description: `Cloud Sandbox worker responded in ${res.latencyMs ?? 0}ms.` });
+      } else {
+        const text = res?.error || 'Could not reach worker endpoint.';
+        setTestResult({ success: false, text });
+        notify({ tone: 'error', title: 'Connection failed', description: text });
+      }
+    } catch (err: any) {
+      const text = err.message || String(err);
+      setTestResult({ success: false, text });
+      notify({ tone: 'error', title: 'Connection failed', description: text });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SettingsGroup title="Cloud Sandbox (Experimental)">
+        <SettingsRow
+          title="Enable Cloud Sandbox"
+          description="Allow offloading AI tool execution to a remote Cloudflare Worker isolate shell rather than running commands locally."
+        >
+          <UiSwitch
+            checked={settings?.chat.cloudSandboxEnabled ?? false}
+            onCheckedChange={handleToggleEnabled}
+            aria-label="Enable Cloud Sandbox"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Automated Worker Setup"
+          description="Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler."
+        >
+          <div className="flex flex-col gap-2 items-end">
+            <button
+              type="button"
+              onClick={handleAutoDeploy}
+              disabled={isDeploying}
+              className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'animate-spin' : ''}`} />
+              <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
+            </button>
+            {deployStep ? (
+              <span className="text-2xs text-text-tertiary animate-pulse font-mono">
+                {deployStep}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Cloudflare Worker URL"
+          description="HTTPS endpoint URL for your deployed Cloudflare Sandbox worker (e.g. https://atlas-cloud-sandbox.workers.dev)."
+        >
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={workerUrl}
+                placeholder="https://my-sandbox.workers.dev"
+                onChange={(e) => setWorkerUrl(e.target.value)}
+                onBlur={handleSaveUrl}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveUrl();
+                }}
+                className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+              />
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting || !workerUrl.trim()}
+                className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-text-primary transition disabled:opacity-50"
+              >
+                {isTesting ? 'Testing…' : 'Test connection'}
+              </button>
+            </div>
+            {testResult ? (
+              <span
+                className={`text-2xs font-mono px-2 py-0.5 rounded ${
+                  testResult.success
+                    ? 'bg-status-success/15 text-status-success'
+                    : 'bg-status-error/15 text-status-error'
+                }`}
+              >
+                {testResult.text}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Worker Auth Secret"
+          description="Shared Bearer token sent in Authorization header to authenticate requests with your worker. Stored in your OS keychain — never shown here once saved."
+        >
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={workerSecret}
+                placeholder={settings?.chat.cloudSandboxHasSecret ? 'Replace saved secret…' : 'Optional Bearer secret'}
+                onChange={(e) => setWorkerSecret(e.target.value)}
+                onBlur={handleSaveSecret}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveSecret();
+                }}
+                className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+              />
+              {settings?.chat.cloudSandboxHasSecret && !workerSecret.trim() ? (
+                <button
+                  type="button"
+                  onClick={handleClearSecret}
+                  className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-status-error transition"
+                >
+                  Clear
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleGenerateSecret}
+                className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-text-primary transition"
+              >
+                Generate Secret
+              </button>
+            </div>
+            {settings?.chat.cloudSandboxHasSecret ? (
+              <span className="text-2xs font-mono text-text-tertiary">
+                ✓ auth secret stored in OS keychain
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+    </div>
+  );
 }
 
 function GeneralPage({
   settings,
   updateState,
-  activeCredentialProviderId,
-  keyDraft,
-  isSaving,
-  isValidating,
   isRefreshingModels,
-  onSelectProvider,
-  onKeyDraftChange,
-  onSaveKey,
-  onValidateKey,
+  onOpenProviders,
   onToggleFreeModels,
+  onVisualModeChange,
   onUpdateAction,
   onRefreshModels,
 }: {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
-  activeCredentialProviderId: ProviderId;
-  keyDraft: string;
-  isSaving: boolean;
-  isValidating: boolean;
   isRefreshingModels: boolean;
-  onSelectProvider: (providerId: ProviderId) => void;
-  onKeyDraftChange: (value: string) => void;
-  onSaveKey: () => void;
-  onValidateKey: () => void;
+  onOpenProviders: () => void;
   onToggleFreeModels: (value: boolean) => void;
+  onVisualModeChange: (mode: VisualMode) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
-  const provider = settings?.providers.find((entry) => entry.providerId === activeCredentialProviderId) ?? null;
-  const metadata = PROVIDER_METADATA[activeCredentialProviderId];
-  const savedStateLabel = provider?.hasSecret ? 'Saved' : 'Missing';
   const lastSyncedLabel = formatTimestamp(settings?.modelCatalogLastSyncedAt);
   const updateLabel = getUpdateLabel(updateState);
 
   return (
     <>
-      <SettingsGroup title="Provider access">
-        <SettingsStackedRow
-          title={metadata.keyLabel}
-          description="Stored in your macOS keychain. Paste a new key to replace the current one."
+      <SettingsGroup title="Providers">
+        <SettingsRow
+          title="Model providers"
+          description="API keys and model lists live in Model settings, one entry per endpoint."
         >
-          <ProviderPicker current={activeCredentialProviderId} onChange={onSelectProvider} />
-
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <StatusPill tone={provider?.hasSecret ? 'success' : 'muted'}>{savedStateLabel}</StatusPill>
-            <StatusPill
-              tone={
-                provider?.status === 'valid'
-                  ? 'success'
-                  : provider?.status === 'invalid'
-                    ? 'warning'
-                    : 'muted'
-              }
-            >
-              {provider?.status ?? 'unknown'}
-            </StatusPill>
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              type="password"
-              value={keyDraft}
-              onChange={(event) => onKeyDraftChange(event.target.value)}
-              placeholder={
-                provider?.hasSecret
-                  ? 'A key is already saved. Paste to replace it.'
-                  : metadata.keyPlaceholder
-              }
-              className="h-10 min-w-0 flex-1 border border-border-default bg-bg-subtle px-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-strong"
-            />
-            <div className="flex gap-2">
-              <ActionButton onClick={onSaveKey} disabled={isSaving} variant="primary">
-                {isSaving ? 'Saving…' : 'Save'}
-              </ActionButton>
-              <ActionButton onClick={onValidateKey} disabled={isValidating}>
-                {isValidating ? 'Validating…' : 'Validate'}
-              </ActionButton>
-            </div>
-          </div>
-
-          <div className="mt-3 text-[12px] text-text-tertiary">
-            Get one at{' '}
-            <a
-              href={metadata.keyLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline hover:text-text-primary"
-            >
-              {metadata.keyLinkLabel}
-            </a>
-          </div>
-        </SettingsStackedRow>
+          <ActionButton onClick={onOpenProviders}>
+            <SlotLabel text="Open model settings" />
+          </ActionButton>
+        </SettingsRow>
 
         <SettingsRow
           title="Free models by default"
@@ -385,6 +607,18 @@ function GeneralPage({
             ariaLabel="Toggle free models by default"
           />
         </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Chat">
+        <SettingsStackedRow
+          title="Inline visuals"
+          description="Diagrams, charts and interactive blocks rendered inside a reply. On automatic, the assistant only draws one when you ask for something visual."
+        >
+          <VisualModePicker
+            current={settings?.chat.visualMode ?? 'auto'}
+            onChange={onVisualModeChange}
+          />
+        </SettingsStackedRow>
       </SettingsGroup>
 
       <SettingsGroup title="Catalog and updates">
@@ -405,17 +639,6 @@ function GeneralPage({
           </ActionButton>
         </SettingsRow>
       </SettingsGroup>
-
-      <SettingsGroup title="Coming soon">
-        <DisabledRow
-          title="Language"
-          description="Atlas will expose app language and localization settings in a later pass."
-        />
-        <DisabledRow
-          title="Notifications"
-          description="Completion and permission notification preferences will live here."
-        />
-      </SettingsGroup>
     </>
   );
 }
@@ -424,22 +647,65 @@ function AppearancePage({
   settings,
   onThemeModeChange,
   onDesignThemeChange,
+  onBorderRadiusChange,
   onUiFontSizeChange,
   onCodeFontSizeChange,
   onUiFontFamilyChange,
   onCodeFontFamilyChange,
+  onAppearancePatch,
 }: {
   settings: SettingsSummary | null;
   onThemeModeChange: (mode: ThemeMode) => void;
   onDesignThemeChange: (theme: DesignTheme) => void;
+  onBorderRadiusChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
   onUiFontSizeChange: (value: number) => void;
   onCodeFontSizeChange: (value: number) => void;
   onUiFontFamilyChange: (value: FontFamilyOverride) => void;
   onCodeFontFamilyChange: (value: FontFamilyOverride) => void;
+  onAppearancePatch: (patch: AppearancePatch) => void;
 }) {
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
   const designTheme = appearance.designTheme;
+
+  const handleCopyTheme = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(exportTheme(appearance), null, 2));
+      notify({ tone: 'success', title: 'Theme copied' });
+    } catch {
+      notify({ tone: 'error', title: 'Could not copy the theme' });
+    }
+  };
+
+  const handleImportTheme = async () => {
+    let raw = '';
+    try {
+      raw = await navigator.clipboard.readText();
+    } catch {
+      notify({ tone: 'error', title: 'Could not read the clipboard' });
+      return;
+    }
+
+    const parsed = parseThemeImport(raw);
+    if (!parsed) {
+      notify({
+        tone: 'warning',
+        title: 'Nothing to import',
+        description: 'Copy a theme JSON to the clipboard first'
+      });
+      return;
+    }
+
+    const { uiFontFamily, codeFontFamily, ...colorPatch } = parsed;
+    onAppearancePatch(colorPatch);
+    if (uiFontFamily !== undefined) {
+      onUiFontFamilyChange(uiFontFamily);
+    }
+    if (codeFontFamily !== undefined) {
+      onCodeFontFamilyChange(codeFontFamily);
+    }
+    notify({ tone: 'success', title: 'Theme imported' });
+  };
 
   return (
     <>
@@ -448,13 +714,133 @@ function AppearancePage({
           title="Theme mode"
           description="Choose whether Atlas follows your system appearance or stays fixed."
         >
-          <ThemeModePicker current={themeMode} onChange={onThemeModeChange} />
+          <ThemeModePicker
+            current={themeMode}
+            designTheme={designTheme}
+            onChange={onThemeModeChange}
+          />
         </SettingsStackedRow>
         <SettingsStackedRow
           title="Design theme"
           description="Choose a design system aesthetic for the interface."
         >
           <DesignThemePicker current={designTheme} onChange={onDesignThemeChange} />
+        </SettingsStackedRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Custom colors">
+        <SettingsRow title="Accent" description="Highlight color for selection, focus, and links.">
+          <ColorField
+            value={appearance.accentColor}
+            placeholder="Theme default"
+            onCommit={(value) => onAppearancePatch({ accentColor: value })}
+          />
+        </SettingsRow>
+        <SettingsRow title="Background" description="Base background the whole interface sits on.">
+          <ColorField
+            value={appearance.backgroundColor}
+            placeholder="Theme default"
+            onCommit={(value) => onAppearancePatch({ backgroundColor: value })}
+          />
+        </SettingsRow>
+        <SettingsRow title="Foreground" description="Primary text color; secondary shades derive from it.">
+          <ColorField
+            value={appearance.foregroundColor}
+            placeholder="Theme default"
+            onCommit={(value) => onAppearancePatch({ foregroundColor: value })}
+          />
+        </SettingsRow>
+        <SettingsRow title="Contrast" description="Strength of borders, dividers, and secondary text.">
+          <ContrastSlider
+            value={appearance.contrast}
+            onCommit={(value) => onAppearancePatch({ contrast: value })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Translucent sidebar"
+          description={
+            isMacPlatform
+              ? 'Let the desktop show through the sidebar. Applies fully after restart.'
+              : 'Unavailable on this platform — window vibrancy is macOS-only.'
+          }
+        >
+          <Switch
+            checked={appearance.translucentSidebar && isMacPlatform}
+            onCheckedChange={(value) => onAppearancePatch({ translucentSidebar: value })}
+            ariaLabel="Toggle translucent sidebar"
+            disabled={!isMacPlatform}
+          />
+        </SettingsRow>
+        <SettingsRow title="Share theme" description="Copy the current theme as JSON, or import one from the clipboard.">
+          <div className="flex items-center gap-2">
+            <ActionButton onClick={() => void handleImportTheme()}>
+              <SlotLabel text="Import" />
+            </ActionButton>
+            <ActionButton onClick={() => void handleCopyTheme()}>
+              <SlotLabel text="Copy theme" />
+            </ActionButton>
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Preferences">
+        <SettingsRow
+          title="Use pointer cursors"
+          description="Change the cursor to a pointer when hovering over interactive elements."
+        >
+          <Switch
+            checked={appearance.pointerCursors}
+            onCheckedChange={(value) => onAppearancePatch({ pointerCursors: value })}
+            ariaLabel="Toggle pointer cursors"
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Raw transcript"
+          description="Render replies, tool output and diffs as plain text, so selections copy without formatting artifacts."
+        >
+          <Switch
+            checked={appearance.rawTranscript}
+            onCheckedChange={(value) => onAppearancePatch({ rawTranscript: value })}
+            ariaLabel="Toggle raw transcript"
+          />
+        </SettingsRow>
+        <SettingsRow title="Reduce motion" description="Reduce animations or match your system setting.">
+          <div
+            role="radiogroup"
+            aria-label="Reduce motion"
+            className="inline-flex rounded-full border border-border-default p-0.5"
+          >
+            {([
+              { value: 'system', label: 'System' },
+              { value: 'on', label: 'On' },
+              { value: 'off', label: 'Off' },
+            ] as const).map((option) => {
+              const isActive = appearance.reduceMotion === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={isActive}
+                  onClick={() => onAppearancePatch({ reduceMotion: option.value })}
+                  className={`h-7 rounded-full px-3 text-2xs font-normal transition ${
+                    isActive ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Shape">
+        <SettingsStackedRow
+          title="Border radius"
+          description="Control the roundness of UI elements. Theme Default respects each theme's design, Sharp Edges removes all rounded corners."
+        >
+          <BorderRadiusPicker current={appearance.borderRadius} onChange={onBorderRadiusChange} />
         </SettingsStackedRow>
       </SettingsGroup>
 
@@ -491,13 +877,6 @@ function AppearancePage({
             onCommit={onCodeFontFamilyChange}
           />
         </SettingsRow>
-      </SettingsGroup>
-
-      <SettingsGroup title="Coming soon">
-        <DisabledRow
-          title="Accent controls"
-          description="Accent color and contrast tuning will be added after the base theme system settles."
-        />
       </SettingsGroup>
     </>
   );
@@ -585,14 +964,11 @@ function KeyboardPage({
             const isCapturing = capturingCommand === definition.command;
 
             return (
-              <div
-                className="border-t border-border-subtle px-4 py-4 first:border-t-0"
-                key={definition.command}
-              >
-                <div className="flex items-start justify-between gap-5">
+              <div className="py-3" key={definition.command}>
+                <div className="flex items-start justify-between gap-6">
                   <div className="min-w-0">
-                    <div className="text-[14px] font-normal text-text-primary">{definition.title}</div>
-                    <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{definition.description}</div>
+                    <div className="text-md font-normal text-text-primary">{definition.title}</div>
+                    <div className="mt-0.5 text-sm leading-relaxed text-text-tertiary">{definition.description}</div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button
@@ -601,10 +977,10 @@ function KeyboardPage({
                         setCapturingCommand((current) => (current === definition.command ? null : definition.command))
                       }
                       onKeyDown={isCapturing ? handleCapture(definition.command) : undefined}
-                      className={`inline-flex h-9 min-w-[128px] items-center justify-center border px-3 font-mono text-[12px] transition ${
+                      className={`inline-flex h-8 min-w-[128px] items-center justify-center rounded-md border px-3 font-mono text-xs transition ${
                         isCapturing
-                          ? 'border-[var(--border-strong)] bg-[var(--bg-hover)] text-white'
-                          : 'border-border-default bg-bg-subtle text-text-primary hover:bg-bg-hover'
+                          ? 'border-border-strong bg-bg-hover text-text-primary'
+                          : 'border-border-subtle bg-transparent text-text-primary hover:bg-bg-hover'
                       }`}
                     >
                       {isCapturing ? 'Press keys…' : shortcutLabel}
@@ -613,13 +989,13 @@ function KeyboardPage({
                   </div>
                 </div>
                 {conflicts.length > 0 ? (
-                  <div className="mt-3 text-[11.5px] text-[var(--text-muted)]">
+                  <div className="mt-2 text-2xs text-text-muted">
                     Also bound to{' '}
                     {conflicts.map((command) => APP_COMMANDS_BY_ID[command].title).join(', ')}. The last matching rule wins.
                   </div>
                 ) : null}
                 {shortcut ? (
-                  <div className="mt-2 text-[11px] font-mono text-text-faint/70">{serializeShortcut(shortcut)}</div>
+                  <div className="mt-1.5 text-2xs font-mono text-text-faint/70">{serializeShortcut(shortcut)}</div>
                 ) : null}
               </div>
             );
@@ -642,14 +1018,17 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
           >
             <div className="flex items-center justify-between gap-3">
               <StatusPill tone={toneForMetricState(provider.state)}>{provider.primary}</StatusPill>
-              {provider.meterValue != null ? <span className="text-[12px] text-text-tertiary">{provider.meterLabel}</span> : null}
+              {provider.meterValue != null ? <span className="text-xs text-text-tertiary">{provider.meterLabel}</span> : null}
             </div>
             {provider.meterValue != null ? (
               <div className="mt-3 flex items-center gap-3">
-                <div className="h-2 flex-1 overflow-hidden bg-bg-subtle">
-                  <div className="h-full bg-[var(--text-muted)]" style={{ width: `${provider.meterValue}%` }} />
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-bg-ghost">
+                  <div
+                    className="h-full rounded-full bg-[var(--text-muted)]"
+                    style={{ width: `${provider.meterValue}%` }}
+                  />
                 </div>
-                <span className="w-12 text-right text-[12px] text-text-tertiary">{provider.meterLabel}</span>
+                <span className="w-12 text-right text-xs text-text-tertiary">{provider.meterLabel}</span>
               </div>
             ) : null}
           </SettingsStackedRow>
@@ -710,13 +1089,18 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
   );
 }
 
+/**
+ * Codex settings feel (reference spec §6): no cards, no bordered
+ * containers. Groups are separated by whitespace plus a single hairline,
+ * headed by a dim 13px-scale label; rows are borderless label + control.
+ */
 function SettingsGroup({ title, children }: PropsWithChildren<{ title: string }>) {
   return (
-    <section>
-      <div className="mb-3 text-[13px] font-normal text-text-secondary">{title}</div>
-      <div className="overflow-hidden border border-border-default bg-[var(--bg-subtle)]">
-        {children}
+    <section className="border-t border-border-subtle pt-6 first:border-t-0 first:pt-0">
+      <div className="mb-1.5 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
+        {title}
       </div>
+      <div>{children}</div>
     </section>
   );
 }
@@ -727,10 +1111,10 @@ function SettingsRow({
   children,
 }: PropsWithChildren<{ title: string; description: string }>) {
   return (
-    <div className="flex items-start justify-between gap-5 border-t border-border-subtle px-4 py-4 first:border-t-0">
+    <div className="flex items-start justify-between gap-6 py-3">
       <div className="min-w-0">
-        <div className="text-[14px] font-normal text-text-primary">{title}</div>
-        <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{description}</div>
+        <div className="text-md font-normal text-text-primary">{title}</div>
+        <div className="mt-0.5 text-sm leading-relaxed text-text-tertiary">{description}</div>
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -743,22 +1127,10 @@ function SettingsStackedRow({
   children,
 }: PropsWithChildren<{ title: string; description: string }>) {
   return (
-    <div className="border-t border-border-subtle px-4 py-4 first:border-t-0">
-      <div className="text-[14px] font-normal text-text-primary">{title}</div>
-      <div className="mt-1 text-[12.5px] leading-5 text-text-tertiary">{description}</div>
-      <div className="mt-4">{children}</div>
-    </div>
-  );
-}
-
-function DisabledRow({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="flex items-start justify-between gap-4 border-t border-border-subtle px-4 py-4 first:border-t-0">
-      <div className="min-w-0 opacity-70">
-        <div className="text-[14px] font-normal text-text-secondary">{title}</div>
-        <div className="mt-1 text-[12.5px] leading-5 text-text-muted">{description}</div>
-      </div>
-      <StatusPill tone="muted">Soon</StatusPill>
+    <div className="py-3">
+      <div className="text-md font-normal text-text-primary">{title}</div>
+      <div className="mt-0.5 text-sm leading-relaxed text-text-tertiary">{description}</div>
+      <div className="mt-3">{children}</div>
     </div>
   );
 }
@@ -768,48 +1140,64 @@ function NumberStepper({
   min,
   max,
   defaultValue,
+  unit = 'px',
   onChange,
 }: {
   value: number;
   min: number;
   max: number;
   defaultValue: number;
+  unit?: string;
   onChange: (value: number) => void;
 }) {
   return (
     <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => onChange(defaultValue)}
-        disabled={value === defaultValue}
-        className="inline-flex h-9 w-9 items-center justify-center border border-border-default bg-bg-subtle text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
-        title="Reset"
-      >
-        <ReloadIcon className="h-4 w-4" />
-      </button>
-      <div className="inline-flex h-9 items-center border border-border-default bg-bg-subtle">
+      <div className="inline-flex h-9 items-center overflow-hidden rounded-md border border-border-default">
         <button
           type="button"
           onClick={() => onChange(Math.max(min, value - 1))}
           disabled={value <= min}
-          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-full w-9 items-center justify-center text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Decrease value"
         >
-          -
+          <MinusIcon className="h-4 w-4" />
         </button>
-        <span className="inline-flex h-full min-w-[56px] items-center justify-center border-x border-border-subtle px-3 text-[13px] font-normal tabular-nums text-text-primary">
+        <span className="inline-flex h-full min-w-[64px] items-center justify-center gap-0.5 px-3 text-sm font-normal tabular-nums text-text-primary">
           {value}
+          <span className="text-text-muted">{unit}</span>
         </span>
         <button
           type="button"
           onClick={() => onChange(Math.min(max, value + 1))}
           disabled={value >= max}
-          className="inline-flex h-full w-10 items-center justify-center text-lg leading-none text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-full w-9 items-center justify-center text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Increase value"
         >
-          +
+          <PlusIcon className="h-4 w-4" />
         </button>
       </div>
+      {/* Reset sits after the control it resets, not in front of it. */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {/* `span`: a disabled button swallows pointer events, and "reset"
+              is exactly what you hover to understand when it is greyed out. */}
+          <span className="inline-flex">
+            <button
+              type="button"
+              onClick={() => onChange(defaultValue)}
+              disabled={value === defaultValue}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label={`Reset to ${defaultValue}${unit}`}
+            >
+              <ReloadIcon className="h-4 w-4" />
+            </button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>
+          Reset to {defaultValue}
+          {unit}
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 }
@@ -824,14 +1212,54 @@ function FontFamilyField({
   onCommit: (value: FontFamilyOverride) => void;
 }) {
   const [draft, setDraft] = useState(value ?? '');
+  const [saved, setSaved] = useState(false);
+  const [missing, setMissing] = useState(false);
 
   useEffect(() => {
     setDraft(value ?? '');
   }, [value]);
 
+  // Warn — never block — when the machine has no such family installed.
+  useEffect(() => {
+    const family = draft.trim();
+    if (!family) {
+      setMissing(false);
+      return;
+    }
+
+    let cancelled = false;
+    const check = () => {
+      if (cancelled) {
+        return;
+      }
+
+      try {
+        const quoted = /[",]/.test(family) ? family : `"${family}"`;
+        setMissing(!document.fonts.check(`16px ${quoted}`));
+      } catch {
+        setMissing(false);
+      }
+    };
+
+    void document.fonts.ready.then(check);
+    return () => {
+      cancelled = true;
+    };
+  }, [draft]);
+
+  useEffect(() => {
+    if (!saved) {
+      return;
+    }
+
+    const timer = setTimeout(() => setSaved(false), 1600);
+    return () => clearTimeout(timer);
+  }, [saved]);
+
   const commitValue = (rawValue: string) => {
     const normalized = rawValue.trim();
     onCommit(normalized.length > 0 ? normalized : null);
+    setSaved(true);
   };
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -855,20 +1283,165 @@ function FontFamilyField({
   };
 
   return (
-    <input
-      type="text"
-      value={draft}
-      placeholder={placeholder}
-      onChange={handleChange}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
-      className="h-9 min-w-[190px] border border-border-default bg-bg-subtle px-3 text-[13px] font-normal text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong placeholder:text-text-muted"
-      spellCheck={false}
-    />
+    <div className="flex flex-col items-end gap-1">
+      <input
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        // The field previews the typeface it names.
+        style={draft.trim() ? { fontFamily: draft } : undefined}
+        className="h-9 min-w-[190px] rounded-md border border-border-default bg-transparent px-3 text-sm font-normal text-text-primary outline-none transition hover:bg-bg-hover focus:border-border-strong placeholder:text-text-muted"
+        spellCheck={false}
+      />
+      {missing ? (
+        <span role="status" className="text-2xs text-warning-text">
+          Not installed on this machine — the system font will be used.
+        </span>
+      ) : saved ? (
+        <span role="status" className="text-2xs text-success">
+          Saved
+        </span>
+      ) : null}
+    </div>
   );
 }
 
-function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: (mode: ThemeMode) => void }) {
+/**
+ * Segmented pickers: the selected cell needs a border + elevated surface, not a
+ * 6% white wash that reads as "hovered".
+ */
+const SEGMENT_BASE =
+  'inline-flex h-8 items-center rounded-full border px-3 text-sm font-normal transition';
+const SEGMENT_ACTIVE = 'border-border-default bg-bg-elevated text-text-primary';
+const SEGMENT_IDLE =
+  'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary';
+
+function ColorField({
+  value,
+  placeholder,
+  onCommit,
+}: {
+  value: string | null;
+  placeholder: string;
+  onCommit: (value: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? '');
+
+  // Track external changes (import, reset) without clobbering mid-edit text.
+  useEffect(() => {
+    setDraft(value ?? '');
+  }, [value]);
+
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      if (value !== null) {
+        onCommit(null);
+      }
+      return;
+    }
+
+    const normalized = normalizeThemeColor(trimmed.startsWith('#') ? trimmed : `#${trimmed}`);
+    if (normalized) {
+      onCommit(normalized);
+    } else {
+      setDraft(value ?? '');
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <label className="relative size-7 shrink-0 cursor-pointer overflow-hidden rounded-full border border-border-medium">
+        <span className="absolute inset-0" style={{ backgroundColor: value ?? 'transparent' }} />
+        <input
+          type="color"
+          value={value ?? '#808080'}
+          onChange={(event) => onCommit(event.target.value)}
+          aria-label="Pick color"
+          className="absolute inset-0 size-full cursor-pointer opacity-0"
+        />
+      </label>
+      <input
+        value={draft}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commitDraft}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          }
+        }}
+        className="h-8 w-32 rounded-md border border-border-default bg-bg-subtle px-2.5 font-mono text-xs uppercase text-text-primary placeholder:normal-case placeholder:text-text-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+      />
+      {value !== null ? (
+        <button
+          type="button"
+          onClick={() => onCommit(null)}
+          className="text-2xs text-text-muted transition hover:text-text-secondary"
+        >
+          Reset
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  return (
+    <div className="flex w-56 items-center gap-3">
+      <input
+        type="range"
+        min={CONTRAST_MIN}
+        max={CONTRAST_MAX}
+        value={draft}
+        aria-label="Contrast"
+        onChange={(event) => setDraft(Number(event.target.value))}
+        onPointerUp={() => onCommit(draft)}
+        onKeyUp={(event) => {
+          if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') {
+            onCommit(draft);
+          }
+        }}
+        className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-bg-active accent-[var(--accent)]"
+      />
+      <span className="w-7 shrink-0 text-right text-sm tabular-nums text-text-secondary">{draft}</span>
+    </div>
+  );
+}
+
+/**
+ * `designTheme` gates the Light segment: only some themes ship a light palette
+ * (see `DESIGN_THEMES_WITH_LIGHT`), and under the others the app painted a dark
+ * UI with `color-scheme: light`, which whitened native inputs and scrollbars.
+ * Offering a mode that cannot be honoured is worse than not offering it, so the
+ * segment is disabled and says why. `System` stays available — it resolves to
+ * dark under those themes.
+ */
+function ThemeModePicker({
+  current,
+  designTheme,
+  onChange,
+}: {
+  current: ThemeMode;
+  designTheme: DesignTheme;
+  onChange: (mode: ThemeMode) => void;
+}) {
+  const supportsLight = designThemeSupportsLight(designTheme);
+  // A preference stored before the theme changed (or before this gate existed)
+  // can still say `light`. The app paints dark in that case, so the picker says
+  // dark too rather than highlighting a segment that is disabled and inert.
+  const effective: ThemeMode = current === 'light' && !supportsLight ? 'dark' : current;
   const items: Array<{ mode: ThemeMode; label: string; icon: typeof SunIcon }> = [
     { mode: 'light', label: 'Light', icon: SunIcon },
     { mode: 'dark', label: 'Dark', icon: MoonIcon },
@@ -876,20 +1449,28 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
   ];
 
   return (
-    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+    <div
+      role="radiogroup"
+      aria-label="Theme mode"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
       {items.map((item) => {
         const Icon = item.icon;
-        const isActive = item.mode === current;
+        const isActive = item.mode === effective;
+        const isDisabled = item.mode === 'light' && !supportsLight;
 
         return (
           <button
             key={item.mode}
             type="button"
+            role="radio"
+            aria-checked={isActive}
+            aria-disabled={isDisabled}
+            disabled={isDisabled}
+            title={isDisabled ? 'This design theme has no light palette.' : undefined}
             onClick={() => onChange(item.mode)}
-            className={`inline-flex h-9 items-center gap-2 px-3 text-[13px] font-normal transition ${
-              isActive
-                ? 'bg-bg-elevated text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary'
+            className={`${SEGMENT_BASE} gap-2 ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE} ${
+              isDisabled ? 'cursor-not-allowed opacity-40' : ''
             }`}
           >
             <Icon className="h-4 w-4" />
@@ -901,28 +1482,36 @@ function ThemeModePicker({ current, onChange }: { current: ThemeMode; onChange: 
   );
 }
 
-function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {
-  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
-    { theme: 'xai', label: 'xAI', description: 'Brutalist monochrome' },
-    { theme: 'default', label: 'Default', description: 'Modern balanced' },
-    { theme: 'cursor', label: 'Cursor', description: 'Warm minimalism' },
+function VisualModePicker({
+  current,
+  onChange,
+}: {
+  current: VisualMode;
+  onChange: (mode: VisualMode) => void;
+}) {
+  const items: Array<{ mode: VisualMode; label: string }> = [
+    { mode: 'auto', label: 'Automatic' },
+    { mode: 'always', label: 'Always' },
+    { mode: 'off', label: 'Never' },
   ];
 
   return (
-    <div className="inline-flex border border-border-default bg-bg-subtle p-1">
+    <div
+      role="radiogroup"
+      aria-label="Inline visuals"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
       {items.map((item) => {
-        const isActive = item.theme === current;
+        const isActive = item.mode === current;
 
         return (
           <button
-            key={item.theme}
+            key={item.mode}
             type="button"
-            onClick={() => onChange(item.theme)}
-            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
-              isActive
-                ? 'bg-bg-elevated text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary'
-            }`}
+            role="radio"
+            aria-checked={isActive}
+            onClick={() => onChange(item.mode)}
+            className={`${SEGMENT_BASE} ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
           >
             <span>{item.label}</span>
           </button>
@@ -932,32 +1521,73 @@ function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChan
   );
 }
 
-function ProviderPicker({
-  current,
-  onChange,
-}: {
-  current: ProviderId;
-  onChange: (providerId: ProviderId) => void;
-}) {
-  const items: ProviderId[] = ['openrouter', 'glm'];
+function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {
+  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
+    { theme: 'codex', label: 'Codex', description: 'Squircle, tinted elevation' },
+    { theme: 'xai', label: 'xAI', description: 'Brutalist monochrome' },
+    { theme: 'default', label: 'Default', description: 'Modern balanced' },
+    { theme: 'cursor', label: 'Cursor', description: 'Warm minimalism' },
+  ];
 
   return (
-    <div className="mb-4 inline-flex border border-border-default bg-bg-subtle p-1">
-      {items.map((providerId) => {
-        const isActive = providerId === current;
+    <div
+      role="radiogroup"
+      aria-label="Design theme"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
+      {items.map((item) => {
+        const isActive = item.theme === current;
 
         return (
           <button
-            key={providerId}
+            key={item.theme}
             type="button"
-            onClick={() => onChange(providerId)}
-            className={`inline-flex h-9 items-center px-3 text-[13px] font-normal transition ${
-              isActive
-                ? 'bg-bg-elevated text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary'
-            }`}
+            role="radio"
+            aria-checked={isActive}
+            title={item.description}
+            onClick={() => onChange(item.theme)}
+            className={`${SEGMENT_BASE} ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
           >
-            {PROVIDER_METADATA[providerId].label}
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BorderRadiusPicker({
+  current,
+  onChange,
+}: {
+  current: import('../../shared/contracts').BorderRadiusMode;
+  onChange: (mode: import('../../shared/contracts').BorderRadiusMode) => void;
+}) {
+  const items: Array<{ mode: import('../../shared/contracts').BorderRadiusMode; label: string }> = [
+    { mode: 'theme-default', label: 'Theme Default' },
+    { mode: 'none', label: 'Sharp Edges' },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Border radius"
+      className="inline-flex rounded-full border border-border-subtle p-0.5"
+    >
+      {items.map((item) => {
+        const isActive = item.mode === current;
+
+        return (
+          <button
+            key={item.mode}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            onClick={() => onChange(item.mode)}
+            className={`${SEGMENT_BASE} ${isActive ? SEGMENT_ACTIVE : SEGMENT_IDLE}`}
+            style={item.mode === 'none' ? { borderRadius: 0 } : undefined}
+          >
+            <span>{item.label}</span>
           </button>
         );
       })}
@@ -980,10 +1610,10 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex h-9 items-center gap-2 px-3 text-[12.5px] font-normal transition disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-normal transition disabled:cursor-not-allowed disabled:opacity-60 ${
         variant === 'primary'
           ? 'bg-bg-button text-text-inverse hover:bg-bg-button-hover'
-          : 'border border-border-default bg-bg-subtle text-text-primary hover:bg-bg-hover'
+          : 'border border-border-subtle bg-transparent text-text-primary hover:bg-bg-hover'
       }`}
     >
       {children}
@@ -991,30 +1621,30 @@ function ActionButton({
   );
 }
 
+/**
+ * The shared Radix switch, with the ON track on the brand accent — a 12%-vs-4%
+ * white wash was unreadable at a glance. Focus ring and disabled state come
+ * from the primitive.
+ */
 function Switch({
   checked,
   onCheckedChange,
   ariaLabel,
+  disabled,
 }: {
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
   ariaLabel: string;
+  disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
+    <UiSwitch
+      checked={checked}
+      onCheckedChange={onCheckedChange}
       aria-label={ariaLabel}
-      onClick={() => onCheckedChange(!checked)}
-      className={`relative inline-flex h-7 w-11 items-center transition ${
-        checked ? 'bg-[var(--bg-active)]' : 'bg-bg-subtle'
-      }`}
-    >
-      <span
-        className={`h-5 w-5 bg-white transition ${checked ? 'translate-x-[22px]' : 'translate-x-[4px]'}`}
-      />
-    </button>
+      disabled={disabled}
+      className="data-[state=checked]:bg-brand"
+    />
   );
 }
 
@@ -1024,13 +1654,15 @@ function StatusPill({
 }: PropsWithChildren<{ tone?: 'success' | 'warning' | 'muted' }>) {
   const toneClass =
     tone === 'success'
-      ? 'border-[var(--border-strong)] bg-[var(--bg-hover)] text-[var(--text-secondary)]'
+      ? 'text-success'
       : tone === 'warning'
-        ? 'border-[var(--border-default)] bg-[var(--bg-ghost)] text-[var(--text-tertiary)]'
-        : 'border-border-default bg-bg-subtle text-text-tertiary';
+        ? 'text-warning-text'
+        : 'text-text-tertiary';
 
   return (
-    <span className={`inline-flex h-7 items-center border px-2.5 text-[11px] font-normal ${toneClass}`}>
+    <span
+      className={`inline-flex h-7 items-center rounded-full border border-border-subtle px-2.5 text-xs font-normal ${toneClass}`}
+    >
       {children}
     </span>
   );
@@ -1038,9 +1670,7 @@ function StatusPill({
 
 function ValueBadge({ children }: PropsWithChildren) {
   return (
-    <span className="inline-flex h-8 min-w-[84px] items-center justify-center border border-border-default bg-bg-subtle px-3 text-[12.5px] font-normal text-text-primary">
-      {children}
-    </span>
+    <span className="text-sm font-normal tabular-nums text-text-secondary">{children}</span>
   );
 }
 
@@ -1183,8 +1813,9 @@ export function buildUsageSummary({
     }
   }
 
-  const openRouter = buildProviderUsageSummary('openrouter', settings);
-  const glm = buildProviderUsageSummary('glm', settings);
+  const providerSummaries = (settings?.customProviders ?? []).map((provider) =>
+    buildProviderUsageSummary(provider.id, settings)
+  );
 
   return {
     local: {
@@ -1201,13 +1832,14 @@ export function buildUsageSummary({
       rendererHeapBytes,
       mainProcessRssBytes: diagnostics?.mainProcess.rssBytes ?? null,
     },
-    providers: [openRouter, glm],
+    providers: providerSummaries,
   };
 }
 
 function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSummary | null): UsageProviderSummary {
   const provider = settings?.providers.find((entry) => entry.providerId === providerId) ?? null;
-  const label = `${PROVIDER_METADATA[providerId].label} usage`;
+  const providerLabel = resolveProviderMetadata(providerId, settings?.customProviders ?? []).label;
+  const label = `${providerLabel} usage`;
 
   if (!provider?.hasSecret) {
     return {
@@ -1215,7 +1847,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
       label,
       state: 'not_connected',
       primary: 'Not connected',
-      secondary: `Add a ${PROVIDER_METADATA[providerId].label} key before provider telemetry can appear here.`,
+      secondary: `Add a ${providerLabel} key before provider telemetry can appear here.`,
     };
   }
 
@@ -1224,7 +1856,7 @@ function buildProviderUsageSummary(providerId: ProviderId, settings: SettingsSum
     label,
     state: 'unavailable',
     primary: 'Pending provider telemetry',
-    secondary: `The layout is ready for ${PROVIDER_METADATA[providerId].label} telemetry once provider metrics are wired in.`,
+    secondary: `The layout is ready for ${providerLabel} telemetry once provider metrics are wired in.`,
   };
 }
 
@@ -1245,3 +1877,47 @@ function estimateMessageCost(
     return undefined;
   }
 }
+
+// =============================================================================
+// Privacy page
+// =============================================================================
+function PrivacyPage({
+  telemetryEnabled,
+  onTelemetryChange,
+}: {
+  telemetryEnabled: boolean;
+  onTelemetryChange: (enabled: boolean) => void;
+}) {
+  return (
+    <>
+      <SettingsGroup title="Usage analytics">
+        <SettingsRow
+          title="Share anonymous usage events"
+          description="Atlas can send anonymous event data (app launched, model selected, preferences updated) to help prioritize fixes. No message content, file names, or API keys are ever sent. Disabling this takes effect immediately."
+        >
+          <Switch
+            checked={telemetryEnabled}
+            onCheckedChange={onTelemetryChange}
+            ariaLabel="Share anonymous usage events"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Local data">
+        <SettingsRow
+          title="Conversation history"
+          description="All conversations and messages are stored locally in a SQLite database under your user data directory. They never leave your machine unless you explicitly use a tool that does so (e.g. web search or web fetch)."
+        >
+          <span className="text-sm text-text-tertiary">Local only</span>
+        </SettingsRow>
+        <SettingsRow
+          title="API keys"
+          description="Provider keys are stored in the operating system keychain via the keytar library. The renderer never has direct access to key values — only a boolean indicating whether a key is configured."
+        >
+          <span className="text-sm text-text-tertiary">OS keychain</span>
+        </SettingsRow>
+      </SettingsGroup>
+    </>
+  );
+}
+

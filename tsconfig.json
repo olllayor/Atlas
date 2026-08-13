@@ -13,9 +13,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "types": ["node", "electron-vite/node", "vite/client"],
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/renderer/*"],
+      "@/*": ["./src/renderer/*"],
     },
   },
   "include": ["electron.vite.config.ts", "src/**/*"],

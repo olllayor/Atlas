@@ -1,0 +1,283 @@
+/* ============================================
+   Theme: Codex
+
+   Ported from OpenAI's own token contract in
+   `codex-rs/tui/src/inline_visualization/assets/visualize.css`
+   ("Agent-facing contract; keep in sync with SKILL.md") and from the
+   `openai/codex` TUI's verified diff/status palettes.
+
+   See docs/codex-parity/design-audit.md §11 for the source table and
+   docs/codex-parity/research-raw.md §3 for per-value citations.
+
+   Two things are load-bearing and easy to undo by accident:
+   1. Elevation is expressed as a *tint* (5% foreground over background)
+      plus 8% hairline borders — not as shadows.
+   2. The radius ramp mirrors OpenAI's published `--radius-*` scale
+      (see the Radii block below for provenance). Rounding is the one
+      place this theme is a faithful transcription rather than an
+      interpretation, so re-tuning values by eye undoes that.
+
+   NOT part of OpenAI's design system: `corner-shape: superellipse(1.5)`.
+   `corner-shape` and `superellipse` appear ZERO times across all three
+   published token files (primitive.css, semantic.css, components.css) of
+   `@openai/apps-sdk-ui`. The property was taken from one narrow, unrelated
+   surface — the Codex TUI's `inline_visualization/assets/visualize.css`,
+   which styles inline chart output, not app chrome — and generalised here
+   to every rounded box. It is an Atlas embellishment, not a parity claim.
+   It is also Chromium-only: `corner-shape` has no support outside Blink
+   and silently no-ops elsewhere, so the squircle is invisible to anyone
+   viewing this renderer in a non-Chromium engine.
+   ============================================ */
+
+[data-design-theme='codex'] {
+  color-scheme: dark;
+
+  /* --- Backgrounds -------------------------------------------------- */
+  --bg-base: #181818;
+  /* Sidebar is pure black in the shipped app — sampled #000000 from the
+     official product frames (docs/codex-parity/shots/reference). */
+  --bg-panel: #000000;
+  /* Composer is an opaque elevated slab, not a tint: sampled #212121. */
+  --bg-composer: #212121;
+  /* --card in the reference = color-mix(in oklab, fg 5%, transparent) */
+  --bg-surface: color-mix(in oklab, #ffffff 5%, transparent);
+  --bg-elevated: color-mix(in oklab, #ffffff 8%, transparent);
+  --bg-overlay: #2d2d2d; /* --popover: opaque, sits above the app bg */
+  --bg-code: color-mix(in srgb, #ffffff 10%, transparent); /* --muted */
+
+  --bg-subtle: color-mix(in oklab, #ffffff 5%, transparent);
+  --bg-ghost: color-mix(in oklab, #ffffff 4%, transparent);
+  --bg-hover: color-mix(in oklab, #ffffff 8%, transparent);
+  --bg-active: color-mix(in oklab, #ffffff 12%, transparent);
+  /* Send/primary button is a near-white circle with a dark glyph in the
+     shipped app (composer reference frame), not the accent blue. */
+  --bg-button: #e8e8e8;
+  --bg-button-hover: #ffffff;
+
+  /* --- Borders: the reference uses a single 8% hairline -------------- */
+  --border-subtle: rgba(255, 255, 255, 0.055);
+  --border-default: rgba(255, 255, 255, 0.082);
+  --border-medium: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+
+  /* --- Text: secondary is ~50% opacity fg, not a separate hue -------- */
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.78);
+  --text-tertiary: rgba(255, 255, 255, 0.498);
+  --text-muted: rgba(255, 255, 255, 0.498); /* 5.28:1 on --bg-base */
+  /* The reference value was 0.32 = 2.91:1, under the 3:1 floor wherever
+     it carries real text (placeholders, the command palette hint). 0.40
+     = 3.80:1 and stays clearly below --text-muted. */
+  --text-faint: rgba(255, 255, 255, 0.4);
+  --text-inverse: #0d0d0d;
+
+  /* --- Accent ------------------------------------------------------- */
+  --accent: #83c3ff;
+  --accent-hover: color-mix(in oklab, #83c3ff 85%, #ffffff);
+  --accent-text: #0d0d0d;
+  --accent-surface: #0d273f; /* --accent: tinted accent surface */
+  --ring: rgba(131, 195, 255, 0.76);
+
+  /* --- Semantic ------------------------------------------------------
+     The reference has no green/red/amber trio: --destructive is ORANGE
+     and doubles as the warning colour. Success has no token at all, so
+     the TUI's `green` bullet is the source for --success. */
+  --success: #5dc977;
+  --success-bg: color-mix(in oklab, #5dc977 12%, transparent);
+  --success-border: color-mix(in oklab, #5dc977 32%, transparent);
+  --success-text: #74d58b;
+
+  --warning: #ff8549;
+  --warning-bg: color-mix(in oklab, #ff8549 12%, transparent);
+  --warning-border: color-mix(in oklab, #ff8549 32%, transparent);
+  --warning-text: #ff8549;
+
+  --error: #ff8549; /* --destructive is orange, not red */
+  --error-bg: color-mix(in oklab, #ff8549 12%, transparent);
+  --error-border: color-mix(in oklab, #ff8549 32%, transparent);
+  --error-text: #ff8549;
+
+  /* --- Diff palette: GitHub's, verified in diff_render.rs:63-78 ------ */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #5dc977;
+  --diff-del-fg: #ff8549;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(255, 255, 255, 0.4);
+  /* Changed-files bar counts: the reference renders +N green and −N
+     red/salmon even though the theme's semantic error is orange. */
+  --diff-add-fg-count: #5dc977;
+  --diff-del-fg-count: #ff7b72;
+
+  /* --- Per-tool accents ---------------------------------------------
+     The TUI renders Explored sub-verbs cyan and nothing else; these give
+     the richer web surface a restrained per-tool hue drawn from the
+     reference's categorical series (visualize.css:31-36). */
+  --tool-read: #83c3ff;
+  --tool-search: #5acbc2;
+  --tool-edit: #aa91ef;
+  --tool-command: #f59a56;
+  --tool-web: #f08fc0;
+  --tool-generic: rgba(255, 255, 255, 0.498);
+
+  /* --- Toasts -------------------------------------------------------- */
+  --toast-bg: #2d2d2d;
+  --toast-border: rgba(255, 255, 255, 0.082);
+  --toast-text: rgba(255, 255, 255, 0.78);
+  --toast-icon: rgba(255, 255, 255, 0.498);
+  --toast-close: rgba(255, 255, 255, 0.32);
+  --toast-close-hover: rgba(255, 255, 255, 0.78);
+
+  /* --- UI ------------------------------------------------------------ */
+  --overlay: rgba(0, 0, 0, 0.55);
+  --scrollbar: rgba(255, 255, 255, 0.12);
+  --scrollbar-hover: rgba(255, 255, 255, 0.2);
+
+  /* --- Typography ---------------------------------------------------- */
+  --font-ui-family: -apple-system, system-ui, 'Segoe UI', sans-serif, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-mono-system: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+  --font-code-sans: var(--font-ui-family);
+  --font-code-mono: var(--font-mono-system);
+
+  /* Body weight is 430, not 400 — a variable-font optical tweak. */
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --font-weight-strong: 600;
+
+  /* The reference sets no letter-spacing token anywhere. Tracking is
+     browser-default; the uppercase-with-wide-tracking idiom is not part
+     of this system. */
+  --tracking-label: 0em;
+
+  /* --- Radii ---------------------------------------------------------
+     Transcribed from OpenAI's published `@openai/apps-sdk-ui` semantic
+     token layer (`semantic.css`, the `--radius-*` block). The previous
+     ramp here (7.5 / 10 / 12.5 / 12.5 / 20) was reverse-engineered from
+     screenshots and matched no step of the real scale; these are the
+     shipped values, in rem-equivalent pixels. */
+  --radius-2xs: 2px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-4xl: 24px;
+  /* Atlas-only alias with no counterpart in the OpenAI scale; pinned to
+     the smallest real step so it cannot drift off-ramp again. */
+  --radius-subtle: var(--radius-xs);
+  --radius-full: 9999px;
+  --corner-shape: superellipse(1.5);
+
+  /* --- Shadows: depth is tint + hairline, not shadow ----------------- */
+  --shadow-elevated: 0 1px 2px -1px rgba(0, 0, 0, 0.08);
+
+  /* --- Motion -------------------------------------------------------- */
+  --duration-fast: 150ms; /* colour / border / shadow */
+  --duration-normal: 200ms; /* positional */
+  --duration-slow: 200ms;
+  --easing-default: cubic-bezier(0, 0, 0.2, 1); /* Material decelerate */
+}
+
+/* ============================================
+   Light variant
+
+   `App.tsx` stamps `data-theme` = 'light' | 'dark' on <html> (resolving
+   'system' against the media query) and `data-design-theme` separately,
+   so light overrides key off both attributes — same mechanism cursor.css
+   uses at `[data-theme='dark'][data-design-theme='cursor']`.
+   ============================================ */
+
+[data-theme='light'][data-design-theme='codex'] {
+  color-scheme: light;
+
+  --bg-base: #ffffff;
+  --bg-panel: #f9f9f9;
+  /* White slab over a white page, separated by the hairline below — the
+     shipped light app puts the *strip* in grey and keeps the input white, so
+     the two stack. Tinting both (the old #f0f0f0) merged them into one blob. */
+  --bg-composer: #ffffff;
+  --border-composer: rgba(26, 28, 31, 0.09);
+  --bg-surface: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --bg-elevated: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --bg-overlay: #ffffff;
+  --bg-code: color-mix(in srgb, #1a1c1f 10%, transparent);
+
+  --bg-subtle: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --bg-ghost: color-mix(in oklab, #1a1c1f 4%, transparent);
+  --bg-hover: color-mix(in oklab, #1a1c1f 7%, transparent);
+  --bg-active: color-mix(in oklab, #1a1c1f 11%, transparent);
+  --bg-button: #1a1c1f;
+  --bg-button-hover: #333639;
+
+  --border-subtle: rgba(26, 28, 31, 0.055);
+  --border-default: rgba(26, 28, 31, 0.08);
+  --border-medium: rgba(26, 28, 31, 0.118);
+  --border-strong: rgba(26, 28, 31, 0.24);
+
+  --text-primary: #1a1c1f;
+  --text-secondary: rgba(26, 28, 31, 0.76);
+  --text-tertiary: rgba(26, 28, 31, 0.494);
+  /* Dark text on white is harder than the mirror case: the reference's
+     0.494 is only 3.27:1 here and 0.32 only 2.02:1. Raised to 4.55:1 and
+     3.87:1 respectively. --text-tertiary keeps the reference value since
+     it is used decoratively rather than for body copy. */
+  --text-muted: rgba(26, 28, 31, 0.6); /* 4.55:1 */
+  --text-faint: rgba(26, 28, 31, 0.55); /* 3.87:1 */
+  --text-inverse: #ffffff;
+
+  --accent: #339cff;
+  --accent-hover: color-mix(in oklab, #339cff 85%, #000000);
+  --accent-text: #ffffff;
+  --accent-surface: #e5f2ff;
+  --ring: #339cff;
+
+  --success: #1f8a65;
+  --success-bg: color-mix(in oklab, #1f8a65 10%, transparent);
+  --success-border: color-mix(in oklab, #1f8a65 28%, transparent);
+  --success-text: #1f8a65;
+
+  --warning: #e25507;
+  --warning-bg: color-mix(in oklab, #e25507 10%, transparent);
+  --warning-border: color-mix(in oklab, #e25507 28%, transparent);
+  --warning-text: #e25507;
+
+  --error: #e25507;
+  --error-bg: color-mix(in oklab, #e25507 10%, transparent);
+  --error-border: color-mix(in oklab, #e25507 28%, transparent);
+  --error-text: #e25507;
+
+  /* Light diffs use pastel backgrounds and default foreground — the
+     background carries the signal, so no coloured body text. */
+  --diff-add-bg: #dafbe1;
+  --diff-del-bg: #ffebe9;
+  --diff-add-fg: inherit;
+  --diff-del-fg: inherit;
+  --diff-add-gutter-bg: #aceebb;
+  --diff-del-gutter-bg: #ffcecb;
+  --diff-gutter-fg: #1f2328;
+  --diff-add-fg-count: #1f8a65;
+  --diff-del-fg-count: #d1242f;
+
+  --tool-read: #339cff;
+  --tool-search: #3ab9b1;
+  --tool-edit: #9b79ec;
+  --tool-command: #f3883b;
+  --tool-web: #eb77b1;
+  --tool-generic: rgba(26, 28, 31, 0.494);
+
+  --toast-bg: #ffffff;
+  --toast-border: rgba(26, 28, 31, 0.08);
+  --toast-text: rgba(26, 28, 31, 0.76);
+  --toast-icon: rgba(26, 28, 31, 0.494);
+  --toast-close: rgba(26, 28, 31, 0.32);
+  --toast-close-hover: rgba(26, 28, 31, 0.76);
+
+  --overlay: rgba(0, 0, 0, 0.25);
+  --scrollbar: rgba(26, 28, 31, 0.16);
+  --scrollbar-hover: rgba(26, 28, 31, 0.26);
+}

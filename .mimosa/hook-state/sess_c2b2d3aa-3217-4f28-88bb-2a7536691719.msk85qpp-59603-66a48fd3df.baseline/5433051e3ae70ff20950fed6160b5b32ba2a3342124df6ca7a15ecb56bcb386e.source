@@ -1,0 +1,37 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { ChevronRightIcon, DotFilledIcon, GearIcon, PersonIcon, ReloadIcon, TimerIcon, UpdateIcon, } from '@radix-ui/react-icons';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, } from './ui/dropdown-menu';
+function getProfileSubtitle(settings) {
+    const openRouter = settings?.providers.find((provider) => provider.providerId === 'openrouter');
+    if (!openRouter?.hasSecret) {
+        return 'No API key configured';
+    }
+    if (openRouter.status === 'valid') {
+        return 'OpenRouter configured';
+    }
+    if (openRouter.status === 'invalid') {
+        return 'OpenRouter needs attention';
+    }
+    return 'OpenRouter key saved';
+}
+function getUpdateLabel(updateState) {
+    if (updateState.status === 'checking') {
+        return 'Checking…';
+    }
+    if (updateState.status === 'available') {
+        return 'Update available';
+    }
+    if (updateState.status === 'downloaded') {
+        return 'Restart required';
+    }
+    return 'Check for updates';
+}
+export function SidebarSettingsMenu({ collapsed, settings, updateState, isRefreshingModels, conversationStats, loadedMessageCount, onOpenSettings, onRefreshModels, onCheckForUpdates, }) {
+    const subtitle = getProfileSubtitle(settings);
+    const usageLabel = conversationStats
+        ? `${conversationStats.storedMessageCount} stored`
+        : loadedMessageCount > 0
+            ? `${loadedMessageCount} loaded`
+            : 'Soon';
+    return (_jsxs(DropdownMenu, { children: [_jsx(DropdownMenuTrigger, { asChild: true, children: _jsxs("button", { type: "button", className: `flex w-full items-center rounded-xl px-2.5 py-2 text-sm text-text-tertiary outline-none transition hover:bg-white/[0.035] hover:text-text-primary focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 ${collapsed ? 'justify-center' : 'gap-2'}`, children: [_jsx(GearIcon, { className: "h-4 w-4 shrink-0" }), !collapsed ? _jsx("span", { className: "truncate text-[13px] font-medium", children: "Settings" }) : null] }) }), _jsxs(DropdownMenuContent, { align: collapsed ? 'center' : 'start', side: "top", sideOffset: 10, className: "w-[276px] rounded-2xl border border-white/10 bg-[#3a3f47]/96 p-2 text-white shadow-[0_22px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl", children: [_jsx("div", { className: "rounded-[14px] bg-white/[0.045] px-3 py-3.5", children: _jsxs("div", { className: "flex items-start gap-2.5", children: [_jsx("span", { className: "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-white/70", children: _jsx(PersonIcon, { className: "h-3.5 w-3.5" }) }), _jsxs("div", { className: "min-w-0", children: [_jsx("div", { className: "truncate text-[13px] font-medium text-white/92", children: "Atlas local profile" }), _jsxs("div", { className: "mt-0.5 flex items-center gap-1.5 text-[12px] text-white/52", children: [_jsx(DotFilledIcon, { className: "h-3 w-3 shrink-0" }), _jsx("span", { className: "truncate", children: subtitle })] }), _jsx("div", { className: "mt-1 text-[12px] text-white/40", children: "Stored on this device" })] })] }) }), _jsx(DropdownMenuSeparator, { className: "mx-0 my-2 bg-white/8" }), _jsxs(DropdownMenuItem, { onSelect: () => onOpenSettings('general'), className: "h-10 rounded-xl px-3 text-[13px] text-white/82 focus:bg-white/[0.06] focus:text-white", children: [_jsx(GearIcon, { className: "h-4 w-4 text-white/46" }), _jsx("span", { children: "Settings" }), _jsx(ChevronRightIcon, { className: "ml-auto h-4 w-4 text-white/30" })] }), _jsxs(DropdownMenuItem, { onSelect: () => onOpenSettings('usage'), className: "h-10 rounded-xl px-3 text-[13px] text-white/82 focus:bg-white/[0.06] focus:text-white", children: [_jsx(TimerIcon, { className: "h-4 w-4 text-white/46" }), _jsx("span", { children: "Usage & limits" }), _jsx("span", { className: "ml-auto text-[11px] text-white/32", children: usageLabel })] }), _jsxs(DropdownMenuItem, { onSelect: onRefreshModels, className: "h-10 rounded-xl px-3 text-[13px] text-white/82 focus:bg-white/[0.06] focus:text-white", children: [_jsx(ReloadIcon, { className: `h-4 w-4 text-white/46 ${isRefreshingModels ? 'animate-spin' : ''}` }), _jsx("span", { children: isRefreshingModels ? 'Refreshing catalog…' : 'Refresh model catalog' })] }), _jsxs(DropdownMenuItem, { onSelect: onCheckForUpdates, className: "h-10 rounded-xl px-3 text-[13px] text-white/82 focus:bg-white/[0.06] focus:text-white", children: [_jsx(UpdateIcon, { className: `h-4 w-4 text-white/46 ${updateState.status === 'checking' ? 'animate-spin' : ''}` }), _jsx("span", { children: getUpdateLabel(updateState) })] })] })] }));
+}

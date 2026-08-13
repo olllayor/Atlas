@@ -1,0 +1,76 @@
+<!--
+  The sandbox test card.
+
+  This widget actively tries every escape the host is supposed to prevent and
+  prints what it managed. Every row should read "blocked". A fixture that only
+  demonstrates the happy path proves nothing: the interesting property is what
+  fails, so this makes the failures visible instead of leaving them to be
+  checked by hand in a devtools console nobody opens.
+-->
+<style>
+  .card { padding: 12px 14px; font: 13px/1.6 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+  td { padding: 2px 0; vertical-align: top; }
+  td:first-child { opacity: 0.65; padding-right: 12px; white-space: nowrap; }
+  .blocked { color: #15803d; }
+  .leaked { color: #b91c1c; font-weight: 600; }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+</style>
+
+<div class="card">
+  <h1>Plugin UI sandbox — escape report</h1>
+  <table id="report"></table>
+  <button id="ping">Send submit message</button>
+  <button id="grow">Ask for 5000px</button>
+</div>
+
+<script>
+  // Each probe returns true when the escape was BLOCKED.
+  const probes = {
+    'Node require': () => typeof window.require === 'undefined',
+    'Node process': () => typeof window.process === 'undefined',
+    'Electron IPC': () => typeof window.atlasChat === 'undefined',
+    'Parent DOM': () => {
+      try {
+        return !parent.document;
+      } catch {
+        return true; // A SecurityError is the boundary doing its job.
+      }
+    },
+    'Network fetch': () => typeof fetch === 'undefined',
+    'Same-origin': () => {
+      try {
+        localStorage.length;
+        return false;
+      } catch {
+        return true; // Opaque origins have no storage.
+      }
+    }
+  };
+
+  const rows = Object.entries(probes).map(([label, probe]) => {
+    let blocked;
+
+    try {
+      blocked = probe() === true;
+    } catch {
+      blocked = true;
+    }
+
+    return `<tr><td>${label}</td><td class="${blocked ? 'blocked' : 'leaked'}">${
+      blocked ? 'blocked' : 'LEAKED'
+    }</td></tr>`;
+  });
+
+  document.getElementById('report').innerHTML = rows.join('');
+
+  // `window.atlas` is the host's shim, injected above this script. It is the
+  // only channel out, and it carries the frame token so the host can tell this
+  // frame's messages from any other window's.
+  document.getElementById('ping').onclick = () => atlas.submit('hello from the widget');
+  document.getElementById('grow').onclick = () => atlas.resize(5000);
+
+  // Height is requested, never taken: the host clamps whatever arrives.
+  atlas.resize(document.body.scrollHeight + 24);
+</script>

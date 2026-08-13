@@ -23,3 +23,10 @@ plan.md
 npx
 skills-lock.json
 skills/
+.pnpm-store/
+
+# Claude Code agent worktrees
+.claude/worktrees/
+
+# Mimosa security-hook session state and scan baselines
+.mimosa/

@@ -1,0 +1,162 @@
+/* ============================================
+   Landing page (XAILandingPage) — minimalist
+   xAI-style marketing surface. Imported by
+   main.tsx alongside the app themes.
+   ============================================ */
+
+/*
+ * The landing page intentionally lives outside the
+ * app's interactive surface. It uses a fixed mono
+ * + sans pairing and very large display type, in
+ * the spirit of xai.com and similar brutalist
+ * marketing sites.
+ */
+
+.xai-page {
+  min-height: 100vh;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.xai-mono {
+  font-family: var(--font-mono-system);
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.xai-sans {
+  font-family: var(--font-ui-family);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+
+/* Display headline — huge, light, tightly tracked. */
+.xai-display {
+  font-family: var(--font-mono-system);
+  font-weight: 200;
+  font-size: clamp(64px, 14vw, 220px);
+  line-height: 0.92;
+  letter-spacing: -0.04em;
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+/* Section heading — used for feature cards, docs section. */
+.xai-section-heading {
+  font-family: var(--font-ui-family);
+  font-weight: 400;
+  font-size: clamp(20px, 2.2vw, 28px);
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+
+/* Body copy — used in hero subtitle and feature cards. */
+.xai-body {
+  font-family: var(--font-ui-family);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: -0.005em;
+  color: var(--text-tertiary);
+}
+
+/* Meta label — small uppercase overline for cards/specs. */
+.xai-meta {
+  font-family: var(--font-mono-system);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Surface card — used by features, docs code block. */
+.xai-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  padding: 24px;
+  transition: border-color 200ms ease;
+}
+
+.xai-card:hover {
+  border-color: var(--border-strong);
+}
+
+/* Tag chip — small uppercase badge inside feature cards. */
+.xai-tag {
+  display: inline-block;
+  padding: 4px 8px;
+  font-family: var(--font-mono-system);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+}
+
+/* Primary CTA — white fill, mono caps. */
+.xai-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 28px;
+  background: var(--bg-button);
+  color: var(--text-inverse);
+  font-family: var(--font-mono-system);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 1px solid var(--bg-button);
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+
+.xai-btn-primary:hover {
+  background: var(--bg-button-hover);
+  border-color: var(--bg-button-hover);
+}
+
+.xai-btn-primary:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+/* Ghost CTA — transparent with thin border, mono caps. */
+.xai-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 28px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono-system);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-default);
+  transition: background 150ms ease, border-color 150ms ease;
+  cursor: pointer;
+}
+
+.xai-btn-ghost:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+
+.xai-btn-ghost:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}

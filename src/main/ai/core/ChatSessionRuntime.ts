@@ -100,6 +100,8 @@ export type ExecuteTurnRequest = {
   subagentRuntime?: SubagentRuntime;
   persistMessage?: boolean;
   parentAgentId?: string;
+  /** Nesting depth: root turn = 0, child agent = 1, grandchild = 2, … */
+  depth?: number;
   allowedTools?: string[];
 };
 
@@ -728,6 +730,7 @@ export class ChatSessionRuntime {
     subagentRuntime,
     persistMessage = true,
     parentAgentId,
+    depth,
     allowedTools,
   }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
     const apiKey = await this.keychain.getSecret(request.providerId);
@@ -749,6 +752,7 @@ export class ChatSessionRuntime {
       assistantMessageId,
       subagentRuntime,
       parentAgentId,
+      depth,
       allowedTools,
     });
 
@@ -1039,6 +1043,7 @@ export class ChatSessionRuntime {
     assistantMessageId,
     subagentRuntime,
     parentAgentId,
+    depth,
     allowedTools,
   }: {
     requestId: string;
@@ -1053,6 +1058,8 @@ export class ChatSessionRuntime {
     assistantMessageId?: string;
     subagentRuntime?: SubagentRuntime;
     parentAgentId?: string;
+    /** Nesting depth of the current turn (0 = root, 1 = first child agent, …). */
+    depth?: number;
     allowedTools?: string[];
   }): Promise<ProviderStreamResult & { parts: ChatMessagePart[]; pendingApprovals: PendingToolApproval[] }> {
     let attempt = 0;
@@ -1151,6 +1158,7 @@ export class ChatSessionRuntime {
           turnId: assistantMessageId ?? requestId,
           parentSignal: signal,
           ...(parentAgentId ? { parentAgentId } : {}),
+          depth,
         }
       : undefined;
 

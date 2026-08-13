@@ -1,5 +1,10 @@
-/** Which OS mechanism actually wrapped the command. Reported in every bash tool result. */
-export type SandboxMechanism = 'seatbelt' | 'bubblewrap' | 'none';
+/**
+ * Which OS mechanism actually wrapped the command. Reported in every bash
+ * tool result. 'cloud' means the command ran in a Cloudflare Durable Object
+ * isolate rather than on the host, so downstream security checks see the
+ * strongest available isolation instead of `none`.
+ */
+export type SandboxMechanism = 'seatbelt' | 'bubblewrap' | 'cloud' | 'none';
 
 export type WritableRoot = {
   /** Absolute, canonicalized (realpath) directory. */

@@ -496,6 +496,16 @@ export type TerminalStartResult = {
   reused: boolean;
 };
 
+/** Subset of WorktreeService's WorktreeInfo the renderer is allowed to see. */
+export type WorktreeInfoSummary = {
+  path: string;
+  head: string;
+  branch: string | null;
+  isMain: boolean;
+  isLocked?: boolean;
+  isPrunable?: boolean;
+};
+
 /** What the runtime resolved for a conversation: its mode and its folder. */
 export type ConversationWorkspace = {
   conversationId: string;
@@ -995,8 +1005,12 @@ export type SettingsChatSummary = {
   cloudSandboxEnabled: boolean;
   /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
   cloudSandboxWorkerUrl: string | null;
-  /** Bearer secret key for authenticating requests to the user's Cloudflare Worker. */
-  cloudSandboxWorkerSecret: string | null;
+  /**
+   * Whether a bearer secret has been configured. The token itself never
+   * leaves the main process — only this flag crosses IPC, so the renderer can
+   * render a "Clear secret" affordance without ever holding the value.
+   */
+  cloudSandboxHasSecret: boolean;
 };
 
 export type SettingsSummary = {
@@ -1946,6 +1960,9 @@ export type RendererApi = {
     saveProviderKey: (providerId: ProviderId, secret: string) => Promise<SettingsSummary>;
     validateProviderKey: (providerId: ProviderId, secret?: string) => Promise<SettingsSummary>;
     updatePreferences: (patch: SettingsUpdateRequest) => Promise<SettingsSummary>;
+    testCloudSandbox: (url?: string, secret?: string) => Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
+    deployCloudSandbox: () => Promise<{ success: boolean; url?: string; secret?: string; error?: string }>;
+    generateCloudSandboxSecret: () => Promise<string>;
   };
   models: {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;
@@ -1978,6 +1995,7 @@ export type RendererApi = {
     rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
+    resetCloudSandbox: (conversationId: string) => Promise<{ success: boolean; error?: string }>;
     setToolPermissionMode: (request: SetConversationToolPermissionModeRequest) => Promise<ToolPermissionMode>;
     /**
      * Pins the conversation's own model, so a pick survives a restart even if
@@ -2005,6 +2023,12 @@ export type RendererApi = {
      * to local. No-op when the conversation has no worktree.
      */
     removeWorktree: (conversationId: string, force?: boolean) => Promise<ConversationWorkspace>;
+    /**
+     * List the worktrees for this conversation's attached project. Empty array
+     * when the conversation has no project or the project folder is gone —
+     * the "can't list" state is a UI concern, not an IPC error.
+     */
+    listWorktrees: (conversationId: string) => Promise<WorktreeInfoSummary[]>;
     /**
      * Ranked message-body hits, capped and archived-filtered. Any string is a
      * legal query — it is sanitized in the main process, never parsed here.

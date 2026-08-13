@@ -99,6 +99,7 @@ type SettingsWorkspaceProps = {
   onRefreshModels: () => void;
   telemetryEnabled: boolean;
   onTelemetryChange: (enabled: boolean) => void;
+  onUpdatePreferences?: (patch: import('../../shared/contracts').SettingsUpdateRequest) => Promise<void>;
 };
 
 type NavItem = {
@@ -142,6 +143,7 @@ export function SettingsWorkspace({
   onRefreshModels,
   telemetryEnabled,
   onTelemetryChange,
+  onUpdatePreferences,
 }: SettingsWorkspaceProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
@@ -263,7 +265,9 @@ export function SettingsWorkspace({
                 />
               ) : null}
 
-              {activeSection === 'beta' ? <BetaPage settings={settings} /> : null}
+              {activeSection === 'beta' ? (
+                <BetaPage settings={settings} onUpdatePreferences={onUpdatePreferences} />
+              ) : null}
             </div>
           </div>
         </div>
@@ -293,18 +297,41 @@ function sectionTitle(section: SettingsSection): string {
   }
 }
 
-function BetaPage({ settings }: { settings: SettingsSummary | null }) {
+function BetaPage({
+  settings,
+  onUpdatePreferences,
+}: {
+  settings: SettingsSummary | null;
+  onUpdatePreferences?: (patch: import('../../shared/contracts').SettingsUpdateRequest) => Promise<void>;
+}) {
   const [workerUrl, setWorkerUrl] = useState(settings?.chat.cloudSandboxWorkerUrl ?? '');
-  const [workerSecret, setWorkerSecret] = useState(settings?.chat.cloudSandboxWorkerSecret ?? '');
+  // Secret is never seeded from settings: the renderer only learns whether one
+  // exists via `cloudSandboxHasSecret`. Local state holds only what the user
+  // has typed since open, which is what gets saved.
+  const [workerSecret, setWorkerSecret] = useState('');
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; text: string } | null>(null);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployStep, setDeployStep] = useState<string | null>(null);
 
   useEffect(() => {
     setWorkerUrl(settings?.chat.cloudSandboxWorkerUrl ?? '');
-    setWorkerSecret(settings?.chat.cloudSandboxWorkerSecret ?? '');
-  }, [settings?.chat.cloudSandboxWorkerUrl, settings?.chat.cloudSandboxWorkerSecret]);
+  }, [settings?.chat.cloudSandboxWorkerUrl]);
+
+  const updatePref = (patch: import('../../shared/contracts').SettingsUpdateRequest) => {
+    if (onUpdatePreferences) {
+      void onUpdatePreferences(patch);
+    } else if (window.atlasChat?.settings?.updatePreferences) {
+      void window.atlasChat.settings.updatePreferences(patch);
+    }
+  };
 
   const handleToggleEnabled = (enabled: boolean) => {
-    void window.atlasChat?.settings?.updatePreferences({
-      chat: { cloudSandboxEnabled: enabled },
+    updatePref({
+      chat: {
+        cloudSandboxEnabled: enabled,
+        ...(!enabled && settings?.chat.executionTarget === 'cloud' ? { executionTarget: 'local' } : {}),
+      },
     });
     notify({
       tone: 'success',
@@ -314,17 +341,104 @@ function BetaPage({ settings }: { settings: SettingsSummary | null }) {
   };
 
   const handleSaveUrl = () => {
-    void window.atlasChat?.settings?.updatePreferences({
+    updatePref({
       chat: { cloudSandboxWorkerUrl: workerUrl.trim() || null },
     });
     notify({ tone: 'success', title: 'Worker URL updated', description: 'Cloud Sandbox endpoint saved.' });
   };
 
   const handleSaveSecret = () => {
-    void window.atlasChat?.settings?.updatePreferences({
-      chat: { cloudSandboxWorkerSecret: workerSecret.trim() || null },
+    const trimmed = workerSecret.trim();
+    if (!trimmed) return;
+    updatePref({
+      chat: { cloudSandboxWorkerSecret: trimmed },
     });
-    notify({ tone: 'success', title: 'Worker Secret updated', description: 'Auth secret saved.' });
+    setWorkerSecret('');
+    notify({ tone: 'success', title: 'Worker Secret updated', description: 'Auth secret saved to OS keychain.' });
+  };
+
+  const handleClearSecret = () => {
+    updatePref({
+      chat: { cloudSandboxWorkerSecret: null },
+    });
+    setWorkerSecret('');
+    notify({ tone: 'success', title: 'Worker Secret cleared', description: 'Cloud Sandbox auth secret removed.' });
+  };
+
+  const handleGenerateSecret = async () => {
+    try {
+      const secret = await window.atlasChat?.settings?.generateCloudSandboxSecret?.();
+      if (secret) {
+        setWorkerSecret(secret);
+        notify({ tone: 'info', title: 'Auth Secret generated', description: 'Random Bearer secret generated — press Enter or blur to save to keychain.' });
+      }
+    } catch (err: any) {
+      notify({ tone: 'error', title: 'Generation failed', description: err.message || String(err) });
+    }
+  };
+
+  const handleAutoDeploy = async () => {
+    setIsDeploying(true);
+    setDeployStep('Checking Cloudflare login & deploying worker isolate…');
+    try {
+      const result = await window.atlasChat?.settings?.deployCloudSandbox?.();
+      if (result?.success && result.url) {
+        setWorkerUrl(result.url);
+        // The deployer already wrote the token to the keychain — never bounce
+        // it back through updatePref or the settings summary round-trip would
+        // re-expose it to the renderer.
+        updatePref({
+          chat: {
+            cloudSandboxEnabled: true,
+            cloudSandboxWorkerUrl: result.url,
+          },
+        });
+        if (result.secret) setWorkerSecret(result.secret);
+        // Leave the token visible in the field so the user can copy it for
+        // safekeeping; suggest doing so explicitly in the toast.
+        setDeployStep(null);
+        setTestResult({ success: true, text: 'Worker deployed & connected!' });
+        notify({
+          tone: 'success',
+          title: 'Cloud Sandbox deployed — auth secret saved to keychain',
+          description: result.secret
+            ? 'Copy the token from the field if you want a backup — you won\'t see it again after you save.'
+            : `Worker published to ${result.url}. Cloud execution enabled.`,
+        });
+      } else {
+        const errorMsg = result?.error || 'Deployment failed.';
+        setDeployStep(null);
+        notify({ tone: 'error', title: 'Deployment failed', description: errorMsg });
+      }
+    } catch (err: any) {
+      setDeployStep(null);
+      notify({ tone: 'error', title: 'Deployment error', description: err.message || String(err) });
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await window.atlasChat?.settings?.testCloudSandbox?.(workerUrl.trim() || undefined, workerSecret.trim() || undefined);
+      if (res?.success) {
+        const text = `Connected (${res.latencyMs ?? 0}ms)`;
+        setTestResult({ success: true, text });
+        notify({ tone: 'success', title: 'Connection successful', description: `Cloud Sandbox worker responded in ${res.latencyMs ?? 0}ms.` });
+      } else {
+        const text = res?.error || 'Could not reach worker endpoint.';
+        setTestResult({ success: false, text });
+        notify({ tone: 'error', title: 'Connection failed', description: text });
+      }
+    } catch (err: any) {
+      const text = err.message || String(err);
+      setTestResult({ success: false, text });
+      notify({ tone: 'error', title: 'Connection failed', description: text });
+    } finally {
+      setIsTesting(false);
+    }
   };
 
   return (
@@ -342,40 +456,106 @@ function BetaPage({ settings }: { settings: SettingsSummary | null }) {
         </SettingsRow>
 
         <SettingsRow
+          title="Automated Worker Setup"
+          description="Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler."
+        >
+          <div className="flex flex-col gap-2 items-end">
+            <button
+              type="button"
+              onClick={handleAutoDeploy}
+              disabled={isDeploying}
+              className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'animate-spin' : ''}`} />
+              <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
+            </button>
+            {deployStep ? (
+              <span className="text-2xs text-text-tertiary animate-pulse font-mono">
+                {deployStep}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
           title="Cloudflare Worker URL"
           description="HTTPS endpoint URL for your deployed Cloudflare Sandbox worker (e.g. https://atlas-cloud-sandbox.workers.dev)."
         >
-          <div className="flex items-center gap-2">
-            <input
-              type="url"
-              value={workerUrl}
-              placeholder="https://my-sandbox.workers.dev"
-              onChange={(e) => setWorkerUrl(e.target.value)}
-              onBlur={handleSaveUrl}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveUrl();
-              }}
-              className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
-            />
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={workerUrl}
+                placeholder="https://my-sandbox.workers.dev"
+                onChange={(e) => setWorkerUrl(e.target.value)}
+                onBlur={handleSaveUrl}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveUrl();
+                }}
+                className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+              />
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting || !workerUrl.trim()}
+                className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-text-primary transition disabled:opacity-50"
+              >
+                {isTesting ? 'Testing…' : 'Test connection'}
+              </button>
+            </div>
+            {testResult ? (
+              <span
+                className={`text-2xs font-mono px-2 py-0.5 rounded ${
+                  testResult.success
+                    ? 'bg-status-success/15 text-status-success'
+                    : 'bg-status-error/15 text-status-error'
+                }`}
+              >
+                {testResult.text}
+              </span>
+            ) : null}
           </div>
         </SettingsRow>
 
         <SettingsRow
           title="Worker Auth Secret"
-          description="Shared Bearer token sent in Authorization header to authenticate requests with your worker."
+          description="Shared Bearer token sent in Authorization header to authenticate requests with your worker. Stored in your OS keychain — never shown here once saved."
         >
-          <div className="flex items-center gap-2">
-            <input
-              type="password"
-              value={workerSecret}
-              placeholder="Optional Bearer secret"
-              onChange={(e) => setWorkerSecret(e.target.value)}
-              onBlur={handleSaveSecret}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveSecret();
-              }}
-              className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
-            />
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={workerSecret}
+                placeholder={settings?.chat.cloudSandboxHasSecret ? 'Replace saved secret…' : 'Optional Bearer secret'}
+                onChange={(e) => setWorkerSecret(e.target.value)}
+                onBlur={handleSaveSecret}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveSecret();
+                }}
+                className="h-8 w-64 rounded-md border border-border-default bg-transparent px-2.5 text-xs font-mono text-text-primary outline-none transition focus:border-brand placeholder:text-text-muted"
+              />
+              {settings?.chat.cloudSandboxHasSecret && !workerSecret.trim() ? (
+                <button
+                  type="button"
+                  onClick={handleClearSecret}
+                  className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-status-error transition"
+                >
+                  Clear
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleGenerateSecret}
+                className="h-8 rounded-md bg-bg-hover hover:bg-bg-active px-3 text-xs font-medium text-text-primary transition"
+              >
+                Generate Secret
+              </button>
+            </div>
+            {settings?.chat.cloudSandboxHasSecret ? (
+              <span className="text-2xs font-mono text-text-tertiary">
+                ✓ auth secret stored in OS keychain
+              </span>
+            ) : null}
           </div>
         </SettingsRow>
       </SettingsGroup>

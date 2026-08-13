@@ -937,7 +937,7 @@ export async function bashToolExecute(input: {
     });
     child.unref();
 
-    workspace?.onCommandRun?.({ command: input.command, exitCode: null });
+    workspace?.onCommandRun?.({ command: input.command, exitCode: null, venue: 'local' });
 
     // No denial detection is possible here: with `stdio: 'ignore'` there is no
     // output to inspect and no exit code to wait for, so a sandbox denial in a
@@ -980,7 +980,7 @@ export async function bashToolExecute(input: {
     };
   }
 
-  workspace?.onCommandRun?.({ command: input.command, exitCode: result.code ?? null });
+  workspace?.onCommandRun?.({ command: input.command, exitCode: result.code ?? null, venue: 'local' });
 
   const isSuccess = !result.interrupted && result.code === 0;
   const rawStdout = result.stdout;

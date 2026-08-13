@@ -1235,6 +1235,7 @@ export default function App() {
           setTelemetryEnabledState(value);
           void setRendererTelemetryEnabled(value);
         }}
+        onUpdatePreferences={updatePreferences}
       />
     ) : showOnboarding ? (
       <OnboardingFlow

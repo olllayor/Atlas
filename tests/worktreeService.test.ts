@@ -29,8 +29,10 @@ test('provisionWorktree checks out a branch named exactly like the chip label', 
     const service = new WorktreeService();
     const wt = await service.provisionWorktree(root, CONVERSATION_ID);
 
-    // The branch is the contract the renderer previews: `atlas/<first 8 of id>`.
-    assert.equal(wt.branch, 'atlas/3f9ab2c1');
+    // Branch names use the full UUID to avoid 8-char prefix collisions across
+    // conversations (see C2 fix). The renderer chip still shows the short form
+    // via worktreeBranchShort() for compact display.
+    assert.equal(wt.branch, `atlas/${CONVERSATION_ID}`);
     assert.ok(resolve(wt.path).startsWith(resolve(root)));
 
     const listed = await service.listWorktrees(root);

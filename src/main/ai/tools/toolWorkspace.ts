@@ -38,7 +38,7 @@ export type ToolWorkspace = {
    */
   instructions?: AgentInstructionsResult;
   /** Callback fired when the agent runs a shell command, for terminal history. */
-  onCommandRun?: (command: { command: string; exitCode: number | null }) => void;
+  onCommandRun?: (command: { command: string; exitCode: number | null; venue: 'local' | 'cloud' }) => void;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;

@@ -30,7 +30,7 @@ export function registerFileChangesIpc(
       IPC_CHANNELS.fileChangesRevert,
       async (event, conversationId: string, changeId: string): Promise<FileChangeRecord> => {
         assertTrustedSender(event);
-        const workspace = resolveConversationWorkspace(db, conversationId);
+        const workspace = resolveConversationWorkspace(db, conversationId, { settingsRepo: db.settings });
         return fileChangeTracker.revertChange(changeId, workspace);
       }
     )

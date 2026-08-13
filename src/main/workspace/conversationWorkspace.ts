@@ -148,7 +148,8 @@ export function resolveConversationWorkspace(
           conversationId,
           command: command.command,
           exitCode: command.exitCode,
-          finishedAt: new Date().toISOString()
+          finishedAt: new Date().toISOString(),
+          venue: command.venue
         });
       } catch (err) {
         console.warn('[conversationWorkspace] failed to record command history:', err);

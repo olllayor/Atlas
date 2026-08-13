@@ -43,16 +43,14 @@ export function executionTargetRows(options: {
 }
 
 /**
- * The worktree branch is deterministic: `atlas/<first 8 of conversation id>`
- * (see WorktreeService.provisionWorktree). The chip shows a short form so the
- * strip carries which isolation the conversation is in without a tooltip.
+ * The stored worktree branch is the full UUID (`atlas/<uuid>`), so we keep it
+ * unchanged for display there. For the chip label we show a short form so the
+ * row stays readable inside the context bar.
  */
 export function worktreeBranchShort(conversationId: string | undefined): string | null {
   if (!conversationId || conversationId.length < 8) return null;
-  // Must match WorktreeService.provisionWorktree exactly (`atlas/<id.slice(0,8)>`):
-  // the chip's branch label is the same string git checks out, so it can never
-  // silently diverge from the backend by editorializing the id (e.g. dropping
-  // hyphens).
+  // Display only the first 8 hex chars for readability; this is purely cosmetic
+  // and does not affect the actual git branch name (which uses the full UUID).
   return `atlas/${conversationId.slice(0, 8)}`;
 }
 

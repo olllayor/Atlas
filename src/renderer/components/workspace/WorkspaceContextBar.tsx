@@ -12,6 +12,7 @@ import {
   GitFork,
   GitPullRequest,
   Laptop,
+  RotateCcw,
   Unlink,
 } from 'lucide-react';
 import { forwardRef, useEffect, useState } from 'react';
@@ -204,6 +205,7 @@ export function WorkspaceContextBar({
           */}
               {project?.exists && onExecutionTargetChange ? (
                 <ExecutionTargetChip
+                  conversationId={conversationId}
                   executionTarget={executionTarget}
                   worktreeLabel={worktreeBranchShort(conversationId)}
                   isGitRepo={Boolean(project.isGitRepository)}
@@ -284,6 +286,7 @@ export function WorkspaceContextBar({
 }
 
 function ExecutionTargetChip({
+  conversationId,
   executionTarget,
   worktreeLabel,
   isGitRepo,
@@ -295,6 +298,7 @@ function ExecutionTargetChip({
   onOpenSettings,
   onRemoveWorktree,
 }: {
+  conversationId?: string;
   executionTarget: ExecutionTarget;
   worktreeLabel: string | null;
   isGitRepo: boolean;
@@ -370,6 +374,30 @@ function ExecutionTargetChip({
             ),
           )}
         </DropdownMenuRadioGroup>
+
+        {executionTarget === 'cloud' ? (
+          <>
+            <DropdownMenuSeparator className="my-1" />
+            <DropdownMenuItem
+              onSelect={async () => {
+                try {
+                  const res = await window.atlasChat?.conversations?.resetCloudSandbox?.(conversationId ?? '');
+                  if (res?.success) {
+                    notify({ tone: 'success', title: 'Cloud sandbox reset', description: 'Session isolate state cleared.' });
+                  } else {
+                    notify({ tone: 'error', title: 'Reset failed', description: res?.error || 'Could not reset session.' });
+                  }
+                } catch (err: any) {
+                  notify({ tone: 'error', title: 'Reset failed', description: err.message || String(err) });
+                }
+              }}
+              className="gap-2 px-2.5 py-2 text-sm"
+            >
+              <RotateCcw className="size-4 shrink-0" strokeWidth={1.75} />
+              Reset cloud session
+            </DropdownMenuItem>
+          </>
+        ) : null}
 
         {(executionTarget !== 'cloud' || hasWorktree) && onReveal ? (
           <>

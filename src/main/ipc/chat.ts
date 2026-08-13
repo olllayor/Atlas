@@ -28,9 +28,9 @@ export function registerChatIpc(chatEngine: ChatEngine) {
 
   ipcMain.handle(
     IPC_CHANNELS.chatAbort,
-    withUserFacingErrors(IPC_CHANNELS.chatAbort, (event, requestId: string) => {
+    withUserFacingErrors(IPC_CHANNELS.chatAbort, async (event, requestId: string) => {
       assertTrustedSender(event);
-      chatEngine.abort(requestId);
+      await chatEngine.abort(requestId);
     }),
   );
 

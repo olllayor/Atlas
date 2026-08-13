@@ -34,6 +34,8 @@ export type SubagentSpawnRequest = {
   outputFile?: string;
   tools?: string[];
   maxSteps?: number;
+  /** Depth in the spawn chain (root = 0). Passed through by spawnBatch automatically. */
+  depth?: number;
 };
 
 export type ChildTurnExecutor = (input: {
@@ -46,6 +48,8 @@ export type ChildTurnExecutor = (input: {
   signal: AbortSignal;
   onEvent: (event: StreamEvent) => void;
   parentAgentId?: string;
+  /** Nesting depth of the current task (0 = root spawn, 1 = grandchild, …). */
+  depth?: number;
 }) => Promise<{
   content: string;
   status?: 'completed' | 'awaiting_approval';
@@ -55,6 +59,8 @@ export type ChildTurnExecutor = (input: {
 export interface SubagentRuntimeOptions {
   runtimeStateRepo?: Pick<RuntimeStateRepo, 'recordEvent'>;
   maxConcurrent?: number;
+  /** Max nesting depth of subagent spawns (root = 0, children = 1, …). Default 3. */
+  maxDepth?: number;
   childExecutor?: ChildTurnExecutor;
   onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
 }
@@ -62,6 +68,7 @@ export interface SubagentRuntimeOptions {
 export class SubagentRuntime {
   private readonly runtimeStateRepo?: Pick<RuntimeStateRepo, 'recordEvent'>;
   private readonly slotQueue: TaskSlotQueue;
+  private readonly maxDepth: number;
   private readonly childExecutor?: ChildTurnExecutor;
   private readonly onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
   private readonly activeTasks = new Map<
@@ -77,6 +84,7 @@ export class SubagentRuntime {
   constructor(options: SubagentRuntimeOptions = {}) {
     this.runtimeStateRepo = options.runtimeStateRepo;
     this.slotQueue = new TaskSlotQueue(options.maxConcurrent ?? 4);
+    this.maxDepth = options.maxDepth ?? 3;
     this.childExecutor = options.childExecutor;
     this.onRuntimeEvent = options.onRuntimeEvent;
   }
@@ -90,6 +98,20 @@ export class SubagentRuntime {
       }
     }
     return count;
+  }
+
+  /**
+   * Whether a new spawn at the given depth can proceed.
+   * Returns false when nesting would exceed maxDepth — the caller should
+   * omit the spawn_agent tool in this case so the model never attempts it.
+   */
+  canSpawn(depth: number): boolean {
+    return depth < this.maxDepth && this.slotQueue.inUse < this.slotQueue.capacity;
+  }
+
+  /** Total concurrency capacity (read for observability / tests). */
+  get maxSlots(): number {
+    return this.slotQueue.capacity;
   }
 
   /** Record and emit an attributed child runtime event envelope. */
@@ -203,6 +225,8 @@ export class SubagentRuntime {
     parentTurnId: string;
     parentToolCallId: string;
     parentAgentId?: string;
+    /** Depth of the caller (children will be depth+1). Omit for top-level spawns. */
+    depth?: number;
     tasks: Array<{
       title: string;
       prompt: string;
@@ -214,6 +238,7 @@ export class SubagentRuntime {
     }>;
     parentSignal?: AbortSignal;
   }): Promise<SubagentTaskState[]> {
+    const childDepth = (input.depth ?? 0) + 1;
     const promises = input.tasks.map((taskSpec, index) =>
       this.spawn({
         conversationId: input.conversationId,
@@ -228,6 +253,7 @@ export class SubagentRuntime {
         outputFile: taskSpec.outputFile,
         tools: taskSpec.tools,
         taskType: taskSpec.taskType,
+        depth: childDepth,
       }, input.parentSignal)
     );
 
@@ -273,6 +299,18 @@ export class SubagentRuntime {
       outputFile: req.outputFile,
     });
 
+    // C4: compute nesting depth. Root tasks (no parentAgentId) start at 0.
+    const depth = req.depth != null ? req.depth : 0;
+
+    // C4: reject immediately if we would exceed maxDepth — no resource consumed.
+    if (depth > this.maxDepth) {
+      state = applyTaskPatch(state, {
+        status: 'failed',
+        error: `Nesting depth ${depth} exceeds maximum (${this.maxDepth})`,
+      });
+      return state;
+    }
+
     const controller = new AbortController();
     if (parentSignal) {
       if (parentSignal.aborted) {
@@ -287,15 +325,16 @@ export class SubagentRuntime {
       resolveDone = resolve;
     });
 
-    this.activeTasks.set(state.agentId, { state, controller, donePromise });
-
-    // Emit initial task.started event (pending)
-    this.emitEvent(state, 'task.started');
-
     let releaseSlot: (() => void) | undefined;
     try {
-      // Wait for concurrency slot
-      releaseSlot = await this.slotQueue.acquire(req.conversationId);
+      // C5: register in activeTasks only after the early-depth guard passes.
+      this.activeTasks.set(state.agentId, { state, controller, donePromise });
+
+      // C5: emit is now inside the try block so cleanup runs on any throw.
+      this.emitEvent(state, 'task.started');
+
+      // C4: pass the controller's signal so queue waiters can be cancelled atomically.
+      releaseSlot = await this.slotQueue.acquire(req.conversationId, controller.signal);
 
       if (controller.signal.aborted || isTerminalTaskStatus(state.status)) {
         state = applyTaskPatch(state, { status: 'interrupted', error: 'Aborted before start' });
@@ -316,6 +355,7 @@ export class SubagentRuntime {
           tools: req.tools,
           outputFile: req.outputFile,
           parentAgentId: state.agentId,
+          depth: req.depth,
           signal: controller.signal,
           onEvent: (event) => {
             state = applyTaskPatch(state, {
@@ -364,9 +404,11 @@ export class SubagentRuntime {
       if (releaseSlot) {
         releaseSlot();
       }
-      this.emitEvent(state, 'task.completed');
+      // C5: each finalizer is individually protected so one failure
+      // cannot prevent the others from completing.
+      try { this.emitEvent(state, 'task.completed'); } catch {}
       this.activeTasks.delete(state.agentId);
-      resolveDone();
+      try { resolveDone(); } catch {}
     }
 
     return state;

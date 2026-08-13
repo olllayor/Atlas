@@ -327,7 +327,9 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
 
       const safeFit = () => {
         try {
-          fitAddon.fit();
+          if (host.clientWidth > 0 && host.clientHeight > 0) {
+            fitAddon.fit();
+          }
         } catch {
           // The panel can be measured while hidden, where fit() has nothing to
           // divide by. The next resize observation corrects it.

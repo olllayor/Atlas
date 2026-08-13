@@ -199,19 +199,39 @@ export class TaskSlotQueue {
     return this.waiting.length;
   }
 
+  get capacity(): number {
+    return this.maxConcurrent;
+  }
+
   /** Try to take a slot now; if the cap is reached, hold until one frees. */
-  async acquire(conversationId?: string): Promise<() => void> {
+  async acquire(conversationId?: string, signal?: AbortSignal): Promise<() => void> {
     if (this.slotsInUse < this.maxConcurrent) {
       this.slotsInUse += 1;
       return () => this.release();
     }
 
     return new Promise<() => void>((resolve, reject) => {
-      this.waiting.push({
-        resolve: (release) => resolve(release),
-        reject,
-        conversationId,
-      });
+      const waiter = { resolve: (release: () => void) => resolve(release), reject, conversationId };
+      this.waiting.push(waiter);
+
+      if (signal) {
+        if (signal.aborted) {
+          // Remove from queue before rejecting so release() doesn't try to promote a stale waiter.
+          const idx = this.waiting.indexOf(waiter);
+          if (idx !== -1) this.waiting.splice(idx, 1);
+          reject(new DOMException('Operation aborted', 'AbortError'));
+        } else {
+          signal.addEventListener(
+            'abort',
+            () => {
+              const i = this.waiting.indexOf(waiter);
+              if (i !== -1) this.waiting.splice(i, 1);
+              reject(new DOMException('Operation aborted', 'AbortError'));
+            },
+            { once: true }
+          );
+        }
+      }
     });
   }
 

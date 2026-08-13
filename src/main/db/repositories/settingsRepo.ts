@@ -29,6 +29,7 @@ import { isDesignTheme } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
 import type { SqliteDatabase } from '../client';
+import { CloudSandboxSecretStore } from '../../secrets/cloudSandboxSecretStore';
 
 type ProviderCredentialRow = {
   provider_id: ProviderId;
@@ -37,8 +38,32 @@ type ProviderCredentialRow = {
   validated_at: string | null;
 };
 
+type CloudSandboxSecretStoreLike = {
+  read(): Promise<string | null>;
+  write(value: string | null): Promise<void>;
+};
+
+export type SettingsRepoOptions = {
+  cloudSandboxSecretStore?: CloudSandboxSecretStoreLike;
+};
+
 export class SettingsRepo {
-  constructor(private readonly db: SqliteDatabase) {}
+  /**
+   * In-memory snapshot of the Cloud Sandbox bearer token. Keychain is the
+   * source of truth; this cache exists so the synchronous turn-setup path
+   * (`resolveConversationWorkspace`) can read it without an await. Refreshed
+   * on every write and primed at startup.
+   */
+  private cloudSandboxSecretCache: string | null = null;
+  private readonly cloudSandboxSecretStore: CloudSandboxSecretStoreLike;
+
+  constructor(
+    private readonly db: SqliteDatabase,
+    options: SettingsRepoOptions = {}
+  ) {
+    // Injected in tests; production wiring passes nothing and gets the keytar-backed store.
+    this.cloudSandboxSecretStore = options.cloudSandboxSecretStore ?? CloudSandboxSecretStore;
+  }
 
   private clampNumber(value: unknown, min: number, max: number, fallback: number) {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -293,13 +318,132 @@ export class SettingsRepo {
     this.setJsonSetting('chat.cloudSandboxWorkerUrl', value ? value.trim() : null);
   }
 
+  /**
+   * Synchronous read of the Cloud Sandbox bearer token from the in-memory
+   * cache. Returns `null` until `primeCloudSandboxSecret()` runs at startup or
+   * `setCloudSandboxWorkerSecret()` is called. Callers that can tolerate an
+   * await (the settings IPC) should use `loadCloudSandboxWorkerSecret()`
+   * instead so a cold cache doesn't show as "missing".
+   */
   getCloudSandboxWorkerSecret(): string | null {
-    const value = this.getJsonSetting<string | null>('chat.cloudSandboxWorkerSecret', null);
-    return typeof value === 'string' && value.trim() ? value.trim() : null;
+    return this.cloudSandboxSecretCache;
   }
 
-  setCloudSandboxWorkerSecret(value: string | null) {
-    this.setJsonSetting('chat.cloudSandboxWorkerSecret', value ? value.trim() : null);
+  /**
+   * Live keychain read. Prefer this over the cached getter anywhere the caller
+   * can await, because a cold cache reads as "no secret configured".
+   */
+  async loadCloudSandboxWorkerSecret(): Promise<string | null> {
+    const value = await this.cloudSandboxSecretStore.read();
+    this.cloudSandboxSecretCache = value;
+    return value;
+  }
+
+  /**
+   * Awaiting callers' read-through: serve from the warm cache when we have it,
+   * otherwise hit the keychain and memoize. Use anywhere the caller can await —
+   * a cold cache otherwise reads as "no secret configured" and breaks flows that
+   * run before `primeCloudSandboxSecret()`.
+   */
+  async readCloudSandboxWorkerSecret(): Promise<string | null> {
+    if (this.cloudSandboxSecretCache !== null) {
+      return this.cloudSandboxSecretCache;
+    }
+    return this.loadCloudSandboxWorkerSecret();
+  }
+
+  /**
+   * Same as `readCloudSandboxWorkerSecret`, but throws rather than returning
+   * null. Keep the cache-aware awaitable pair together so next reader sees the
+   * difference is contract (null vs throw), not mechanism.
+   */
+  async requireCloudSandboxWorkerSecret(): Promise<string> {
+    const value = await this.readCloudSandboxWorkerSecret();
+    if (!value) {
+      throw new Error('Cloud Sandbox bearer token is not configured');
+    }
+    return value;
+  }
+
+  /**
+   * Persists the secret to the OS keychain and updates the in-memory cache.
+   * Also clears any legacy plaintext row from `app_settings` so an upgrade
+   * doesn't leave the old copy behind.
+   */
+  async setCloudSandboxWorkerSecret(value: string | null): Promise<void> {
+    const trimmed = value?.trim() || null;
+    await this.cloudSandboxSecretStore.write(trimmed);
+    this.cloudSandboxSecretCache = trimmed;
+    this.db
+      .prepare('DELETE FROM app_settings WHERE key = @key')
+      .run({ key: 'chat.cloudSandboxWorkerSecret' });
+  }
+
+  /** Whether a secret is configured, without ever exposing the token itself. */
+  hasCloudSandboxWorkerSecret(): boolean {
+    return this.cloudSandboxSecretCache !== null;
+  }
+
+  /**
+   * One-shot migration for installs that saved the bearer token to
+   * `app_settings` before the keytar store existed. Runs at startup; later
+   * `setCloudSandboxWorkerSecret()` calls also clear it, but a user who never
+   * re-saves after upgrading would otherwise keep the plaintext copy forever.
+   * Idempotent — safe to run on every launch.
+   */
+  purgeLegacyCloudSandboxWorkerSecret(): void {
+    this.db
+      .prepare('DELETE FROM app_settings WHERE key = @key')
+      .run({ key: 'chat.cloudSandboxWorkerSecret' });
+  }
+
+  /**
+   * Loads the keychain value into memory. Call once at startup.
+   *
+   * Also performs the one-time upgrade: if a plaintext copy is still sitting
+   * in `app_settings.chat.cloudSandboxWorkerSecret` from before keychain
+   * storage, move it to the keychain and delete the row so the old copy
+   * can't be lifted later by anything that only reads the database.
+   *
+   * Keychain always wins over the legacy row when both are present — the
+   * newer write is authoritative.
+   */
+  async primeCloudSandboxSecret(): Promise<void> {
+    const legacyRow = this.db
+      .prepare<{ key: string }, { value: string }>(
+        'SELECT value FROM app_settings WHERE key = @key'
+      )
+      .get({ key: 'chat.cloudSandboxWorkerSecret' });
+
+    let legacyValue: string | null = null;
+    if (legacyRow) {
+      try {
+        const parsed = JSON.parse(legacyRow.value) as unknown;
+        legacyValue = typeof parsed === 'string' && parsed.trim() ? parsed.trim() : null;
+      } catch {
+        legacyValue = null;
+      }
+      // Always purge the plaintext row, even if we don't adopt the value —
+      // the upgrade's whole point is that userData stops being a credential
+      // store.
+      this.db
+        .prepare('DELETE FROM app_settings WHERE key = @key')
+        .run({ key: 'chat.cloudSandboxWorkerSecret' });
+    }
+
+    const existing = await this.cloudSandboxSecretStore.read();
+    if (existing) {
+      this.cloudSandboxSecretCache = existing;
+      return;
+    }
+
+    if (legacyValue) {
+      await CloudSandboxSecretStore.write(legacyValue);
+      this.cloudSandboxSecretCache = legacyValue;
+      return;
+    }
+
+    this.cloudSandboxSecretCache = null;
   }
 
   /**

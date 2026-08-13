@@ -106,7 +106,9 @@ export class WorktreeService {
    */
   async provisionWorktree(repoRoot: string, conversationId: string): Promise<WorktreeInfo> {
     const worktreeDir = join(repoRoot, '.atlas-worktrees', conversationId);
-    const branchName = `atlas/${conversationId.slice(0, 8)}`;
+    // Full UUID prevents 8-char prefix collisions across conversations.
+    // Git refnames handle hyphenated IDs without issue (see WorkspaceCheckpointService).
+    const branchName = `atlas/${conversationId}`;
 
     const existing = await this.listWorktrees(repoRoot);
     const found = existing.find((wt) => resolve(wt.path) === resolve(worktreeDir));

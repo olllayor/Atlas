@@ -64,7 +64,7 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
 
   ipcMain.handle(
     IPC_CHANNELS.settingsUpdatePreferences,
-    withUserFacingErrors(IPC_CHANNELS.settingsUpdatePreferences, (event, patch: SettingsUpdateRequest) => {
+    withUserFacingErrors(IPC_CHANNELS.settingsUpdatePreferences, async (event, patch: SettingsUpdateRequest) => {
       assertTrustedSender(event);
       const appearancePatch = patch?.appearance;
 
@@ -176,7 +176,7 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       }
 
       if (patch?.chat?.cloudSandboxWorkerSecret !== undefined) {
-        settingsRepo.setCloudSandboxWorkerSecret(patch.chat.cloudSandboxWorkerSecret);
+        await settingsRepo.setCloudSandboxWorkerSecret(patch.chat.cloudSandboxWorkerSecret);
       }
 
       if (patch?.chat?.lastProjectId !== undefined) {
@@ -193,6 +193,45 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       }
 
       return modelRegistry.getSettingsSummary();
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsTestCloudSandbox,
+    withUserFacingErrors(IPC_CHANNELS.settingsTestCloudSandbox, async (event, url?: string, secret?: string) => {
+      assertTrustedSender(event);
+      const targetUrl = url?.trim() || settingsRepo.getCloudSandboxWorkerUrl();
+      // Renderer-supplied override wins for testing an unsaved value; otherwise
+      // hit the keychain directly so a cold cache doesn't read as "missing".
+      const targetSecret = secret !== undefined ? (secret?.trim() || null) : await settingsRepo.loadCloudSandboxWorkerSecret();
+
+      if (!targetUrl) {
+        return { success: false, error: 'No Cloudflare Worker URL specified.' };
+      }
+
+      const { cloudHealthCheck } = await import('../ai/tools/sandbox/cloudflareComputer');
+      return cloudHealthCheck({
+        endpoint: targetUrl,
+        authToken: targetSecret,
+      });
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsGenerateCloudSandboxSecret,
+    withUserFacingErrors(IPC_CHANNELS.settingsGenerateCloudSandboxSecret, (event) => {
+      assertTrustedSender(event);
+      const { generateRandomSecret } = require('../ai/tools/sandbox/cloudDeployService');
+      return generateRandomSecret();
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsDeployCloudSandbox,
+    withUserFacingErrors(IPC_CHANNELS.settingsDeployCloudSandbox, async (event) => {
+      assertTrustedSender(event);
+      const { deployCloudSandboxWorker } = await import('../ai/tools/sandbox/cloudDeployService');
+      return deployCloudSandboxWorker(settingsRepo);
     })
   );
 }

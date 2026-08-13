@@ -13,6 +13,82 @@ export type CloudNDJSONEvent =
   | { type: 'exit'; code: number | null; interrupted?: boolean }
   | { type: 'error'; error: string };
 
+export type CloudHealthCheckResult = {
+  success: boolean;
+  latencyMs?: number;
+  version?: string;
+  error?: string;
+};
+
+export async function cloudHealthCheck(config: CloudSandboxConfig): Promise<CloudHealthCheckResult> {
+  const endpointUrl = config.endpoint.replace(/\/+$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8_000);
+  const startTime = Date.now();
+
+  try {
+    const response = await fetch(`${endpointUrl}/health`, {
+      method: 'GET',
+      headers: {
+        ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
+      },
+      signal: controller.signal,
+    });
+
+    const latencyMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      return {
+        success: false,
+        latencyMs,
+        error: `HTTP ${response.status}: ${errText || response.statusText}`,
+      };
+    }
+
+    const data = await response.json().catch(() => ({}));
+    return {
+      success: true,
+      latencyMs,
+      version: data?.version ?? '0.1.0',
+    };
+  } catch (err: any) {
+    const latencyMs = Date.now() - startTime;
+    return {
+      success: false,
+      latencyMs,
+      error: err.name === 'AbortError' ? 'Connection timed out (8s)' : (err.message || String(err)),
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function cloudResetSession(
+  conversationId: string,
+  config: CloudSandboxConfig
+): Promise<{ success: boolean; error?: string }> {
+  const endpointUrl = config.endpoint.replace(/\/+$/, '');
+  try {
+    const response = await fetch(`${endpointUrl}/reset`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
+      },
+      body: JSON.stringify({ conversationId }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      return { success: false, error: `HTTP ${response.status}: ${errText || response.statusText}` };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
 export async function cloudBashExecute(
   input: {
     command: string;
@@ -86,6 +162,24 @@ export async function cloudBashExecute(
         }
       }
     }
+
+    if (buffer.trim()) {
+      try {
+        const event: CloudNDJSONEvent = JSON.parse(buffer);
+        if (event.type === 'stdout') {
+          stdoutCap.write(event.data);
+        } else if (event.type === 'stderr') {
+          stderrCap.write(event.data);
+        } else if (event.type === 'exit') {
+          exitCode = event.code;
+          interrupted = Boolean(event.interrupted);
+        } else if (event.type === 'error') {
+          stderrCap.write(`[Cloud Sandbox Error] ${event.error}\n`);
+        }
+      } catch {
+        // Ignore JSON parse error
+      }
+    }
   } catch (error: any) {
     if (error.name === 'AbortError') {
       interrupted = true;
@@ -103,14 +197,17 @@ export async function cloudBashExecute(
     ? '(Command executed successfully with exit code 0)'
     : rawStdout;
 
-  workspace?.onCommandRun?.({ command: input.command, exitCode });
+  workspace?.onCommandRun?.({ command: input.command, exitCode, venue: 'cloud' });
 
   return {
     stdout,
     stderr: rawStderr,
     interrupted,
-    sandbox: 'none',
+    sandbox: 'cloud',
     sandboxNetwork: 'allow',
+    // Escalation is a local-sandbox concept; the DO isolate is already the
+    // most restrictive venue, so the flag is reported as-is for transparency
+    // rather than flipped on.
     sandboxEscalated: Boolean(input.dangerouslyDisableSandbox),
     ...(stdoutCap.truncated || stderrCap.truncated ? { outputTruncated: true as const } : {}),
     returnCodeInterpretation: interrupted

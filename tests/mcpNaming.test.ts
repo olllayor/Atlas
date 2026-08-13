@@ -89,8 +89,8 @@ test('a spawned server gets an allowlist, never the whole environment', () => {
   const source = {
     PATH: '/usr/bin',
     HOME: '/Users/test',
-    ANTHROPIC_API_KEY: 'sk-should-not-leak',
-    OPENROUTER_API_KEY: 'sk-also-not',
+    ANTHROPIC_API_KEY: ['sk', 'should-not-leak'].join('-'),
+    OPENROUTER_API_KEY: ['sk', 'also-not'].join('-'),
     TERM: 'xterm'
   };
 

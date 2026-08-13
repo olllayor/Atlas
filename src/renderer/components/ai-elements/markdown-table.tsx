@@ -69,7 +69,7 @@ function MarkdownTable({ children, className, node: _node, ...props }: Component
         {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-tertiary)]" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
 
-      <div className="scrollbar-auto-hide overflow-x-auto">
+      <div className="scrollbar-auto-hide overflow-x-auto overscroll-y-auto">
         <table
           className={cn(
             'w-full border-collapse text-left [&_tbody_tr:last-child>td]:border-b-0',

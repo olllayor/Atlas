@@ -8,9 +8,14 @@ bindings = [
   { name = "SANDBOX_DO", class_name = "SandboxDO" }
 ]
 
+[worker_loaders]
+bindings = [
+  { name = "LOADER" }
+]
+
 [[migrations]]
 tag = "v1"
-new_classes = ["SandboxDO"]
+new_sqlite_classes = ["SandboxDO"]
 
 # To set the auth secret (required if you want Bearer token auth):
 #   wrangler secret put CF_API_SECRET

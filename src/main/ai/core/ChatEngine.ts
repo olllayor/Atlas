@@ -278,7 +278,7 @@ export class ChatEngine {
           });
         }
       },
-      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId }) => {
+      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth }) => {
         const activeReq = Array.from(this.activeRequests.values()).find(
           (req) => req.request.conversationId === conversationId
         );
@@ -325,6 +325,7 @@ export class ChatEngine {
             initialParts: accumulatedParts,
             subagentRuntime: this.subagentRuntime,
             parentAgentId,
+            depth,
             allowedTools: tools,
             emitEvent: (evt) => {
               onEvent(evt);

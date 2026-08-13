@@ -256,6 +256,43 @@ export function registerConversationsIpc({
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.worktreeList,
+    withUserFacingErrors(IPC_CHANNELS.worktreeList, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+      const ws = describeConversationWorkspace(database, conversationId);
+      // No attached project or the folder is gone on disk: empty state, not an error.
+      if (!ws.project?.exists) return [];
+      const list = await worktreeService.listWorktrees(ws.project.root);
+      // Map to the contract type so we never leak WorktreeInfo internals across IPC.
+      return list.map(({ path, head, branch, isMain, isLocked, isPrunable }) => ({
+        path,
+        head,
+        branch,
+        isMain,
+        isLocked,
+        isPrunable,
+      }));
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsResetCloudSandbox,
+    withUserFacingErrors(IPC_CHANNELS.conversationsResetCloudSandbox, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+
+      const url = settingsRepo.getCloudSandboxWorkerUrl();
+      const secret = await settingsRepo.loadCloudSandboxWorkerSecret();
+
+      if (!url) {
+        return { success: false, error: 'No Cloudflare Worker URL configured.' };
+      }
+
+      const { cloudResetSession } = await import('../ai/tools/sandbox/cloudflareComputer');
+      return cloudResetSession(conversationId, { endpoint: url, authToken: secret });
+    })
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.conversationsSetToolPermissionMode,
     withUserFacingErrors(
       IPC_CHANNELS.conversationsSetToolPermissionMode,

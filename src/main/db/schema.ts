@@ -291,6 +291,19 @@ ON plugin_audit_records (request_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_plugin_audit_conversation
 ON plugin_audit_records (conversation_id, occurred_at);
 
+-- One row per spawn identity a person has judged, keyed by spawnConsentKey in
+-- shared/mcp.ts rather than by server id: consenting to "github/server" should
+-- not silently cover a bundle update that changes the command it runs. Rows
+-- persist across restarts (unlike conversation approval grants) so an alwaysOn
+-- server stays silent after its first approval, and a denial stays denied until
+-- someone clears it from the plugin page.
+CREATE TABLE IF NOT EXISTS spawn_consents (
+  consent_key TEXT PRIMARY KEY,
+  decision TEXT NOT NULL CHECK (decision IN ('granted', 'denied')),
+  server_id TEXT NOT NULL,
+  granted_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversation_checkpoints (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -485,7 +498,8 @@ CREATE TABLE IF NOT EXISTS terminal_history (
   command TEXT NOT NULL,
   exit_code INTEGER,
   started_at TEXT NOT NULL,
-  finished_at TEXT
+  finished_at TEXT,
+  venue TEXT NOT NULL DEFAULT 'local'
 );
 
 CREATE INDEX IF NOT EXISTS idx_terminal_history_conversation
@@ -953,6 +967,18 @@ export function applySchema(database: SqliteDatabase) {
     database
       .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
       .run('migrations.fileChangeLineCounts', 'done');
+  }
+
+  // Migration: terminal-history venue so the terminal panel can distinguish
+  // "this ran on your Mac" from "this ran in a Cloudflare Durable Object".
+  // Existing rows default to 'local', which is historically accurate.
+  const terminalHistoryColumns = database
+    .prepare<[], { name: string }>('PRAGMA table_info(terminal_history)')
+    .all()
+    .map((column) => column.name);
+
+  if (terminalHistoryColumns.length > 0 && !terminalHistoryColumns.includes('venue')) {
+    database.exec("ALTER TABLE terminal_history ADD COLUMN venue TEXT NOT NULL DEFAULT 'local'");
   }
 
   applyMessageSearchIndex(database, settingsKeys.includes(MESSAGE_SEARCH_BACKFILL_KEY));

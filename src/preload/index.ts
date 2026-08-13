@@ -11,7 +11,13 @@ const api: RendererApi = {
     validateProviderKey: (providerId, secret) =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsValidateProviderKey, providerId, secret),
     updatePreferences: (patch) =>
-      ipcRenderer.invoke(IPC_CHANNELS.settingsUpdatePreferences, patch)
+      ipcRenderer.invoke(IPC_CHANNELS.settingsUpdatePreferences, patch),
+    testCloudSandbox: (url, secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsTestCloudSandbox, url, secret),
+    deployCloudSandbox: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsDeployCloudSandbox),
+    generateCloudSandboxSecret: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsGenerateCloudSandboxSecret)
   },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
@@ -46,6 +52,7 @@ const api: RendererApi = {
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
     setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
+    resetCloudSandbox: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsResetCloudSandbox, conversationId),
     setToolPermissionMode: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetToolPermissionMode, request),
     setDefaultModel: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetDefaultModel, request),
     setPinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetPinned, request),
@@ -55,7 +62,9 @@ const api: RendererApi = {
     startSide: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsStartSide, request),
     listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId),
     removeWorktree: (conversationId, force) =>
-      ipcRenderer.invoke(IPC_CHANNELS.worktreeRemove, { conversationId, force })
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeRemove, { conversationId, force }),
+    listWorktrees: (conversationId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.worktreeList, conversationId)
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),

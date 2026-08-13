@@ -297,12 +297,44 @@ export function namespaceMcpTool(serverName: string, toolName: string): string {
     return full;
   }
 
-  const suffix = `_${hashFor(`${serverName} ${toolName}`)}`;
+  const suffix = `_${hashFor(`${serverName}\x00${toolName}`)}`;
   return `${full.slice(0, MAX_TOOL_NAME_LENGTH - suffix.length)}${suffix}`;
 }
 
 export function isMcpToolName(name: string): boolean {
   return name.startsWith(`${MCP_TOOL_NAME_PREFIX}${MCP_TOOL_NAME_DELIMITER}`);
+}
+
+/**
+ * The identity a person's spawn consent is recorded against.
+ *
+ * Intent (decision D1 of the first-spawn-consent plan): consent covers exactly
+ * one concrete command line, so the key must change when *anything the user
+ * consented to* changes — the server identity (`id`), the resolved executable
+ * (`command`), or the arguments/launch context (`args`, `cwd`). Anything left
+ * out of the key is implicitly re-consented when it changes, and anything added
+ * to the key names an additional thing the user is being asked to sign off on.
+ *
+ * Called only on the stdio path: `command` is null for HTTP/SSE servers, so a
+ * null here is a programming error, not a consent case.
+ *
+ * TODO(user): implement this. Aim for 3–6 lines. Requirements:
+ *   - throw when `input.command` is null (do not let an HTTP server slip through)
+ *   - distinct commands → distinct keys
+ *   - an args or cwd change must change the key
+ *   - pure: the same helper is used by the writer (on consent) and the checker
+ *     (before every spawn), so the two cannot drift
+ *   - you may use `hashFor` (FNV-1a, defined above) and `sanitizeToolNamePart`,
+ *     and you may join with '\0' separators — do NOT need node:crypto.
+ */
+export function spawnConsentKey(input: {
+  id: string;
+  command: string | null;
+  args: string[];
+  cwd: string | null;
+}): string {
+  // TODO(user): implement (3–6 lines). See plan Task 1, Step 1.
+  throw new Error('spawnConsentKey: not implemented');
 }
 
 /** A namespaced tool name, read back into the parts a person recognises. */

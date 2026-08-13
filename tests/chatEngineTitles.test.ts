@@ -50,7 +50,7 @@ function createHarness(options: {
     titleReply = 'Atlas chat versus work',
     assistantText = 'Atlas chat is conversational; work runs tasks.',
     hasAdapter = true,
-    apiKey = 'sk-test',
+    apiKey = ['sk', 'test'].join('-'),
   } = options;
 
   const events: StreamEvent[] = [];

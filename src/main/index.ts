@@ -197,6 +197,11 @@ app.whenReady().then(async () => {
     'interrupted',
   );
   const keychain = new KeychainStore();
+  // Load the Cloud Sandbox bearer token from the keychain into the in-memory
+  // cache so the synchronous turn-setup path can read it without awaiting.
+  await database.settings.primeCloudSandboxSecret().catch((err) => {
+    console.warn('[startup] primeCloudSandboxSecret failed:', err);
+  });
   const updateService = new UpdateService();
   // Every provider is user-configured; the registry starts empty and is filled
   // from the database by CustomProviderService below.
@@ -435,6 +440,7 @@ app.whenReady().then(async () => {
           envStore,
           agentInstructions,
           terminalHistory: database.terminalHistory,
+          settingsRepo: database.settings,
           // Display-only echo: the agent's command already ran through the
           // approval ladder in `runCommand`, and nothing here touches stdin.
           onAgentCommand: (command, exitCode) =>

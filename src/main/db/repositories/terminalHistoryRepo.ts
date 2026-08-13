@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import type { SqliteDatabase } from '../client';
 
+/** Venue a command ran in. 'local' = host OS sandbox; 'cloud' = Cloudflare DO isolate. */
+export type CommandVenue = 'local' | 'cloud';
+
 export type TerminalHistoryRecord = {
   id: string;
   conversationId: string;
@@ -9,6 +12,7 @@ export type TerminalHistoryRecord = {
   exitCode: number | null;
   startedAt: string;
   finishedAt: string | null;
+  venue: CommandVenue;
 };
 
 type TerminalHistoryRow = {
@@ -18,6 +22,7 @@ type TerminalHistoryRow = {
   exit_code: number | null;
   started_at: string;
   finished_at: string | null;
+  venue: CommandVenue | null;
 };
 
 function mapRow(row: TerminalHistoryRow): TerminalHistoryRecord {
@@ -27,7 +32,10 @@ function mapRow(row: TerminalHistoryRow): TerminalHistoryRecord {
     command: row.command,
     exitCode: row.exit_code,
     startedAt: row.started_at,
-    finishedAt: row.finished_at
+    finishedAt: row.finished_at,
+    // Rows inserted before the venue column landed read back as local, which
+    // matches what they actually were (cloud wasn't wired yet).
+    venue: row.venue === 'cloud' ? 'cloud' : 'local'
   };
 }
 
@@ -40,16 +48,18 @@ export class TerminalHistoryRepo {
     exitCode?: number | null;
     startedAt?: string;
     finishedAt?: string | null;
+    venue?: CommandVenue;
   }): TerminalHistoryRecord {
     const id = randomUUID();
     const startedAt = input.startedAt ?? new Date().toISOString();
+    const venue = input.venue === 'cloud' ? 'cloud' : 'local';
 
     this.db
       .prepare(
         `INSERT INTO terminal_history (
-          id, conversation_id, command, exit_code, started_at, finished_at
+          id, conversation_id, command, exit_code, started_at, finished_at, venue
         ) VALUES (
-          @id, @conversationId, @command, @exitCode, @startedAt, @finishedAt
+          @id, @conversationId, @command, @exitCode, @startedAt, @finishedAt, @venue
         )`
       )
       .run({
@@ -58,7 +68,8 @@ export class TerminalHistoryRepo {
         command: input.command.trim(),
         exitCode: input.exitCode ?? null,
         startedAt,
-        finishedAt: input.finishedAt ?? null
+        finishedAt: input.finishedAt ?? null,
+        venue
       });
 
     return {
@@ -67,7 +78,8 @@ export class TerminalHistoryRepo {
       command: input.command.trim(),
       exitCode: input.exitCode ?? null,
       startedAt,
-      finishedAt: input.finishedAt ?? null
+      finishedAt: input.finishedAt ?? null,
+      venue
     };
   }
 

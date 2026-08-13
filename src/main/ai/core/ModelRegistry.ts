@@ -207,7 +207,10 @@ export class ModelRegistry {
         visualMode: this.settingsRepo.getVisualMode(),
         cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
         cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
-        cloudSandboxWorkerSecret: this.settingsRepo.getCloudSandboxWorkerSecret(),
+        // Raw token never crosses IPC — keychain holds it, the renderer only
+        // needs to know whether one is configured so the UI can afford the
+        // correct affordance (show/hide the "Clear" button, etc.).
+        cloudSandboxHasSecret: this.settingsRepo.hasCloudSandboxWorkerSecret(),
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,

@@ -2,6 +2,8 @@
  * Agent tools definition (`docs/plans/agents/02-subagent-runtime.md`).
  *
  * Provides the `spawn_agent` tool for parallel subagent delegation.
+ * When `context.depth >= runtime.maxDepth` or all slots are exhausted, the
+ * tool is omitted entirely so the model cannot attempt a rejected spawn.
  */
 import { tool } from 'ai';
 import { z } from 'zod';
@@ -13,14 +15,24 @@ export type SubagentContext = {
   parentAgentId?: string;
   parentToolCallId?: string;
   parentSignal?: AbortSignal;
+  /** Nesting depth of the current subagent (root = 0, grandchild = 2, …). */
+  depth?: number;
 };
 
 export function createAgentTools(
   subagentRuntime?: SubagentRuntime,
   context?: SubagentContext
 ) {
-  return {
-    spawn_agent: tool({
+  // Gate the tool when depth cap or slot pressure prevents a new spawn.
+  const canSpawn =
+    subagentRuntime != null && context != null
+      ? subagentRuntime.canSpawn(context.depth ?? 0)
+      : false;
+
+  const tools: Record<string, unknown> = {};
+
+  if (canSpawn) {
+    tools.spawn_agent = tool({
       description:
         'Run a focused sub-task in a separate agent with its own context window. Accepts an array of tasks for parallel fan-out.',
       inputSchema: z.object({
@@ -53,6 +65,7 @@ export function createAgentTools(
           parentTurnId: context.turnId,
           parentToolCallId: toolCallId,
           parentAgentId: context.parentAgentId,
+          depth: context.depth,
           tasks: input.tasks,
           parentSignal: context.parentSignal,
         });
@@ -69,6 +82,8 @@ export function createAgentTools(
           })),
         };
       },
-    }),
-  };
+    });
+  }
+
+  return tools;
 }

@@ -1,0 +1,6 @@
+{
+  "name": "atlassian-rovo",
+  "version": "1.0.0",
+  "description": "Manage Jira issues and Confluence pages.",
+  "skills": "./skills/"
+}

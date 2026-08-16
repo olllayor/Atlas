@@ -71,8 +71,10 @@ export function registerConversationsIpc({
         settingsRepo.getLastProjectId()
       );
 
+      const workspaceMode = request?.workspaceMode ?? settingsRepo.getWorkspaceMode();
+
       const conversation = conversationsRepo.create({
-        workspaceMode: settingsRepo.getWorkspaceMode(),
+        workspaceMode,
         projectId,
         toolPermissionMode: request?.toolPermissionMode ?? settingsRepo.getToolPermissionMode()
       });
@@ -116,8 +118,18 @@ export function registerConversationsIpc({
 
   ipcMain.handle(
     IPC_CHANNELS.conversationsDelete,
-    withUserFacingErrors(IPC_CHANNELS.conversationsDelete, (event, conversationId: string) => {
+    withUserFacingErrors(IPC_CHANNELS.conversationsDelete, async (event, conversationId: string) => {
       assertTrustedSender(event);
+
+      const ws = describeConversationWorkspace(database, conversationId);
+      if (ws.worktreeRoot && ws.project?.exists) {
+        try {
+          await worktreeService.removeWorktree(ws.project.root, { path: ws.worktreeRoot, force: true });
+        } catch {
+          // Failure to clean worktree directory on disk must not block conversation deletion
+        }
+      }
+
       conversationsRepo.delete(conversationId);
       onConversationDeleted?.(conversationId);
     })

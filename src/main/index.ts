@@ -79,6 +79,7 @@ import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewH
 import { SiteService } from './sites/SiteService';
 import { logger } from './observability/logger';
 import { KeychainStore } from './secrets/keychain';
+import { worktreeService } from './workspace/WorktreeService';
 import { resolveConversationWorkspace } from './workspace/conversationWorkspace';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
@@ -506,6 +507,8 @@ app.whenReady().then(async () => {
     projectsRepo: database.projects,
     settingsRepo: database.settings,
     ideLauncher,
+    conversationsRepo: database.conversations,
+    worktreeService,
   });
   registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
   registerGitIpc(database, gitStateService, gitReviewService);
@@ -521,6 +524,7 @@ app.whenReady().then(async () => {
     updates: pluginUpdates,
     origins: pluginOrigins,
     activations: pluginActivations,
+    secrets: mcpSecrets,
     setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
     setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
   });

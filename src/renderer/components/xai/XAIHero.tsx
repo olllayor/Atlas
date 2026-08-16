@@ -9,7 +9,7 @@ interface HeroProps {
 
 export function XAIHero({
   headline = 'ATLAS',
-  subtitle = 'OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.',
+  subtitle = 'Local-first BYOK desktop AI workspace and agent studio with multi-provider support, MCP integration, and interactive visual artifacts.',
   primaryCTA = 'OPEN THE APP',
   secondaryCTA = 'READ THE DOCS',
   onPrimaryClick,

@@ -13,10 +13,15 @@ import { pickPreferredIde } from '../workspace/IdeLauncher';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
 
+import type { ConversationsRepo } from '../db/repositories/conversationsRepo';
+import type { WorktreeService } from '../workspace/WorktreeService';
+
 type ProjectsIpcDeps = {
   projectsRepo: ProjectsRepo;
   settingsRepo: SettingsRepo;
   ideLauncher: IdeLauncher;
+  conversationsRepo?: ConversationsRepo;
+  worktreeService?: WorktreeService;
 };
 
 /**
@@ -64,7 +69,13 @@ async function loadIcon(iconPath: string | null) {
  * a path, so the native picker lives here rather than in the renderer, and the
  * chosen path is normalised once before anything stores it.
  */
-export function registerProjectsIpc({ projectsRepo, settingsRepo, ideLauncher }: ProjectsIpcDeps) {
+export function registerProjectsIpc({
+  projectsRepo,
+  settingsRepo,
+  ideLauncher,
+  conversationsRepo,
+  worktreeService
+}: ProjectsIpcDeps) {
   ipcMain.handle(
     IPC_CHANNELS.projectsList,
     withUserFacingErrors(IPC_CHANNELS.projectsList, (event) => {
@@ -113,8 +124,29 @@ export function registerProjectsIpc({ projectsRepo, settingsRepo, ideLauncher }:
 
   ipcMain.handle(
     IPC_CHANNELS.projectsDelete,
-    withUserFacingErrors(IPC_CHANNELS.projectsDelete, (event, projectId: string) => {
+    withUserFacingErrors(IPC_CHANNELS.projectsDelete, async (event, projectId: string) => {
       assertTrustedSender(event);
+
+      const project = projectsRepo.get(projectId);
+      if (conversationsRepo) {
+        const affected = conversationsRepo.resetWorkspaceForProject(projectId);
+        if (project?.exists && worktreeService) {
+          for (const item of affected) {
+            if (item.worktreeRoot) {
+              try {
+                await worktreeService.removeWorktree(project.root, { path: item.worktreeRoot, force: true });
+              } catch {
+                // Ignore individual worktree removal failure
+              }
+            }
+          }
+        }
+      }
+
+      if (settingsRepo.getLastProjectId() === projectId) {
+        settingsRepo.setLastProjectId(null);
+      }
+
       // Only the attachment is removed; nothing on disk is touched.
       projectsRepo.delete(projectId);
     })

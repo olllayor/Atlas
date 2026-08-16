@@ -222,7 +222,11 @@ const api: RendererApi = {
     setActivated: (conversationId: string, plugin: string, active: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsSetActivated, conversationId, plugin, active),
     setAlwaysOn: (conversationId: string, plugin: string, alwaysOn: boolean) =>
-      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetAlwaysOn, conversationId, plugin, alwaysOn)
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSetAlwaysOn, conversationId, plugin, alwaysOn),
+    configureAuth: (pluginName: string, credentials: Record<string, string>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsConfigureAuth, pluginName, credentials),
+    checkHealth: (pluginName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckHealth, pluginName)
   },
   mcpUi: {
     // Returns a descriptor, never markup. See `main/ipc/mcpUi.ts`.

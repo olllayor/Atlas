@@ -1,7 +1,8 @@
-import { Cross2Icon, TrashIcon, UpdateIcon } from '@radix-ui/react-icons';
+import { CheckCircledIcon, Cross2Icon, ExclamationTriangleIcon, Link2Icon, ReloadIcon, TrashIcon, UpdateIcon } from '@radix-ui/react-icons';
 import { useState } from 'react';
 
-import type { PluginServerSummary, PluginSummary, PluginUpdateView } from '../../../shared/contracts';
+import type { AuthConfig, PluginServerSummary, PluginSummary, PluginUpdateView } from '../../../shared/contracts';
+import { notify, notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 import { Switch as UiSwitch } from '../ui/switch';
 import { ConnectorList } from './ConnectorList';
@@ -9,10 +10,6 @@ import { PluginIcon } from './PluginIcon';
 
 /**
  * One plugin, and what it is allowed to do.
- *
- * Everything shown is derived from the validated manifest and resolved paths.
- * The server rows in particular carry the literal command or endpoint, never a
- * friendly summary — a bundle must not be able to describe itself as harmless.
  */
 export function PluginDetailPanel({
   plugin,
@@ -33,6 +30,42 @@ export function PluginDetailPanel({
   onUninstall: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [editingAuth, setEditingAuth] = useState(!plugin.hasCredentials && Boolean(plugin.credentials?.length));
+  const [authValues, setAuthValues] = useState<Record<string, string>>({});
+  const [savingAuth, setSavingAuth] = useState(false);
+  const [checkingHealth, setCheckingHealth] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleSaveAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingAuth(true);
+    try {
+      await window.atlasChat.plugins.configureAuth(plugin.name, authValues);
+      setEditingAuth(false);
+      notify({ title: 'Credentials updated', tone: 'success' });
+    } catch (err) {
+      notifyError('Failed to save credentials', err);
+    } finally {
+      setSavingAuth(false);
+    }
+  };
+
+  const handleCheckHealth = async () => {
+    setCheckingHealth(true);
+    setHealthStatus(null);
+    try {
+      const res = await window.atlasChat.plugins.checkHealth(plugin.name);
+      if (res.ok) {
+        setHealthStatus({ ok: true, message: `Connected successfully (${res.toolsCount ?? 0} capabilities ready)` });
+      } else {
+        setHealthStatus({ ok: false, message: res.error ?? 'Connection check failed.' });
+      }
+    } catch (err) {
+      setHealthStatus({ ok: false, message: String(err) });
+    } finally {
+      setCheckingHealth(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-[var(--overlay)]" onClick={onClose}>
@@ -42,15 +75,37 @@ export function PluginDetailPanel({
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 gap-3">
-            <PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} />
+            <PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} size="lg" />
             <div className="min-w-0">
-              <h2 className="truncate text-base text-text-primary">
+              <h2 className="truncate text-base font-medium text-text-primary">
                 {plugin.displayName ?? plugin.name}
               </h2>
               <p className="text-2xs text-text-faint">
                 v{plugin.version}
                 {plugin.author ? ` · ${plugin.author}` : ''}
               </p>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span
+                  className={cn(
+                    'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-medium',
+                    plugin.state === 'enabled'
+                      ? 'bg-brand/10 text-brand'
+                      : plugin.state === 'needs_configuration'
+                      ? 'bg-warning-bg text-warning'
+                      : plugin.state === 'error'
+                      ? 'bg-error-bg text-error-text'
+                      : 'bg-bg-hover text-text-tertiary'
+                  )}
+                >
+                  {plugin.state === 'enabled'
+                    ? 'Connected & Enabled'
+                    : plugin.state === 'needs_configuration'
+                    ? 'Needs Configuration'
+                    : plugin.state === 'disabled'
+                    ? 'Disabled'
+                    : plugin.state}
+                </span>
+              </div>
             </div>
           </div>
           <button
@@ -66,8 +121,6 @@ export function PluginDetailPanel({
         <p className="mt-3 text-sm text-text-tertiary">{plugin.description}</p>
 
         {plugin.blockedReason ? (
-          // Above the switch, because it is the reason the switch is dead. A
-          // revocation is not a preference the user can toggle back on.
           <div className="mt-4 rounded-lg border border-error-border bg-error-bg p-3">
             <p className="text-xs font-medium text-error-text">Withdrawn</p>
             <p className="mt-1 text-2xs text-error-text">{plugin.blockedReason}</p>
@@ -86,13 +139,97 @@ export function PluginDetailPanel({
           />
         </div>
 
+        {plugin.credentials && plugin.credentials.length > 0 ? (
+          <Section title="Account & Authentication" note="Securely stored in your local OS Keychain.">
+            {!editingAuth ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-secondary">
+                    {plugin.hasCredentials ? 'Credentials configured' : 'Authentication required'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingAuth(true)}
+                    className="rounded-md bg-bg-active px-2.5 py-1 text-xs text-text-primary hover:bg-bg-hover"
+                  >
+                    {plugin.hasCredentials ? 'Update Credentials' : 'Connect Account'}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => void handleCheckHealth()}
+                    disabled={checkingHealth}
+                    className="flex items-center gap-1.5 rounded-md border border-border-default px-2.5 py-1 text-2xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                  >
+                    <ReloadIcon className={cn('size-3', checkingHealth && 'animate-spin')} />
+                    Test Connection
+                  </button>
+                  {healthStatus ? (
+                    <span
+                      className={cn(
+                        'flex items-center gap-1 text-2xs',
+                        healthStatus.ok ? 'text-success' : 'text-error-text'
+                      )}
+                    >
+                      {healthStatus.ok ? (
+                        <CheckCircledIcon className="size-3.5" />
+                      ) : (
+                        <ExclamationTriangleIcon className="size-3.5" />
+                      )}
+                      {healthStatus.message}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleSaveAuth} className="space-y-3 rounded-lg border border-border-default/60 bg-bg-surface p-3">
+                {plugin.credentials.map((cred) => (
+                  <label key={'secretName' in cred ? cred.secretName : cred.type} className="block space-y-1">
+                    <span className="text-xs font-medium text-text-secondary">
+                      {'label' in cred && cred.label ? cred.label : 'secretName' in cred ? cred.secretName : 'API Token'}
+                    </span>
+                    <input
+                      type="password"
+                      placeholder={'placeholder' in cred && cred.placeholder ? cred.placeholder : 'Enter value...'}
+                      value={'secretName' in cred ? authValues[cred.secretName] ?? '' : ''}
+                      onChange={(e) => {
+                        if ('secretName' in cred) {
+                          setAuthValues({ ...authValues, [cred.secretName]: e.target.value });
+                        }
+                      }}
+                      className="w-full rounded-md border border-border-default bg-bg-base px-2.5 py-1.5 text-xs text-text-primary outline-none focus:border-brand"
+                    />
+                  </label>
+                ))}
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditingAuth(false)}
+                    className="rounded-md px-2.5 py-1 text-xs text-text-tertiary hover:text-text-primary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingAuth}
+                    className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+                  >
+                    {savingAuth ? 'Saving...' : 'Save to Keychain'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </Section>
+        ) : null}
+
         {update && !plugin.blockedReason ? (
           <UpdateRow update={update} busy={busy} onUpdate={onUpdate} />
         ) : null}
 
         {plugin.servers.length > 0 ? (
           <Section
-            title="Runs on this machine"
+            title="MCP Servers & Tools"
             note={
               plugin.skills.length > 0
                 ? 'These start when you use one of this plugin’s skills, not before.'

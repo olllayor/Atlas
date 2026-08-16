@@ -1,0 +1,6 @@
+{
+  "name": "notion",
+  "version": "1.0.0",
+  "description": "Notion workflows for specs, research, and notes.",
+  "skills": "./skills/"
+}

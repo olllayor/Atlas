@@ -1280,7 +1280,7 @@ export default function App() {
           onRename={(id, title) => void renameConversation(id, title)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onAttachProject={() => {
-            void attachProject({ conversationId: selectedConversationId ?? undefined });
+            void attachProject();
           }}
           onCreateInProject={(projectId) => void createConversationInProject(projectId)}
           onRevealProject={(projectId) => void window.atlasChat.projects.reveal(projectId)}

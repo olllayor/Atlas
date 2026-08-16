@@ -4,250 +4,174 @@
 [![CI](https://github.com/olllayor/Atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/olllayor/Atlas/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/olllayor/Atlas)](https://github.com/olllayor/Atlas/releases/latest)
 
-Atlas is a local-first desktop chat client for BYOK AI interactions. Save your API keys once, browse cached model catalogs, pick models manually, chat with streaming responses, and keep your conversation history on your machine.
+> **Atlas** is a local-first, privacy-focused desktop AI workspace and agent studio. Bring Your Own Key (BYOK), connect to any model provider, run MCP tools, orchestrate autonomous agent workflows, and render live interactive visual artifacts — all stored securely on your own machine.
 
-This repository is open source. The core app scaffold is in place, production builds pass, and the automated test suite is green. Room to improve remains (see the roadmap and `docs/`), but the project is active rather than a dormant scaffold.
+---
 
-## What it does
+## 🎯 Purpose & Vision
 
-- **Multi-provider BYOK flow** — OpenRouter, Google GLM, and extensible provider architecture
-- **OS keychain storage** — API keys secured via `keytar` in system keychain
-- **Cached model catalog** — Local SQLite storage with free-model filtering, vision/tool support detection
-- **Streaming chat responses** — Real-time text streaming from Electron main process
-- **Tool calling** — Built-in local tools: file read, grep search, glob search, web search, web fetch, bash execution, model catalog search
-- **Visual rendering** — Markdown, code blocks with syntax highlighting, Mermaid diagrams, Math equations, iframes
-- **Reasoning support** — Expose model reasoning tokens for supported models
-- **Conversation management** — Local SQLite persistence for conversations and messages with full history
-- **Abort support** — Cancel in-flight requests
-- **Security-oriented Electron architecture** — Typed preload bridge, renderer doesn't access secrets
+Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthly subscriptions, or opaque proprietary servers. **Atlas** is built from the ground up to give developers, researchers, and power users full sovereignty over their AI environment.
 
-## Stack
+### Core Principles
 
-- Electron
-- React
-- TypeScript
-- Vite / electron-vite
-- Zustand
-- Tailwind CSS
-- better-sqlite3
-- keytar
-- Vercel AI SDK
+- 🔑 **True BYOK Freedom** — Bring your own API keys directly to OpenRouter, Anthropic, OpenAI, Google Gemini/GLM, or local models (Ollama, LM Studio, vLLM). Pay only for what you consume at provider rates, with zero middleman markups.
+- 🔒 **Privacy & Local-First Architecture** — Your conversations, prompts, workspace state, and model catalogs remain on your local disk in SQLite. All API keys are encrypted in your operating system's native keychain (`keytar`).
+- 🤖 **Agentic Workflow & Extensibility** — Move seamlessly between standard chat, planning, and autonomous execution modes with built-in Model Context Protocol (MCP) support, custom plugins, and safety-gated tool execution.
+- 🎨 **Rich Visual Artifacts** — Beyond plain text: stream and interact with live sandboxed HTML/UI documents, Mermaid diagrams, React Flow node graphs, LaTeX math formulas, and code diffs.
+- ⚡ **Desktop-Native Craft** — Engineered with a refined warm minimalism aesthetic, command palette (`cmdk`), deep keyboard navigation, integrated terminal, and smooth view transitions.
 
-## Current status
+---
 
-- `pnpm build` passes
-- The main app architecture and UI flow are implemented
-- Multi-provider support (OpenRouter, GLM) with extensible architecture
-- Tool calling with built-in local tools
-- Visual rendering (markdown, code, diagrams, math, iframes)
-- Full conversation persistence in SQLite
-- `pnpm dev` uses a re-branded macOS launcher (custom dock icon, isolated dev bundle id); if that launcher build ever fails it now falls back to the stock Electron binary with a warning instead of taking the dev loop down. Set `ATLAS_SKIP_DEV_LAUNCHER=1` to bypass it entirely.
+## ✨ Key Features
 
-Highest-value contribution areas are in the roadmap below (conversation search, export/import, theme switching) rather than the dev runner, which is in a working state.
+### 🌐 Universal Provider Ecosystem
+- **OpenRouter Integration** — Real-time model catalog synchronization with free-tier model discovery and parameter controls.
+- **Major Model Providers** — Anthropic Claude, OpenAI, and Google Gemini / GLM.
+- **Custom & Local Endpoints** — Connect any OpenAI-compatible provider, including Ollama, vLLM, LM Studio, or self-hosted inference servers.
+- **Reasoning & Thinking Tokens** — Real-time streaming and inspectable thought traces for reasoning models (DeepSeek-R1, Claude 3.7 Sonnet, OpenAI o1/o3-mini, Gemini Thinking).
 
-## Getting started
+### 🛠️ Agent Studio & Execution Modes
+- **Multiple Workspace Modes**:
+  - **Chat Mode** — Clean, conversational interface for rapid Q&A, writing, and brainstorming.
+  - **Plan Mode** — Structured step-by-step reasoning and architectural planning before code execution.
+  - **Agent / Act Mode** — Autonomous agent execution with tool calling, self-correction, and progress reporting.
+  - **Review Mode** — Review diffs, verify tool actions, and inspect command execution safely.
+- **Safety-First Tool Execution** — Local tools for file reading, grep search, glob matching, web search/fetch, and bash execution with user approval checkpoints.
+- **Context Injection & `@mentions`** — Reference files, workspace directories, plugins, and MCP resources directly inside your prompt.
 
-### Requirements
+### 🔌 Model Context Protocol (MCP) & Plugin Engine
+- **First-Class MCP Client** — Connect to any MCP server via Stdio or SSE to equip models with custom tools, resources, and prompt templates.
+- **Extensible Plugin System** — Load and manage plugins with automated security audits, connector verification, and marketplace discovery.
+- **Integrated Terminal** — Embedded terminal sessions powered by `@xterm/xterm` and `node-pty` for local debugging.
 
-- Node.js `>= 22`
-- `pnpm`
-- macOS, Linux, or Windows with native build tooling required by `better-sqlite3` and `keytar`
+### 📊 Interactive Visual Artifacts & Rendering
+- **Sandboxed Visual Documents** — Inline live rendering for HTML, web applications, and UI components with full-screen expansion.
+- **Interactive Diagrams** — Native support for Mermaid diagrams and Dagre / React Flow node-link graphs.
+- **Code Highlighting & Diffs** — Shiki-powered syntax highlighting with copy buttons, language tags, and diff views.
+- **LaTeX Math Equations** — Formatted mathematical notation via KaTeX.
+- **Token & Cost Intelligence** — Built-in token lens for real-time prompt token estimation and per-session cost tracking.
 
-### Install
+---
+
+## 🏗️ Technical Stack
+
+- **Framework**: Electron + React 19 + TypeScript + Vite (`electron-vite`)
+- **AI Core**: Vercel AI SDK (`ai`), OpenRouter Provider, Anthropic, Google, and OpenAI adapters
+- **State Management**: Zustand
+- **Styling & UI**: Tailwind CSS v4, Motion (Framer Motion), Radix UI primitives, Lucide icons, `cmdk`
+- **Database & Storage**: `better-sqlite3` (with WAL mode), OS Keychain via `keytar`
+- **Terminal & Editor**: `@xterm/xterm`, `node-pty`, Shiki
+- **Protocols & Standards**: Model Context Protocol (`@modelcontextprotocol/sdk`)
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Node.js** `>= 22.0.0`
+- **pnpm** `>= 10.0.0`
+- **Native Build Tools**: Python 3 and C++ build tools (required by `better-sqlite3`, `keytar`, and `node-pty`).
+  - **macOS**: `xcode-select --install`
+  - **Linux**: `build-essential libsecret-1-dev`
+  - **Windows**: Visual Studio C++ Build Tools
+
+### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/olllayor/Atlas.git
+cd Atlas
+
+# Install dependencies and build native addons
 pnpm install
 ```
 
-### Run in development
+### Development
 
 ```bash
+# Start Atlas in development mode with HMR
 pnpm dev
 ```
 
-`pnpm dev` boots electron-vite with HMR. On macOS the dev script builds a
-re-branded app launcher (proper dock icon + an isolated `com.olllayor.atlaschat.dev`
-bundle id so keychain entries don't collide with the installed app); if that
-build fails it falls back to the stock Electron binary and prints a warning. Set
-`ATLAS_SKIP_DEV_LAUNCHER=1` to skip the branded launcher.
+*Note for macOS developers:* `pnpm dev` creates a rebranded app launcher with an isolated development bundle ID (`com.olllayor.atlaschat.dev`) so test keychain entries don't collide with production. Set `ATLAS_SKIP_DEV_LAUNCHER=1` to bypass the dev launcher.
 
-### Build
+### Production Build
 
 ```bash
+# Type check and bundle for production
 pnpm build
+
+# Package desktop installer (DMG, ZIP, etc.)
+pnpm package
 ```
 
-## Installing on macOS
+---
 
-Atlas is distributed as an unsigned DMG via GitHub Releases. macOS will warn you because the app has not been notarized with an Apple Developer account. Here is how to install it.
+## 🍏 Installing on macOS
+
+Atlas is distributed as an unsigned DMG via GitHub Releases. macOS Gatekeeper may show a security prompt upon initial launch because the binary is built without an Apple Developer certificate.
 
 ### Download
 
-1. Go to [Releases](https://github.com/olllayor/Atlas/releases)
-2. Download the DMG matching your Mac:
-   - `Atlas-*-arm64.dmg` — Apple Silicon (M1/M2/M3/M4)
-   - `Atlas-*-x64.dmg` — Intel Macs
-3. Open the DMG and drag Atlas to your Applications folder
+1. Visit [GitHub Releases](https://github.com/olllayor/Atlas/releases/latest).
+2. Download the DMG corresponding to your architecture:
+   - **Apple Silicon (M1/M2/M3/M4)**: `Atlas-*-arm64.dmg`
+   - **Intel Macs**: `Atlas-*-x64.dmg`
+3. Drag **Atlas** into your `/Applications` folder.
 
-### Bypassing the "unidentified developer" warning
+### Bypassing Gatekeeper
 
-The first time you open Atlas, macOS will block it with one of these messages:
+If macOS displays *"Atlas can't be opened because it is from an unidentified developer"* or *"Atlas is damaged"*:
 
-- **"Atlas can't be opened because it is from an unidentified developer"**
-- **"Atlas is damaged and can't be opened. You should move it to the Trash"**
+**Option A — System Settings (Recommended):**
+1. Open **System Settings** → **Privacy & Security**.
+2. Scroll down to the **Security** section.
+3. Click **Open Anyway** next to the Atlas notice.
 
-Both are expected for unsigned apps. To bypass them:
-
-**Method 1 — System Settings**
-
-1. Open **System Settings** → **Privacy & Security**
-2. Scroll to the Security section
-3. You should see a message: *"Atlas was blocked from use because it is not from an identified developer"*
-4. Click **Open Anyway**
-5. Confirm by clicking **Open** in the dialog
-
-**Method 2 — Terminal (if Method 1 doesn't show the button)**
-
+**Option B — Terminal:**
 ```bash
 xattr -d com.apple.quarantine /Applications/Atlas.app
 ```
 
-This removes the quarantine flag that triggers the warning. You only need to do this once.
+---
 
-**Method 3 — Right-click open**
+## 🔒 Security Architecture
 
-1. Right-click (or Control-click) on Atlas.app
-2. Select **Open** from the context menu
-3. Click **Open** in the confirmation dialog
+Atlas is engineered with security and privacy as core design tenets:
 
-This method sometimes works for the "unidentified developer" warning but not for the "damaged" warning — use the `xattr` command above if you see "damaged."
+1. **Process Isolation**: The renderer process executes in a sandboxed context without direct Node.js access. All OS APIs, database access, and network requests are mediated by a strictly typed preload bridge.
+2. **Key Security**: API keys are never stored in plain text or SQLite files. They are saved directly into the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+3. **Local Privacy**: Conversations, system prompts, attachments, and settings never leave your computer, except for direct HTTPS requests made to your chosen AI providers.
+4. **Execution Safeguards**: Terminal commands, file mutations, and tool invocations feature explicit user approval gates before running.
 
-### Why is this necessary?
+---
 
-Apple requires developers to pay $99/year for a Developer Program membership to sign and notarize apps. Atlas is an open-source personal project without a paid Apple account. The app is safe — you can review the source code and build it yourself from this repository.
+## 🗺️ Roadmap & Milestones
 
-## Product scope
+- [x] **Multi-Provider BYOK Engine** (OpenRouter, Claude, OpenAI, Google Gemini/GLM, Ollama/Custom)
+- [x] **OS Keychain Key Storage** & Local SQLite Database
+- [x] **Model Context Protocol (MCP)** Client (Stdio & SSE)
+- [x] **Reasoning / Thinking Token Streaming** & Visualizer
+- [x] **Local Tool Calling & Approvals** (Bash, File I/O, Search, Web)
+- [x] **Live Visual Documents & Artifacts** (HTML sandboxes, Mermaid, React Flow diagrams, LaTeX)
+- [x] **Workspace & Directory Binding** with `@mention` context injection
+- [x] **Integrated Terminal** (`node-pty` + `xterm.js`)
+- [x] **Custom Plugin System & Auditing**
+- [ ] **Full-Text Conversation Search** across message history
+- [ ] **Conversation Branching & Forking**
+- [ ] **Local Vector Embeddings & Long-Term Memory**
+- [ ] **Automated Multi-Provider Fallbacks & Health Routing**
+- [ ] **Conversation Export & Import** (Markdown, JSON, PDF)
 
-Atlas v1 is intentionally small:
+---
 
-- single-user desktop app
-- local-only storage
-- manual model selection
+## 🤝 Contributing
 
-Out of scope for v1:
+Contributions from the community are welcome! Please check out [CONTRIBUTING.md](./CONTRIBUTING.md) for development workflows, code standards, and submission guidelines.
 
-- accounts or cloud sync
-- multi-device sync
-- automatic provider routing
-- hosted backend services
+---
 
-## Roadmap
+## 📄 License
 
-### Providers
-
-- [x] OpenRouter — API key support
-- [x] Google GLM — API key support
-- [ ] OpenAI — API key + CLI OAuth login
-- [ ] Google Gemini — API key + CLI OAuth login
-- [ ] Anthropic Claude — API key support
-- [ ] Multi-provider fallback — auto-failover between configured providers
-- [ ] Provider health dashboard — per-provider status, last successful call, rate-limit indicators
-
-### AI capabilities (powered by Vercel AI SDK)
-
-- [x] Tool / function calling — model tool use with local tool execution (web search, file read, code exec)
-- [ ] Structured output — JSON mode for models that support it (`generateObject` / `streamObject`)
-- [x] Reasoning / thinking — expose model reasoning tokens for supported models
-- [x] Image input / vision — drag-and-drop images into the composer (multi-modal messages)
-- [ ] Prompt templates — save and reuse common prompt patterns
-- [ ] Auto-title conversations — generate titles from first message
-- [ ] Model comparison — send the same prompt to multiple models side by side
-- [ ] Streaming resume — reconnect and resume interrupted streams
-
-### UI/UX
-
-- [x] Keyboard shortcuts — quick model switch, new chat, search, settings
-- [x] Code block copy button — one-click copy on rendered code blocks
-- [x] Syntax highlighting — language-specific code highlighting
-- [ ] Conversation search — full-text search across message history
-- [ ] Message editing — edit and regenerate assistant responses
-- [ ] Branch conversations — fork a conversation at any message
-- [ ] Conversation export — Markdown, JSON, and PDF export per conversation
-- [ ] Import conversations — restore from exported files
-- [ ] Custom system prompts — per-conversation or global default
-- [ ] Theme support — light mode, custom accent colors
-- [ ] Window management — remember window size, position, sidebar state
-
-### Core features
-
-- [x] Cost tracking — estimated cost per message and per conversation (OpenRouter usage accounting built in)
-- [ ] Conversation memory — long-term memory with vector embeddings stored locally
-- [ ] Session management — named sessions within a conversation, separate context windows
-- [ ] Token budget controls — per-conversation or global max-token limits
-- [ ] Offline mode — view history and draft messages without a network connection
-- [ ] Conversation folders / tags — organize conversations with labels
-
-### Platform
-
-- [x] Auto-updates — built-in update checker and silent background downloads
-- [ ] Native menus — proper macOS/Windows/Linux application menus
-- [ ] Tray icon — background operation with tray notifications
-- [ ] Portable mode — run without installation (Windows/Linux)
-- [ ] Code signing & notarization — macOS notarization, Windows code signing
-
-## Repository layout
-
-```text
-src/main/           Electron main process, providers, tools, IPC, DB, keychain
-src/main/ai/        AI core: providers (OpenRouter, GLM), chat engine, model registry
-src/main/ai/tools/  Built-in tools (file read, grep, glob, web search/fetch, bash)
-src/main/db/       SQLite client and repositories
-src/main/secrets/  OS keychain integration
-src/preload/       Typed bridge exposed to the renderer
-src/renderer/      React UI components
-src/shared/        Shared contracts, types, utilities
-```
-
-## Security model
-
-- renderer code does not access secrets directly
-- API calls happen from the Electron main process
-- secrets are stored in the OS keychain, not SQLite
-- renderer communication goes through a narrow preload API
-
-This is still a personal-tool codebase moving toward public OSS quality. Review the code before using it with sensitive credentials.
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-### Releases
-
-Atlas uses GitHub Releases for distribution. To cut a new release:
-
-```bash
-# bump patch (0.1.0 -> 0.1.1)
-pnpm release
-
-# bump minor (0.1.0 -> 0.2.0)
-pnpm release:minor
-
-# bump major (0.1.0 -> 1.0.0)
-pnpm release:major
-```
-
-Then push the tag to trigger the release workflow:
-
-```bash
-git push && git push --tags
-```
-
-This triggers the CI release workflow, which builds macOS DMG and ZIP artifacts for Apple Silicon and Intel, optionally signs/notarizes them if Apple secrets are configured, and publishes them to GitHub Releases with `latest-mac.yml` and blockmaps.
-
-## Security
-
-See [SECURITY.md](./SECURITY.md).
-
-## License
-
-[MIT](./LICENSE)
+This project is licensed under the [MIT License](./LICENSE).

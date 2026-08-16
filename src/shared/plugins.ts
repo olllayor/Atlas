@@ -592,6 +592,8 @@ export type PluginMcpServerDecl = {
    * that inlined one would be putting a credential in a git repository.
    */
   bearerTokenEnvVar: string | null;
+  credentials?: import('./contracts').AuthConfig[];
+  defaultApproval?: McpToolApprovalMode;
 };
 
 export type PluginMcpParseResult =

@@ -1,0 +1,6 @@
+{
+  "name": "linear",
+  "version": "1.0.0",
+  "description": "Manage issues, cycles, and projects in Linear.",
+  "skills": "./skills/"
+}

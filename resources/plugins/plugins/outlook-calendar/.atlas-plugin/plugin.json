@@ -1,0 +1,6 @@
+{
+  "name": "outlook-calendar",
+  "version": "1.0.0",
+  "description": "Manage Microsoft Outlook schedules and events.",
+  "skills": "./skills/"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "brave-search",
+  "version": "1.0.0",
+  "description": "Real-time web and news search for fresh context.",
+  "skills": "./skills/"
+}

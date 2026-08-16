@@ -1,0 +1,6 @@
+{
+  "name": "gmail",
+  "version": "1.0.0",
+  "description": "Read and manage Gmail messages and drafts.",
+  "skills": "./skills/"
+}

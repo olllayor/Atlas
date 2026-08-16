@@ -1,0 +1,6 @@
+{
+  "name": "granola",
+  "version": "1.0.0",
+  "description": "Add your meeting notes and context.",
+  "skills": "./skills/"
+}

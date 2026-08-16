@@ -1,0 +1,6 @@
+{
+  "name": "figma",
+  "version": "1.0.0",
+  "description": "Inspect UI designs, tokens, components, and layouts.",
+  "skills": "./skills/"
+}

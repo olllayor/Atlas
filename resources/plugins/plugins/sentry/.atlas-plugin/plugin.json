@@ -1,0 +1,6 @@
+{
+  "name": "sentry",
+  "version": "1.0.0",
+  "description": "Query issues, stack traces, and release errors.",
+  "skills": "./skills/"
+}

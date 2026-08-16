@@ -1,0 +1,6 @@
+{
+  "name": "google-drive",
+  "version": "1.0.0",
+  "description": "Work across Drive, Docs, Sheets, and Slides.",
+  "skills": "./skills/"
+}

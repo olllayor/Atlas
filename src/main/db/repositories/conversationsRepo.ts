@@ -998,6 +998,31 @@ export class ConversationsRepo {
   }
 
   /**
+   * Reset workspace fields for all conversations referencing a project being detached.
+   */
+  resetWorkspaceForProject(projectId: string): Array<{ conversationId: string; worktreeRoot: string | null }> {
+    const rows = this.db
+      .prepare<{ projectId: string }, { id: string; worktree_root: string | null }>(
+        'SELECT id, worktree_root FROM conversations WHERE project_id = @projectId'
+      )
+      .all({ projectId });
+
+    if (rows.length > 0) {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET project_id = NULL, worktree_root = NULL, execution_target = 'local'
+            WHERE project_id = @projectId
+          `
+        )
+        .run({ projectId });
+    }
+
+    return rows.map((r) => ({ conversationId: r.id, worktreeRoot: r.worktree_root }));
+  }
+
+  /**
    * Title plus its provenance. Automatic naming needs both: it may replace a
    * placeholder or an earlier auto-name, but never a title the user typed.
    */

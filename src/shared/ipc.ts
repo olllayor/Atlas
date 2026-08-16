@@ -76,6 +76,8 @@ export const IPC_CHANNELS = {
   pluginsActivation: 'plugins:activation',
   pluginsSetActivated: 'plugins:setActivated',
   pluginsSetAlwaysOn: 'plugins:setAlwaysOn',
+  pluginsConfigureAuth: 'plugins:configureAuth',
+  pluginsCheckHealth: 'plugins:checkHealth',
   mcpUiDescribe: 'mcpUi:describe',
   githubOpenPr: 'github:openPr',
   fileChangesList: 'fileChanges:list',

@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { mkdir } from 'node:fs/promises';
 
 import type { McpServerConfig, McpToolAnnotations } from '../../../shared/mcp';
-import { buildMcpServerEnv, isValidMcpCommand } from '../../../shared/mcp';
+import { buildMcpServerEnv, isAllowedMcpEndpointUrl, isValidMcpCommand } from '../../../shared/mcp';
 import { logger } from '../../observability/logger';
 
 /** Codex's defaults, kept so a server tuned for one behaves the same in the other. */
@@ -323,6 +323,11 @@ export class McpClientManager {
     if (server.transport === 'http' || server.transport === 'sse') {
       if (!server.url) {
         throw new Error(`The MCP server "${server.name}" has no URL.`);
+      }
+
+      const urlCheck = isAllowedMcpEndpointUrl(server.url);
+      if (!urlCheck.ok) {
+        throw new Error(urlCheck.error);
       }
 
       // Read at connect time from the environment the bundle named, never

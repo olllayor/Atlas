@@ -3,8 +3,188 @@
   "interface": {
     "displayName": "Bundled with Atlas"
   },
-  "description": "Plugins that ship with the app.",
+  "description": "Curated plugins, MCP tools, and skills for Atlas.",
   "plugins": [
+    {
+      "name": "github",
+      "source": {
+        "source": "local",
+        "path": "./plugins/github"
+      },
+      "description": "Triage PRs, issues, CI, and publish flows.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "gmail",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gmail"
+      },
+      "description": "Read and manage Gmail messages and drafts.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "google-drive",
+      "source": {
+        "source": "local",
+        "path": "./plugins/google-drive"
+      },
+      "description": "Work across Drive, Docs, Sheets, and Slides.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "google-calendar",
+      "source": {
+        "source": "local",
+        "path": "./plugins/google-calendar"
+      },
+      "description": "Manage Google Calendar events and schedules.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "notion",
+      "source": {
+        "source": "local",
+        "path": "./plugins/notion"
+      },
+      "description": "Notion workflows for specs, research, and notes.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "slack",
+      "source": {
+        "source": "local",
+        "path": "./plugins/slack"
+      },
+      "description": "Read and manage Slack channels and messages.",
+      "category": "Featured",
+      "version": "1.0.0"
+    },
+    {
+      "name": "linear",
+      "source": {
+        "source": "local",
+        "path": "./plugins/linear"
+      },
+      "description": "Manage issues, cycles, and projects in Linear.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "figma",
+      "source": {
+        "source": "local",
+        "path": "./plugins/figma"
+      },
+      "description": "Inspect UI designs, tokens, components, and layouts.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "spotify",
+      "source": {
+        "source": "local",
+        "path": "./plugins/spotify"
+      },
+      "description": "Search music, manage playlists, and control playback.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "granola",
+      "source": {
+        "source": "local",
+        "path": "./plugins/granola"
+      },
+      "description": "Add your meeting notes and context.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "fireflies",
+      "source": {
+        "source": "local",
+        "path": "./plugins/fireflies"
+      },
+      "description": "Search meeting transcripts and action items.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "outlook-calendar",
+      "source": {
+        "source": "local",
+        "path": "./plugins/outlook-calendar"
+      },
+      "description": "Manage Microsoft Outlook schedules and events.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "plaud",
+      "source": {
+        "source": "local",
+        "path": "./plugins/plaud"
+      },
+      "description": "Retrieve audio transcripts and insights from Plaud.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "otter-ai",
+      "source": {
+        "source": "local",
+        "path": "./plugins/otter-ai"
+      },
+      "description": "Search meeting notes from Otter.ai.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "atlassian-rovo",
+      "source": {
+        "source": "local",
+        "path": "./plugins/atlassian-rovo"
+      },
+      "description": "Manage Jira issues and Confluence pages.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
+      "name": "postgres",
+      "source": {
+        "source": "local",
+        "path": "./plugins/postgres"
+      },
+      "description": "Query PostgreSQL databases and inspect schemas.",
+      "category": "Developer Tools",
+      "version": "1.0.0"
+    },
+    {
+      "name": "sentry",
+      "source": {
+        "source": "local",
+        "path": "./plugins/sentry"
+      },
+      "description": "Query issues, stack traces, and release errors.",
+      "category": "Developer Tools",
+      "version": "1.0.0"
+    },
+    {
+      "name": "brave-search",
+      "source": {
+        "source": "local",
+        "path": "./plugins/brave-search"
+      },
+      "description": "Real-time web and news search for fresh context.",
+      "category": "Developer Tools",
+      "version": "1.0.0"
+    },
     {
       "name": "plugin-authoring",
       "source": {
@@ -16,7 +196,8 @@
         "installation": "INSTALLED_BY_DEFAULT",
         "authentication": "ON_INSTALL"
       },
-      "category": "Developer Tools"
+      "category": "Developer Tools",
+      "version": "1.0.0"
     }
   ]
 }

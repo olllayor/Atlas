@@ -216,6 +216,32 @@ export type PluginCommandSummary = {
   argumentHint: string;
 };
 
+export type PluginLifecycleState =
+  | 'available'
+  | 'installing'
+  | 'installed'
+  | 'needs_configuration'
+  | 'connected'
+  | 'enabled'
+  | 'disabled'
+  | 'error';
+
+export type AuthConfig =
+  | { type: 'oauth'; authorizationUrl: string; tokenUrl?: string; scopes?: string[] }
+  | { type: 'api_key'; secretName: string; label?: string; placeholder?: string }
+  | { type: 'bearer'; secretName: string; label?: string; placeholder?: string }
+  | { type: 'database_url'; secretName: string; label?: string; placeholder?: string };
+
+export type PluginMcpServerDefinition = {
+  id: string;
+  transport?: 'stdio' | 'streamableHttp' | 'sse';
+  command?: string;
+  args?: string[];
+  url?: string;
+  credentials?: AuthConfig[];
+  defaultApproval?: 'auto' | 'prompt' | 'writes' | 'approve';
+};
+
 export type PluginSummary = {
   name: string;
   version: string;
@@ -227,6 +253,7 @@ export type PluginSummary = {
   homepage: string | null;
   root: string;
   enabled: boolean;
+  state: PluginLifecycleState;
   skills: PluginSkillSummary[];
   commands: PluginCommandSummary[];
   servers: PluginServerSummary[];
@@ -236,6 +263,10 @@ export type PluginSummary = {
   hooksDeclared: boolean;
   /** What the bundle declared in its Atlas-specific block. */
   atlas: AtlasPluginOptions;
+  /** Required credentials / secrets declared by the plugin. */
+  credentials: AuthConfig[];
+  /** Whether all declared required credentials are configured in Keychain. */
+  hasCredentials: boolean;
   /**
    * Why Atlas refuses to run it, when a revocation covers it.
    *
@@ -1143,6 +1174,10 @@ export type CreateConversationRequest = {
    * Which project the new chat belongs to.
    */
   projectId?: string | null;
+  /**
+   * Initial workspace mode.
+   */
+  workspaceMode?: WorkspaceMode;
   /**
    * Initial tool permission mode.
    */
@@ -2173,6 +2208,13 @@ export type RendererApi = {
       plugin: string,
       alwaysOn: boolean
     ) => Promise<PluginActivationEntry[]>;
+    configureAuth: (
+      pluginName: string,
+      credentials: Record<string, string>
+    ) => Promise<PluginsView>;
+    checkHealth: (
+      pluginName: string
+    ) => Promise<{ ok: boolean; toolsCount?: number; error?: string }>;
   };
   mcpUi: {
     /**

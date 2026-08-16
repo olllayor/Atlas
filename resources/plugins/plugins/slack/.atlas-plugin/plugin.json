@@ -1,0 +1,6 @@
+{
+  "name": "slack",
+  "version": "1.0.0",
+  "description": "Read and manage Slack channels and messages.",
+  "skills": "./skills/"
+}

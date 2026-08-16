@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "notion": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-notion@0.1.0"
+      ],
+      "env_vars": [
+        "NOTION_API_KEY"
+      ]
+    }
+  }
+}

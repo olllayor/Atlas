@@ -33,6 +33,8 @@ import { assertTrustedSender } from './security';
  * any source but the settings UI, and the picker path never lets a renderer
  * name a directory it was not shown.
  */
+import type { McpSecretStore } from '../secrets/mcpSecrets';
+
 export function registerPluginsIpc(deps: {
   registry: PluginRegistry;
   installer: PluginInstaller;
@@ -40,6 +42,7 @@ export function registerPluginsIpc(deps: {
   updates: PluginUpdateService;
   origins: PluginOriginStore;
   activations: PluginActivationStore;
+  secrets?: McpSecretStore;
   setEnabled: (name: string, enabled: boolean) => void;
   setAlwaysOn: (name: string, alwaysOn: boolean) => void;
 }) {
@@ -359,6 +362,40 @@ export function registerPluginsIpc(deps: {
         assertTrustedSender(event);
         deps.setAlwaysOn(plugin, alwaysOn);
         return deps.activations.status(conversationId);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.pluginsConfigureAuth,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsConfigureAuth,
+      async (event, pluginName: string, credentials: Record<string, string>): Promise<PluginsView> => {
+        assertTrustedSender(event);
+        if (deps.secrets) {
+          await deps.secrets.setPluginCredentials(pluginName, credentials);
+        }
+        deps.registry.invalidate();
+        return view();
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.pluginsCheckHealth,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsCheckHealth,
+      async (event, pluginName: string): Promise<{ ok: boolean; toolsCount?: number; error?: string }> => {
+        assertTrustedSender(event);
+        const snapshot = deps.registry.snapshot();
+        const plugin = snapshot.plugins.find((p) => p.manifest.name === pluginName)
+          ?? snapshot.disabled.find((p) => p.manifest.name === pluginName);
+
+        if (!plugin) {
+          return { ok: false, error: `Plugin "${pluginName}" not found.` };
+        }
+
+        return { ok: true, toolsCount: plugin.skills.length + plugin.commands.length };
       }
     )
   );

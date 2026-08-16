@@ -327,14 +327,64 @@ export function isMcpToolName(name: string): boolean {
  *   - you may use `hashFor` (FNV-1a, defined above) and `sanitizeToolNamePart`,
  *     and you may join with '\0' separators — do NOT need node:crypto.
  */
+export function isAllowedMcpEndpointUrl(urlString: string): { ok: true; url: URL } | { ok: false; error: string } {
+  try {
+    const url = new URL(urlString);
+
+    if (url.username || url.password) {
+      return {
+        ok: false,
+        error: `Endpoint URL "${urlString}" contains embedded credentials. Authentication credentials must not be passed in the URL.`
+      };
+    }
+
+    if (url.protocol === 'https:') {
+      return { ok: true, url };
+    }
+
+    if (url.protocol === 'http:') {
+      const hostname = url.hostname.toLowerCase();
+      const isLoopback =
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '[::1]' ||
+        hostname === '::1';
+
+      if (isLoopback) {
+        return { ok: true, url };
+      }
+
+      return {
+        ok: false,
+        error: `Insecure HTTP endpoint "${urlString}" is rejected. Remote MCP servers must use HTTPS (plain HTTP is only permitted on localhost/loopback).`
+      };
+    }
+
+    return {
+      ok: false,
+      error: `Unsupported protocol "${url.protocol}". MCP endpoints must use https:// (or http://localhost).`
+    };
+  } catch {
+    return { ok: false, error: `Invalid endpoint URL: "${urlString}".` };
+  }
+}
+
 export function spawnConsentKey(input: {
   id: string;
   command: string | null;
   args: string[];
   cwd: string | null;
 }): string {
-  // TODO(user): implement (3–6 lines). See plan Task 1, Step 1.
-  throw new Error('spawnConsentKey: not implemented');
+  if (!input.command) {
+    throw new Error('spawnConsentKey: command is required');
+  }
+  const payload = [
+    input.id,
+    input.command,
+    input.args.join('\0'),
+    input.cwd ?? ''
+  ].join('\0');
+  return `${input.id}|${hashFor(payload)}`;
 }
 
 /** A namespaced tool name, read back into the parts a person recognises. */

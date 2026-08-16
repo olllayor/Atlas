@@ -3,7 +3,7 @@
   "version": "0.1.18",
   "private": false,
   "author": "Olloyor",
-  "description": "OpenRouter-first BYOK desktop chat client for free-tier model discovery and streaming.",
+  "description": "Local-first, privacy-focused BYOK desktop AI workspace and agent studio with multi-provider support, MCP integration, and interactive visual artifacts.",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -1,0 +1,6 @@
+{
+  "name": "fireflies",
+  "version": "1.0.0",
+  "description": "Search meeting transcripts and action items.",
+  "skills": "./skills/"
+}

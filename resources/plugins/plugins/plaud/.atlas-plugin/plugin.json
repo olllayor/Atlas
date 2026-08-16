@@ -1,0 +1,6 @@
+{
+  "name": "plaud",
+  "version": "1.0.0",
+  "description": "Retrieve audio transcripts and insights from Plaud.",
+  "skills": "./skills/"
+}

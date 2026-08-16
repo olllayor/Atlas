@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "sentry": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sentry@0.1.0"
+      ],
+      "env_vars": [
+        "SENTRY_AUTH_TOKEN"
+      ]
+    }
+  }
+}

@@ -1,5 +1,7 @@
 import type {
+  AuthConfig,
   PluginCommandSummary,
+  PluginLifecycleState,
   PluginServerSummary,
   PluginSummary,
   PluginsView
@@ -48,17 +50,47 @@ function toSummary(
   blockedReason: string | null,
   marketplace: string | null
 ): PluginSummary {
+  const credentials: AuthConfig[] = [];
+  for (const server of plugin.mcpServers) {
+    if (server.credentials) {
+      credentials.push(...server.credentials);
+    } else if (server.envVars && server.envVars.length > 0) {
+      for (const envVar of server.envVars) {
+        credentials.push({
+          type: envVar.toLowerCase().includes('url') ? 'database_url' : 'api_key',
+          secretName: envVar,
+          label: envVar.replace(/_/g, ' ')
+        });
+      }
+    }
+  }
+
+  const uniqueCredentials = Array.from(
+    new Map(credentials.map((c) => ['secretName' in c ? c.secretName : c.type, c])).values()
+  );
+
+  let state: PluginLifecycleState = 'installed';
+  if (blockedReason) {
+    state = 'disabled';
+  } else if (!enabled) {
+    state = 'disabled';
+  } else {
+    state = 'enabled';
+  }
+
   return {
     name: plugin.manifest.name,
     version: plugin.manifest.version,
     description: plugin.manifest.description,
-    // Display metadata is presentation only and never decides anything.
     displayName: plugin.manifest.interface?.displayName ?? null,
     iconUrl: pluginIconUrl(pluginIconPath(plugin.root, plugin.manifest)),
     author: plugin.manifest.author?.name ?? null,
     homepage: plugin.manifest.homepage,
     root: plugin.root,
     enabled,
+    state,
+    credentials: uniqueCredentials,
+    hasCredentials: uniqueCredentials.length === 0,
     skills: plugin.skills.map((skill) => ({
       name: skill.name,
       description: skill.description,
@@ -68,10 +100,6 @@ function toSummary(
     })),
     commands: plugin.commands.map(toCommandSummary),
     servers: plugin.mcpServers.map((server) => toServerSummary(plugin, server)),
-    // Listed so the row is honest about what the bundle declares. Every one
-    // renders unavailable — Atlas has no connector broker — but "offers
-    // something Atlas cannot yet perform" is a different statement from
-    // "offers nothing", and the user is entitled to the first one.
     connectors: plugin.connectors.map((connector) => ({
       key: connector.key,
       id: connector.id,
@@ -80,10 +108,6 @@ function toSummary(
       category: connector.category,
       required: connector.required
     })),
-    // Parsed and counted so the page can say a bundle carries them. Atlas does
-    // not run hooks: they are arbitrary commands fired on session lifecycle
-    // events with no model and no approval in the loop, which is the largest
-    // privilege in the format and the one with the least visibility.
     hooksDeclared: plugin.manifest.paths.hooks != null || 'hooks' in plugin.manifest.unknown,
     atlas: plugin.manifest.atlas,
     blockedReason,

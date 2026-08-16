@@ -109,7 +109,7 @@ type SidebarProps = {
    */
   onRename?: (conversationId: string, title: string) => void;
   onOpenSettings: (section?: SettingsSection) => void;
-  /** Opens the folder picker; the new project becomes the current one. */
+  /** Opens the folder picker to attach a project to the workspace. */
   onAttachProject: () => void;
   /** Starts a fresh Code-mode conversation inside a project. */
   onCreateInProject: (projectId: string) => void;

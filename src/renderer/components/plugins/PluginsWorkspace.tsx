@@ -1,4 +1,13 @@
-import { FileIcon, GearIcon, MagnifyingGlassIcon, PlusIcon, ReloadIcon, UpdateIcon } from '@radix-ui/react-icons';
+import {
+  ChevronRightIcon,
+  DotsHorizontalIcon,
+  FileIcon,
+  GearIcon,
+  MagnifyingGlassIcon,
+  PlusIcon,
+  ReloadIcon,
+  UpdateIcon
+} from '@radix-ui/react-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 
@@ -27,10 +36,6 @@ type Tab = 'plugins' | 'skills';
 
 /**
  * Plugins as a destination rather than a settings pane.
- *
- * Installing a plugin is a browsing task — you look through a catalogue, read
- * what something does, and decide. Settings is where you adjust things you have
- * already chosen, and burying a catalogue there makes finding anything a chore.
  */
 export function PluginsWorkspace() {
   const [tab, setTab] = useState<Tab>('plugins');
@@ -184,11 +189,11 @@ export function PluginsWorkspace() {
           </h1>
           <p className="mt-1.5 text-sm text-text-tertiary">
             {tab === 'plugins'
-              ? 'Bundles of skills and tools. They run on this machine — only install ones you trust.'
+              ? 'Work with Atlas across your favorite tools.'
               : 'Instructions your installed plugins contribute. Loaded only when one matches what you are doing.'}
           </p>
 
-          <label className="mt-5 flex items-center gap-2.5 rounded-xl bg-bg-surface px-3.5 py-2.5">
+          <label className="mt-5 flex items-center gap-2.5 rounded-xl bg-bg-surface px-3.5 py-2.5 shadow-sm border border-border-default/40">
             <MagnifyingGlassIcon className="size-4 shrink-0 text-text-faint" aria-hidden />
             <input
               value={query}
@@ -246,9 +251,10 @@ export function PluginsWorkspace() {
               updateFor={updateFor}
               onOpen={setSelected}
               onInstall={(marketplace, plugin) =>
-                void run(() =>
-                  window.atlasChat.plugins.installFromMarketplace(marketplace, plugin)
-                )
+                void run(async () => {
+                  await window.atlasChat.plugins.installFromMarketplace(marketplace, plugin);
+                  setSelected(plugin);
+                })
               }
               onManage={() => setManaging(true)}
             />
@@ -339,11 +345,18 @@ function PluginsTab({
   );
 
   return (
-    <div className="mt-7 space-y-8">
+    <div className="mt-7 space-y-9">
       {installed.length > 0 ? (
         <section>
           <div className="flex items-center justify-between">
-            <h2 className="text-base">Installed</h2>
+            <button
+              type="button"
+              onClick={onManage}
+              className="flex items-center gap-1 text-sm font-medium text-text-primary hover:text-text-secondary"
+            >
+              <span>Installed</span>
+              <ChevronRightIcon className="size-4 text-text-tertiary" />
+            </button>
             <button
               type="button"
               onClick={onManage}
@@ -353,7 +366,7 @@ function PluginsTab({
               <GearIcon className="size-4" aria-hidden />
             </button>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2.5">
+          <div className="mt-3 flex flex-wrap items-center gap-3">
             {installed.map((plugin) => (
               <button
                 key={plugin.name}
@@ -365,11 +378,11 @@ function PluginsTab({
                     : (plugin.displayName ?? plugin.name)
                 }
                 className={cn(
-                  'relative rounded-xl p-0.5 transition-opacity hover:opacity-80',
+                  'group relative flex items-center justify-center rounded-2xl transition-transform hover:scale-105',
                   !plugin.enabled && 'opacity-40'
                 )}
               >
-                <PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} />
+                <PluginIcon name={plugin.name} iconUrl={plugin.iconUrl} size="md" />
                 {/* One dot, three meanings, never more than one at once: a
                     withdrawn plugin has nothing to update to, and a republished
                     version is not an ordinary release. */}
@@ -404,6 +417,7 @@ function PluginsTab({
             group={group}
             busy={busy}
             installedNames={installedNames}
+            onOpen={onOpen}
             onInstall={onInstall}
           />
         ))
@@ -418,37 +432,64 @@ function CategorySection({
   group,
   busy,
   installedNames,
+  onOpen,
   onInstall
 }: {
   group: Group;
   busy: boolean;
   installedNames: Set<string>;
+  onOpen: (name: string) => void;
   onInstall: (marketplace: string, plugin: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? group.entries : group.entries.slice(0, CATEGORY_PREVIEW);
 
+  const footerSummary = useMemo(() => {
+    if (group.entries.length <= CATEGORY_PREVIEW) return null;
+    const remaining = group.entries.slice(CATEGORY_PREVIEW);
+    const names = remaining.slice(0, 2).map((e) => e.name);
+    return `See ${names.join(', ')}, and more`;
+  }, [group.entries]);
+
   return (
     <section>
-      <h2 className="border-b border-border-default pb-2 text-base">{group.title}</h2>
-      <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1 md:grid-cols-2">
+      <h2 className="text-base font-medium tracking-tight text-text-primary mb-3">{group.title}</h2>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {shown.map((entry) => (
           <EntryCard
             key={`${entry.marketplace}/${entry.name}`}
             entry={entry}
             busy={busy}
             installed={installedNames.has(entry.name)}
+            onOpen={() => onOpen(entry.name)}
             onInstall={() => onInstall(entry.marketplace, entry.name)}
           />
         ))}
       </div>
-      {group.entries.length > CATEGORY_PREVIEW ? (
+      {footerSummary && !expanded ? (
+        <div className="mt-3 flex items-center">
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="flex items-center gap-2 rounded-full border border-border-default/60 bg-bg-surface px-3.5 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
+          >
+            <div className="flex -space-x-1.5">
+              {group.entries.slice(CATEGORY_PREVIEW, CATEGORY_PREVIEW + 3).map((e) => (
+                <div key={e.name} className="size-4 overflow-hidden rounded-full border border-bg-surface">
+                  <PluginIcon name={e.name} iconUrl={e.iconUrl} size="sm" />
+                </div>
+              ))}
+            </div>
+            <span>{footerSummary}</span>
+          </button>
+        </div>
+      ) : expanded && group.entries.length > CATEGORY_PREVIEW ? (
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => setExpanded(false)}
           className="mt-2 text-2xs text-text-faint hover:text-text-secondary"
         >
-          {expanded ? 'Show less' : `Show all ${group.entries.length}`}
+          Show less
         </button>
       ) : null}
     </section>
@@ -459,31 +500,37 @@ function EntryCard({
   entry,
   busy,
   installed,
+  onOpen,
   onInstall
 }: {
   entry: MarketplaceEntryView & { marketplace: string };
   busy: boolean;
   installed: boolean;
+  onOpen: () => void;
   onInstall: () => void;
 }) {
   return (
     <div
+      onClick={() => {
+        if (installed) onOpen();
+      }}
       className={cn(
-        'group flex items-start gap-3 rounded-lg px-2 py-2.5 hover:bg-bg-hover',
+        'group flex items-center gap-3.5 rounded-xl border border-border-default/50 bg-bg-surface p-3 transition-colors hover:bg-bg-hover/80',
+        installed && 'cursor-pointer',
         entry.blocked && 'opacity-50'
       )}
     >
-      <PluginIcon name={entry.name} iconUrl={entry.iconUrl} />
+      <PluginIcon name={entry.name} iconUrl={entry.iconUrl} size="md" />
       <div className="min-w-0 flex-1">
-        <p className="flex items-baseline gap-2 truncate text-sm text-text-primary">
-          <span className="truncate">{entry.name}</span>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium capitalize text-text-primary">{entry.name.replace(/[-_]/g, ' ')}</span>
           {entry.builtIn ? (
-            <span className="shrink-0 rounded bg-bg-hover px-1 text-2xs text-text-faint">
+            <span className="shrink-0 rounded bg-bg-hover px-1.5 py-0.5 text-2xs text-text-faint">
               built in
             </span>
           ) : null}
-        </p>
-        <p className="truncate text-xs text-text-tertiary">
+        </div>
+        <p className="line-clamp-1 text-xs text-text-tertiary mt-0.5">
           {entry.description ?? entry.origin}
         </p>
         {entry.blocked ? <p className="mt-0.5 text-2xs text-error-text">{entry.blocked}</p> : null}
@@ -491,17 +538,29 @@ function EntryCard({
 
       <div className="shrink-0 self-center">
         {installed ? (
-          <span className="text-2xs text-text-faint">Installed</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+            aria-label={`Options for ${entry.name}`}
+            className="flex size-8 items-center justify-center rounded-lg text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors"
+          >
+            <DotsHorizontalIcon className="size-4" />
+          </button>
         ) : (
           <button
             type="button"
-            onClick={onInstall}
+            onClick={(e) => {
+              e.stopPropagation();
+              onInstall();
+            }}
             disabled={busy || Boolean(entry.blocked)}
-            // Hidden until the row is hovered or focused, so a long catalogue
-            // is a list of names rather than a wall of buttons.
-            className="rounded-md border border-border-default px-2 py-1 text-2xs text-text-secondary opacity-0 transition-opacity hover:bg-bg-active focus:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+            aria-label={`Install ${entry.name}`}
+            className="flex size-8 items-center justify-center rounded-lg text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors disabled:opacity-40"
           >
-            Install
+            <PlusIcon className="size-4" />
           </button>
         )}
       </div>
@@ -564,19 +623,23 @@ function EmptyCatalog({
   query: string;
 }) {
   return (
-    <div className="rounded-xl border border-border-default p-10 text-center">
-      <p className="text-sm text-text-secondary">
-        {query ? 'Nothing matches that search.' : hasMarkets ? 'No plugins listed yet.' : 'No marketplaces added.'}
-      </p>
-      {!query ? (
-        <button
-          type="button"
-          onClick={onManage}
-          className="mt-3 rounded-lg border border-border-default px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover"
-        >
-          {hasMarkets ? 'Manage marketplaces' : 'Add a marketplace'}
-        </button>
-      ) : null}
+    <div className="mt-7 rounded-lg border border-border-default p-8 text-center text-sm text-text-tertiary">
+      {query ? (
+        <p>No plugins match “{query}”.</p>
+      ) : hasMarkets ? (
+        <p>No plugins listed by your marketplaces.</p>
+      ) : (
+        <div>
+          <p>No marketplaces configured.</p>
+          <button
+            type="button"
+            onClick={onManage}
+            className="mt-2 text-text-primary underline hover:text-text-secondary"
+          >
+            Add a marketplace
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -646,22 +709,14 @@ function groupByCategory(marketplaces: MarketplaceView[], needle: string): Group
     return [{ title: `${matching.length} results`, entries: matching }];
   }
 
-  // What the app ships leads, ahead of any publisher's ordering: it is the one
-  // group the user did not choose to add and the one guaranteed to work here.
-  // It is also removed from everything below — a plugin listed twice reads as
-  // two plugins.
-  const bundled = matching.filter((entry) => entry.builtIn);
-  const rest = matching.filter((entry) => !entry.builtIn);
-
-  const groups: Group[] = bundled.length > 0 ? [{ title: 'Included with Atlas', entries: bundled }] : [];
-
-  if (rest.length > 0) {
-    groups.push({ title: 'Featured', entries: rest.slice(0, CATEGORY_PREVIEW) });
-  }
-
   const byCategory = new Map<string, Group['entries']>();
 
-  for (const entry of rest) {
+  const priorityCategories = ['Featured', 'Productivity', 'Developer Tools'];
+  for (const cat of priorityCategories) {
+    byCategory.set(cat, []);
+  }
+
+  for (const entry of matching) {
     const key = entry.category?.trim() || 'Everything else';
     const bucket = byCategory.get(key);
 
@@ -672,16 +727,11 @@ function groupByCategory(marketplaces: MarketplaceView[], needle: string): Group
     }
   }
 
+  const groups: Group[] = [];
   for (const [title, entries] of byCategory) {
-    if (title !== 'Everything else') {
+    if (entries.length > 0) {
       groups.push({ title, entries });
     }
-  }
-
-  const uncategorised = byCategory.get('Everything else');
-
-  if (uncategorised) {
-    groups.push({ title: 'Everything else', entries: uncategorised });
   }
 
   return groups;

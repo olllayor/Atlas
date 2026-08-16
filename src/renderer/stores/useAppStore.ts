@@ -852,8 +852,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       Reading an unfiled chat states `null`, which is equally deliberate: it
       keeps the next chat unfiled instead of adopting the last project used.
     */
-    const { conversations, selectedConversationId } = get();
-    const active = selectedConversationId
+    const { conversations, selectedConversationId, activeView } = get();
+    const active = activeView === 'chat' && selectedConversationId
       ? (conversations.find((conversation) => conversation.id === selectedConversationId) ?? null)
       : null;
 
@@ -876,12 +876,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createConversationInProject: async (projectId) => {
-    // Bound at creation, not patched after: the row used to appear under
-    // Recents for a frame and then jump into the project.
-    const created = await window.atlasChat.conversations.create({ projectId });
-    await get().setConversationWorkspace(created.id, { mode: 'code', projectId });
+    // Bound at creation with mode: 'code', not patched after: creating with the
+    // mode directly avoids mutating the global default workspace mode in settings.
+    const created = await window.atlasChat.conversations.create({ projectId, workspaceMode: 'code' });
     await get().refreshConversationList();
-    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+    set((state) => ({
+      activeView: 'chat',
+      commandPaletteOpen: false,
+      modelPickerOpen: false,
+      settings: state.settings
+        ? { ...state.settings, chat: { ...state.settings.chat, lastProjectId: created.projectId } }
+        : state.settings
+    }));
     await get().loadConversation(created.id);
   },
 
@@ -918,9 +924,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       await get().refreshProjects();
 
-      const target = conversationId ?? get().selectedConversationId;
-      if (target) {
-        await get().setConversationWorkspace(target, { projectId: project.id });
+      if (conversationId) {
+        await get().setConversationWorkspace(conversationId, { projectId: project.id });
       }
 
       return project;
@@ -1104,6 +1109,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   detachProject: async (projectId) => {
     await window.atlasChat.projects.delete(projectId);
+    set((state) => ({
+      settings: state.settings?.chat.lastProjectId === projectId
+        ? { ...state.settings, chat: { ...state.settings.chat, lastProjectId: null } }
+        : state.settings
+    }));
     await Promise.all([get().refreshProjects(), get().refreshConversationList()]);
   },
 

@@ -1,0 +1,6 @@
+{
+  "name": "otter-ai",
+  "version": "1.0.0",
+  "description": "Search meeting notes from Otter.ai.",
+  "skills": "./skills/"
+}

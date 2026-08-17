@@ -527,6 +527,33 @@ export type TerminalStartResult = {
   reused: boolean;
 };
 
+/**
+ * The renderer's projection of one background job — the registry's snapshot
+ * shape, duplicated here so the renderer never imports main-process modules.
+ */
+export type JobStatusView = 'running' | 'stopping' | 'completed' | 'killed' | 'failed';
+
+export type JobSnapshotView = {
+  /** The registry-issued id (`<kind>-N`). */
+  id: string;
+  kind: string;
+  label: string;
+  conversationId: string;
+  status: JobStatusView;
+  /** Kind-specific detail ('exit code: 3'), present once supplied. */
+  detail?: string;
+  /** Epoch ms when the job was registered. */
+  startedAt: number;
+  /** Epoch ms when the job settled; absent while `running`/`stopping`. */
+  finishedAt?: number;
+};
+
+/** Pushed to every window when a job is registered or settles. */
+export type JobEvent = {
+  type: 'started' | 'done';
+  snapshot: JobSnapshotView;
+};
+
 /** Subset of WorktreeService's WorktreeInfo the renderer is allowed to see. */
 export type WorktreeInfoSummary = {
   path: string;
@@ -2242,5 +2269,13 @@ export type RendererApi = {
     resize: (conversationId: string, cols: number, rows: number) => Promise<void>;
     kill: (conversationId: string) => Promise<void>;
     subscribe: (listener: (event: TerminalOutputEvent) => void) => () => void;
+  };
+  jobs: {
+    /** Snapshots of every job the conversation owns, registration order. */
+    list: (conversationId: string) => Promise<JobSnapshotView[]>;
+    /** Request cancellation of one job; resolves with the updated snapshot. */
+    kill: (conversationId: string, jobId: string) => Promise<JobSnapshotView>;
+    /** Push channel for job registration and settlement. */
+    subscribe: (listener: (event: JobEvent) => void) => () => void;
   };
 };

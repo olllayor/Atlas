@@ -265,6 +265,22 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.terminalOutput, handler);
       };
     }
+  },
+  jobs: {
+    list: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.jobsList, conversationId),
+    kill: (conversationId: string, jobId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.jobsKill, conversationId, jobId),
+    subscribe: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.jobsEvent, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.jobsEvent, handler);
+      };
+    }
   }
 };
 

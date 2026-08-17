@@ -65,20 +65,20 @@ export interface SubagentRuntimeOptions {
   onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
 }
 
+/** One live task's runtime handles, keyed by agentId. */
+type ActiveTask = {
+  state: SubagentTaskState;
+  controller: AbortController;
+  donePromise?: Promise<void>;
+};
+
 export class SubagentRuntime {
   private readonly runtimeStateRepo?: Pick<RuntimeStateRepo, 'recordEvent'>;
   private readonly slotQueue: TaskSlotQueue;
   private readonly maxDepth: number;
   private readonly childExecutor?: ChildTurnExecutor;
   private readonly onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
-  private readonly activeTasks = new Map<
-    string,
-    {
-      state: SubagentTaskState;
-      controller: AbortController;
-      donePromise?: Promise<void>;
-    }
-  >();
+  private readonly activeTasks = new Map<string, ActiveTask>();
   private sequenceCounter = 0;
 
   constructor(options: SubagentRuntimeOptions = {}) {
@@ -421,19 +421,37 @@ export class SubagentRuntime {
   async interruptAll(conversationId: string, reason = 'Parent turn aborted'): Promise<number> {
     this.slotQueue.drainQueue(conversationId);
 
-    let interruptedCount = 0;
-    const tasksToInterrupt: Array<{
-      state: SubagentTaskState;
-      controller: AbortController;
-      donePromise?: Promise<void>;
-    }> = [];
-
+    const tasksToInterrupt: ActiveTask[] = [];
     for (const item of this.activeTasks.values()) {
       if (item.state.conversationId === conversationId && !item.state.isFinal) {
         tasksToInterrupt.push(item);
       }
     }
 
+    return this.interruptTasks(tasksToInterrupt, reason);
+  }
+
+  /**
+   * Cascade stop across EVERY conversation (app quit). Mirrors the
+   * background-job registry's `killAll`: live subagent sessions are tracked,
+   * not detached, so quitting cancels them instead of orphaning them.
+   */
+  async interruptAllConversations(reason = 'App quitting'): Promise<number> {
+    this.slotQueue.drainQueue();
+
+    const tasksToInterrupt: ActiveTask[] = [];
+    for (const item of this.activeTasks.values()) {
+      if (!item.state.isFinal) {
+        tasksToInterrupt.push(item);
+      }
+    }
+
+    return this.interruptTasks(tasksToInterrupt, reason);
+  }
+
+  /** Shared abort-and-await core for the cascade-stop entry points. */
+  private async interruptTasks(tasksToInterrupt: ActiveTask[], reason: string): Promise<number> {
+    let interruptedCount = 0;
     const promisesToAwait: Promise<void>[] = [];
 
     for (const { state, controller, donePromise } of tasksToInterrupt) {

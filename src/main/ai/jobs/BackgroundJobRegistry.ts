@@ -109,6 +109,9 @@ export interface JobRead {
 
 export type JobDoneListener = (snapshot: JobSnapshot) => void;
 
+/** Fired right after a job is registered and its producer has started. */
+export type JobStartListener = (snapshot: JobSnapshot) => void;
+
 function isTerminal(status: JobStatus): boolean {
   return status === 'completed' || status === 'killed' || status === 'failed';
 }
@@ -139,6 +142,7 @@ export class BackgroundJobRegistry {
   private readonly store = new Map<string, TrackedJob>();
   private readonly counters = new Map<string, number>();
   private readonly doneListeners = new Set<JobDoneListener>();
+  private readonly startListeners = new Set<JobStartListener>();
 
   constructor(
     private readonly maxJobsPerConversation: number = DEFAULT_MAX_JOBS_PER_CONVERSATION,
@@ -208,6 +212,16 @@ export class BackgroundJobRegistry {
       markSettled
     };
     this.store.set(id, job);
+
+    const startSnapshot = this.snapshot(job);
+    for (const listener of this.startListeners) {
+      try {
+        void listener(startSnapshot);
+      } catch {
+        // Same containment as done-listeners: one bad observer must not
+        // break registration.
+      }
+    }
 
     void hooks.done.then(
       (outcome) => this.settle(job, outcome),
@@ -308,6 +322,15 @@ export class BackgroundJobRegistry {
   onJobDone(listener: JobDoneListener): () => void {
     this.doneListeners.add(listener);
     return () => this.doneListeners.delete(listener);
+  }
+
+  /**
+   * Observe each registration. Listener throws are contained; returns an
+   * unsubscribe function.
+   */
+  onJobStart(listener: JobStartListener): () => void {
+    this.startListeners.add(listener);
+    return () => this.startListeners.delete(listener);
   }
 
   /**

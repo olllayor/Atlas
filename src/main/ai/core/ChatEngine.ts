@@ -405,6 +405,15 @@ export class ChatEngine {
     }),
   ) {}
 
+  /**
+   * The subagent runtime, exposed so the app shell can cascade-stop live
+   * subagent sessions on conversation deletion and app quit — the same
+   * owner-disposal edges the background-job registry already handles.
+   */
+  get subagents(): SubagentRuntime {
+    return this.subagentRuntime;
+  }
+
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
     const lastMessage = request.messages.at(-1);
     const inputParts =

@@ -198,6 +198,43 @@ test('interruptAll stops all live child tasks for a conversation with status int
   assert.ok(updatedOrCompleted.length > 0);
 });
 
+test('interruptAllConversations stops live tasks across every conversation', async () => {
+  const runtime = new SubagentRuntime({
+    childExecutor: async ({ signal }) => {
+      await new Promise((_, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('Aborted by signal')), { once: true });
+      });
+      return { content: 'Never reached' };
+    },
+  });
+
+  const spawnA = runtime.spawn({
+    conversationId: 'conv-a',
+    parentTurnId: 'turn-a',
+    parentToolCallId: 'call-a',
+    title: 'Child A',
+    prompt: 'Wait forever',
+  });
+  const spawnB = runtime.spawn({
+    conversationId: 'conv-b',
+    parentTurnId: 'turn-b',
+    parentToolCallId: 'call-b',
+    title: 'Child B',
+    prompt: 'Wait forever',
+  });
+
+  await new Promise((res) => setTimeout(res, 20));
+
+  const count = await runtime.interruptAllConversations('app quitting');
+  assert.equal(count, 2);
+
+  const [stateA, stateB] = await Promise.all([spawnA, spawnB]);
+  assert.equal(stateA.status, 'interrupted');
+  assert.equal(stateB.status, 'interrupted');
+  assert.equal(runtime.getActiveCount('conv-a'), 0);
+  assert.equal(runtime.getActiveCount('conv-b'), 0);
+});
+
 test('spawn_agent tool integrates with SubagentRuntime and formats compact digest', async () => {
   const runtime = new SubagentRuntime({
     childExecutor: async ({ prompt }) => ({

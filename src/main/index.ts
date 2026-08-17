@@ -11,7 +11,7 @@ import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
 import { SpillStore } from './ai/tools/spill/SpillStore';
-import { BackgroundJobRegistry } from './ai/jobs/BackgroundJobRegistry';
+import { BackgroundJobRegistry, type JobSnapshot } from './ai/jobs/BackgroundJobRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
@@ -36,6 +36,7 @@ import { registerGitIpc } from './ipc/git';
 import { registerGitHubIpc } from './ipc/github';
 import { registerFileChangesIpc } from './ipc/fileChanges';
 import { registerTerminalIpc } from './ipc/terminal';
+import { registerJobsIpc } from './ipc/jobs';
 import { IdeLauncher } from './workspace/IdeLauncher';
 import { ProjectDetector } from './workspace/ProjectDetector';
 import { AgentInstructionsService } from './workspace/AgentInstructions';
@@ -204,6 +205,15 @@ app.whenReady().then(async () => {
   // subagents and terminals can register as kinds later). Conversation-fenced:
   // ids are predictable, so the fence, not id secrecy, is the boundary.
   const jobRegistry = new BackgroundJobRegistry();
+  // Push registration and settlement to every window so the jobs chip stays
+  // live without polling. Each window filters by its own conversation.
+  const broadcastJobEvent = (type: 'started' | 'done') => (snapshot: JobSnapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.jobsEvent, { type, snapshot });
+    }
+  };
+  jobRegistry.onJobStart(broadcastJobEvent('started'));
+  jobRegistry.onJobDone(broadcastJobEvent('done'));
   // Reclaim spill directories whose conversation is gone. Fire-and-forget:
   // sweeping is housekeeping, and a slow disk must not delay startup. The
   // min-age guard keeps any directory a live turn may be writing to.
@@ -431,6 +441,9 @@ app.whenReady().then(async () => {
     // orphaning them the way the old fire-and-forget spawn did. Fire-and-
     // forget here too — quit must not hang on a slow kill.
     void jobRegistry.killAll('app quitting');
+    // Same for live subagent sessions: they are tracked by the runtime, so
+    // quit cascade-stops them rather than leaving child turns running.
+    void chatEngine.subagents.interruptAllConversations('app quitting');
   });
 
   // The turn path reads project env vars synchronously, so the keychain values
@@ -555,6 +568,8 @@ app.whenReady().then(async () => {
       // Same for its background jobs: the owner is gone, so nothing can
       // claim their output anymore.
       void jobRegistry.killConversation(conversationId, 'conversation deleted').catch(() => undefined);
+      // And its live subagent sessions, for the same reason.
+      void chatEngine.subagents.interruptAll(conversationId, 'conversation deleted').catch(() => undefined);
     },
   });
   registerProjectsIpc({
@@ -584,6 +599,7 @@ app.whenReady().then(async () => {
   });
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
+  registerJobsIpc(jobRegistry);
   registerChatIpc(chatEngine);
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);

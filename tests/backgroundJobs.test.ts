@@ -362,6 +362,26 @@ test('onJobDone contains listener throws and supports unsubscribe', async () => 
   assert.deepEqual(seen, ['bash-1']); // unchanged after unsubscribe
 });
 
+test('onJobStart fires on registration with a running snapshot and supports unsubscribe', () => {
+  const registry = new BackgroundJobRegistry();
+  const seen: Array<{ id: string; status: string }> = [];
+  registry.onJobStart(() => {
+    throw new Error('bad listener');
+  });
+  const unsubscribe = registry.onJobStart((snapshot) =>
+    seen.push({ id: snapshot.id, status: snapshot.status })
+  );
+
+  const a = scriptedProducer();
+  registry.start({ kind: 'bash', label: 'x', conversationId: 'c', run: () => a.hooks });
+  assert.deepEqual(seen, [{ id: 'bash-1', status: 'running' }]);
+
+  unsubscribe();
+  const b = scriptedProducer();
+  registry.start({ kind: 'bash', label: 'y', conversationId: 'c', run: () => b.hooks });
+  assert.deepEqual(seen, [{ id: 'bash-1', status: 'running' }]); // unchanged after unsubscribe
+});
+
 // ---------------------------------------------------------------------------
 // Output capping and notice formatting
 // ---------------------------------------------------------------------------

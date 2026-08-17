@@ -4,11 +4,14 @@ import { BrowserWindow, app, ipcMain } from 'electron/main';
 
 import { ChatEngine } from './ai/core/ChatEngine';
 import { ChatSessionRuntime } from './ai/core/ChatSessionRuntime';
+import { ContextManager } from './ai/core/ContextManager';
+import { SummaryRefreshService } from './ai/compaction/summaryRefresher';
 import { CustomProviderService } from './ai/core/CustomProviderService';
 import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
 import { SpillStore } from './ai/tools/spill/SpillStore';
+import { BackgroundJobRegistry } from './ai/jobs/BackgroundJobRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
@@ -197,6 +200,10 @@ app.whenReady().then(async () => {
   registerAttachmentProtocolHandler(attachmentStore);
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
   const spillStore = new SpillStore(await resolveSpillsDirectory());
+  // One registry for every long-running producer (background bash today;
+  // subagents and terminals can register as kinds later). Conversation-fenced:
+  // ids are predictable, so the fence, not id secrecy, is the boundary.
+  const jobRegistry = new BackgroundJobRegistry();
   // Reclaim spill directories whose conversation is gone. Fire-and-forget:
   // sweeping is housekeeping, and a slow disk must not delay startup. The
   // min-age guard keeps any directory a live turn may be writing to.
@@ -420,6 +427,10 @@ app.whenReady().then(async () => {
     // Spawned servers outlive the window otherwise: the transport keeps the
     // child alive, and nothing else would reap it.
     void mcpManager.disposeAll();
+    // Background jobs are tracked, not detached: quit cancels them instead of
+    // orphaning them the way the old fire-and-forget spawn did. Fire-and-
+    // forget here too — quit must not hang on a slow kill.
+    void jobRegistry.killAll('app quitting');
   });
 
   // The turn path reads project env vars synchronously, so the keychain values
@@ -429,6 +440,23 @@ app.whenReady().then(async () => {
   });
 
   const checkpointCoordinator = new CheckpointCoordinator(database);
+
+  // Rolling summaries survive relaunch via the durable store, and each fresh
+  // heuristic summary gets an async model upgrade in the background.
+  const summaryRefresher = new SummaryRefreshService({
+    conversationsRepo: database.conversations,
+    modelsRepo: database.models,
+    keychain,
+    providers,
+    summaries: database.conversationSummaries,
+  });
+  const contextManager = new ContextManager(
+    {
+      onSummaryRefresh: (conversationId, fingerprint, olderMessages) =>
+        summaryRefresher.refresh(conversationId, fingerprint, olderMessages),
+    },
+    database.conversationSummaries,
+  );
 
   const chatEngine = new ChatEngine(
     database.conversations,
@@ -441,7 +469,7 @@ app.whenReady().then(async () => {
       database.models,
       keychain,
       providers,
-      undefined,
+      contextManager,
       ({ conversationId, mentions }) => {
         const optedIn = shouldLoadSiteTools({
           mentions,
@@ -449,8 +477,8 @@ app.whenReady().then(async () => {
         });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
-      (conversationId) =>
-        resolveConversationWorkspace(database, conversationId, {
+      (conversationId) => ({
+        ...resolveConversationWorkspace(database, conversationId, {
           fileChangeTracker,
           envStore,
           agentInstructions,
@@ -461,6 +489,8 @@ app.whenReady().then(async () => {
           onAgentCommand: (command, exitCode) =>
             ptyService.echoAgentCommand(conversationId, command, exitCode),
         }),
+        jobRegistry,
+      }),
       () => database.settings.getVisualMode(),
       mcpToolsProvider,
       skillsService,
@@ -521,6 +551,9 @@ app.whenReady().then(async () => {
       // Spill files are an implementation detail of the conversation's turns;
       // they go with it. Fire-and-forget for the same reason the sweep is.
       void spillStore.deleteConversation(conversationId).catch(() => undefined);
+      // Same for its background jobs: the owner is gone, so nothing can
+      // claim their output anymore.
+      void jobRegistry.killConversation(conversationId, 'conversation deleted').catch(() => undefined);
     },
   });
   registerProjectsIpc({

@@ -201,6 +201,21 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
 ON conversation_turns (conversation_id, created_at);
 
+-- Durable rolling summaries of compacted older turns. The fingerprint ties a
+-- row to the exact older-turn content it summarises; a stale fingerprint means
+-- the history moved on and the row must be recomputed. The status column is
+-- the crash lock for the async model-generated pass: a row left in 'building'
+-- after a crash is ignored by readers and retried by the next refresh, so a
+-- mid-flight failure is detectable instead of silently corrupting the cache.
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL,
+  rolling_summary TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'heuristic',
+  status TEXT NOT NULL DEFAULT 'ready',
+  updated_at TEXT NOT NULL
+);
+
 -- Git snapshots bracketing each turn, so a turn's edits can be shown as one
 -- diff and undone as one act. The status column records the skipped cases (no
 -- project, not a repository, git unavailable) rather than dropping the row, so

@@ -2,9 +2,17 @@ import { createHash } from 'node:crypto';
 
 import type { ModelMessage } from 'ai';
 
+import { pruneModelHistory } from '../compaction/toolResultPruner';
 import { estimateMessagesTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
+import type { ConversationSummariesRepo } from '../../db/repositories/conversationSummariesRepo';
 
-export type ContextBuildMode = 'standard' | 'aggressive';
+/**
+ * 'standard' and 'aggressive' are the proactive modes; 'maximal' is the last
+ * overflow-recovery step, entered only after the provider confirms the prompt
+ * is still too long. It keeps just the newest turn raw and leans hardest on
+ * the summary — the newest turn is never dropped in any mode.
+ */
+export type ContextBuildMode = 'standard' | 'aggressive' | 'maximal';
 
 export type ToolSummary = {
   toolName: string;
@@ -62,8 +70,16 @@ export type BuildModelInputResult = {
 };
 
 type ContextManagerHooks = {
-  onSummaryRefresh?: (conversationId: string, fingerprint: string) => void;
+  /**
+   * Fired when a fresh rolling summary was computed (memory and durable store
+   * both missed). Carries the older messages so an async model-backed
+   * refresher can upgrade the heuristic summary without re-deriving the split.
+   */
+  onSummaryRefresh?: (conversationId: string, fingerprint: string, olderMessages: ModelMessage[]) => void;
 };
+
+/** The durable summary cache seam; see `ConversationSummariesRepo`. */
+export type SummaryStore = Pick<ConversationSummariesRepo, 'get' | 'upsert'>;
 
 type CachedOlderContext = {
   fingerprint: string;
@@ -79,37 +95,54 @@ type ConversationTurn = {
 const RECENT_TURN_LIMIT: Record<ContextBuildMode, number> = {
   standard: 10,
   aggressive: 6,
+  maximal: 1,
 };
 
 const TOOL_SUMMARY_LIMIT: Record<ContextBuildMode, number> = {
   standard: 8,
   aggressive: 4,
+  maximal: 2,
 };
 
 const TOOL_PURPOSE_MAX_CHARS: Record<ContextBuildMode, number> = {
   standard: 160,
   aggressive: 96,
+  maximal: 80,
 };
 
 const TOOL_RESULT_MAX_CHARS: Record<ContextBuildMode, number> = {
   standard: 260,
   aggressive: 140,
+  maximal: 100,
 };
 
 const CONTEXT_ADDENDUM_MAX_CHARS: Record<ContextBuildMode, number> = {
   standard: 4_200,
   aggressive: 2_200,
+  maximal: 1_600,
 };
 
 const SUMMARY_SECTION_MAX_ITEMS = 6;
 
+/** One entry per conversation; evicted least-recently-built beyond this cap. */
+const MEMORY_CACHE_LIMIT = 50;
+
 export class ContextManager {
   private readonly cache = new Map<string, CachedOlderContext>();
 
-  constructor(private readonly hooks: ContextManagerHooks = {}) {}
+  constructor(
+    private readonly hooks: ContextManagerHooks = {},
+    private readonly store?: SummaryStore,
+  ) {}
 
   buildModelInput(args: BuildModelInputArgs): BuildModelInputResult {
-    const { conversationId, history, mode, budget } = args;
+    const { conversationId, mode, budget } = args;
+    // Oversized tool results from older turns keep paying context rent on
+    // every request until their turn is compressed away. Prune them to a
+    // bounded head/marker/tail on the request copy — the persisted transcript
+    // keeps the full result, and pruning is idempotent, so running it on
+    // every build is free.
+    const history = pruneModelHistory(args.history).messages;
     const split = splitHistoryIntoTurns(history);
     const olderTurnCount = chooseOlderTurnCount(split, mode, budget);
 
@@ -137,14 +170,26 @@ export class ContextManager {
     const fingerprint = buildOlderTurnsFingerprint(olderMessages);
 
     let cached = this.cache.get(conversationId);
-    if (!cached || cached.fingerprint !== fingerprint) {
-      cached = {
-        fingerprint,
-        rollingSummary: buildRollingSummary(olderTurns, split.prefaceMessages),
-        toolSummaries: buildToolSummaries(olderMessages),
-      };
-      this.cache.set(conversationId, cached);
-      this.hooks.onSummaryRefresh?.(conversationId, fingerprint);
+    if (cached && cached.fingerprint !== fingerprint) {
+      cached = undefined;
+    }
+
+    if (!cached) {
+      const fromStore = this.resolveFromStore(conversationId, fingerprint, olderMessages);
+      if (fromStore) {
+        cached = fromStore;
+        this.rememberCached(conversationId, cached, false);
+      } else {
+        cached = {
+          fingerprint,
+          rollingSummary: buildRollingSummary(olderTurns, split.prefaceMessages),
+          toolSummaries: buildToolSummaries(olderMessages),
+        };
+        this.rememberCached(conversationId, cached, true);
+        // A fresh heuristic summary was computed (memory and durable store both
+        // missed). The hook lets an async refresher upgrade it with a model pass.
+        this.hooks.onSummaryRefresh?.(conversationId, fingerprint, olderMessages);
+      }
     }
 
     const toolSummaries = compactToolSummariesForMode(cached.toolSummaries, mode);
@@ -169,6 +214,74 @@ export class ContextManager {
           !budget || historyTokens + addendumTokens + budget.reservedTokens <= budget.totalTokens,
       },
     };
+  }
+
+  /**
+   * Durable cache lookup. A row is only usable when its fingerprint matches
+   * the current older-turn content and its refresh finished ('ready'); a row
+   * stuck in 'building' after a crash is treated as absent and recomputed.
+   */
+  private resolveFromStore(
+    conversationId: string,
+    fingerprint: string,
+    olderMessages: ModelMessage[],
+  ): CachedOlderContext | null {
+    if (!this.store) {
+      return null;
+    }
+
+    let row;
+    try {
+      row = this.store.get(conversationId);
+    } catch {
+      // The durable cache is an optimisation; a store failure degrades to
+      // recomputation, never to a failed request.
+      return null;
+    }
+
+    if (!row || row.status !== 'ready' || row.fingerprint !== fingerprint) {
+      return null;
+    }
+
+    return {
+      fingerprint,
+      rollingSummary: row.rollingSummary || null,
+      toolSummaries: buildToolSummaries(olderMessages),
+    };
+  }
+
+  /**
+   * Insertion-ordered memory cache with a hard cap, plus best-effort
+   * write-through of freshly computed heuristic summaries so they survive a
+   * relaunch. Store hits are not rewritten — that would downgrade a
+   * model-generated summary's provenance.
+   */
+  private rememberCached(conversationId: string, cached: CachedOlderContext, persist: boolean) {
+    this.cache.delete(conversationId);
+    this.cache.set(conversationId, cached);
+    while (this.cache.size > MEMORY_CACHE_LIMIT) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.cache.delete(oldest);
+    }
+
+    if (!persist || !this.store || !cached.rollingSummary) {
+      return;
+    }
+
+    try {
+      this.store.upsert({
+        conversationId,
+        fingerprint: cached.fingerprint,
+        rollingSummary: cached.rollingSummary,
+        source: 'heuristic',
+        status: 'ready',
+      });
+    } catch {
+      // Best effort: the in-memory copy still serves this process.
+    }
   }
 }
 

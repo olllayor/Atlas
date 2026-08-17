@@ -40,6 +40,8 @@ import {
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
+import { JOB_TOOL_SYSTEM_PROMPT, buildJobCompletionNoticeMessage } from '../tools/jobTools';
+import { formatCompletionNotice, type BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
 import type { SkillsService } from '../../plugins/SkillsService';
 import { createSkillTools } from '../../plugins/skillTools';
 import type { ToolWorkspace } from '../tools/toolWorkspace';
@@ -261,6 +263,31 @@ export function buildRetryNotice(code: string, attempt: number, budget: number):
     default:
       return `The request failed and is being retried — ${progress}`;
   }
+}
+
+/**
+ * The next compaction step after a provider-confirmed context overflow, or
+ * null once the ladder is exhausted. Each step keeps fewer turns raw and
+ * leans harder on the summary; the newest turn survives every step, so the
+ * reduction is always balanced — a tool call and its result are compressed
+ * together or not at all.
+ */
+function nextCompactionMode(mode: ContextBuildMode): ContextBuildMode | null {
+  switch (mode) {
+    case 'standard':
+      return 'aggressive';
+    case 'aggressive':
+      return 'maximal';
+    case 'maximal':
+      return null;
+  }
+}
+
+function compactionNotice(mode: ContextBuildMode): string {
+  if (mode === 'maximal') {
+    return 'The conversation is still too long for this model. Keeping only the latest exchange raw and retrying.';
+  }
+  return 'The conversation was too long for this model. Summarising older turns and retrying.';
 }
 
 function positiveOrNull(value: number | null | undefined) {
@@ -730,6 +757,45 @@ export class ChatSessionRuntime {
     }
   }
 
+  /**
+   * Claim every unreported settled background job for the conversation and
+   * shape them for the model. The drain is the claim — whatever happens to
+   * the turn afterwards, these notices are not re-delivered.
+   */
+  private drainJobCompletionNotices(
+    registry: BackgroundJobRegistry,
+    conversationId: string,
+    requestId: string,
+    emitEvent: (event: StreamEvent) => void
+  ): ModelMessage[] {
+    let drained: ReturnType<BackgroundJobRegistry['drainCompletionNotices']>;
+    try {
+      drained = registry.drainCompletionNotices(conversationId);
+    } catch {
+      // A drain failure must not take the turn down: the notices stay
+      // unreported and the next turn tries again.
+      return [];
+    }
+
+    if (drained.length === 0) {
+      return [];
+    }
+
+    // The transient user-facing half, same channel as the repeat-guard nudge.
+    emitEvent({
+      type: 'notice',
+      requestId,
+      code: 'background-jobs-completed',
+      level: 'info',
+      message:
+        drained.length === 1
+          ? `Background job ${drained[0].id} finished.`
+          : `${drained.length} background jobs finished.`
+    });
+
+    return [buildJobCompletionNoticeMessage(drained)];
+  }
+
   async executeTurn({
     requestId,
     request,
@@ -1006,6 +1072,10 @@ export class ChatSessionRuntime {
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,
+      // Shipped exactly when the job tools are registered: etiquette for a
+      // tool the model cannot call is noise, and omitting it where the tools
+      // exist would leave the model busy-polling.
+      ...(workspace.jobRegistry && workspace.conversationId ? [JOB_TOOL_SYSTEM_PROMPT] : []),
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
       ...(skillsPrompt ? [skillsPrompt] : []),
@@ -1231,7 +1301,23 @@ export class ChatSessionRuntime {
         pendingApprovals: new Map<string, PendingToolApproval>(),
       };
       // Same budget the ring displays, so what is shown is what is sent.
-      const history = messagesOverride ?? this.selectModelHistory(request.conversationId);
+      //
+      // Background jobs that settled since the conversation's last turn are
+      // drained here — exactly once; the registry marks them reported — and
+      // ride into this request as a synthetic user message. Appended to the
+      // request copy only, never persisted: the transcript already records
+      // what the jobs did, and the notice exists to make the model collect
+      // them with job_output.
+      const jobNotices = workspace.jobRegistry
+        ? this.drainJobCompletionNotices(
+            workspace.jobRegistry,
+            request.conversationId,
+            requestId,
+            emitEvent
+          )
+        : [];
+      const baseHistory = messagesOverride ?? this.selectModelHistory(request.conversationId);
+      const history = jobNotices.length > 0 ? [...baseHistory, ...jobNotices] : baseHistory;
       const modelInput = this.contextManager.buildModelInput({
         conversationId: request.conversationId,
         history,
@@ -1423,18 +1509,18 @@ export class ChatSessionRuntime {
         };
       } catch (error) {
         const normalized = normalizeError(error);
-        const shouldRetryWithCompaction =
-          compactionMode === 'standard' &&
-          !streamedAnyResponse &&
-          !signal.aborted &&
-          this.isPromptTooLongError(error, normalized.message);
+        const nextMode: ContextBuildMode | null =
+          !streamedAnyResponse && !signal.aborted && this.isPromptTooLongError(error, normalized.message)
+            ? nextCompactionMode(compactionMode)
+            : null;
 
-        if (shouldRetryWithCompaction) {
-          compactionMode = 'aggressive';
+        if (nextMode) {
+          compactionMode = nextMode;
           logger.warn('turn.compacting', {
             requestId,
             modelId: request.modelId,
             attempt,
+            compactionMode,
             historyTokens: modelInput.usage.historyTokens,
             code: normalized.code,
           });
@@ -1443,7 +1529,7 @@ export class ChatSessionRuntime {
             requestId,
             code: 'compacting',
             level: 'info',
-            message: 'The conversation was too long for this model. Summarising older turns and retrying.',
+            message: compactionNotice(compactionMode),
             });
           continue;
         }

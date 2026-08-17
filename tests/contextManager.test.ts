@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { ModelMessage } from 'ai';
 
 import { ContextManager } from '../src/main/ai/core/ContextManager.js';
+import type { ConversationSummaryRecord } from '../src/main/db/repositories/conversationSummariesRepo.js';
 
 function createTurn(index: number): ModelMessage[] {
   return [
@@ -270,4 +271,225 @@ test('usage accounting is reported for the uncompressed path too', () => {
   assert.equal(result.usage.keptTurnCount, 2);
   assert.equal(result.usage.addendumTokens, 0);
   assert.ok(result.usage.historyTokens > 0, 'a real conversation never costs zero tokens');
+});
+
+function createFakeSummaryStore() {
+  const rows = new Map<string, ConversationSummaryRecord>();
+  const upserts: Array<{ conversationId: string; source: string; status: string }> = [];
+
+  return {
+    rows,
+    upserts,
+    get: (conversationId: string) => rows.get(conversationId) ?? null,
+    upsert: (input: {
+      conversationId: string;
+      fingerprint: string;
+      rollingSummary: string;
+      source: 'heuristic' | 'model';
+      status: 'ready' | 'building';
+    }) => {
+      upserts.push({ conversationId: input.conversationId, source: input.source, status: input.status });
+      const record: ConversationSummaryRecord = {
+        conversationId: input.conversationId,
+        fingerprint: input.fingerprint,
+        rollingSummary: input.rollingSummary,
+        source: input.source,
+        status: input.status,
+        updatedAt: new Date().toISOString(),
+      };
+      rows.set(input.conversationId, record);
+      return record;
+    },
+  };
+}
+
+test('a fresh heuristic summary is written through to the durable store', () => {
+  const store = createFakeSummaryStore();
+  const manager = new ContextManager({}, store);
+
+  manager.buildModelInput({
+    conversationId: 'conversation-persist',
+    history: createHistory(12),
+    mode: 'standard',
+  });
+
+  assert.equal(store.upserts.length, 1);
+  assert.deepEqual(store.upserts[0], {
+    conversationId: 'conversation-persist',
+    source: 'heuristic',
+    status: 'ready',
+  });
+  const row = store.get('conversation-persist');
+  assert.ok(row);
+  assert.match(row.rollingSummary, /Goals:/);
+});
+
+test('a matching ready store row serves the summary without recomputing', () => {
+  const store = createFakeSummaryStore();
+  const seeder = new ContextManager({}, store);
+  const history = createHistory(12);
+
+  seeder.buildModelInput({ conversationId: 'conversation-store-hit', history, mode: 'standard' });
+  const seeded = store.get('conversation-store-hit');
+  assert.ok(seeded);
+  // Simulate a model upgrade landing in the store after the heuristic write.
+  store.upsert({
+    conversationId: 'conversation-store-hit',
+    fingerprint: seeded.fingerprint,
+    rollingSummary: 'Goals:\n- model-written summary marker',
+    source: 'model',
+    status: 'ready',
+  });
+
+  // A fresh manager has an empty memory cache, so this build must hit the store.
+  const refreshes: string[] = [];
+  const manager = new ContextManager({ onSummaryRefresh: (id) => refreshes.push(id) }, store);
+  const upsertsBeforeHit = store.upserts.length;
+  const input = manager.buildModelInput({
+    conversationId: 'conversation-store-hit',
+    history,
+    mode: 'standard',
+  });
+
+  assert.match(input.rollingSummary ?? '', /model-written summary marker/);
+  assert.equal(refreshes.length, 0, 'a store hit must not trigger a refresh');
+  assert.equal(store.upserts.length, upsertsBeforeHit, 'a store hit must not be rewritten');
+});
+
+test('a store row with a stale fingerprint is ignored and recomputed', () => {
+  const store = createFakeSummaryStore();
+  store.rows.set('conversation-stale', {
+    conversationId: 'conversation-stale',
+    fingerprint: 'fingerprint-from-another-lifetime',
+    rollingSummary: 'Goals:\n- stale content',
+    source: 'model',
+    status: 'ready',
+    updatedAt: new Date().toISOString(),
+  });
+
+  const manager = new ContextManager({}, store);
+  const input = manager.buildModelInput({
+    conversationId: 'conversation-stale',
+    history: createHistory(12),
+    mode: 'standard',
+  });
+
+  assert.ok(input.rollingSummary);
+  assert.ok(!input.rollingSummary!.includes('stale content'));
+  // The recomputed heuristic replaced the stale row.
+  const row = store.get('conversation-stale');
+  assert.ok(row);
+  assert.equal(row.source, 'heuristic');
+  assert.notEqual(row.fingerprint, 'fingerprint-from-another-lifetime');
+});
+
+test('a store row stuck in building is treated as absent', () => {
+  const store = createFakeSummaryStore();
+  store.rows.set('conversation-building', {
+    conversationId: 'conversation-building',
+    fingerprint: 'does-not-matter',
+    rollingSummary: 'Goals:\n- half-written',
+    source: 'model',
+    status: 'building',
+    updatedAt: new Date().toISOString(),
+  });
+
+  const manager = new ContextManager({}, store);
+  const input = manager.buildModelInput({
+    conversationId: 'conversation-building',
+    history: createHistory(12),
+    mode: 'standard',
+  });
+
+  assert.ok(input.rollingSummary);
+  assert.ok(!input.rollingSummary!.includes('half-written'));
+  const row = store.get('conversation-building');
+  assert.ok(row);
+  assert.equal(row.status, 'ready', 'the crash lock is replaced by a fresh ready row');
+});
+
+test('the memory cache evicts least-recently-built conversations beyond the cap', () => {
+  const refreshes: string[] = [];
+  const manager = new ContextManager({ onSummaryRefresh: (id) => refreshes.push(id) });
+  const history = createHistory(12);
+
+  // Fill past the 50-conversation cap, then touch the first conversation again.
+  for (let index = 0; index < 51; index += 1) {
+    manager.buildModelInput({ conversationId: `conversation-${index}`, history, mode: 'standard' });
+  }
+  assert.equal(refreshes.length, 51);
+
+  // conversation-0 was evicted, so its summary is recomputed (a refresh fires).
+  manager.buildModelInput({ conversationId: 'conversation-0', history, mode: 'standard' });
+  assert.equal(refreshes.length, 52);
+
+  // conversation-50 is still cached, so no refresh fires.
+  manager.buildModelInput({ conversationId: 'conversation-50', history, mode: 'standard' });
+  assert.equal(refreshes.length, 52);
+});
+
+test('maximal mode keeps only the newest turn raw', () => {
+  const manager = new ContextManager();
+  const history = createHistory(12);
+
+  const input = manager.buildModelInput({
+    conversationId: 'conversation-maximal',
+    history,
+    mode: 'maximal',
+  });
+
+  assert.equal(input.recentMessages.length, 2, 'one turn = its user message plus follow-up');
+  assert.equal(input.usage.keptTurnCount, 1);
+  assert.equal(input.usage.droppedTurnCount, 11);
+  assert.ok(input.systemContextAddendum);
+  assert.ok(input.systemContextAddendum!.length <= 1_600);
+});
+
+test('compaction never splits a tool call from its result', () => {
+  const manager = new ContextManager();
+  const history: ModelMessage[] = [];
+  for (let index = 0; index < 12; index += 1) {
+    history.push({ role: 'user', content: `Request ${index}?` });
+    history.push({
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCallId: `call-${index}`, toolName: 'bash', input: { command: `cmd ${index}` } },
+      ],
+    } as unknown as ModelMessage);
+    history.push({
+      role: 'tool',
+      content: [
+        { type: 'tool-result', toolCallId: `call-${index}`, toolName: 'bash', output: { result: `output ${index}` } },
+      ],
+    } as unknown as ModelMessage);
+  }
+
+  for (const mode of ['standard', 'aggressive', 'maximal'] as const) {
+    const input = manager.buildModelInput({
+      conversationId: `conversation-pairing-${mode}`,
+      history,
+      mode,
+    });
+
+    const callIds = new Set<string>();
+    const resultIds = new Set<string>();
+    for (const message of input.recentMessages) {
+      const content = (message as { content?: unknown }).content;
+      if (!Array.isArray(content)) {
+        continue;
+      }
+      for (const part of content) {
+        const record = part as { type?: string; toolCallId?: string };
+        if (record.type === 'tool-call' && record.toolCallId) {
+          callIds.add(record.toolCallId);
+        }
+        if (record.type === 'tool-result' && record.toolCallId) {
+          resultIds.add(record.toolCallId);
+        }
+      }
+    }
+
+    // Every retained call has its result and vice versa — turns move whole.
+    assert.deepEqual([...callIds].sort(), [...resultIds].sort(), `pairing broken in ${mode}`);
+  }
 });

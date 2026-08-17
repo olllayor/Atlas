@@ -7,6 +7,7 @@ import { constants as fsConstants } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
 import { BoundedCommandOutput } from './commandOutputCap';
+import { startBackgroundBashJob } from '../jobs/bashJobProducer';
 import type { ContainedFsFailure } from '../../security/containedFs';
 import { containedRead, containedReadBuffer } from '../../security/containedFs';
 import type { SandboxPolicy } from './sandbox';
@@ -929,6 +930,36 @@ export async function bashToolExecute(input: {
   const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
 
   if (input.run_in_background) {
+    // With a registry the child is a tracked job: captured output, a real
+    // `<kind>-N` id, list/read/kill through the job tools, and teardown when
+    // the conversation goes away. The registry spawn happens inside `start()`
+    // preflight, so a rejected start (full bucket) spawns nothing.
+    if (workspace?.jobRegistry && workspace.conversationId) {
+      const { jobId } = startBackgroundBashJob(workspace.jobRegistry, {
+        command: input.command,
+        description: input.description,
+        launch: { command: launch.command, args: launch.args },
+        cwd,
+        env: combinedEnv,
+        conversationId: workspace.conversationId,
+        onCommandRun: workspace.onCommandRun
+      });
+
+      return {
+        stdout: '',
+        stderr: '',
+        interrupted: false,
+        backgroundTaskId: jobId,
+        noOutputExpected: false,
+        sandbox: launch.mechanism,
+        sandboxNetwork: policy.network,
+        sandboxEscalated: escalated,
+        returnCodeInterpretation: 'backgrounded'
+      };
+    }
+
+    // No registry (tests, default workspace): the legacy detached spawn.
+    // Fire-and-forget by necessity — nothing exists to track it.
     const child = spawn(launch.command, launch.args, {
       cwd,
       env: combinedEnv,

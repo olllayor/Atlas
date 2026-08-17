@@ -699,6 +699,79 @@ test('ChatSessionRuntime does not retry prompt-too-long compaction after partial
   assert.equal(attempts, 1);
 });
 
+test('ChatSessionRuntime escalates to maximal compaction when aggressive still overflows', async () => {
+  const history = createHistory(12);
+  let attempts = 0;
+  const messageCounts: number[] = [];
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      attempts += 1;
+      messageCounts.push(request.messages.length);
+
+      if (attempts <= 2) {
+        throw new Error('Maximum context length exceeded for this model');
+      }
+
+      return {
+        content: 'Recovered with maximal compaction',
+        latencyMs: 13,
+      };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, history });
+
+  await runtime.executeTurn({
+    requestId: 'request-retry-maximal',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(attempts, 3);
+  assert.equal(messageCounts[0], 20, 'standard keeps ten turns raw');
+  assert.equal(messageCounts[1], 12, 'aggressive keeps six turns raw');
+  assert.equal(messageCounts[2], 2, 'maximal keeps only the newest turn raw');
+});
+
+test('ChatSessionRuntime gives up after the maximal compaction step still overflows', async () => {
+  const history = createHistory(12);
+  let attempts = 0;
+
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      attempts += 1;
+      throw new Error('Maximum context length exceeded for this model');
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, history });
+
+  await assert.rejects(
+    runtime.executeTurn({
+      requestId: 'request-ladder-exhausted',
+      request: createRequest(),
+      signal: new AbortController().signal,
+      emitEvent: () => undefined,
+    }),
+    Error,
+  );
+
+  // standard, aggressive, maximal — then the honest error, no unbounded loop.
+  assert.equal(attempts, 3);
+});
+
 test('ChatSessionRuntime hands the provider the catalog limits for the selected model', async () => {
   let capturedHints: unknown;
 

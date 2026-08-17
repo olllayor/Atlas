@@ -5,6 +5,7 @@ import { containedWritePath } from '../../security/containedFs';
 import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
 import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
+import type { BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
 
 /**
  * Where a turn's tools run, resolved in the main process from the conversation
@@ -39,6 +40,14 @@ export type ToolWorkspace = {
   instructions?: AgentInstructionsResult;
   /** Callback fired when the agent runs a shell command, for terminal history. */
   onCommandRun?: (command: { command: string; exitCode: number | null; venue: 'local' | 'cloud' }) => void;
+  /**
+   * The app-wide background-job registry, present when background work is
+   * available. `run_in_background` bash registers its child here, and the
+   * job_output/job_list/job_kill tools read and control it. Absent in tests
+   * and on the default workspace, where background bash degrades to the old
+   * detached fire-and-forget spawn.
+   */
+  jobRegistry?: BackgroundJobRegistry | null;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;

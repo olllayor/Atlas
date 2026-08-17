@@ -181,6 +181,7 @@ export function describeAgentInstructionsForPrompt(instructions: AgentInstructio
  * call something that was never in its tool set.
  */
 import { createAgentTools, type SubagentContext } from './agentTools';
+import { createJobTools } from './jobTools';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
 
 export type { SubagentContext };
@@ -194,9 +195,17 @@ export function createBuiltInTools(
   subagentContext?: SubagentContext
 ) {
   const agentTools = createAgentTools(subagentRuntime, subagentContext);
+  // Job-control tools exist only where the substrate does: a registry and a
+  // conversation to fence them to. Read-only mode withholds them below along
+  // with the other side-effecting tools.
+  const jobTools =
+    workspace.jobRegistry && workspace.conversationId
+      ? createJobTools(workspace.jobRegistry, workspace.conversationId)
+      : {};
   const all = {
     ...(extraTools ?? {}),
     ...agentTools,
+    ...jobTools,
     ...buildCodeTools(workspace),
     read_file: tool({
       description:
@@ -388,9 +397,13 @@ export function createBuiltInTools(
  * without bubblewrap is still reported honestly at the point it matters.
  */
 function describeBashTool(workspace: ToolWorkspace) {
+  const backgroundLine = workspace.jobRegistry
+    ? 'Set run_in_background: true to start a long-running command as a tracked background job: it returns a job id, and you can read its output with job_output, list jobs with job_list, and stop one with job_kill.'
+    : 'Set run_in_background: true to detach a long-running command; its output is not captured.';
+
   if (process.platform === 'win32') {
     return workspace.mode === 'code'
-      ? 'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, linters, and git.'
+      ? `Run a shell command with the attached project folder as the working directory. Use it for builds, tests, linters, and git. ${backgroundLine}`
       : 'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.';
   }
 
@@ -399,7 +412,8 @@ function describeBashTool(workspace: ToolWorkspace) {
       'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, and linters.',
       'Commands run inside an OS sandbox: writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.',
       'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.',
-      'Each result reports the sandbox that was applied.'
+      'Each result reports the sandbox that was applied.',
+      backgroundLine
     ].join(' ');
   }
 

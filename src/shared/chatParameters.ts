@@ -161,7 +161,12 @@ export const SIDE_EFFECTING_TOOL_NAMES = [
   'git_stash',
   'git_branch',
   'git_push',
-  'github_pr_create'
+  'github_pr_create',
+  // Job control acts on processes the conversation started; read-only mode
+  // must not be able to list, read, or kill them either.
+  'job_output',
+  'job_list',
+  'job_kill'
 ] as const;
 
 /** Tools that pause for approval in `ask` mode. */

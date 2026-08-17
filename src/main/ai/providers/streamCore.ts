@@ -3,6 +3,10 @@ import type { LanguageModel } from 'ai';
 
 import { ProviderStalledError, RequestTimeoutError } from '../core/ErrorNormalizer';
 import type { ProviderStreamRequest, ProviderStreamResult } from '../core/ProviderAdapter';
+import {
+  createRepeatToolReminderGuard,
+  type RepeatToolReminderConfig
+} from '../guards/repeatToolReminder';
 
 /**
  * Hard ceiling applied on top of whatever the model advertises. Providers bill
@@ -144,6 +148,11 @@ export type StreamCoreOptions = {
   request: ProviderStreamRequest;
   config?: Partial<StreamCoreConfig>;
   providerOptions?: StreamTextProviderOptions;
+  /**
+   * Repeat-call guard configuration; `false` disables the guard entirely.
+   * Defaults to the guard's own defaults (thresholds [3, 5, 8]).
+   */
+  repeatToolReminder?: RepeatToolReminderConfig | false;
 };
 
 /**
@@ -155,7 +164,8 @@ export async function runProviderStream({
   model,
   request,
   config: configOverrides,
-  providerOptions
+  providerOptions,
+  repeatToolReminder
 }: StreamCoreOptions): Promise<ProviderStreamResult> {
   const config = { ...DEFAULT_STREAM_CORE_CONFIG, ...configOverrides };
   const watchdog = createWatchdog(config);
@@ -172,6 +182,33 @@ export async function runProviderStream({
   const maxOutputTokens = resolveMaxOutputTokens(request.maxOutputTokens, request.modelHints, config);
   const temperature = resolveTemperature(request.temperature, request.modelHints, config);
 
+  // Advisory loop-breaker: counts consecutive identical tool calls and, past
+  // the thresholds, nudges the model on the next step. One guard per stream —
+  // a stream is one turn for one conversation, so chains never leak across
+  // turns or into subagents (which run their own streams).
+  const repeatGuard =
+    hasTools && repeatToolReminder !== false
+      ? createRepeatToolReminderGuard(repeatToolReminder ?? {})
+      : undefined;
+
+  // Post-execute observation point: `tool-result` chunks fire for executed and
+  // denied calls; calls whose execute threw surface only through
+  // `experimental_onToolCallFinish` below (the SDK filters `tool-error` out of
+  // onChunk). Both are attempts worth counting, exactly like dsh's
+  // `tools/post-execute`.
+  const observeRepeat = (toolName: string | undefined, input: unknown) => {
+    const reminder = repeatGuard?.observe({ toolName, input });
+    if (!reminder) {
+      return;
+    }
+
+    request.onNotice?.({
+      code: 'repeat-tool-reminder',
+      level: 'info',
+      message: `Repeated ${reminder.summary} — nudged the model to change approach.`
+    });
+  };
+
   try {
     const result = streamText({
       model,
@@ -180,6 +217,20 @@ export async function runProviderStream({
       tools: request.tools,
       toolChoice: request.toolChoice,
       stopWhen: hasTools ? stepCountIs(config.toolStepLimit) : undefined,
+      // Delivery point for the repeat-call guard: when a reminder is queued,
+      // append it after the previous step's tool results for this step only.
+      // The override is not merged into response.messages, so the nudge is
+      // model-visible for one step and never persisted to the transcript.
+      prepareStep: repeatGuard
+        ? ({ messages, stepNumber }) => {
+            if (stepNumber === 0) {
+              return {};
+            }
+
+            const injected = repeatGuard.injectIntoStepMessages(messages);
+            return injected === messages ? {} : { messages: injected };
+          }
+        : undefined,
       temperature,
       maxOutputTokens,
       abortSignal: signal,
@@ -225,6 +276,13 @@ export async function runProviderStream({
           case 'tool-result': {
             const output = chunk.output as { type?: unknown; reason?: unknown } | null | undefined;
             const denied = output != null && typeof output === 'object' && output.type === 'execution-denied';
+
+            // Count denied attempts too: a model hammering a call the approval
+            // ladder refuses is exactly the loop worth breaking. Preliminary
+            // (streaming) results are skipped so one execution counts once.
+            if (!chunk.preliminary) {
+              observeRepeat(chunk.toolName ?? toolNameByCallId.get(chunk.toolCallId), chunk.input);
+            }
 
             if (denied) {
               request.onToolOutputDenied?.({
@@ -292,6 +350,12 @@ export async function runProviderStream({
         if (success) {
           return;
         }
+
+        // A call whose execute threw is still an attempt; count it so a model
+        // re-issuing a crashing call gets the same nudge. Errored calls never
+        // reach onChunk (the SDK filters `tool-error` out), so this callback is
+        // the only observation point for them.
+        observeRepeat(toolCall.toolName, toolCall.input);
 
         request.onToolOutputError?.({
           toolCallId: toolCall.toolCallId,

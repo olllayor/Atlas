@@ -47,6 +47,8 @@ import type { SubagentRuntime } from '../agents/SubagentRuntime';
 import { DEFAULT_TOOL_WORKSPACE } from '../tools/toolWorkspace';
 import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
 import { formatToolError } from '../tools/ToolErrorFormatter';
+import type { SpillStore } from '../tools/spill/SpillStore';
+import { applySpillPolicy } from '../tools/spill/spillPolicy';
 import { logger, startTimer } from '../../observability/logger';
 import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
@@ -451,6 +453,15 @@ export class ChatSessionRuntime {
      * does.
      */
     private readonly audit: { record: (input: AuditInput) => void } | null = null,
+    /**
+     * Where oversized tool results are persisted so the model's context sees a
+     * bounded preview instead of the full text.
+     *
+     * Optional by design: the spill policy is best-effort everywhere, and its
+     * absence is a no-op rather than an error — the same posture the policy
+     * takes toward a save failure.
+     */
+    private readonly spillStore: Pick<SpillStore, 'saveText'> | null = null,
   ) {}
 
   /** The server behind a namespaced tool name, for an audit record. */
@@ -1193,6 +1204,18 @@ export class ChatSessionRuntime {
       }
       tools = filtered as any;
     }
+    // Oversized results are persisted to the spill store and replaced with a
+    // bounded preview + locator, so one runaway grep or build log cannot eat
+    // the context budget. Applied after the allowedTools filter so wrapping
+    // never resurrects a withheld tool; a missing store is a no-op.
+    if (tools) {
+      tools = applySpillPolicy(
+        tools,
+        this.spillStore
+          ? { conversationId: request.conversationId, store: this.spillStore }
+          : null
+      ) as any;
+    }
     // Catalog-derived limits so the adapter can size the request to this model
     // rather than to a provider-wide constant.
     const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
@@ -1355,6 +1378,9 @@ export class ChatSessionRuntime {
             }
 
             this.applyEvent(turnState, { type: 'tool-approval-requested', requestId, ...event }, emitEvent);
+          },
+          onNotice: (event) => {
+            emitEvent({ type: 'notice', requestId, ...event });
           },
         });
 

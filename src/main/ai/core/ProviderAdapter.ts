@@ -74,6 +74,13 @@ export type ProviderStreamRequest = {
     toolName?: string;
     reason?: string;
   }) => void;
+  /**
+   * Transient, user-facing status from the stream loop itself (not from the
+   * model). Currently emitted by the repeat-tool-call guard when it nudges the
+   * model. Mirrors the `notice` stream event shape minus requestId, which the
+   * runtime stamps.
+   */
+  onNotice?: (event: { code: string; level: 'info' | 'warning'; message: string }) => void;
 };
 
 export type ProviderStreamResult = {

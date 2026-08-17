@@ -8,6 +8,7 @@ import { CustomProviderService } from './ai/core/CustomProviderService';
 import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
+import { SpillStore } from './ai/tools/spill/SpillStore';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
@@ -164,6 +165,12 @@ async function resolveSitesDirectory() {
   return sitesPath;
 }
 
+async function resolveSpillsDirectory() {
+  const spillsPath = join(app.getPath('userData'), 'spills');
+  await mkdir(spillsPath, { recursive: true });
+  return spillsPath;
+}
+
 app.whenReady().then(async () => {
   // First thing after ready: everything below is worth having a record of, and
   // a failure here is exactly the kind that leaves no other trace.
@@ -189,6 +196,13 @@ app.whenReady().then(async () => {
   const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
   registerAttachmentProtocolHandler(attachmentStore);
   const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
+  const spillStore = new SpillStore(await resolveSpillsDirectory());
+  // Reclaim spill directories whose conversation is gone. Fire-and-forget:
+  // sweeping is housekeeping, and a slow disk must not delay startup. The
+  // min-age guard keeps any directory a live turn may be writing to.
+  void spillStore
+    .sweep(database.conversations.list({ includeArchived: true, includeSide: true }).map((c) => c.id))
+    .catch((err) => logger.warn('spill.sweep_failed', { error: err instanceof Error ? err.message : String(err) }));
   const toolStateStore = new ToolStateStore(database.toolExecutions);
   const interruptedMessageIds = toolStateStore.reconcileInterrupted();
   const interruptedRuntimeSessions = database.runtimeState.reconcileInterruptedSessions();
@@ -462,6 +476,7 @@ app.whenReady().then(async () => {
         }
       },
       mcpAuditLog,
+      spillStore,
     ),
     database.runtimeState,
     toolStateStore,
@@ -501,7 +516,12 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     projectsRepo: database.projects,
     settingsRepo: database.settings,
-    onConversationDeleted: (conversationId) => ptyService.kill(conversationId),
+    onConversationDeleted: (conversationId) => {
+      ptyService.kill(conversationId);
+      // Spill files are an implementation detail of the conversation's turns;
+      // they go with it. Fire-and-forget for the same reason the sweep is.
+      void spillStore.deleteConversation(conversationId).catch(() => undefined);
+    },
   });
   registerProjectsIpc({
     projectsRepo: database.projects,

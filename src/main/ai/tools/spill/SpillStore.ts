@@ -35,6 +35,21 @@ export interface SavedSpill {
 }
 
 /**
+ * An append-only spill file opened for streaming writes. Used by producers
+ * (a child process's stdout) that must bound memory by writing as data
+ * arrives, rather than accumulating the full text and calling
+ * {@link SpillStore.saveText} at the end.
+ */
+export interface SpillStream {
+  /** Absolute path — the locator quoted back to the model. */
+  path: string;
+  /** Append one chunk (UTF-8). Serialized by the caller. */
+  append(text: string): Promise<void>;
+  /** Flush and close. Safe to call once. */
+  end(): Promise<void>;
+}
+
+/**
  * Encode an arbitrary string as one filesystem-safe path segment.
  *
  * Conversation ids come from our own database and tool names from our own
@@ -92,6 +107,27 @@ export class SpillStore {
     }
 
     return { path, bytes };
+  }
+
+  /**
+   * Open a fresh append-only spill file under the conversation's directory
+   * and return a streaming handle. Same filename convention and exclusive
+   * owner-only creation as {@link saveText}; the difference is that content
+   * is written incrementally, so a producer can bound its memory instead of
+   * buffering the full text.
+   */
+  async openStream(input: { conversationId: string; toolName: string }): Promise<SpillStream> {
+    const dir = join(this.rootDir, encodeSegment(input.conversationId));
+    await mkdir(dir, { recursive: true });
+
+    const path = join(dir, `${randomBytes(6).toString('hex')}-${encodeSegment(input.toolName)}.txt`);
+    const handle = await open(path, 'wx', 0o600);
+
+    return {
+      path,
+      append: (text: string) => handle.appendFile(text, 'utf8'),
+      end: () => handle.close()
+    };
   }
 
   /** Remove every spill file a conversation produced. */

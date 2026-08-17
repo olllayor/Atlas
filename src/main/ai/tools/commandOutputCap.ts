@@ -77,6 +77,15 @@ function safeCutIndex(value: string, index: number) {
 export class BoundedCommandOutput {
   private readonly byteBudget: number;
 
+  /**
+   * Optional overflow tee, invoked with the FULL stream from the moment the
+   * byte budget is crossed: first with the entire buffered prefix at the
+   * crossing, then with every subsequent chunk. It fires only on overflow, so
+   * a caller can use it to persist the complete output lazily (see
+   * `SpillingCommandOutput`) without touching the bounded in-memory path.
+   */
+  private readonly tee: ((text: string) => void) | undefined;
+
   /** Verbatim chunks, kept only while the stream is still under budget. */
   private buffered: string[] | null = [];
   private bufferedBytes = 0;
@@ -92,8 +101,9 @@ export class BoundedCommandOutput {
   private pendingTail = '';
   private pendingOmitted = 0;
 
-  constructor(byteBudget: number = COMMAND_OUTPUT_BYTE_BUDGET) {
+  constructor(byteBudget: number = COMMAND_OUTPUT_BYTE_BUDGET, tee?: (text: string) => void) {
     this.byteBudget = Math.max(0, byteBudget);
+    this.tee = tee;
   }
 
   get truncated() {
@@ -153,6 +163,11 @@ export class BoundedCommandOutput {
   }
 
   private ingest(text: string) {
+    // Every chunk that reaches `ingest` is post-overflow (the first call
+    // carries the entire buffered prefix), so teeing here captures the full
+    // stream without touching the under-budget fast path.
+    this.tee?.(text);
+
     let start = 0;
 
     for (;;) {

@@ -213,7 +213,7 @@ export function PluginDetailPanel({
                   <button
                     type="submit"
                     disabled={savingAuth}
-                    className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+                    className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-text-inverse hover:bg-brand/90 disabled:opacity-50"
                   >
                     {savingAuth ? 'Saving...' : 'Save to Keychain'}
                   </button>

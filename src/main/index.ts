@@ -490,6 +490,7 @@ app.whenReady().then(async () => {
             ptyService.echoAgentCommand(conversationId, command, exitCode),
         }),
         jobRegistry,
+        spillStore,
       }),
       () => database.settings.getVisualMode(),
       mcpToolsProvider,

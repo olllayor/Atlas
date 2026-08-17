@@ -6,6 +6,7 @@ import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceMo
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
 import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
 import type { BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
+import type { SpillStore } from './spill/SpillStore';
 
 /**
  * Where a turn's tools run, resolved in the main process from the conversation
@@ -48,6 +49,15 @@ export type ToolWorkspace = {
    * detached fire-and-forget spawn.
    */
   jobRegistry?: BackgroundJobRegistry | null;
+  /**
+   * The app-wide spill store, present when spill persistence is available.
+   * Foreground bash tees any stream that overflows the ingest budget to a
+   * spill file here and reports its path, so a large build log stays bounded
+   * in memory yet fully recoverable via `read_file`. Absent in tests and on
+   * the default workspace, where overflow degrades to bounded in-memory
+   * truncation only.
+   */
+  spillStore?: Pick<SpillStore, 'openStream'> | null;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;

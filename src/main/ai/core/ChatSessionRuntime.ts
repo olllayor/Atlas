@@ -51,6 +51,7 @@ import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
 import { formatToolError } from '../tools/ToolErrorFormatter';
 import type { SpillStore } from '../tools/spill/SpillStore';
 import { applySpillPolicy } from '../tools/spill/spillPolicy';
+import { applyTimeoutPolicy } from '../guards/timeoutPolicy';
 import { logger, startTimer } from '../../observability/logger';
 import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
@@ -1279,12 +1280,17 @@ export class ChatSessionRuntime {
     // the context budget. Applied after the allowedTools filter so wrapping
     // never resurrects a withheld tool; a missing store is a no-op.
     if (tools) {
-      tools = applySpillPolicy(
+      const withSpill = applySpillPolicy(
         tools,
         this.spillStore
           ? { conversationId: request.conversationId, store: this.spillStore }
           : null
-      ) as any;
+      );
+      // Cooperative per-tool deadlines: a tool that declares `timeoutMs` gets
+      // its abort signal fused with a timer, and a fired deadline replaces
+      // the result with a structured TOOL_TIMEOUT. Applied outermost so the
+      // deadline covers the spill wrapper too.
+      tools = applyTimeoutPolicy(withSpill) as any;
     }
     // Catalog-derived limits so the adapter can size the request to this model
     // rather than to a provider-wide constant.

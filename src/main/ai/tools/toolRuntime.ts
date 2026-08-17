@@ -633,9 +633,10 @@ function decodeDuckDuckGoUrl(rawUrl: string) {
   }
 }
 
-async function fetchText(url: URL | string, init?: RequestInit) {
+async function fetchText(url: URL | string, init?: RequestInit, signal?: AbortSignal) {
   const response = await fetch(url, {
     ...init,
+    signal,
     headers: {
       'User-Agent': 'Atlas/0.1',
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
@@ -667,12 +668,14 @@ export async function webSearchToolExecute(input: {
   query: string;
   allowed_domains?: string[];
   blocked_domains?: string[];
+  /** Fused turn-abort + timeout signal, supplied by the timeout policy. */
+  signal?: AbortSignal;
 }) {
   const startedAt = Date.now();
   const searchUrl = new URL('https://duckduckgo.com/html/');
   searchUrl.searchParams.set('q', input.query);
 
-  const response = await fetchText(searchUrl);
+  const response = await fetchText(searchUrl, undefined, input.signal);
 
   if (!response.ok) {
     throw new Error(`Web search failed with status ${response.status}.`);
@@ -728,9 +731,9 @@ export async function webSearchToolExecute(input: {
   };
 }
 
-async function fetchViaJinaReader(url: string) {
+async function fetchViaJinaReader(url: string, signal?: AbortSignal) {
   const jinaUrl = `https://r.jina.ai/http://${url.replace(/^https?:\/\//, '')}`;
-  const response = await fetchText(jinaUrl);
+  const response = await fetchText(jinaUrl, undefined, signal);
 
   if (!response.ok) {
     throw new Error(`Jina reader failed with status ${response.status}.`);
@@ -803,6 +806,8 @@ function extractRelevantText(text: string, prompt: string) {
 export async function webFetchToolExecute(input: {
   url: string;
   prompt: string;
+  /** Fused turn-abort + timeout signal, supplied by the timeout policy. */
+  signal?: AbortSignal;
 }) {
   const startedAt = Date.now();
   const normalizedUrl = new URL(input.url);
@@ -811,7 +816,7 @@ export async function webFetchToolExecute(input: {
     normalizedUrl.protocol = 'https:';
   }
 
-  let response = await fetchText(normalizedUrl);
+  let response = await fetchText(normalizedUrl, undefined, input.signal);
   const arrayBuffer = await response.arrayBuffer();
   let bytes = arrayBuffer.byteLength;
   let contentType = response.headers.get('content-type') ?? '';
@@ -838,7 +843,7 @@ export async function webFetchToolExecute(input: {
 
   if (looksBlocked) {
     try {
-      const fallback = await fetchViaJinaReader(normalizedUrl.toString());
+      const fallback = await fetchViaJinaReader(normalizedUrl.toString(), input.signal);
       response = fallback.response;
       bytes = Buffer.byteLength(fallback.text, 'utf8');
       contentType = response.headers.get('content-type') ?? 'text/plain';

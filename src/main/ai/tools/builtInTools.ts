@@ -254,28 +254,44 @@ export function createBuiltInTools(
       strict: true,
       execute: (input: Parameters<typeof globToolExecute>[0]) => globToolExecute(input, workspace)
     }),
-    web_search: tool({
-      description:
-        'Search the web for current information. Use this when the answer depends on recent documentation, current events, or live web pages.',
-      inputSchema: z.object({
-        query: z.string().trim().min(2).describe('Search query'),
-        allowed_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Only include results from these domains'),
-        blocked_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Exclude results from these domains')
+    web_search: {
+      ...tool({
+        description:
+          'Search the web for current information. Use this when the answer depends on recent documentation, current events, or live web pages.',
+        inputSchema: z.object({
+          query: z.string().trim().min(2).describe('Search query'),
+          allowed_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Only include results from these domains'),
+          blocked_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Exclude results from these domains')
+        }),
+        strict: true,
+        execute: (
+          input: Parameters<typeof webSearchToolExecute>[0],
+          execOptions?: { abortSignal?: AbortSignal }
+        ) => webSearchToolExecute({ ...input, signal: execOptions?.abortSignal })
       }),
-      strict: true,
-      execute: webSearchToolExecute
-    }),
-    web_fetch: tool({
-      description:
-        'Fetch a URL and extract text content relevant to the provided prompt. Use this after web search when you need page content, not just links.',
-      needsApproval: true,
-      inputSchema: z.object({
-        url: z.string().trim().url().describe('Fully qualified URL to fetch'),
-        prompt: z.string().trim().min(1).describe('What information should be extracted from the page')
+      // Cooperative budget enforced by the timeout policy: the execute above
+      // forwards the fused abort signal to fetch, so a hung search is cut at
+      // 60s instead of blocking the turn until the stream watchdog. Declared
+      // outside tool() because the SDK's Tool type has no timeoutMs field.
+      timeoutMs: 60_000
+    },
+    web_fetch: {
+      ...tool({
+        description:
+          'Fetch a URL and extract text content relevant to the provided prompt. Use this after web search when you need page content, not just links.',
+        needsApproval: true,
+        inputSchema: z.object({
+          url: z.string().trim().url().describe('Fully qualified URL to fetch'),
+          prompt: z.string().trim().min(1).describe('What information should be extracted from the page')
+        }),
+        strict: true,
+        execute: (
+          input: Parameters<typeof webFetchToolExecute>[0],
+          execOptions?: { abortSignal?: AbortSignal }
+        ) => webFetchToolExecute({ ...input, signal: execOptions?.abortSignal })
       }),
-      strict: true,
-      execute: webFetchToolExecute
-    }),
+      timeoutMs: 60_000
+    },
     bash: tool({
       description: describeBashTool(workspace),
       needsApproval: true,

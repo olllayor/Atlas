@@ -1,4 +1,5 @@
 .opencode/
+.zcode/
 .kilo/
 node_modules
 dist

@@ -1259,6 +1259,12 @@ export type SearchMessagesRequest = {
   limit?: number;
   /** Mirrors `ListConversationsRequest`: archived chats are out of sight until asked for. */
   includeArchived?: boolean;
+  /**
+   * Restrict hits to one project's conversations. Null/omitted searches
+   * everything. Unfiled conversations (`project_id IS NULL`) never match a
+   * project filter.
+   */
+  projectId?: string | null;
 };
 
 /**

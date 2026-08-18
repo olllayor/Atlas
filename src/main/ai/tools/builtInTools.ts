@@ -31,6 +31,8 @@ import {
   githubPrStatusToolExecute
 } from './githubTools';
 import { detectSandboxMechanism } from './sandbox';
+import { createSessionSearchTools } from './sessionSearchTools';
+import type { SessionSearchSource } from './sessionSearchTools';
 import {
   bashToolExecute,
   globToolExecute,
@@ -192,7 +194,12 @@ export function createBuiltInTools(
   mode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
   workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
   subagentRuntime?: SubagentRuntime,
-  subagentContext?: SubagentContext
+  subagentContext?: SubagentContext,
+  /**
+   * The past-conversation search seam for `session_search`. Optional so every
+   * existing call site is unchanged; the tool is omitted when absent.
+   */
+  sessionSearch?: SessionSearchSource | null
 ) {
   const agentTools = createAgentTools(subagentRuntime, subagentContext);
   // Job-control tools exist only where the substrate does: a registry and a
@@ -202,10 +209,16 @@ export function createBuiltInTools(
     workspace.jobRegistry && workspace.conversationId
       ? createJobTools(workspace.jobRegistry, workspace.conversationId)
       : {};
+  // Recall over past sessions exists only where the search source does; the
+  // project filter rides the workspace so "project only" means this project.
+  const sessionSearchTools = sessionSearch
+    ? createSessionSearchTools(sessionSearch, { projectId: workspace.projectId ?? null })
+    : {};
   const all = {
     ...(extraTools ?? {}),
     ...agentTools,
     ...jobTools,
+    ...sessionSearchTools,
     ...buildCodeTools(workspace),
     read_file: tool({
       description:

@@ -185,7 +185,7 @@ export class MessageSearchRepo {
     }
 
     const rows = this.db
-      .prepare<{ match: string; includeArchived: number; limit: number }, SearchRow>(
+      .prepare<{ match: string; includeArchived: number; projectId: string | null; limit: number }, SearchRow>(
         `
           SELECT
             m.id AS messageId,
@@ -200,6 +200,7 @@ export class MessageSearchRepo {
           JOIN conversations c ON c.id = m.conversation_id
           WHERE ${MESSAGE_SEARCH_TABLE} MATCH @match
             AND (@includeArchived = 1 OR c.archived_at IS NULL)
+            AND (@projectId IS NULL OR c.project_id = @projectId)
             -- Side conversations are hidden from the listing on purpose, and a
             -- search that surfaced them would be the one place a tangent leaked
             -- back into history. Filtered here rather than at index time: the
@@ -214,6 +215,7 @@ export class MessageSearchRepo {
       .all({
         match,
         includeArchived: request.includeArchived ? 1 : 0,
+        projectId: request.projectId ?? null,
         limit: clampLimit(request.limit)
       });
 
@@ -233,8 +235,9 @@ export class MessageSearchRepo {
     }
 
     const conditions = terms.map((_, index) => `m.content LIKE @term${index} ESCAPE '\\'`).join(' AND ');
-    const parameters: Record<string, string | number> = {
+    const parameters: Record<string, string | number | null> = {
       includeArchived: request.includeArchived ? 1 : 0,
+      projectId: request.projectId ?? null,
       limit: clampLimit(request.limit)
     };
 
@@ -243,7 +246,7 @@ export class MessageSearchRepo {
     });
 
     const rows = this.db
-      .prepare<Record<string, string | number>, Omit<SearchRow, 'snippet'> & { content: string }>(
+      .prepare<Record<string, string | number | null>, Omit<SearchRow, 'snippet'> & { content: string }>(
         `
           SELECT
             m.id AS messageId,
@@ -257,6 +260,7 @@ export class MessageSearchRepo {
           JOIN conversations c ON c.id = m.conversation_id
           WHERE ${conditions}
             AND (@includeArchived = 1 OR c.archived_at IS NULL)
+            AND (@projectId IS NULL OR c.project_id = @projectId)
             -- Side conversations are hidden from the listing on purpose, and a
             -- search that surfaced them would be the one place a tangent leaked
             -- back into history. Filtered here rather than at index time: the

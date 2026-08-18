@@ -13,6 +13,7 @@ import {
 import type { SqliteDatabase } from '../src/main/db/client.js';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo.js';
 import { MessageSearchRepo, toFtsMatchExpression } from '../src/main/db/repositories/messageSearchRepo.js';
+import { ProjectsRepo } from '../src/main/db/repositories/projectsRepo.js';
 import { MESSAGE_SEARCH_TABLE, applySchema } from '../src/main/db/schema.js';
 
 function wrap(raw: DatabaseSync): SqliteDatabase {
@@ -47,7 +48,7 @@ function makeDatabase(t: TestContext, label: string) {
   const database = wrap(raw);
   applySchema(database);
 
-  return { database, raw };
+  return { database, raw, tempDir };
 }
 
 /**
@@ -380,4 +381,73 @@ test('the search index migration is idempotent across reopen', (t) => {
   assert.doesNotThrow(() => applySchema(wrap(reopened)));
 
   assert.equal(new ConversationsRepo(wrap(reopened)).searchMessages({ query: 'search index' }).length, 1);
+});
+
+/**
+ * Seeds two conversations that both mention the same term — one attached to a
+ * project, one unfiled — so a project filter has something to exclude.
+ */
+function seedProjectScope(database: SqliteDatabase, tempDir: string) {
+  const conversations = new ConversationsRepo(database);
+  const projects = new ProjectsRepo(database);
+  const project = projects.create({ root: join(tempDir, 'project-root'), title: 'Scoped project' });
+
+  const filed = conversations.create({ projectId: project.id });
+  conversations.addMessage({
+    conversationId: filed.id,
+    role: 'user',
+    content: 'The checkpoint compaction ladder lives in this project',
+    status: 'complete',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+  });
+
+  const unfiled = conversations.create();
+  conversations.addMessage({
+    conversationId: unfiled.id,
+    role: 'user',
+    content: 'The checkpoint idea came up here too, without a project',
+    status: 'complete',
+    providerId: 'openrouter',
+    modelId: 'openrouter/test-model',
+  });
+
+  return { conversations, project, filed, unfiled };
+}
+
+test('a project filter scopes search to that project on the indexed path', (t) => {
+  const { database, tempDir } = makeDatabase(t, 'search-project-index');
+  const { conversations, project, filed, unfiled } = seedProjectScope(database, tempDir);
+
+  const all = conversations.searchMessages({ query: 'checkpoint' });
+  assert.deepEqual(
+    new Set(all.map((hit) => hit.conversationId)),
+    new Set([filed.id, unfiled.id]),
+    'without a filter both conversations match'
+  );
+
+  const scoped = conversations.searchMessages({ query: 'checkpoint', projectId: project.id });
+  assert.deepEqual(scoped.map((hit) => hit.conversationId), [filed.id]);
+
+  // An unfiled conversation never matches a project filter, and a filter for a
+  // project with no conversations matches nothing at all.
+  assert.deepEqual(conversations.searchMessages({ query: 'checkpoint', projectId: 'no-such-project' }), []);
+  assert.ok(unfiled.id);
+});
+
+test('a project filter scopes search the same way on the LIKE fallback', (t) => {
+  const { database, raw, tempDir } = makeDatabase(t, 'search-project-fallback');
+  const { conversations, project, filed } = seedProjectScope(database, tempDir);
+
+  removeSearchIndex(raw);
+  const fallback = new MessageSearchRepo(database);
+  assert.equal(fallback.hasSearchIndex(), false);
+
+  assert.equal(fallback.search({ query: 'checkpoint' }).length, 2, 'both match without a filter');
+  assert.deepEqual(
+    fallback.search({ query: 'checkpoint', projectId: project.id }).map((hit) => hit.conversationId),
+    [filed.id],
+    'the fallback honours the same scope as the index'
+  );
+  assert.deepEqual(fallback.search({ query: 'checkpoint', projectId: 'no-such-project' }), []);
 });

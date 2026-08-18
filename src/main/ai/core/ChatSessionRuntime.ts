@@ -41,6 +41,7 @@ import {
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
 import { JOB_TOOL_SYSTEM_PROMPT, buildJobCompletionNoticeMessage } from '../tools/jobTools';
+import { SESSION_SEARCH_SYSTEM_PROMPT } from '../tools/sessionSearchTools';
 import { formatCompletionNotice, type BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
 import type { SkillsService } from '../../plugins/SkillsService';
 import { createSkillTools } from '../../plugins/skillTools';
@@ -918,7 +919,7 @@ export class ChatSessionRuntime {
     const siteTools = this.resolveSiteTools(request);
     const tools = request.enableTools
       ? {
-          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
+          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace, undefined, undefined, this.conversationsRepo),
           ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
           // Deliberately no activation hook here — see the constructor.
           // Last known catalog: this path cannot await a connection, and an
@@ -1077,6 +1078,9 @@ export class ChatSessionRuntime {
       // tool the model cannot call is noise, and omitting it where the tools
       // exist would leave the model busy-polling.
       ...(workspace.jobRegistry && workspace.conversationId ? [JOB_TOOL_SYSTEM_PROMPT] : []),
+      // session_search rides the always-present conversationsRepo, so its
+      // etiquette ships unconditionally, like update_plan's.
+      SESSION_SEARCH_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
       ...(skillsPrompt ? [skillsPrompt] : []),
@@ -1252,7 +1256,8 @@ export class ChatSessionRuntime {
             toolPermissionMode,
             workspace,
             subagentRuntime,
-            subagentContext
+            subagentContext,
+            this.conversationsRepo
           ),
           ...(this.skillsService
             ? createSkillTools(

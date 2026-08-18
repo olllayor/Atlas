@@ -667,6 +667,14 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE conversations ADD COLUMN worktree_root TEXT');
   }
 
+  // Migration: sticky Sites opt-in. Once a conversation mentions @Sites its
+  // toolset stays registered for the rest of the conversation, so the tool
+  // catalog stops toggling per message (prompt-cache stability). Existing rows
+  // read back as not opted in, which matches the old per-mention behaviour.
+  if (!conversationColumns.includes('sites_opt_in')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN sites_opt_in INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Migration: pin and archive. Both default to NULL, so every existing
   // conversation reads back as unpinned and unarchived — nothing disappears
   // from the sidebar on upgrade.

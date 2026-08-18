@@ -180,14 +180,28 @@ export function buildTaskEnvelope(
 /**
  * A FIFO slot queue enforcing the T2 bounded-concurrency rule: at most
  * `maxConcurrent` tasks hold a slot; the rest sit `pending` in first-come order.
+ *
+ * One extra rule keeps spawns deadlock-free: a single conversation can never
+ * have more in-flight subagents (running + waiting) than the total slot count.
+ * A subagent keeps its slot while it awaits its own nested spawns, so a
+ * conversation that could occupy every slot and still queue one more would let
+ * the last waiter block on a slot held by the ancestor it waits on — a
+ * circular wait that only abort could break. Rejecting at the cap surfaces a
+ * per-task error instead of a hung turn.
  */
+/** One queued slot request. Only the path that removes it from the queue may
+ * return its pending count, so drain/abort/promotion can't double-decrement. */
+type TaskSlotWaiter = {
+  resolve: (release: () => void) => void;
+  reject: (reason: Error) => void;
+  conversationId?: string;
+};
+
 export class TaskSlotQueue {
-  private waiting: Array<{
-    resolve: (release: () => void) => void;
-    reject: (reason: Error) => void;
-    conversationId?: string;
-  }> = [];
+  private waiting: TaskSlotWaiter[] = [];
   private slotsInUse = 0;
+  /** In-flight acquires per conversation: running slots plus queued waiters. */
+  private pendingByConversation = new Map<string, number>();
 
   constructor(private readonly maxConcurrent: number) {}
 
@@ -203,29 +217,51 @@ export class TaskSlotQueue {
     return this.maxConcurrent;
   }
 
-  /** Try to take a slot now; if the cap is reached, hold until one frees. */
+  /**
+   * Try to take a slot now; if the cap is reached, hold until one frees.
+   * Throws immediately when the conversation is already at the per-conversation
+   * cap — see the class comment for why that wait would be unsafe.
+   */
   async acquire(conversationId?: string, signal?: AbortSignal): Promise<() => void> {
+    if (conversationId !== undefined) {
+      const pending = this.pendingByConversation.get(conversationId) ?? 0;
+      if (pending >= this.maxConcurrent) {
+        throw new Error(
+          `Subagent capacity reached: this conversation already has ${pending} subagents running or waiting (limit ${this.maxConcurrent}). Wait for one to finish before spawning more.`
+        );
+      }
+      this.pendingByConversation.set(conversationId, pending + 1);
+    }
+
     if (this.slotsInUse < this.maxConcurrent) {
       this.slotsInUse += 1;
-      return () => this.release();
+      return this.makeRelease(conversationId);
     }
 
     return new Promise<() => void>((resolve, reject) => {
       const waiter = { resolve: (release: () => void) => resolve(release), reject, conversationId };
       this.waiting.push(waiter);
 
+      // Remove from queue before rejecting so release() doesn't try to promote
+      // a stale waiter. Only the path that actually removes the waiter returns
+      // its pending count — if drainQueue() or a slot promotion got here first,
+      // the waiter is already gone and its count is already accounted for.
+      const abandon = () => {
+        const index = this.waiting.indexOf(waiter);
+        if (index === -1) return;
+        this.waiting.splice(index, 1);
+        this.decrementPending(conversationId);
+      };
+
       if (signal) {
         if (signal.aborted) {
-          // Remove from queue before rejecting so release() doesn't try to promote a stale waiter.
-          const idx = this.waiting.indexOf(waiter);
-          if (idx !== -1) this.waiting.splice(idx, 1);
+          abandon();
           reject(new DOMException('Operation aborted', 'AbortError'));
         } else {
           signal.addEventListener(
             'abort',
             () => {
-              const i = this.waiting.indexOf(waiter);
-              if (i !== -1) this.waiting.splice(i, 1);
+              abandon();
               reject(new DOMException('Operation aborted', 'AbortError'));
             },
             { once: true }
@@ -235,22 +271,42 @@ export class TaskSlotQueue {
     });
   }
 
-  private release(): void {
+  private makeRelease(conversationId?: string): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release(conversationId);
+    };
+  }
+
+  private decrementPending(conversationId?: string): void {
+    if (conversationId === undefined) return;
+    const pending = (this.pendingByConversation.get(conversationId) ?? 0) - 1;
+    if (pending <= 0) {
+      this.pendingByConversation.delete(conversationId);
+    } else {
+      this.pendingByConversation.set(conversationId, pending);
+    }
+  }
+
+  private release(conversationId?: string): void {
     const next = this.waiting.shift();
     if (next) {
-      next.resolve(() => this.release());
+      // The slot transfers to the promoted waiter: the global count stays, and
+      // the waiter's pending count (paid at acquire time) simply changes from
+      // waiting to running while the releaser's is returned.
+      this.decrementPending(conversationId);
+      next.resolve(this.makeRelease(next.conversationId));
     } else {
       this.slotsInUse = Math.max(0, this.slotsInUse - 1);
+      this.decrementPending(conversationId);
     }
   }
 
   /** Drop every queued waiter (used by cascade interrupt); returns how many were waiting. */
   drainQueue(conversationId?: string): number {
-    let toDrain: Array<{
-      resolve: (release: () => void) => void;
-      reject: (reason: Error) => void;
-      conversationId?: string;
-    }>;
+    let toDrain: TaskSlotWaiter[];
 
     if (conversationId !== undefined) {
       toDrain = this.waiting.filter((w) => w.conversationId === conversationId);
@@ -263,6 +319,7 @@ export class TaskSlotQueue {
     }
 
     for (const waiter of toDrain) {
+      this.decrementPending(waiter.conversationId);
       const err = new Error('Task slot queue drained');
       err.name = 'AbortError';
       waiter.reject(err);

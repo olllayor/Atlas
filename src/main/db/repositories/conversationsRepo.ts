@@ -1700,4 +1700,33 @@ export class ConversationsRepo {
 
     return mode;
   }
+
+  /**
+   * Whether this conversation opted into the Sites toolset. Sticky on purpose:
+   * once the tools are in the catalog they stay there, so the tool list does
+   * not churn between turns and the provider's prompt cache survives.
+   */
+  getSiteOptIn(conversationId: string): boolean {
+    const row = this.db
+      .prepare<{ conversationId: string }, { sites_opt_in: number | null }>(
+        `SELECT sites_opt_in FROM conversations WHERE id = @conversationId`
+      )
+      .get({ conversationId });
+
+    return Boolean(row?.sites_opt_in);
+  }
+
+  setSiteOptIn(conversationId: string, optedIn: boolean): void {
+    const result = this.db
+      .prepare(
+        `UPDATE conversations
+         SET sites_opt_in = @optedIn, updated_at = @updatedAt
+         WHERE id = @conversationId`
+      )
+      .run({ conversationId, optedIn: optedIn ? 1 : 0, updatedAt: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+  }
 }

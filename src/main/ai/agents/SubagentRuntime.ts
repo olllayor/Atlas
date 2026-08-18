@@ -102,11 +102,16 @@ export class SubagentRuntime {
 
   /**
    * Whether a new spawn at the given depth can proceed.
-   * Returns false when nesting would exceed maxDepth — the caller should
-   * omit the spawn_agent tool in this case so the model never attempts it.
+   *
+   * Depth-only on purpose: this gates whether the `spawn_agent` tool is
+   * registered, and the tool catalog must stay stable across turns so the
+   * provider's prompt cache is not invalidated. Slot pressure is deliberately
+   * NOT checked here — it is enforced at `acquire` time, where an over-capacity
+   * spawn is rejected with an actionable per-task error instead of the tool
+   * silently vanishing from the catalog.
    */
   canSpawn(depth: number): boolean {
-    return depth < this.maxDepth && this.slotQueue.inUse < this.slotQueue.capacity;
+    return depth < this.maxDepth;
   }
 
   /** Total concurrency capacity (read for observability / tests). */

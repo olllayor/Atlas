@@ -201,9 +201,12 @@ test('TaskSlotQueue drainQueue rejects waiting promises with AbortError', async 
 });
 
 test('TaskSlotQueue drainQueue isolates by conversationId', async () => {
-  const queue = new TaskSlotQueue(1);
-  await queue.acquire('conv-1');
+  const queue = new TaskSlotQueue(2);
+  const release1 = await queue.acquire('conv-1');
+  const release2 = await queue.acquire('conv-2');
 
+  // Both slots held; each conversation's second acquire is admitted (pending
+  // 1 < cap 2) but must wait as a queued waiter.
   const p1 = queue.acquire('conv-1');
   const p2 = queue.acquire('conv-2');
 
@@ -219,6 +222,40 @@ test('TaskSlotQueue drainQueue isolates by conversationId', async () => {
   p2.then(() => { p2Settled = true; }, () => { p2Settled = true; });
   await new Promise((res) => setTimeout(res, 10));
   assert.equal(p2Settled, false);
+
+  // conv-2's waiter survives the conv-1 drain and takes the freed slot.
+  release1();
+  const release3 = await p2;
+  assert.equal(p2Settled, true);
+
+  release2();
+  release3();
+  assert.equal(queue.inUse, 0);
+});
+
+test('TaskSlotQueue rejects a conversation at the per-conversation cap', async () => {
+  const queue = new TaskSlotQueue(2);
+  const release1 = await queue.acquire('conv-1');
+  const p1 = queue.acquire('conv-1'); // admitted (pending 1 < 2), queued behind full slots
+
+  // conv-1 is now at the cap (1 running + 1 waiting): the next acquire is
+  // rejected outright instead of queueing — that wait is the deadlock vector.
+  await assert.rejects(queue.acquire('conv-1'), /capacity reached/i);
+
+  // Freeing conv-1's slot promotes its waiter.
+  release1();
+  const release3 = await p1;
+
+  release3();
+  assert.equal(queue.inUse, 0);
+
+  // Counts fully returned: conv-1 can fill the cap again from zero.
+  const r1 = await queue.acquire('conv-1');
+  const r2 = await queue.acquire('conv-1');
+  await assert.rejects(queue.acquire('conv-1'), /capacity reached/i);
+  r1();
+  r2();
+  assert.equal(queue.inUse, 0);
 });
 
 test('createTask and linkageFor preserve parentAgentId when spawned in nested subagent context', () => {

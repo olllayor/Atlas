@@ -484,10 +484,22 @@ app.whenReady().then(async () => {
       providers,
       contextManager,
       ({ conversationId, mentions }) => {
-        const optedIn = shouldLoadSiteTools({
-          mentions,
-          hasExistingSite: database.sites.hasSiteForConversation(conversationId),
-        });
+        // Sticky opt-in: once a conversation mentions @Sites the toolset stays
+        // registered for the rest of it, so the tool catalog stops toggling per
+        // message and the provider's prompt cache survives. The mention check
+        // still runs first so the very first opt-in persists itself.
+        const mentioned = mentions.includes('sites');
+        if (mentioned && !database.conversations.getSiteOptIn(conversationId)) {
+          database.conversations.setSiteOptIn(conversationId, true);
+        }
+
+        const optedIn =
+          mentioned ||
+          database.conversations.getSiteOptIn(conversationId) ||
+          shouldLoadSiteTools({
+            mentions,
+            hasExistingSite: database.sites.hasSiteForConversation(conversationId),
+          });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
       (conversationId) => ({

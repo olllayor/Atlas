@@ -584,3 +584,54 @@ test('ConversationsRepo carries execution target and worktree root through the s
   assert.equal(workspace.executionTarget, 'worktree');
   assert.equal(workspace.worktreeRoot, '/tmp/atlas/.atlas-worktrees/conv-1');
 });
+
+test('Sites opt-in is sticky per conversation and defaults to off', () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-site-optin-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction: <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) => (...args: TArgs) => {
+      raw.exec('BEGIN');
+      try {
+        const res = callback(...args);
+        raw.exec('COMMIT');
+        return res;
+      } catch (err) {
+        raw.exec('ROLLBACK');
+        throw err;
+      }
+    }
+  } as unknown as SqliteDatabase;
+
+  try {
+    // applySchema twice: the second run must be a no-op for the migration
+    // (PRAGMA-probed ALTER TABLE), proving idempotency.
+    applySchema(database);
+    applySchema(database);
+    const conversations = new ConversationsRepo(database);
+
+    const convA = conversations.create();
+    const convB = conversations.create();
+
+    // Migration default: every existing conversation reads back as opted out.
+    assert.equal(conversations.getSiteOptIn(convA.id), false);
+    assert.equal(conversations.getSiteOptIn(convB.id), false);
+
+    conversations.setSiteOptIn(convA.id, true);
+    assert.equal(conversations.getSiteOptIn(convA.id), true);
+    assert.equal(conversations.getSiteOptIn(convB.id), false); // isolation
+
+    // Sticky means it can also be cleared explicitly (e.g. a future settings
+    // surface); the repo itself does not force permanence.
+    conversations.setSiteOptIn(convA.id, false);
+    assert.equal(conversations.getSiteOptIn(convA.id), false);
+
+    // Unknown conversation: get is false, set throws.
+    assert.equal(conversations.getSiteOptIn('missing'), false);
+    assert.throws(() => conversations.setSiteOptIn('missing', true), /not found/);
+  } finally {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

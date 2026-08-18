@@ -93,7 +93,7 @@ test('Child tool events carry agentId + parentToolCallId attribution', async () 
   assert.equal(toolEnvelopes[1].parentToolCallId, 'parent-call-55');
 });
 
-test('Concurrency cap: 10 spawns with cap 4 never exceeds 4 active slots concurrently', async () => {
+test('Global concurrency cap: 10 spawns across conversations never exceed 4 active slots', async () => {
   let maxActiveObserved = 0;
   let currentActive = 0;
 
@@ -108,20 +108,26 @@ test('Concurrency cap: 10 spawns with cap 4 never exceeds 4 active slots concurr
     },
   });
 
-  const tasks = Array.from({ length: 10 }, (_, i) => ({
-    title: `Task ${i}`,
-    prompt: `Prompt ${i}`,
-  }));
+  // One task per conversation so the per-conversation cap never binds — this
+  // isolates the GLOBAL slot limit, which is what this test is about.
+  const promises = Array.from({ length: 10 }, (_, i) =>
+    runtime.spawn({
+      conversationId: `conv-concurrency-${i}`,
+      parentTurnId: 'turn-1',
+      parentToolCallId: `call-batch-${i}`,
+      title: `Task ${i}`,
+      prompt: `Prompt ${i}`,
+    })
+  );
 
-  const results = await runtime.spawnBatch({
-    conversationId: 'conv-concurrency',
-    parentTurnId: 'turn-1',
-    parentToolCallId: 'call-batch',
-    tasks,
-  });
+  const results = await Promise.all(promises);
 
   assert.equal(results.length, 10);
+  for (const result of results) {
+    assert.equal(result.status, 'completed');
+  }
   assert.ok(maxActiveObserved <= 4, `Expected max active <= 4, got ${maxActiveObserved}`);
+  assert.ok(maxActiveObserved >= 2, `Expected real concurrency, got ${maxActiveObserved}`);
 });
 
 test('Child that throws yields task.completed failed status and does not throw top-level', async () => {
@@ -271,7 +277,7 @@ test('interruptAll drains queued tasks and isolates by conversationId', async ()
   let finishedConv2 = false;
 
   const runtime = new SubagentRuntime({
-    maxConcurrent: 1,
+    maxConcurrent: 2,
     childExecutor: async ({ conversationId, signal }) => {
       if (conversationId === 'conv-1') {
         await new Promise((_, reject) => {
@@ -285,7 +291,7 @@ test('interruptAll drains queued tasks and isolates by conversationId', async ()
     },
   });
 
-  // Task 1 for conv-1 (runs immediately, holding slot)
+  // conv-1 task A: runs immediately, holds a slot, hangs until aborted.
   const conv1Run = runtime.spawn({
     conversationId: 'conv-1',
     parentTurnId: 'turn-1',
@@ -294,38 +300,41 @@ test('interruptAll drains queued tasks and isolates by conversationId', async ()
     prompt: 'Run 1',
   });
 
-  // Task 2 for conv-1 (queued behind maxConcurrent 1)
-  const conv1Queued = runtime.spawn({
-    conversationId: 'conv-1',
-    parentTurnId: 'turn-1',
+  // conv-2 task B: runs immediately, holds the second slot.
+  const conv2Run = runtime.spawn({
+    conversationId: 'conv-2',
+    parentTurnId: 'turn-2',
     parentToolCallId: 'call-2',
-    title: 'Conv 1 queued',
+    title: 'Conv 2 active',
     prompt: 'Run 2',
   });
 
-  // Task for conv-2 (queued behind maxConcurrent 1)
-  const conv2Queued = runtime.spawn({
-    conversationId: 'conv-2',
-    parentTurnId: 'turn-2',
+  // conv-1 task C: conv-1's pending count is 1 (< cap 2) so it is admitted,
+  // but both slots are held, so it queues as a waiter. (Under the
+  // per-conversation cap a conversation can still queue — just never beyond
+  // the total slot count.)
+  const conv1Queued = runtime.spawn({
+    conversationId: 'conv-1',
+    parentTurnId: 'turn-1',
     parentToolCallId: 'call-3',
-    title: 'Conv 2 queued',
+    title: 'Conv 1 queued',
     prompt: 'Run 3',
   });
 
   await new Promise((res) => setTimeout(res, 20));
 
-  // Interrupt conv-1
-  const count = await runtime.interruptAll('conv-1', 'Cancelled conv-1');
-  assert.equal(count, 2); // 1 active + 1 queued
+  // Interrupt conv-1: drains its queued waiter and aborts its active task,
+  // while conv-2 keeps running (isolation).
+  await runtime.interruptAll('conv-1', 'Cancelled conv-1');
 
   const res1 = await conv1Run;
-  const res2 = await conv1Queued;
+  const res3 = await conv1Queued;
   assert.equal(res1.status, 'interrupted');
-  assert.equal(res2.status, 'interrupted');
+  assert.equal(res3.status, 'interrupted');
 
-  // conv-2 should now get the slot and finish normally
-  const res3 = await conv2Queued;
-  assert.equal(res3.status, 'completed');
+  // conv-2 is untouched and completes normally.
+  const res2 = await conv2Run;
+  assert.equal(res2.status, 'completed');
   assert.equal(finishedConv2, true);
 });
 
@@ -414,4 +423,187 @@ test('Nested subagent execution forwards parentAgentId to child executor and nes
   );
   assert.ok(nestedStartEvent);
   assert.equal(nestedStartEvent.payload.parentAgentId, 'call-parent-spawn:0');
+});
+
+test('canSpawn is depth-only: true at full slots, false only at the depth cap', () => {
+  const runtime = new SubagentRuntime({ maxConcurrent: 1, maxDepth: 3 });
+
+  // A depth-2 agent's children would be depth 3 — still allowed.
+  assert.equal(runtime.canSpawn(0), true);
+  assert.equal(runtime.canSpawn(2), true);
+  // A depth-3 agent's children would be depth 4 > maxDepth — gated.
+  assert.equal(runtime.canSpawn(3), false);
+});
+
+test('spawn_agent stays registered while slots are full; omitted only at depth cap', async () => {
+  const runtime = new SubagentRuntime({
+    maxConcurrent: 1,
+    childExecutor: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { content: 'Done' };
+    },
+  });
+
+  const context = { conversationId: 'conv-gate', turnId: 'turn-1' };
+
+  // Fill the only slot.
+  const running = runtime.spawn({
+    conversationId: 'conv-gate',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-filler',
+    title: 'Filler',
+    prompt: 'Fill the slot',
+  });
+  await new Promise((res) => setTimeout(res, 10));
+
+  // Slot full — the tool must still be present (catalog stability).
+  const toolsAtFullSlots = createAgentTools(runtime, context);
+  assert.ok('spawn_agent' in toolsAtFullSlots, 'spawn_agent must stay registered at full slots');
+
+  // Depth cap (maxDepth defaults to 3) — the tool is omitted (static fact,
+  // safe to gate on).
+  const toolsAtDepthCap = createAgentTools(runtime, { ...context, depth: 3 });
+  assert.ok(!('spawn_agent' in toolsAtDepthCap), 'spawn_agent must be omitted at depth cap');
+
+  await running;
+});
+
+test('Per-conversation capacity: over-capacity spawn is rejected per task, not queued', async () => {
+  const runtime = new SubagentRuntime({
+    maxConcurrent: 2,
+    childExecutor: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { content: 'Done' };
+    },
+  });
+
+  // Two tasks fill both slots; a third from the same conversation must be
+  // rejected immediately with an actionable error — not queued behind its own
+  // siblings (that wait is the deadlock vector this rule removes).
+  const results = await runtime.spawnBatch({
+    conversationId: 'conv-cap',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-cap',
+    tasks: [
+      { title: 'A', prompt: 'Do A' },
+      { title: 'B', prompt: 'Do B' },
+      { title: 'C', prompt: 'Do C' },
+    ],
+  });
+
+  assert.equal(results.length, 3);
+  assert.equal(results[0].status, 'completed');
+  assert.equal(results[1].status, 'completed');
+  assert.equal(results[2].status, 'failed');
+  assert.match(results[2].error ?? '', /capacity reached/i);
+});
+
+test('Cross-conversation spawns still queue behind a busy slot', async () => {
+  const order: string[] = [];
+
+  const runtime = new SubagentRuntime({
+    maxConcurrent: 1,
+    childExecutor: async ({ conversationId }) => {
+      order.push(`start:${conversationId}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push(`end:${conversationId}`);
+      return { content: `Done ${conversationId}` };
+    },
+  });
+
+  const first = runtime.spawn({
+    conversationId: 'conv-a',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-a',
+    title: 'A',
+    prompt: 'A',
+  });
+  const second = runtime.spawn({
+    conversationId: 'conv-b',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-b',
+    title: 'B',
+    prompt: 'B',
+  });
+
+  const [resA, resB] = await Promise.all([first, second]);
+  assert.equal(resA.status, 'completed');
+  assert.equal(resB.status, 'completed');
+  // conv-b waited for conv-a's slot: strict serialization, no rejection.
+  assert.deepEqual(order, ['start:conv-a', 'end:conv-a', 'start:conv-b', 'end:conv-b']);
+});
+
+test('Deadlock scenario: nested spawn at capacity is rejected, not hung', async () => {
+  let runtime: SubagentRuntime;
+  runtime = new SubagentRuntime({
+    maxConcurrent: 1,
+    childExecutor: async ({ prompt, parentAgentId }) => {
+      if (prompt === 'Parent holds the only slot') {
+        // The parent child holds the only slot and tries to spawn a nested
+        // task from the same conversation. Old behaviour: the nested task
+        // queued behind its own ancestor and hung the turn. New behaviour:
+        // immediate per-task rejection.
+        const nestedTools = createAgentTools(runtime, {
+          conversationId: 'conv-deadlock',
+          turnId: 'turn-1',
+          parentAgentId,
+          parentToolCallId: 'call-nested',
+          depth: 1,
+        });
+
+        const nestedResult = await (nestedTools.spawn_agent as any).execute(
+          { tasks: [{ title: 'Nested', prompt: 'Nested child' }] },
+          { toolCallId: 'call-nested', messages: [] }
+        );
+
+        assert.equal(nestedResult.tasks.length, 1);
+        assert.equal(nestedResult.tasks[0].status, 'failed');
+        assert.match(nestedResult.tasks[0].error ?? '', /capacity reached/i);
+      }
+      return { content: `Done: ${prompt}` };
+    },
+  });
+
+  const parentResult = await runtime.spawn({
+    conversationId: 'conv-deadlock',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-parent',
+    title: 'Parent',
+    prompt: 'Parent holds the only slot',
+  });
+
+  assert.equal(parentResult.status, 'completed');
+});
+
+test('Rejected spawn does not leak the pending count: later spawns succeed', async () => {
+  const runtime = new SubagentRuntime({
+    maxConcurrent: 1,
+    childExecutor: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { content: 'Done' };
+    },
+  });
+
+  // First batch: one runs, one is rejected at the per-conversation cap.
+  const firstBatch = await runtime.spawnBatch({
+    conversationId: 'conv-leak',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-1',
+    tasks: [
+      { title: 'A', prompt: 'A' },
+      { title: 'B', prompt: 'B' },
+    ],
+  });
+  assert.equal(firstBatch[0].status, 'completed');
+  assert.equal(firstBatch[1].status, 'failed');
+
+  // After the slot frees, the same conversation can spawn again — the
+  // rejected waiter must not have left a phantom pending count behind.
+  const secondBatch = await runtime.spawnBatch({
+    conversationId: 'conv-leak',
+    parentTurnId: 'turn-2',
+    parentToolCallId: 'call-2',
+    tasks: [{ title: 'C', prompt: 'C' }],
+  });
+  assert.equal(secondBatch[0].status, 'completed');
 });

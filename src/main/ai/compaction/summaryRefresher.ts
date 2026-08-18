@@ -206,28 +206,26 @@ export class SummaryRefreshService {
 }
 
 /**
- * TODO(user contribution): the summarisation voice and the acceptance bar.
- *
- * This prompt defines what a "good" rolling summary reads like — its sections,
- * its density, its language policy — and `sanitizeModelSummary` below decides
- * which model outputs count as usable. Both are working defaults today;
- * reshape them to taste. Keep the four section names stable: the addendum
- * renderer and the heuristic fallback share that shape.
+ * The write side of the checkpoint-compaction contract (user-authored): the
+ * summary is a handoff for the LLM that resumes the conversation after
+ * compaction. The read side — the addendum intro that presents this summary
+ * back to the model — lives in `buildSystemContextAddendum` (ContextManager);
+ * the two must stay in sync.
  */
 const SUMMARY_SYSTEM_PROMPT =
-  'You compress older parts of a coding-assistant conversation into a rolling memory block. ' +
-  'Read the transcript and reply with exactly four sections in this order, each a header line ' +
-  'followed by short bullet lines starting with "- ": Goals, Decisions, Constraints, Open loops. ' +
-  'Capture what the user is trying to achieve, what was chosen or built, hard limits that must keep ' +
-  'being honoured, and anything left unfinished. Use the conversation\'s own language. Prefer ' +
-  'specifics (names, paths, commands) over vague restatements, omit pleasantries, and never invent ' +
-  'facts the transcript does not contain. Reply with the sections only — no preamble, no closing remarks.';
+  'You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\n' +
+  'Include:\n' +
+  '- Current progress and key decisions made\n' +
+  '- Important context, constraints, or user preferences\n' +
+  '- What remains to be done (clear next steps)\n' +
+  '- Any critical data, examples, or references needed to continue\n\n' +
+  'Be concise, structured, and focused on helping the next LLM seamlessly continue the work.';
 
 /**
- * TODO(user contribution): acceptance policy for model output.
- *
- * Current bar: non-trivial length and at least one recognised section header.
- * Tighten or relax as needed — returning null keeps the heuristic summary.
+ * Acceptance bar for model output (tune to taste — returning null keeps the
+ * heuristic summary). The write prompt is free-form, so this checks for *any*
+ * structure — markdown headers, "Section:" lines, or bullet lists — rather
+ * than specific section names.
  */
 export function sanitizeModelSummary(content: string | null | undefined): string | null {
   if (!content) {
@@ -239,8 +237,9 @@ export function sanitizeModelSummary(content: string | null | undefined): string
     return null;
   }
 
-  const hasSection = /^(Goals|Decisions|Constraints|Open loops):/m.test(trimmed);
-  if (!hasSection) {
+  const hasHeader = /^#{1,4}\s/m.test(trimmed) || /^[A-Z][^\n]{0,60}:$/m.test(trimmed);
+  const bulletCount = trimmed.match(/^[-*]\s/gm)?.length ?? 0;
+  if (!hasHeader && bulletCount < 2) {
     return null;
   }
 

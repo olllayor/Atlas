@@ -67,7 +67,7 @@ test('ContextManager emits structured rolling summary and system addendum for ol
   assert.match(input.rollingSummary!, /Constraints:/);
   assert.match(input.rollingSummary!, /Open loops:/);
   assert.ok(input.systemContextAddendum);
-  assert.match(input.systemContextAddendum!, /Rolling summary \(older turns\):/);
+  assert.match(input.systemContextAddendum!, /Another language model started to solve this problem/);
 });
 
 test('ContextManager reuses cached older summary when older fingerprint is unchanged', () => {

@@ -290,10 +290,17 @@ test('sanitizeModelSummary rejects thin or unstructured output', () => {
   assert.equal(sanitizeModelSummary(null), null);
   assert.equal(sanitizeModelSummary(''), null);
   assert.equal(sanitizeModelSummary('Goals:\n- x'), null, 'too short to be a useful memory block');
-  assert.equal(sanitizeModelSummary('Just some prose without any section headers at all, long enough to pass the length check.'), null);
+  assert.equal(sanitizeModelSummary('Just some prose without any section headers or bullets at all, long enough to pass the length check.'), null);
 
-  const valid = 'Goals:\n- build the thing\n\nDecisions:\n- none captured';
-  assert.equal(sanitizeModelSummary(valid), valid);
+  // The write prompt is free-form, so any real structure is accepted:
+  const fourSections = 'Goals:\n- build the thing\n\nDecisions:\n- none captured';
+  assert.equal(sanitizeModelSummary(fourSections), fourSections, 'legacy section format still passes');
+
+  const markdown = '## Progress\nShipped the summary store.\n\n## Next steps\n- wire the meter';
+  assert.equal(sanitizeModelSummary(markdown), markdown, 'markdown headers pass');
+
+  const bullets = 'Progress so far:\n- audited the compaction path\n- added the durable store';
+  assert.equal(sanitizeModelSummary(bullets), bullets, 'bullet lists pass');
 });
 
 test('sanitizeModelSummary clamps a runaway answer', () => {

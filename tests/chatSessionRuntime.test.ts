@@ -624,7 +624,7 @@ test('ChatSessionRuntime compiles older history into system addendum and keeps r
 
   assert.ok(capturedMessages);
   assert.equal(capturedMessages!.length, 20);
-  assert.ok(capturedSystem?.includes('ContextManager memory for older turns.'));
+  assert.ok(capturedSystem?.includes('Another language model started to solve this problem'));
 });
 
 test('ChatSessionRuntime retries once with aggressive compaction when prompt is too long before streaming', async () => {

@@ -478,10 +478,16 @@ function buildSystemContextAddendum(
     return null;
   }
 
-  const lines: string[] = ['ContextManager memory for older turns. Treat this as background context and prioritize recent raw turns for exact wording.'];
+  // The read side of the checkpoint-compaction contract (user-authored): the
+  // summary is presented as a handoff from the model that ran the older
+  // turns. The write side is SUMMARY_SYSTEM_PROMPT in summaryRefresher.ts —
+  // the two must stay in sync.
+  const lines: string[] = [
+    'Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:',
+  ];
 
   if (rollingSummary) {
-    lines.push('', 'Rolling summary (older turns):', rollingSummary);
+    lines.push('', rollingSummary);
   }
 
   if (toolSummaries.length > 0) {

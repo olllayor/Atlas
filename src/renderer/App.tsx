@@ -10,6 +10,7 @@ import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingComm
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
+import type { PermissionPreset } from '../shared/permissionPresets';
 import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
@@ -539,6 +540,28 @@ export default function App() {
       }
     },
     [selectedConversationId, setConversationToolPermissionMode, updatePreferences]
+  );
+  /**
+   * A preset is the two axis handlers run back to back, so it inherits their
+   * side effects instead of reimplementing them: switching into Code opens the
+   * workbench and asks for a project folder when one is missing, and each axis
+   * write is optimistic with rollback in the store.
+   */
+  const handlePermissionPresetSelect = useCallback(
+    (preset: PermissionPreset) => {
+      // Both mounts are disabled without a selected conversation; guard anyway
+      // so a preset can never half-apply (the mode handler no-ops without a
+      // conversation while the permission handler would fall back to the
+      // settings default — writing one axis and not the other).
+      if (!selectedConversationId) return;
+      captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, {
+        setting: 'permissionPreset',
+        value: preset.id
+      });
+      handleWorkspaceModeChange(preset.workspaceMode);
+      handleToolPermissionModeChange(preset.toolPermissionMode);
+    },
+    [handleWorkspaceModeChange, handleToolPermissionModeChange, selectedConversationId]
   );
   // What the main process detected about that folder — project type, framework,
   // configured env keys. Fetched, not derived: it comes from the filesystem.
@@ -1317,6 +1340,7 @@ export default function App() {
               isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
               onChange={handleWorkspaceModeChange}
               onPermissionModeChange={handleToolPermissionModeChange}
+              onPresetSelect={handlePermissionPresetSelect}
               onExecutionTargetChange={handleExecutionTargetChange}
               onRequestProject={
                 selectedConversationId
@@ -1595,6 +1619,7 @@ export default function App() {
                 }
                 onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
                 onToolPermissionModeChange={handleToolPermissionModeChange}
+                onPermissionPresetSelect={handlePermissionPresetSelect}
                 onOpenGallery={() => setGalleryOpen(true)}
               />
             </div>

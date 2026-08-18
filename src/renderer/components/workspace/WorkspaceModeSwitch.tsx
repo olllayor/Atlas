@@ -12,6 +12,11 @@ import {
 
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
+import {
+  PERMISSION_PRESETS,
+  matchPermissionPreset,
+  type PermissionPreset,
+} from '../../../shared/permissionPresets';
 import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
 import { EXECUTION_TARGETS, WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
 import {
@@ -45,6 +50,8 @@ type AccessMenuProps = {
   isGitRepo?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
+  /** One-click posture: writes both axes at once. Absent without a handler. */
+  onPresetSelect?: (preset: PermissionPreset) => void;
   onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
@@ -70,11 +77,52 @@ function AccessMenuContent({
   isGitRepo,
   onModeChange,
   onPermissionModeChange,
+  onPresetSelect,
   onExecutionTargetChange,
   onRequestProject,
 }: AccessMenuProps) {
+  const activePreset = permissionMode ? matchPermissionPreset(mode, permissionMode) : null;
+
   return (
     <>
+      {/* Quick postures: one click writes both axes. Sits above the individual
+          controls the way a shortcut sits above the thing it shortcuts — the
+          rows below stay the fine-tuning path, and stay in sync because they
+          read the same props the preset handler writes. */}
+      {permissionMode && onPresetSelect ? (
+        <>
+          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
+            Quick presets
+          </DropdownMenuLabel>
+          {PERMISSION_PRESETS.map((preset) => (
+            <DropdownMenuItem
+              key={preset.id}
+              onSelect={() => onPresetSelect(preset)}
+              disabled={permissionDisabled}
+              className="items-start gap-3 rounded-md px-3 py-2"
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span
+                  className={cn(
+                    'text-sm font-semibold',
+                    preset.toolPermissionMode === 'full-access'
+                      ? 'text-warning-text'
+                      : 'text-text-primary'
+                  )}
+                >
+                  {preset.label}
+                </span>
+                <span className="text-2xs leading-4 text-text-tertiary">{preset.hint}</span>
+              </span>
+              {activePreset?.id === preset.id ? (
+                <Check className="mt-0.5 size-4 shrink-0 text-text-secondary" />
+              ) : null}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
+        </>
+      ) : null}
+
       {WORKSPACE_MODES.map((entry) => {
         const isActive = entry.value === mode;
         // Only the *selected* mode can be unready — the alternative has not
@@ -225,6 +273,7 @@ export function WorkspaceModeSwitch({
   permissionMode,
   permissionDisabled,
   onPermissionModeChange,
+  onPresetSelect,
   executionTarget,
   cloudSandboxEnabled,
   isGitRepo,
@@ -246,6 +295,8 @@ export function WorkspaceModeSwitch({
   permissionMode?: ToolPermissionMode;
   permissionDisabled?: boolean;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
+  /** One-click posture: writes both axes at once. Absent without a handler. */
+  onPresetSelect?: (preset: PermissionPreset) => void;
   executionTarget?: ExecutionTarget;
   cloudSandboxEnabled?: boolean;
   isGitRepo?: boolean;
@@ -328,6 +379,7 @@ export function WorkspaceModeSwitch({
           isGitRepo={isGitRepo}
           onModeChange={onChange}
           onPermissionModeChange={onPermissionModeChange}
+          onPresetSelect={onPresetSelect}
           onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
@@ -354,6 +406,7 @@ export function WorkspaceAccessChip({
   isGitRepo,
   onModeChange,
   onPermissionModeChange,
+  onPresetSelect,
   onExecutionTargetChange,
   onRequestProject,
 }: {
@@ -366,6 +419,8 @@ export function WorkspaceAccessChip({
   isGitRepo?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange: (mode: ToolPermissionMode) => void;
+  /** One-click posture: writes both axes at once. Absent without a handler. */
+  onPresetSelect?: (preset: PermissionPreset) => void;
   onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
@@ -429,6 +484,7 @@ export function WorkspaceAccessChip({
           isGitRepo={isGitRepo}
           onModeChange={onModeChange}
           onPermissionModeChange={onPermissionModeChange}
+          onPresetSelect={onPresetSelect}
           onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />

@@ -35,6 +35,7 @@ import type {
   ProviderCredentialSummary,
 } from '../../shared/contracts';
 import type { WorkspaceMode } from '../../shared/workspaceModes';
+import type { PermissionPreset } from '../../shared/permissionPresets';
 import { ModelSelector } from './ModelSelector';
 import { WorkspaceAccessChip } from './workspace/WorkspaceModeSwitch';
 import {
@@ -126,6 +127,8 @@ export type ComposerProps = {
   onRequestProject?: () => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onToolPermissionModeChange: (value: ToolPermissionMode) => void;
+  /** One-click posture from the chip's menu: writes both access axes at once. */
+  onPermissionPresetSelect?: (preset: PermissionPreset) => void;
   onOpenGallery: () => void;
 };
 
@@ -506,6 +509,7 @@ export function Composer({
   onRequestProject,
   onReasoningEffortChange,
   onToolPermissionModeChange,
+  onPermissionPresetSelect,
   onOpenGallery,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -1188,6 +1192,7 @@ export function Composer({
                 disabled={isStreaming || selectedModel?.supportsTools === false}
                 onModeChange={onWorkspaceModeChange}
                 onPermissionModeChange={onToolPermissionModeChange}
+                onPresetSelect={onPermissionPresetSelect}
                 onRequestProject={onRequestProject}
               />
 

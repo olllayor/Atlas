@@ -151,6 +151,13 @@ type AppState = {
   refreshConversationStats: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
+  /**
+   * Refetches one conversation's page into the cache without touching the
+   * selection or drafts. The subagent composer uses it to pull followup turns
+   * into an open child transcript — child turns run outside the normal
+   * request/stream plumbing, so no push event carries them.
+   */
+  reloadConversationDetail: (conversationId: string) => Promise<void>;
   loadOlderMessages: (conversationId: string) => Promise<void>;
   createConversation: () => Promise<void>;
   /** New conversation already bound to a project and set to Code mode. */
@@ -787,6 +794,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
       notifyError('Could not open the conversation', error);
+    }
+  },
+
+  reloadConversationDetail: async (conversationId) => {
+    try {
+      const page = await window.atlasChat.conversations.getPage(conversationId, {
+        limit: DEFAULT_CONVERSATION_PAGE_SIZE,
+      });
+      set((current) => ({
+        conversationDetails: {
+          ...current.conversationDetails,
+          [conversationId]: mergeConversationPage(current.conversationDetails[conversationId], page)
+        }
+      }));
+    } catch {
+      // A failed refresh keeps the stale transcript; the next poll retries.
     }
   },
 

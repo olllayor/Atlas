@@ -18,6 +18,7 @@ import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
 import { ChatComposerSlot } from './components/ChatComposerSlot';
+import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
@@ -32,6 +33,7 @@ import { OpenInIdeButton } from './components/workspace/OpenInIdeButton';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
 import { useMeasuredHeight } from './hooks/useMeasuredHeight';
 import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
+import { useSubagentComposerState } from './hooks/useSubagentComposerState';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
@@ -397,6 +399,39 @@ export default function App() {
 
   const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
   const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+
+  /**
+   * Composer takeover (plan §3.5). A subagent conversation must not send
+   * through the ordinary chat path — one-shot children are execution records
+   * and continuable children only accept parent-authorized followups — so
+   * the whole composer is swapped for the subagent slab below.
+   */
+  const subagentTakeover = useSubagentComposerState(selectedConversationId);
+  const reloadConversationDetail = useAppStore((state) => state.reloadConversationDetail);
+
+  const sendSubagentFollowup = useCallback(
+    async (text: string) => {
+      if (!selectedConversationId) return;
+      const parentId = activeConversation?.conversation.sideOfConversationId ?? null;
+      if (!parentId) {
+        notify({ tone: 'error', title: 'Parent conversation unavailable', description: 'This session can no longer accept messages' });
+        return;
+      }
+      await window.atlasChat.subagents.followup(parentId, selectedConversationId, text);
+      // The turn runs outside the request/stream plumbing, so pull the
+      // accepted message in; the hook's sync poll carries the rest.
+      void reloadConversationDetail(selectedConversationId);
+    },
+    [activeConversation, reloadConversationDetail, selectedConversationId]
+  );
+
+  const stopSubagent = useCallback(() => {
+    if (!selectedConversationId) return;
+    captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+    void window.atlasChat.subagents.interrupt(selectedConversationId).then(() => {
+      void useAppStore.getState().reloadConversationDetail(selectedConversationId);
+    });
+  }, [selectedConversationId]);
   /**
    * A session nobody has spoken in yet — no stored turns and no draft in
    * flight. Same test the transcript uses to decide it should show the
@@ -601,14 +636,36 @@ export default function App() {
   );
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
+  const [livenessMap, setLivenessMap] = useState<Map<string, 'working' | 'monitoring' | null>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLiveness = async () => {
+      try {
+        const map = (await (window as any).atlasChat?.subagents?.getLiveness?.()) as Record<string, 'working' | 'monitoring' | null> | undefined;
+        if (!cancelled && map) setLivenessMap(new Map(Object.entries(map)));
+      } catch {}
+    };
+    void fetchLiveness();
+    const unsub = (window as any).atlasChat?.chat?.subscribe?.((event: any) => {
+      if (event?.type === 'runtime-sync') void fetchLiveness();
+    }) as (() => void) | undefined;
+    const interval = setInterval(() => void fetchLiveness(), 2000);
+    return () => {
+      cancelled = true;
+      try { unsub?.(); } catch {}
+      clearInterval(interval);
+    };
+  }, []);
+
   const sidebarItems = useMemo(
     () =>
       buildSidebarConversationItems({
         conversations,
         draftsByConversation,
         now: nowMs,
+        livenessByConversation: livenessMap,
       }),
-    [conversations, draftsByConversation, nowMs]
+    [conversations, draftsByConversation, nowMs, livenessMap]
   );
   /**
    * Archived chats get the same row view model as live ones — they are the same
@@ -622,8 +679,9 @@ export default function App() {
         conversations: archivedConversations,
         draftsByConversation,
         now: nowMs,
+        livenessByConversation: livenessMap,
       }),
-    [archivedConversations, draftsByConversation, nowMs]
+    [archivedConversations, draftsByConversation, nowMs, livenessMap]
   );
   const hasArchivedChats = hasArchivedConversations({
     storedConversationCount: conversationStats?.storedConversationCount ?? null,
@@ -1556,9 +1614,16 @@ export default function App() {
                 }}
               />
 
-              <ChatComposerSlot
-                conversationId={selectedConversationId}
-                disabled={!selectedConversationId}
+              {subagentTakeover.mode !== 'normal' ? (
+                <SubagentComposer
+                  takeover={subagentTakeover}
+                  onSend={sendSubagentFollowup}
+                  onStop={stopSubagent}
+                />
+              ) : (
+                <ChatComposerSlot
+                  conversationId={selectedConversationId}
+                  disabled={!selectedConversationId}
                 isStreaming={activeDraft?.status === 'streaming'}
                 models={models}
                 selectedModelId={selectedModelId}
@@ -1621,7 +1686,8 @@ export default function App() {
                 onToolPermissionModeChange={handleToolPermissionModeChange}
                 onPermissionPresetSelect={handlePermissionPresetSelect}
                 onOpenGallery={() => setGalleryOpen(true)}
-              />
+                />
+              )}
             </div>
           </div>
 

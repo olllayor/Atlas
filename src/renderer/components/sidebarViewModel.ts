@@ -56,6 +56,7 @@ type BuildSidebarConversationItemsParams = {
   conversations: ConversationSummary[];
   draftsByConversation: Record<string, DraftStateLike | undefined>;
   now: number;
+  livenessByConversation?: Map<string, 'working' | 'monitoring' | null>;
 };
 
 const MONTHS = [
@@ -387,7 +388,8 @@ export function buildSidebarConversationItems({
   conversations,
   draftsByConversation,
   now,
-}: BuildSidebarConversationItemsParams) {
+  livenessByConversation,
+}: BuildSidebarConversationItemsParams & { livenessByConversation?: Map<string, 'working' | 'monitoring' | null> }) {
   return conversations.map<SidebarConversationItem>((conversation) => {
     const draft = draftsByConversation[conversation.id];
     // No pre-clipping: the row truncates with CSS, and the `title` tooltip
@@ -403,8 +405,11 @@ export function buildSidebarConversationItems({
     const timestampMs = parseTimestamp(draft?.startedAt ?? conversation.updatedAt);
     // The draft is what this window is streaming right now; the persisted
     // status is what a turn started before a reload — or in another window —
-    // left behind. The draft wins where both speak.
-    const isRunning = draft ? draft.status === 'streaming' : conversation.status === 'running';
+    // left behind. The draft wins where both speak, but background liveness
+    // (S6) outranks a settled draft: a parent with a running subagent is still
+    // working even after its own turn settles.
+    const backgroundLiveness = livenessByConversation?.get(conversation.id) ?? null;
+    const isRunning = backgroundLiveness === 'working' ? true : draft ? draft.status === 'streaming' : conversation.status === 'running';
     const isFailed = draft ? draft.status === 'error' : conversation.status === 'failed';
     const startedMs = isRunning
       ? parseTimestamp(draft?.startedAt ?? conversation.startedAt ?? null)

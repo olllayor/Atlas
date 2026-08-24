@@ -56,6 +56,8 @@ import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
 import { AtlasMark } from './ui/atlas-mark';
 
 import { SpawnAgentCta } from './agents/SpawnAgentCta';
+import { SubagentCatalog } from './subagents/SubagentCatalog';
+import { SubagentBreadcrumbs } from './subagents/SubagentBreadcrumbs';
 import { useAppStore } from '../stores/useAppStore';
 import { foldAgents, type RuntimeAgent } from '../lib/agentFold';
 
@@ -1500,6 +1502,14 @@ export function ChatWindow({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      {conversationId && (
+        <>
+          {/* Self-styling components: each renders nothing when empty, so an
+              ordinary conversation gets no phantom header strip here. */}
+          <SubagentBreadcrumbs conversationId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
+          <SubagentCatalog parentId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
+        </>
+      )}
       <div
         ref={attachScrollRef}
         /*

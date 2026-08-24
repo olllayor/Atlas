@@ -60,6 +60,9 @@ import type { ProviderRegistry } from './providerRegistry';
 import type { ExecuteTurnResult } from './ChatSessionRuntime';
 import { ChatSessionRuntime } from './ChatSessionRuntime';
 import { SubagentRuntime } from '../agents/SubagentRuntime';
+import { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
+import { BackgroundLivenessService } from './BackgroundLivenessService';
+import { enrichSubagentEntries } from '../agents/subagentProjections';
 import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
 import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
@@ -200,6 +203,9 @@ export class ChatEngine {
   /** Requests accepted but waiting for a slot, oldest first. */
   private readonly queuedRequestIds: string[] = [];
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
+  private readonly backgroundLiveness: import('./BackgroundLivenessService').BackgroundLivenessService;
+  private readonly continuationManager: SubagentContinuationManager;
+  private readonly subagentRuntime: SubagentRuntime;
 
   constructor(
     private readonly conversationsRepo: ConversationsRepo,
@@ -261,9 +267,81 @@ export class ChatEngine {
      * against what is installed *now* rather than what was installed when the
      * engine was constructed.
      */
-    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null,
-    private readonly subagentRuntime = new SubagentRuntime({
+    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null
+  ) {
+    this.backgroundLiveness = new BackgroundLivenessService();
+    this.continuationManager = new SubagentContinuationManager({
+      conversationsRepo: this.conversationsRepo as unknown as ConversationsRepo,
+      runtimeStateRepo: this.runtimeStateRepo as unknown as any,
+      executeTurn: async ({ childId, parentConversationId, prompt, model, tools, depth, parentAgentId, signal }) => {
+        // Resolve provider/model: inherit from parent conversation or use child's override, fallback to first configured model
+        const parentSummary = this.conversationsRepo.getSummary(parentConversationId) as any;
+        const childSummary = this.conversationsRepo.getSummary(childId) as any;
+        const fallback = this.resolveFallbackModel();
+        const providerId = parentSummary?.defaultProviderId ?? childSummary?.defaultProviderId ?? fallback?.providerId ?? 'openrouter';
+        const modelId = model ?? parentSummary?.defaultModelId ?? childSummary?.defaultModelId ?? fallback?.modelId ?? 'unknown';
+        const requestId = randomUUID();
+        // Continuable turns are persisted so history survives cold resume
+        const result = await this.runtime.executeTurn({
+          requestId,
+          request: {
+            conversationId: childId,
+            providerId,
+            modelId,
+            messages: [{ role: 'user', content: prompt } as any],
+            enableTools: true,
+          },
+          signal,
+          persistMessage: true,
+          subagentRuntime: this.subagentRuntime,
+          continuationManager: this.continuationManager,
+          parentAgentId,
+          depth,
+          allowedTools: tools,
+          emitEvent: () => {},
+        });
+        return result;
+      },
+      onRuntimeEvent: (envelope) => {
+        const activeReq = Array.from(this.activeRequests.values()).find(
+          (req) => req.request.conversationId === envelope.conversationId
+        );
+        if (activeReq) {
+          this.sendToWindow(activeReq.window, {
+            type: 'runtime-sync',
+            conversationId: envelope.conversationId,
+            requestId: envelope.requestId,
+            eventId: envelope.eventId,
+            sequence: envelope.sequence,
+          });
+        }
+      },
+      onLivenessChange: (parentId, childId, status) => {
+        try {
+          this.backgroundLiveness.recordSubagentLiveness({ conversationId: parentId, subagentId: childId, status });
+        } catch {}
+      },
+    });
+    this.subagentRuntime = new SubagentRuntime({
       runtimeStateRepo,
+      continuationManager: this.continuationManager as any,
+      createChildConversation: (input) => {
+        const maybeRepo = this.conversationsRepo as unknown as Partial<Pick<ConversationsRepo, 'createSubagentConversation'>>;
+        if (typeof maybeRepo.createSubagentConversation !== 'function') return null;
+        return maybeRepo.createSubagentConversation({
+          parentConversationId: input.parentConversationId,
+          title: input.title,
+          delegationDepth: input.delegationDepth,
+          agentId: input.agentId,
+          mode: input.mode as 'one-shot' | 'continuable',
+          parentTurnId: input.parentTurnId,
+        });
+      },
+      deleteChildConversation: (childId) => {
+        try {
+          this.conversationsRepo.delete(childId);
+        } catch {}
+      },
       onRuntimeEvent: (envelope) => {
         const activeReq = Array.from(this.activeRequests.values()).find(
           (req) => req.request.conversationId === envelope.conversationId
@@ -284,9 +362,9 @@ export class ChatEngine {
         );
         const parentRequest = activeReq?.request;
         const convSummary = this.conversationsRepo.getSummary(conversationId);
-        const firstProviderId = Array.from(this.providers.keys())[0] ?? 'openrouter';
-        const providerId = parentRequest?.providerId ?? convSummary?.defaultProviderId ?? firstProviderId;
-        const modelId = model ?? parentRequest?.modelId ?? convSummary?.defaultModelId ?? 'google/gemini-2.5-flash';
+        const fallback = this.resolveFallbackModel();
+        const providerId = parentRequest?.providerId ?? convSummary?.defaultProviderId ?? fallback?.providerId ?? 'openrouter';
+        const modelId = model ?? parentRequest?.modelId ?? convSummary?.defaultModelId ?? fallback?.modelId ?? 'unknown';
 
         const childRequestId = randomUUID();
 
@@ -324,6 +402,7 @@ export class ChatEngine {
             messagesOverride: currentMessages,
             initialParts: accumulatedParts,
             subagentRuntime: this.subagentRuntime,
+            continuationManager: this.continuationManager,
             parentAgentId,
             depth,
             allowedTools: tools,
@@ -402,8 +481,20 @@ export class ChatEngine {
           },
         };
       },
-    }),
-  ) {}
+    });
+  }
+
+  private resolveFallbackModel(): { providerId: string; modelId: string } | null {
+    try {
+      const configured = this.modelsRepo.list({ configuredOnly: true } as any);
+      if (configured.length > 0) return { providerId: configured[0].providerId, modelId: configured[0].id };
+      const all = this.modelsRepo.list();
+      if (all.length > 0) return { providerId: all[0].providerId, modelId: all[0].id };
+    } catch {}
+    const firstProvider = Array.from(this.providers.keys())[0];
+    if (firstProvider) return { providerId: firstProvider, modelId: 'unknown' };
+    return null;
+  }
 
   /**
    * The subagent runtime, exposed so the app shell can cascade-stop live
@@ -412,6 +503,75 @@ export class ChatEngine {
    */
   get subagents(): SubagentRuntime {
     return this.subagentRuntime;
+  }
+
+  get continuations(): SubagentContinuationManager {
+    return this.continuationManager;
+  }
+
+  listSubagents(parentConversationId: string) {
+    const raw = this.conversationsRepo.listSubagentChildren(parentConversationId);
+    return enrichSubagentEntries(raw as any, this.conversationsRepo as any, this.continuationManager as any);
+  }
+
+  async followupSubagent(parentConversationId: string, childId: string, content: string): Promise<string> {
+    return this.continuationManager.followup(parentConversationId, childId, content);
+  }
+
+  interruptSubagent(childId: string): { accepted: true } {
+    return this.continuationManager.interrupt(childId);
+  }
+
+  /**
+   * Composer takeover input (plan §3.5): whether `childId` is a subagent, its
+   * mode, whether the exact parent can still authorize followups, and whether
+   * a live activation is working. Null for ordinary conversations.
+   */
+  getSubagentComposerState(childId: string): {
+    isSubagent: true;
+    mode: 'one-shot' | 'continuable';
+    parentAvailable: boolean;
+    running: boolean;
+  } | null {
+    const meta = this.conversationsRepo.getSubagentMeta(childId);
+    if (!meta || meta.origin !== 'subagent') return null;
+
+    const parentAvailable = (() => {
+      if (!meta.parentId) return false;
+      try {
+        const parent = this.conversationsRepo.getSummary(meta.parentId);
+        return Boolean(parent && !parent.archivedAt);
+      } catch {
+        return false;
+      }
+    })();
+
+    const status = this.continuationManager.getActivationStatus(childId);
+    const running = Boolean(status && (status.processing || status.queued > 0));
+
+    return { isSubagent: true, mode: meta.mode === 'continuable' ? 'continuable' : 'one-shot', parentAvailable, running };
+  }
+
+  getSubagentHistory(request: { parentConversationId: string; childId: string; mode?: string | null }): { conversation: any; messages: any[] } {
+    const meta = this.conversationsRepo.getSubagentMeta(request.childId);
+    if (!meta || meta.origin !== 'subagent') {
+      throw new Error(`Conversation ${request.childId} is not a subagent`);
+    }
+    if (meta.parentId !== request.parentConversationId) {
+      throw new Error(`Parent mismatch for subagent ${request.childId}`);
+    }
+    if (request.mode != null && meta.mode !== request.mode) {
+      throw new Error(`Mode mismatch for subagent ${request.childId}: expected ${request.mode}, got ${meta.mode}`);
+    }
+    // Also verify via descriptor if present (handles version skew)
+    return this.conversationsRepo.get(request.childId) as any;
+  }
+
+  getSubagentsLiveness(): Map<string, 'working' | 'monitoring' | null> {
+    // Directly project the liveness registry — never enumerate conversations via
+    // `list()` which is paginated/filtered and would miss parents not on the
+    // first page or archived parents with live children.
+    return new Map(this.backgroundLiveness.getAllLiveness() as Map<string, 'working' | 'monitoring' | null>);
   }
 
   async start(window: BrowserWindow, request: ChatStartRequest): Promise<ChatStartResponse> {
@@ -900,6 +1060,7 @@ export class ChatEngine {
         messagesOverride,
         initialParts: active.parts,
         subagentRuntime: this.subagentRuntime,
+        continuationManager: this.continuationManager,
         emitEvent: (event) => {
           this.handleRuntimeStreamEvent(active, event);
         },

@@ -52,6 +52,8 @@ export type SubagentTaskState = {
   model: string | null;
   outputFile: string | null;
   attempt: number;
+  /** Durable child conversation for S1+ (side_of_conversation_id). Null when not yet created or ephemeral Task only. */
+  childConversationId?: string | null;
 };
 
 /** Fields an emitter is allowed to patch mid-run. */

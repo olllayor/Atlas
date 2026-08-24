@@ -9,6 +9,13 @@ import { randomUUID } from 'node:crypto';
 import type { ActivityType, RuntimeEventEnvelope, StreamEvent } from '../../../shared/contracts';
 import type { RecordRuntimeEventInput, RuntimeStateRepo } from '../../db/repositories/runtimeStateRepo';
 import {
+  CHILD_STEP_LIMIT,
+  DEFAULT_CHILD_STEPS,
+  describeSpawnViolations,
+  validateSpawnRequest,
+  type SubagentCapabilities,
+} from './subagentCapabilities';
+import {
   agentIdFor,
   applyTaskPatch,
   buildTaskEnvelope,
@@ -17,6 +24,9 @@ import {
   SubagentTaskState,
   TaskSlotQueue,
 } from './subagentTasks';
+import { snapshotSubagentDescriptor } from './subagentDescriptor';
+
+export type { SubagentCapabilities };
 
 export type SubagentSpawnRequest = {
   conversationId: string;
@@ -33,7 +43,19 @@ export type SubagentSpawnRequest = {
   role?: string;
   outputFile?: string;
   tools?: string[];
+  /**
+   * The child's model-turn budget. Validated against the capabilities
+   * `stepLimit` at spawn time (fail-loud, never clamped) and threaded to the
+   * child turn loop. Omitted ⇒ the provider default.
+   */
   maxSteps?: number;
+  /**
+   * Run in the background: the spawn returns immediately with a `pending`
+   * state while the child queues for a slot and runs detached. The parent
+   * keeps its turn, is notified when the child settles, and controls it via
+   * the list/interrupt/output surfaces. Requires `supportsBackground`.
+   */
+  background?: boolean;
   /** Depth in the spawn chain (root = 0). Passed through by spawnBatch automatically. */
   depth?: number;
 };
@@ -45,6 +67,8 @@ export type ChildTurnExecutor = (input: {
   role?: string;
   tools?: string[];
   outputFile?: string;
+  /** The child's model-turn budget; the executor must honor it. */
+  maxSteps?: number;
   signal: AbortSignal;
   onEvent: (event: StreamEvent) => void;
   parentAgentId?: string;
@@ -56,6 +80,17 @@ export type ChildTurnExecutor = (input: {
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
 }>;
 
+export type SubagentChildMode = 'one-shot' | 'continuable';
+
+export interface SubagentChildInput {
+  parentConversationId: string;
+  title: string;
+  delegationDepth: number;
+  agentId: string;
+  mode: SubagentChildMode;
+  parentTurnId: string;
+}
+
 export interface SubagentRuntimeOptions {
   runtimeStateRepo?: Pick<RuntimeStateRepo, 'recordEvent'>;
   maxConcurrent?: number;
@@ -63,6 +98,37 @@ export interface SubagentRuntimeOptions {
   maxDepth?: number;
   childExecutor?: ChildTurnExecutor;
   onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
+  /**
+   * S1 hook: create a durable child conversation row for listing/cold-resume.
+   * When undefined (tests, older wiring) the runtime keeps the ephemeral Task-only
+   * behavior with no durable row — backward compat.
+   * Should insert `conversations` with origin='subagent', side_of_conversation_id=parent,
+   * subagent_mode, subagent_label, delegation_depth and return the new id.
+   * Return null/undefined to skip durable creation (e.g. test mocks without DB).
+   */
+  createChildConversation?: (input: SubagentChildInput) => string | null | undefined | Promise<string | null | undefined>;
+  /** Rollback for the hook above when spawn fails before slot acceptance. */
+  deleteChildConversation?: (childConversationId: string) => void | Promise<void>;
+  /** S2: continuable manager for background:true spawns. When present, background spawns become continuable. */
+  continuationManager?: {
+    startContinuable: (spec: {
+      parentConversationId: string;
+      parentTurnId: string;
+      parentToolCallId: string;
+      /** Batch position; keeps agent ids distinct across a fan-out. */
+      agentIndex?: number;
+      parentAgentId?: string;
+      title: string;
+      prompt: string;
+      model?: string;
+      tools?: string[];
+      depth?: number;
+      signal?: AbortSignal;
+    }) => Promise<{ childId: string; messageId: string }>;
+    interruptForParent?: (parentConversationId: string, childId: string) => Promise<{ accepted: true } | undefined>;
+    interruptAllForConversation?: (conversationId: string) => number;
+    interruptAll?: () => number;
+  } | null;
 }
 
 /** One live task's runtime handles, keyed by agentId. */
@@ -72,13 +138,52 @@ type ActiveTask = {
   donePromise?: Promise<void>;
 };
 
+/**
+ * A background task's durable record. Unlike `ActiveTask` (deleted on settle),
+ * this survives settlement so the parent can still list, read output, and see
+ * the outcome — and so the completion notice can be drained exactly once.
+ * Mirrors `BackgroundJobRegistry`'s reported-flag idiom.
+ */
+type BackgroundTask = {
+  state: SubagentTaskState;
+  controller: AbortController;
+  donePromise: Promise<void>;
+  /** True once a drain, output read, or interrupt observed the terminal state. */
+  reported: boolean;
+  /**
+   * True when the live lifecycle belongs to the continuation manager (S2).
+   * Interrupt routing and terminal semantics differ — a continuable child is
+   * keepInbox and never goes terminal from an interrupt, even when its
+   * Activation is not currently resident (cold child must not be killed by a
+   * stale one-shot abort path).
+   */
+  continuable?: boolean;
+};
+
+/** A read-only projection of one background agent for the model-facing tools. */
+export type BackgroundAgentSnapshot = {
+  agentId: string;
+  title: string;
+  status: SubagentTaskState['status'];
+  isFinal: boolean;
+  progress: string | null;
+  result: string | null;
+  error: string | null;
+  totalTokens: number;
+};
+
 export class SubagentRuntime {
   private readonly runtimeStateRepo?: Pick<RuntimeStateRepo, 'recordEvent'>;
   private readonly slotQueue: TaskSlotQueue;
   private readonly maxDepth: number;
   private readonly childExecutor?: ChildTurnExecutor;
   private readonly onRuntimeEvent?: (envelope: RuntimeEventEnvelope) => void;
+  private readonly createChildConversation?: SubagentRuntimeOptions['createChildConversation'];
+  private readonly deleteChildConversation?: SubagentRuntimeOptions['deleteChildConversation'];
+  private readonly continuationManager?: SubagentRuntimeOptions['continuationManager'];
   private readonly activeTasks = new Map<string, ActiveTask>();
+  /** Background tasks, keyed by agentId; survive settlement for later reads. */
+  private readonly backgroundTasks = new Map<string, BackgroundTask>();
   private sequenceCounter = 0;
 
   constructor(options: SubagentRuntimeOptions = {}) {
@@ -87,6 +192,29 @@ export class SubagentRuntime {
     this.maxDepth = options.maxDepth ?? 3;
     this.childExecutor = options.childExecutor;
     this.onRuntimeEvent = options.onRuntimeEvent;
+    this.createChildConversation = options.createChildConversation;
+    this.deleteChildConversation = options.deleteChildConversation;
+    this.continuationManager = options.continuationManager ?? null;
+  }
+
+  /** S2: allow ChatEngine to inject manager after construction (circular dep). */
+  setContinuationManager(manager: SubagentRuntimeOptions['continuationManager']): void {
+    (this as unknown as { continuationManager: typeof manager }).continuationManager = manager;
+  }
+
+  /**
+   * The static capability descriptor for this provider. Published so the
+   * model-facing tools can state the real limits and validate requests
+   * fail-loud before any resource is consumed.
+   */
+  get capabilities(): SubagentCapabilities {
+    return {
+      provider: 'atlas-turn-executor',
+      maxDepth: this.maxDepth,
+      maxConcurrent: this.slotQueue.capacity,
+      supportsBackground: true,
+      stepLimit: { min: CHILD_STEP_LIMIT.min, max: CHILD_STEP_LIMIT.max },
+    };
   }
 
   /** Get current active task count for a conversation. */
@@ -201,6 +329,44 @@ export class SubagentRuntime {
     return envelope;
   }
 
+  /** Emit a durable subagent descriptor (S1). Stored under the child conversation so listing can find it after restart. */
+  private emitDescriptorEvent(state: SubagentTaskState, descriptor: ReturnType<typeof snapshotSubagentDescriptor>): void {
+    this.sequenceCounter += 1;
+    const envelope: RuntimeEventEnvelope = {
+      eventId: randomUUID(),
+      conversationId: state.childConversationId ?? state.conversationId,
+      turnId: state.turnId,
+      requestId: state.parentToolCallId,
+      sequence: this.sequenceCounter,
+      occurredAt: new Date().toISOString(),
+      activityType: 'subagent.descriptor' as ActivityType,
+      tone: 'info',
+      provider: 'system',
+      providerEventType: 'subagent.descriptor',
+      toolCallId: null,
+      messageId: null,
+      approvalId: null,
+      agentId: state.agentId,
+      parentToolCallId: state.parentToolCallId,
+      payload: {
+        subagentDescriptor: descriptor,
+        agentId: state.agentId,
+        parentToolCallId: state.parentToolCallId,
+        title: descriptor.label,
+        agentKind: state.agentKind,
+      } as unknown as Record<string, unknown>,
+    } as RuntimeEventEnvelope;
+
+    if (this.runtimeStateRepo) {
+      // S1: must throw on failure so the caller can rollback the child row.
+      // Swallowing here would leave a child conversation with no descriptor — cold resume (S2) would see a diagnostic orphan.
+      this.runtimeStateRepo.recordEvent(envelope as unknown as RecordRuntimeEventInput);
+    }
+    if (this.onRuntimeEvent) {
+      this.onRuntimeEvent(envelope);
+    }
+  }
+
   /** Emit task event envelope to repo if available. */
   private emitEvent(
     state: SubagentTaskState,
@@ -232,6 +398,8 @@ export class SubagentRuntime {
     parentAgentId?: string;
     /** Depth of the caller (children will be depth+1). Omit for top-level spawns. */
     depth?: number;
+    /** Run every task in this batch in the background. */
+    background?: boolean;
     tasks: Array<{
       title: string;
       prompt: string;
@@ -240,6 +408,7 @@ export class SubagentRuntime {
       outputFile?: string;
       tools?: string[];
       taskType?: string;
+      maxSteps?: number;
     }>;
     parentSignal?: AbortSignal;
   }): Promise<SubagentTaskState[]> {
@@ -258,6 +427,8 @@ export class SubagentRuntime {
         outputFile: taskSpec.outputFile,
         tools: taskSpec.tools,
         taskType: taskSpec.taskType,
+        maxSteps: taskSpec.maxSteps,
+        background: input.background,
         depth: childDepth,
       }, input.parentSignal)
     );
@@ -286,6 +457,17 @@ export class SubagentRuntime {
 
   /**
    * Spawn a single subagent task.
+   *
+   * Validates the request against the provider `capabilities` fail-loud
+   * BEFORE consuming any resource (depth, background support, maxSteps range).
+   * A violation returns a `failed` state carrying every actionable message —
+   * never accept-then-ignore.
+   *
+   * With `background: true`, the task is registered and kicked off detached,
+   * and this returns immediately with the `pending` state while the child
+   * queues for a slot and runs. The parent keeps its turn and later controls
+   * the task via `listBackgroundAgents` / `interruptAgent` /
+   * `readBackgroundOutput`, and is notified via `drainBackgroundNotices`.
    */
   async spawn(req: SubagentSpawnRequest, parentSignal?: AbortSignal): Promise<SubagentTaskState> {
     const index = req.agentIndex ?? 0;
@@ -304,16 +486,65 @@ export class SubagentRuntime {
       outputFile: req.outputFile,
     });
 
-    // C4: compute nesting depth. Root tasks (no parentAgentId) start at 0.
+    // Fail-loud capability check. `depth` here is the spawned task's own depth
+    // (root tasks start at 0), matching the historical backstop below.
     const depth = req.depth != null ? req.depth : 0;
+    const violations = validateSpawnRequest(this.capabilities, {
+      depth,
+      background: req.background,
+      maxSteps: req.maxSteps,
+    });
+    if (violations.length > 0) {
+      return applyTaskPatch(state, {
+        status: 'failed',
+        error: describeSpawnViolations(violations),
+      });
+    }
 
     // C4: reject immediately if we would exceed maxDepth — no resource consumed.
+    // (Retained as a defense-in-depth backstop identical to the capability
+    // check above; the capability path produces the richer message.)
     if (depth > this.maxDepth) {
       state = applyTaskPatch(state, {
         status: 'failed',
         error: `Nesting depth ${depth} exceeds maximum (${this.maxDepth})`,
       });
       return state;
+    }
+
+    // S2: continuable path — background spawns become durable sessions with inbox FIFO.
+    // When a continuation manager is present, background:true means continuable.
+    if (req.background && this.continuationManager) {
+      try {
+        const started = await this.continuationManager.startContinuable({
+          parentConversationId: req.conversationId,
+          parentTurnId: req.parentTurnId,
+          parentToolCallId: req.parentToolCallId,
+          agentIndex: index,
+          parentAgentId: req.parentAgentId,
+          title: req.title,
+          prompt: req.prompt,
+          model: req.model,
+          tools: req.tools,
+          depth,
+          signal: parentSignal,
+        });
+        state = { ...state, childConversationId: started.childId, status: 'pending', isFinal: false } as SubagentTaskState;
+        // Keep a lightweight background record so old listBackgroundAgents still surfaces continuable children until S5 catalog lands.
+        // The real execution is owned by the manager; this record is just for backward compat listing.
+        this.backgroundTasks.set(state.agentId, {
+          state,
+          controller: new AbortController(), // unused — the manager owns the live controller
+          continuable: true,
+          donePromise: new Promise<void>(() => {}), // never settles via Task; manager owns lifecycle (S3 will wire interrupt)
+          reported: false,
+        });
+        try { this.emitEvent(state, 'task.started'); } catch {}
+        return state;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return applyTaskPatch(state, { status: 'failed', error: msg });
+      }
     }
 
     const controller = new AbortController();
@@ -330,7 +561,86 @@ export class SubagentRuntime {
       resolveDone = resolve;
     });
 
+    // S1: create durable child conversation synchronously so background callers
+    // get childConversationId immediately and listing sees it even while queued.
+    // NOTE: mode is 'one-shot' until S2 manager exists. Persisting
+    // 'continuable' now would lie to cold-resume (S2 would misread old rows).
+    if (this.createChildConversation) {
+      let created: string | null | undefined = null;
+      try {
+        const mode = 'one-shot' as const; // S2 will switch to req.background ? 'continuable' : 'one-shot'
+        created = (await this.createChildConversation({
+          parentConversationId: req.conversationId,
+          title: req.title,
+          delegationDepth: depth,
+          agentId: state.agentId,
+          mode,
+          parentTurnId: req.parentTurnId,
+        })) ?? null;
+        if (created) {
+          state = { ...state, childConversationId: created };
+          const descriptor = snapshotSubagentDescriptor({
+            mode,
+            provider: 'atlas-turn-executor',
+            label: req.title,
+            agentId: state.agentId,
+            parentConversationId: req.conversationId,
+            delegationDepth: depth,
+            ...(req.model ? { model: req.model } : {}),
+            ...(req.tools ? { toolFilter: req.tools } : {}),
+          });
+          // Emit under child conversation for catalog durability.
+          // S2-must-tighten: failure here must rollback the child row (cold resume breaks silently otherwise).
+          this.emitDescriptorEvent(state, descriptor);
+        }
+      } catch (err) {
+        // Rollback the orphaned child row if we already created it.
+        if (created && this.deleteChildConversation) {
+          try { await this.deleteChildConversation(created); } catch {}
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        return applyTaskPatch(state, {
+          status: 'failed',
+          error: `Failed to create subagent session: ${msg}`,
+        });
+      }
+    }
+
+    if (req.background) {
+      // Register the durable record first so the task is listable/interruptible
+      // from the moment the spawn returns, even while it still waits for a slot.
+      this.backgroundTasks.set(state.agentId, {
+        state,
+        controller,
+        donePromise,
+        reported: false,
+      });
+      // Detached: the child runs to completion on its own; settlement updates
+      // the record and resolves donePromise. Errors are contained in runTask.
+      void this.runTask(req, state, controller, resolveDone, true, donePromise);
+      return state;
+    }
+
+    return this.runTask(req, state, controller, resolveDone, false, donePromise);
+  }
+
+  /**
+   * The shared task lifecycle for inline and background spawns: acquire a
+   * slot, run the child executor, and finalize. For background tasks the
+   * durable record in `backgroundTasks` is updated (not deleted) on settle so
+   * the parent can still read the outcome; inline tasks leave no residue.
+   */
+  private async runTask(
+    req: SubagentSpawnRequest,
+    initialState: SubagentTaskState,
+    controller: AbortController,
+    resolveDone: () => void,
+    background: boolean,
+    donePromise?: Promise<void>
+  ): Promise<SubagentTaskState> {
+    let state = initialState;
     let releaseSlot: (() => void) | undefined;
+    let childConversationId: string | null = null;
     try {
       // C5: register in activeTasks only after the early-depth guard passes.
       this.activeTasks.set(state.agentId, { state, controller, donePromise });
@@ -338,10 +648,76 @@ export class SubagentRuntime {
       // C5: emit is now inside the try block so cleanup runs on any throw.
       this.emitEvent(state, 'task.started');
 
+      // S1: create durable child conversation + descriptor before slot acceptance.
+      // Created in spawn() synchronously for background immediate visibility;
+      // inline path may still need it if spawn was bypassed (e.g. direct runTask).
+      if (this.createChildConversation && !state.childConversationId) {
+        try {
+          const mode = req.background ? 'continuable' as const : 'one-shot' as const;
+          const created = await this.createChildConversation({
+            parentConversationId: req.conversationId,
+            title: req.title,
+            delegationDepth: req.depth ?? 0,
+            agentId: state.agentId,
+            mode,
+            parentTurnId: req.parentTurnId,
+          });
+          if (created) {
+            childConversationId = created;
+            state = { ...state, childConversationId: created };
+            // Refresh the active record so readers see the durable id immediately.
+            this.activeTasks.set(state.agentId, { state, controller, donePromise });
+            if (background) {
+              const bg = this.backgroundTasks.get(state.agentId);
+              if (bg) bg.state = state;
+            }
+            const descriptor = snapshotSubagentDescriptor({
+              mode,
+              provider: 'atlas-turn-executor',
+              label: req.title,
+              agentId: state.agentId,
+              parentConversationId: req.conversationId,
+              delegationDepth: req.depth ?? 0,
+              ...(req.model ? { model: req.model } : {}),
+              ...(req.tools ? { toolFilter: req.tools } : {}),
+            });
+            this.emitDescriptorEvent(state, descriptor);
+          }
+        } catch (err) {
+          // Hook failure should not hide as silent ignore — surface as task error.
+          const msg = err instanceof Error ? err.message : String(err);
+          state = applyTaskPatch(state, { status: 'failed', error: `Failed to create subagent session: ${msg}` });
+          this.emitEvent(state, 'task.completed');
+          return state;
+        }
+      } else if (state.childConversationId) {
+        childConversationId = state.childConversationId;
+      }
+
       // C4: pass the controller's signal so queue waiters can be cancelled atomically.
-      releaseSlot = await this.slotQueue.acquire(req.conversationId, controller.signal);
+      try {
+        releaseSlot = await this.slotQueue.acquire(req.conversationId, controller.signal);
+      } catch (acquireErr) {
+        // Acquire failed (capacity or abort) before acceptance — rollback durable child.
+        if (childConversationId && this.deleteChildConversation) {
+          try { await this.deleteChildConversation(childConversationId); } catch {}
+          childConversationId = null;
+          state = { ...state, childConversationId: null };
+          this.activeTasks.set(state.agentId, { state, controller, donePromise });
+          if (background) {
+            const bg = this.backgroundTasks.get(state.agentId);
+            if (bg) bg.state = state;
+          }
+        }
+        throw acquireErr;
+      }
 
       if (controller.signal.aborted || isTerminalTaskStatus(state.status)) {
+        if (childConversationId && this.deleteChildConversation) {
+          try { await this.deleteChildConversation(childConversationId); } catch {}
+          childConversationId = null;
+          state = { ...state, childConversationId: null };
+        }
         state = applyTaskPatch(state, { status: 'interrupted', error: 'Aborted before start' });
         return state;
       }
@@ -359,6 +735,7 @@ export class SubagentRuntime {
           role: req.role,
           tools: req.tools,
           outputFile: req.outputFile,
+          maxSteps: req.maxSteps ?? DEFAULT_CHILD_STEPS,
           parentAgentId: state.agentId,
           depth: req.depth,
           signal: controller.signal,
@@ -398,6 +775,12 @@ export class SubagentRuntime {
       }
     } catch (err: unknown) {
       const isAbort = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
+      // Rollback durable child if we never acquired a slot (never accepted).
+      if (childConversationId && !releaseSlot && this.deleteChildConversation) {
+        try { await this.deleteChildConversation(childConversationId); } catch {}
+        childConversationId = null;
+        state = { ...state, childConversationId: null };
+      }
       const outcomeStatus = isAbort ? 'interrupted' : 'failed';
       const errorMsg = err instanceof Error ? err.message : String(err);
 
@@ -413,6 +796,13 @@ export class SubagentRuntime {
       // cannot prevent the others from completing.
       try { this.emitEvent(state, 'task.completed'); } catch {}
       this.activeTasks.delete(state.agentId);
+      if (background) {
+        // Keep the durable record for later reads; refresh its terminal state.
+        const record = this.backgroundTasks.get(state.agentId);
+        if (record) {
+          record.state = state;
+        }
+      }
       try { resolveDone(); } catch {}
     }
 
@@ -421,10 +811,16 @@ export class SubagentRuntime {
 
   /**
    * Cascade stop: Interrupt all live child tasks for a conversation.
-   * Drains the queue and aborts controllers.
+   * Drains the queue and aborts controllers. Also interrupts continuable activations.
    */
   async interruptAll(conversationId: string, reason = 'Parent turn aborted'): Promise<number> {
     this.slotQueue.drainQueue(conversationId);
+
+    if (this.continuationManager?.interruptAllForConversation) {
+      try {
+        this.continuationManager.interruptAllForConversation(conversationId);
+      } catch {}
+    }
 
     const tasksToInterrupt: ActiveTask[] = [];
     for (const item of this.activeTasks.values()) {
@@ -443,6 +839,11 @@ export class SubagentRuntime {
    */
   async interruptAllConversations(reason = 'App quitting'): Promise<number> {
     this.slotQueue.drainQueue();
+    if (this.continuationManager?.interruptAll) {
+      try {
+        this.continuationManager.interruptAll();
+      } catch {}
+    }
 
     const tasksToInterrupt: ActiveTask[] = [];
     for (const item of this.activeTasks.values()) {
@@ -481,5 +882,211 @@ export class SubagentRuntime {
     }
 
     return interruptedCount;
+  }
+
+  // ── Background-agent control surfaces ────────────────────────────────────
+  //
+  // The model-facing half of background spawns, mirroring the
+  // `BackgroundJobRegistry` idiom: conversation-fenced reads, terminal tasks
+  // go "unreported" until a drain/read/interrupt claims them, and snapshots
+  // are fresh projections, never live state.
+
+  /** Fresh projection of one background agent, or `undefined` when unknown. */
+  private backgroundRecord(agentId: string, conversationId: string): BackgroundTask | undefined {
+    const record = this.backgroundTasks.get(agentId);
+    if (!record) {
+      return undefined;
+    }
+    // Agent ids are deterministic (`${toolCallId}:${index}`), so this fence —
+    // not id secrecy — is the authorization boundary.
+    if (record.state.conversationId !== conversationId) {
+      return undefined;
+    }
+    return record;
+  }
+
+  private snapshotBackground(record: BackgroundTask): BackgroundAgentSnapshot {
+    const { state } = record;
+    return {
+      agentId: state.agentId,
+      title: state.title,
+      status: state.status,
+      isFinal: state.isFinal,
+      progress: state.progress,
+      result: state.result,
+      error: state.error,
+      totalTokens: state.usage?.totalTokens ?? 0,
+    };
+  }
+
+  /** Snapshots of every background agent owned by the conversation, spawn order. */
+  listBackgroundAgents(conversationId: string): BackgroundAgentSnapshot[] {
+    const snapshots: BackgroundAgentSnapshot[] = [];
+    for (const record of this.backgroundTasks.values()) {
+      if (record.state.conversationId === conversationId) {
+        snapshots.push(this.snapshotBackground(record));
+      }
+    }
+    return snapshots;
+  }
+
+  /**
+   * Interrupt one background agent by id. Returns its snapshot, or `undefined`
+   * when no such agent belongs to the conversation. Already-terminal agents
+   * are returned as-is (and marked reported — the caller saw the outcome).
+   */
+  async interruptAgent(
+    agentId: string,
+    conversationId: string,
+    reason = 'Interrupted by parent agent'
+  ): Promise<BackgroundAgentSnapshot | undefined> {
+    const record = this.backgroundRecord(agentId, conversationId);
+    if (!record) {
+      return undefined;
+    }
+
+    if (record.state.isFinal) {
+      record.reported = true;
+      return this.snapshotBackground(record);
+    }
+
+    // S2: continuable agents are keepInbox — interrupt only aborts the current
+    // turn (and parks the queue), never the whole agent. The durable flag, not
+    // live-activation residency, decides routing: after a restart a cold
+    // continuable child has no Activation but must still not be killed here.
+    if (record.continuable && record.state.childConversationId) {
+      const childId = record.state.childConversationId;
+      try {
+        await this.continuationManager?.interruptForParent?.(conversationId, childId);
+      } catch {}
+      // Do not mark Task terminal; the Activation stays available for followups.
+      // Emit a progress event so UI shows interrupt, but keep isFinal false.
+      this.emitEvent({ ...record.state, status: 'running' } as SubagentTaskState, 'task.updated');
+      return this.snapshotBackground(record);
+    }
+
+    record.controller.abort();
+    record.state = applyTaskPatch(record.state, { status: 'interrupted', error: reason });
+    this.emitEvent(record.state, 'task.updated');
+    record.reported = true;
+
+    // Await settlement so the caller sees the real terminal state, not the
+    // optimistic patch — bounded by the child executor honoring its signal.
+    await record.donePromise;
+    return this.snapshotBackground(record);
+  }
+
+  /**
+   * Read a background agent's outcome. Terminal results are idempotent (never
+   * consumed); a terminal read marks the agent reported. Live agents return
+   * their progress instead.
+   */
+  readBackgroundOutput(
+    agentId: string,
+    conversationId: string
+  ): { snapshot: BackgroundAgentSnapshot; text: string } | undefined {
+    const record = this.backgroundRecord(agentId, conversationId);
+    if (!record) {
+      return undefined;
+    }
+
+    if (record.state.isFinal) {
+      record.reported = true;
+      const text = record.state.result ?? record.state.error ?? '';
+      return { snapshot: this.snapshotBackground(record), text };
+    }
+
+    return {
+      snapshot: this.snapshotBackground(record),
+      text: record.state.progress ?? '(still running)',
+    };
+  }
+
+  /**
+   * Wait for a background agent to settle, up to `timeoutMs`. Resolves with
+   * the snapshot at settlement or timeout — a timed-out agent keeps running.
+   * A settled wait marks the agent reported.
+   */
+  async waitBackgroundAgent(
+    agentId: string,
+    timeoutMs: number,
+    conversationId: string
+  ): Promise<BackgroundAgentSnapshot | undefined> {
+    const record = this.backgroundRecord(agentId, conversationId);
+    if (!record) {
+      return undefined;
+    }
+
+    if (!record.state.isFinal) {
+      await Promise.race([
+        record.donePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, timeoutMs))),
+      ]);
+    }
+
+    if (record.state.isFinal) {
+      record.reported = true;
+    }
+    return this.snapshotBackground(record);
+  }
+
+  /**
+   * Claim every unreported settled background agent for the conversation,
+   * marking each reported. The turn loop injects one notice per drained
+   * snapshot — several agents settling together cost one step, not one turn
+   * each. Exactly-once delivery mirrors `BackgroundJobRegistry`.
+   */
+  drainBackgroundNotices(conversationId: string): BackgroundAgentSnapshot[] {
+    const drained: BackgroundAgentSnapshot[] = [];
+    for (const record of this.backgroundTasks.values()) {
+      if (record.state.conversationId !== conversationId || !record.state.isFinal || record.reported) {
+        continue;
+      }
+      record.reported = true;
+      drained.push(this.snapshotBackground(record));
+    }
+    return drained;
+  }
+
+  /**
+   * Forget every background record for a conversation (owner disposal). Live
+   * one-shot agents are interrupted and awaited; live continuable children are
+   * handed to the continuation manager (their records never settle via Task, so
+   * awaiting them here would hang forever). Called on conversation deletion so
+   * the map cannot grow without bound.
+   */
+  async clearConversationBackground(conversationId: string, reason?: string): Promise<number> {
+    const liveOneShot: BackgroundTask[] = [];
+    const ids: string[] = [];
+    let continuableCount = 0;
+    for (const [agentId, record] of this.backgroundTasks.entries()) {
+      if (record.state.conversationId !== conversationId) {
+        continue;
+      }
+      ids.push(agentId);
+      if (record.state.isFinal) continue;
+      if (record.continuable) {
+        continuableCount += 1;
+        const childId = record.state.childConversationId;
+        if (childId) {
+          try {
+            await this.continuationManager?.interruptForParent?.(conversationId, childId);
+          } catch {}
+        }
+      } else {
+        liveOneShot.push(record);
+      }
+    }
+
+    for (const record of liveOneShot) {
+      record.controller.abort();
+      record.reported = true;
+    }
+    await Promise.allSettled(liveOneShot.map((record) => record.donePromise));
+    for (const agentId of ids) {
+      this.backgroundTasks.delete(agentId);
+    }
+
+    return liveOneShot.length + continuableCount;
   }
 }

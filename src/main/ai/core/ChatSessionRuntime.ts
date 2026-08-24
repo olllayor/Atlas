@@ -47,6 +47,7 @@ import type { SkillsService } from '../../plugins/SkillsService';
 import { createSkillTools } from '../../plugins/skillTools';
 import type { ToolWorkspace } from '../tools/toolWorkspace';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
+import type { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
 import { DEFAULT_TOOL_WORKSPACE } from '../tools/toolWorkspace';
 import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
 import { formatToolError } from '../tools/ToolErrorFormatter';
@@ -104,6 +105,7 @@ export type ExecuteTurnRequest = {
   messagesOverride?: ModelMessage[];
   initialParts?: ChatMessagePart[];
   subagentRuntime?: SubagentRuntime;
+  continuationManager?: SubagentContinuationManager;
   persistMessage?: boolean;
   parentAgentId?: string;
   /** Nesting depth: root turn = 0, child agent = 1, grandchild = 2, … */
@@ -759,6 +761,30 @@ export class ChatSessionRuntime {
     }
   }
 
+  private drainSubagentNotices(
+    manager: SubagentContinuationManager,
+    conversationId: string,
+    requestId: string,
+    emitEvent: (event: StreamEvent) => void
+  ): ModelMessage[] {
+    let notices: ReturnType<SubagentContinuationManager['drainCompletionNotices']>;
+    try {
+      notices = manager.drainCompletionNotices(conversationId);
+    } catch {
+      return [];
+    }
+    if (notices.length === 0) return [];
+    emitEvent({
+      type: 'notice',
+      requestId,
+      code: 'subagents-failed',
+      level: 'warning',
+      message: notices.length === 1 ? `Subagent ${notices[0].childId.slice(0, 8)} failed.` : `${notices.length} subagents failed.`,
+    });
+    const text = notices.map((n) => `Subagent ${n.childId.slice(0, 8)} (${n.title}) failed: ${n.error}`).join('\n');
+    return [{ role: 'user', content: text } as ModelMessage];
+  }
+
   /**
    * Claim every unreported settled background job for the conversation and
    * shape them for the model. The drain is the claim — whatever happens to
@@ -807,6 +833,7 @@ export class ChatSessionRuntime {
     messagesOverride,
     initialParts,
     subagentRuntime,
+    continuationManager,
     persistMessage = true,
     parentAgentId,
     depth,
@@ -830,6 +857,7 @@ export class ChatSessionRuntime {
       initialParts,
       assistantMessageId,
       subagentRuntime,
+      continuationManager,
       parentAgentId,
       depth,
       allowedTools,
@@ -1128,6 +1156,7 @@ export class ChatSessionRuntime {
     initialParts,
     assistantMessageId,
     subagentRuntime,
+    continuationManager,
     parentAgentId,
     depth,
     allowedTools,
@@ -1143,6 +1172,7 @@ export class ChatSessionRuntime {
     /** Present on a resumed turn; absent on a first send, where no row exists yet. */
     assistantMessageId?: string;
     subagentRuntime?: SubagentRuntime;
+    continuationManager?: SubagentContinuationManager;
     parentAgentId?: string;
     /** Nesting depth of the current turn (0 = root, 1 = first child agent, …). */
     depth?: number;
@@ -1257,7 +1287,9 @@ export class ChatSessionRuntime {
             workspace,
             subagentRuntime,
             subagentContext,
-            this.conversationsRepo
+            this.conversationsRepo,
+            continuationManager,
+            subagentContext ? { conversationId: subagentContext.conversationId } : undefined
           ),
           ...(this.skillsService
             ? createSkillTools(
@@ -1327,8 +1359,12 @@ export class ChatSessionRuntime {
             emitEvent
           )
         : [];
+      const subagentNotices = continuationManager
+        ? this.drainSubagentNotices(continuationManager, request.conversationId, requestId, emitEvent)
+        : [];
+      const combinedNotices = [...jobNotices, ...subagentNotices];
       const baseHistory = messagesOverride ?? this.selectModelHistory(request.conversationId);
-      const history = jobNotices.length > 0 ? [...baseHistory, ...jobNotices] : baseHistory;
+      const history = combinedNotices.length > 0 ? [...baseHistory, ...combinedNotices] : baseHistory;
       const modelInput = this.contextManager.buildModelInput({
         conversationId: request.conversationId,
         history,

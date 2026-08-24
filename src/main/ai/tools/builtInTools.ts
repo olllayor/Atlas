@@ -183,8 +183,10 @@ export function describeAgentInstructionsForPrompt(instructions: AgentInstructio
  * call something that was never in its tool set.
  */
 import { createAgentTools, type SubagentContext } from './agentTools';
+import { createSubagentControlTools, type SubagentControlContext } from './subagentControlTools';
 import { createJobTools } from './jobTools';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
+import type { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
 
 export type { SubagentContext };
 
@@ -199,9 +201,17 @@ export function createBuiltInTools(
    * The past-conversation search seam for `session_search`. Optional so every
    * existing call site is unchanged; the tool is omitted when absent.
    */
-  sessionSearch?: SessionSearchSource | null
+  sessionSearch?: SessionSearchSource | null,
+  continuationManager?: SubagentContinuationManager | null,
+  subagentControlContext?: SubagentControlContext | null
 ) {
   const agentTools = createAgentTools(subagentRuntime, subagentContext);
+  const controlTools =
+    continuationManager && subagentControlContext
+      ? createSubagentControlTools(continuationManager, subagentControlContext)
+      : continuationManager
+        ? createSubagentControlTools(continuationManager, subagentContext ? { conversationId: subagentContext.conversationId } : undefined)
+        : {};
   // Job-control tools exist only where the substrate does: a registry and a
   // conversation to fence them to. Read-only mode withholds them below along
   // with the other side-effecting tools.
@@ -217,6 +227,7 @@ export function createBuiltInTools(
   const all = {
     ...(extraTools ?? {}),
     ...agentTools,
+    ...controlTools,
     ...jobTools,
     ...sessionSearchTools,
     ...buildCodeTools(workspace),

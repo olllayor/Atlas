@@ -1192,8 +1192,30 @@ export type ConversationDetail = {
     projectId: string | null;
     pinnedAt: string | null;
     archivedAt: string | null;
+    sideOfConversationId?: string | null;
+    origin?: string | null;
+    subagentMode?: string | null;
+    subagentLabel?: string | null;
+    delegationDepth?: number | null;
   };
   messages: ChatMessage[];
+};
+
+/**
+ * What a subagent conversation's composer is allowed to do (plan §3.5).
+ *
+ * Null when the conversation is not a subagent at all — the ordinary chat
+ * path applies. `parentAvailable` is the exact-parent authority check the
+ * followup path enforces, surfaced here so the composer can say why it is
+ * read-only before the user types into a dead end. `running` reflects live
+ * activation state only; a cold child with no activation reports false even
+ * though its history is intact.
+ */
+export type SubagentComposerState = {
+  isSubagent: true;
+  mode: 'one-shot' | 'continuable';
+  parentAvailable: boolean;
+  running: boolean;
 };
 
 export type CreateConversationRequest = {
@@ -1674,7 +1696,8 @@ export type ActivityType =
   | 'task.started'
   | 'task.progress'
   | 'task.updated'
-  | 'task.completed';
+  | 'task.completed'
+  | 'subagent.descriptor';
 
 export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
 
@@ -1743,6 +1766,33 @@ export type TaskAgentLinkage = {
   outputFile?: string;
   /** Provider-synthesized rows that belong only in the Agents surface. */
   timelineBypass?: boolean;
+};
+
+export const SUBAGENT_DESCRIPTOR_VERSION = 1;
+
+export type SubagentMode = 'one-shot' | 'continuable';
+
+export interface SubagentDescriptor {
+  readonly version: typeof SUBAGENT_DESCRIPTOR_VERSION;
+  readonly mode: SubagentMode;
+  readonly provider: string;
+  readonly label: string;
+  readonly agentId: string;
+  readonly parentConversationId: string;
+  readonly delegationDepth: number;
+  readonly model?: string;
+  readonly toolFilter?: readonly string[];
+}
+
+export type SubagentListEntry = {
+  readonly childConversationId: string;
+  readonly mode: SubagentMode;
+  readonly label: string;
+  readonly hasChildren: boolean;
+  readonly status: 'running' | 'inactive';
+  readonly delegationDepth: number;
+  readonly parentConversationId: string;
+  readonly createdAt: string;
 };
 
 export type RuntimeEventEnvelope = {
@@ -2283,5 +2333,14 @@ export type RendererApi = {
     kill: (conversationId: string, jobId: string) => Promise<JobSnapshotView>;
     /** Push channel for job registration and settlement. */
     subscribe: (listener: (event: JobEvent) => void) => () => void;
+  };
+  subagents: {
+    list: (parentConversationId: string) => Promise<Array<{ id: string; title: string; mode: string | null; label: string | null }>>;
+    followup: (parentConversationId: string, childId: string, content: string) => Promise<string>;
+    interrupt: (childId: string) => Promise<{ accepted: true }>;
+    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) => Promise<any>;
+    getLiveness: () => Promise<Record<string, 'working' | 'monitoring' | null>>;
+    /** Composer takeover input: is this conversation a subagent, and can it still be driven? */
+    getComposerState: (childId: string) => Promise<SubagentComposerState | null>;
   };
 };

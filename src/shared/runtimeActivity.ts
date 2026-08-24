@@ -84,6 +84,14 @@ export function getWorkLogEntryId(event: RuntimeEventEnvelope) {
     return `task:${event.payload.taskId}`;
   }
 
+  if (event.activityType === 'subagent.descriptor' && typeof event.payload.agentId === 'string') {
+    return `subagent:${event.payload.agentId}`;
+  }
+  if (event.activityType === 'subagent.descriptor') {
+    const d = (event.payload.subagentDescriptor as Record<string, unknown> | undefined)?.agentId;
+    if (typeof d === 'string') return `subagent:${d}`;
+  }
+
   return `activity:${event.eventId}`;
 }
 
@@ -366,6 +374,11 @@ function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEve
 export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEventEnvelope): WorkLogEntry | null {
   if (event.activityType.startsWith('task.')) {
     return deriveTaskWorkLogEntry(previous, event);
+  }
+  if (event.activityType === 'subagent.descriptor') {
+    // Descriptor is durable identity, not a timeline row — keep it queryable but hidden from main work log.
+    // Return null so the activity list does not render it; it lives in runtime_events for catalog reads.
+    return null;
   }
 
   const title =

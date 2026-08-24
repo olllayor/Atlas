@@ -281,6 +281,16 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.jobsEvent, handler);
       };
     }
+  },
+  subagents: {
+    list: (parentConversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsList, parentConversationId),
+    followup: (parentConversationId: string, childId: string, content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsFollowup, { parentConversationId, childId, content }),
+    interrupt: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsInterrupt, childId),
+    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsHistory, request),
+    getLiveness: () => ipcRenderer.invoke(IPC_CHANNELS.subagentsLiveness) as Promise<Record<string, 'working' | 'monitoring' | null>>,
+    getComposerState: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsComposerState, childId)
   }
 };
 

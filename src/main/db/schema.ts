@@ -711,12 +711,33 @@ export function applySchema(database: SqliteDatabase) {
     );
   }
 
+  // S1 — continuable subagent provenance. Reuses side_of_conversation_id as
+  // parent FK (subagent IS a side conversation with origin marker). New columns
+  // only distinguish it from an ephemeral tangent.
+  if (!conversationColumns.includes('origin')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN origin TEXT");
+  }
+  if (!conversationColumns.includes('subagent_mode')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN subagent_mode TEXT");
+  }
+  if (!conversationColumns.includes('subagent_label')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN subagent_label TEXT");
+  }
+  if (!conversationColumns.includes('delegation_depth')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0");
+  }
+
   // Created here rather than in SCHEMA above: SCHEMA runs before the migration
   // block, so on an existing database the column this indexes does not exist
   // yet and the CREATE INDEX would abort the whole script.
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_side_of
     ON conversations (side_of_conversation_id);
+  `);
+  // Batched hasChildren lookup: WHERE origin='subagent' AND side_of_conversation_id IN (...)
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_subagent_parent
+    ON conversations (side_of_conversation_id) WHERE origin = 'subagent';
   `);
 
   // Migration: pinned projects. `projects` is younger than the migration block

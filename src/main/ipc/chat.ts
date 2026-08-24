@@ -85,4 +85,56 @@ export function registerChatIpc(chatEngine: ChatEngine) {
       await chatEngine.openVisualWindow(window, request);
     }),
   );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsList,
+    withUserFacingErrors(IPC_CHANNELS.subagentsList, async (event, parentConversationId: string) => {
+      assertTrustedSender(event);
+      return chatEngine.listSubagents(parentConversationId);
+    }),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsFollowup,
+    withUserFacingErrors(IPC_CHANNELS.subagentsFollowup, async (event, request: { parentConversationId: string; childId: string; content: string }) => {
+      assertTrustedSender(event);
+      return chatEngine.followupSubagent(request.parentConversationId, request.childId, request.content);
+    }),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsInterrupt,
+    withUserFacingErrors(IPC_CHANNELS.subagentsInterrupt, async (event, childId: string) => {
+      assertTrustedSender(event);
+      return chatEngine.interruptSubagent(childId);
+    }),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsHistory,
+    withUserFacingErrors(
+      IPC_CHANNELS.subagentsHistory,
+      async (event, request: { parentConversationId: string; childId: string; mode?: string | null }) => {
+        assertTrustedSender(event);
+        return chatEngine.getSubagentHistory(request);
+      },
+    ),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsLiveness,
+    withUserFacingErrors(IPC_CHANNELS.subagentsLiveness, async (event) => {
+      assertTrustedSender(event);
+      const map = chatEngine.getSubagentsLiveness();
+      return Object.fromEntries(map);
+    }),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.subagentsComposerState,
+    withUserFacingErrors(IPC_CHANNELS.subagentsComposerState, async (event, childId: string) => {
+      assertTrustedSender(event);
+      return chatEngine.getSubagentComposerState(childId);
+    }),
+  );
 }

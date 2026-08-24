@@ -580,8 +580,13 @@ app.whenReady().then(async () => {
       // Same for its background jobs: the owner is gone, so nothing can
       // claim their output anymore.
       void jobRegistry.killConversation(conversationId, 'conversation deleted').catch(() => undefined);
-      // And its live subagent sessions, for the same reason.
+      // And its live subagent sessions, for the same reason. Eviction stops the
+      // continuation loops (child-first through nested trees) and drops any
+      // completion notices nobody will ever drain; interruptAll handles the
+      // remaining one-shot Task sessions.
+      chatEngine.continuations.evictForConversation(conversationId);
       void chatEngine.subagents.interruptAll(conversationId, 'conversation deleted').catch(() => undefined);
+      void chatEngine.subagents.clearConversationBackground(conversationId, 'conversation deleted').catch(() => undefined);
     },
   });
   registerProjectsIpc({

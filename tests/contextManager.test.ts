@@ -10,11 +10,11 @@ function createTurn(index: number): ModelMessage[] {
   return [
     {
       role: 'user',
-      content: `User turn ${index}: request ${index}?`,
+      content: `User turn ${index}: request ${index}? ${`Detail ${index}. `.repeat(48)}`,
     },
     {
       role: 'assistant',
-      content: `Assistant turn ${index}: response ${index}.`,
+      content: `Assistant turn ${index}: response ${index}. ${`Finding ${index}. `.repeat(48)}`,
     },
   ];
 }
@@ -49,13 +49,15 @@ test('ContextManager keeps recent turns raw and unchanged in standard mode', () 
 test('ContextManager emits structured rolling summary and system addendum for older turns', () => {
   const manager = new ContextManager();
   const history = createHistory(11);
+  // Long turns: the shrink guard reverts compression when the summary would
+  // cost as much as the turns it replaces, so the span must be worth summing.
   history[0] = {
     role: 'user',
-    content: 'Build only v1 context manager. Do not add pinned facts. Keep it bounded?',
+    content: `Build only v1 context manager. Do not add pinned facts. Keep it bounded? ${'Scope note. '.repeat(48)}`,
   };
   history[1] = {
     role: 'assistant',
-    content: 'Decision: ship deterministic summarization first. Constraint: no DB schema changes.',
+    content: `Decision: ship deterministic summarization first. Constraint: no DB schema changes. ${'Design note. '.repeat(48)}`,
   };
 
   const input = manager.buildModelInput({
@@ -516,4 +518,106 @@ test('the handoff message is byte-stable across consecutive builds with unchange
     JSON.stringify(first.recentMessages[0]),
     JSON.stringify(second.recentMessages[0])
   );
+});
+
+test('appending turns does not move a sticky compaction boundary', () => {
+  const manager = new ContextManager();
+  const history = createHistory(12);
+  const first = manager.buildModelInput({ conversationId: 'conversation-sticky', history, mode: 'standard' });
+  assert.equal(first.usage.keptTurnCount, 10);
+
+  // Two more turns arrive. The sliding-ceiling behaviour would compress one
+  // more turn and rewrite the handoff every time; the sticky boundary keeps
+  // the split frozen so the request prefix stays cacheable.
+  const second = manager.buildModelInput({
+    conversationId: 'conversation-sticky',
+    history: [...history, ...createTurn(12), ...createTurn(13)],
+    mode: 'standard',
+  });
+
+  assert.equal(
+    JSON.stringify(second.recentMessages[0]),
+    JSON.stringify(first.recentMessages[0]),
+    'handoff bytes must be identical across turns',
+  );
+  assert.equal(second.usage.keptTurnCount, 12);
+});
+
+test('the sticky boundary survives a mode detour and resumes unchanged', () => {
+  const manager = new ContextManager();
+  const history = createHistory(12);
+  const conversationId = 'conversation-detour';
+
+  manager.buildModelInput({ conversationId, history, mode: 'standard' });
+
+  // A retry ladder escalation switches mode and recomputes from scratch…
+  const aggressive = manager.buildModelInput({ conversationId, history, mode: 'aggressive' });
+  assert.equal(aggressive.usage.keptTurnCount, 6);
+
+  // …but going back to standard picks up the ORIGINAL sticky boundary, not a
+  // fresh cost computation — the bytes the provider cached are still valid.
+  const back = manager.buildModelInput({
+    conversationId,
+    history: [...history, ...createTurn(12)],
+    mode: 'standard',
+  });
+  assert.equal(back.usage.keptTurnCount, 11);
+});
+
+test('the boundary moves at the pressure line, before the window actually overflows', () => {
+  const manager = new ContextManager();
+  const history: ModelMessage[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    history.push(
+      { role: 'user', content: `Question ${index}? ${'context '.repeat(400)}` },
+      { role: 'assistant', content: `Answer ${index}. ${'detail '.repeat(400)}` }
+    );
+  }
+
+  // Room for everything with 20% to spare: the pressure line (85%) is not
+  // crossed, so the turn-count ceiling alone decides — nothing is dropped.
+  const roomy = manager.buildModelInput({
+    conversationId: 'conversation-pressure-roomy',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 15_000, reservedTokens: 500 },
+  });
+  assert.equal(roomy.usage.droppedTurnCount, 0);
+  assert.equal(roomy.usage.fitsBudget, true);
+
+  // Same shape, but the kept slice lands between the pressure line and the
+  // wall: compaction fires even though the request still fits.
+  const tight = manager.buildModelInput({
+    conversationId: 'conversation-pressure-tight',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 8_000, reservedTokens: 500 },
+  });
+  assert.ok(tight.usage.droppedTurnCount > 0, 'pressure alone must move the boundary');
+  assert.equal(tight.usage.fitsBudget, true, 'and the compressed request still fits');
+});
+
+test('the shrink guard reverts compression that would not shrink anything', () => {
+  const manager = new ContextManager();
+  // Tiny turns: any summary — with its fixed preamble — costs more than the
+  // turns it would replace.
+  const history = [
+    { role: 'user', content: 'hi?' },
+    { role: 'assistant', content: 'hello.' },
+    { role: 'user', content: 'still there?' },
+    { role: 'assistant', content: 'yes.' },
+    { role: 'user', content: 'now the real question: explain the whole system?' },
+    { role: 'assistant', content: 'ok.' },
+  ] as ModelMessage[];
+
+  const result = manager.buildModelInput({
+    conversationId: 'conversation-shrink-guard',
+    history,
+    mode: 'standard',
+    budget: { totalTokens: 600, reservedTokens: 100 },
+  });
+
+  assert.equal(result.systemContextAddendum, null, 'no summary is built');
+  assert.equal(result.usage.droppedTurnCount, 0, 'the raw turns are sent instead');
+  assert.equal(result.recentMessages.length, history.length);
 });

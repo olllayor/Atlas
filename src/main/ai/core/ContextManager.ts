@@ -105,6 +105,19 @@ type ConversationTurn = {
   followUps: ModelMessage[];
 };
 
+/**
+ * The last compaction decision per conversation.
+ *
+ * Reused across builds so the handoff message stays byte-stable while nothing
+ * forces a change — which is what lets the provider's prompt cache cover
+ * everything above the handoff instead of re-reading the conversation every
+ * turn (dsh's summarize-once-until-pressure shape).
+ */
+type StickyBoundary = {
+  mode: ContextBuildMode;
+  olderCount: number;
+};
+
 const RECENT_TURN_LIMIT: Record<ContextBuildMode, number> = {
   standard: 10,
   aggressive: 6,
@@ -140,8 +153,23 @@ const SUMMARY_SECTION_MAX_ITEMS = 6;
 /** One entry per conversation; evicted least-recently-built beyond this cap. */
 const MEMORY_CACHE_LIMIT = 50;
 
+/**
+ * Compaction fires here, not at 100% (dsh's `thresholdRatio`, tuned up from
+ * their 0.8 because Atlas's budget already reserves the completion).
+ *
+ * Waiting for the window to actually overflow means the turn that crosses the
+ * line pays for an emergency compression mid-request and the *next* user
+ * message starts with no headroom at all. Walking the boundary at 85% keeps
+ ~15% of the window free for the reply and the question after it, and the
+ * boundary then re-sticks — so the cost is paid once, not every turn.
+ */
+const PRESSURE_RATIO = 0.85;
+
 export class ContextManager {
   private readonly cache = new Map<string, CachedOlderContext>();
+  /** Keyed by conversation *and* mode: a retry-ladder escalation must not
+   * clobber the boundary the provider's cache is warm for. */
+  private readonly boundaries = new Map<string, StickyBoundary>();
 
   constructor(
     private readonly hooks: ContextManagerHooks = {},
@@ -157,7 +185,7 @@ export class ContextManager {
     // every build is free.
     const history = pruneModelHistory(args.history).messages;
     const split = splitHistoryIntoTurns(history);
-    const olderTurnCount = chooseOlderTurnCount(split, mode, budget);
+    const olderTurnCount = this.chooseOlderTurnCountSticky(conversationId, split, mode, budget);
 
     if (olderTurnCount <= 0) {
       const historyTokens = estimateMessagesTokens(history);
@@ -209,6 +237,32 @@ export class ContextManager {
     const rollingSummary = cached.rollingSummary;
     const systemContextAddendum = buildSystemContextAddendum(rollingSummary, toolSummaries, mode);
 
+    // Shrink guard (dsh compacts only when the summary is strictly smaller
+    // than what it replaces): a heuristic summary that costs as much as the
+    // turns it drops is not compression — it is lossy at full price. Sending
+    // the raw turns is strictly better, so the split is reverted for this
+    // build. The sticky boundary is deliberately left where it is: the guard
+    // is deterministic given the same history, so every build here reaches
+    // the same revert, and pressure re-checks from this position next time.
+    const addendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
+    if (systemContextAddendum && addendumTokens >= estimateMessagesTokens(olderMessages)) {
+      const historyTokens = estimateMessagesTokens(history);
+      return {
+        recentMessages: history,
+        rollingSummary: null,
+        toolSummaries: [],
+        systemContextAddendum: null,
+        usage: {
+          historyTokens,
+          addendumTokens: 0,
+          droppedTurnCount: 0,
+          keptTurnCount: split.turns.length,
+          fitsBudget:
+            !budget || historyTokens + budget.reservedTokens <= budget.totalTokens,
+        },
+      };
+    }
+
     // The handoff is a positioned history message: after any preface (which it
     // also summarizes), before the first kept turn. Deterministic given
     // (fingerprint, mode), so identical requests carry identical bytes and the
@@ -224,7 +278,7 @@ export class ContextManager {
           : keptMessages;
 
     const historyTokens = estimateMessagesTokens(keptMessages);
-    const addendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
+    const finalAddendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
 
     return {
       recentMessages,
@@ -233,13 +287,82 @@ export class ContextManager {
       systemContextAddendum,
       usage: {
         historyTokens,
-        addendumTokens,
+        addendumTokens: finalAddendumTokens,
         droppedTurnCount: olderTurns.length,
         keptTurnCount: recentTurns.length,
         fitsBudget:
-          !budget || historyTokens + addendumTokens + budget.reservedTokens <= budget.totalTokens,
+          !budget || historyTokens + finalAddendumTokens + budget.reservedTokens <= budget.totalTokens,
       },
     };
+  }
+
+  /**
+   * How many of the oldest turns to compress rather than send raw — sticky
+   * edition.
+   *
+   * The first decision for a conversation is the old cost-based one. After
+   * that, the boundary is frozen: appending turns never moves it, so the
+   * handoff bytes (and everything above them) stay identical and the
+   * provider's prefix cache keeps hitting. The boundary only moves under
+   * pressure — the kept slice has eaten into the headroom (85% of what is
+   * available, not 100% of it) — or when a retry escalation switches mode,
+   * and then the new value sticks again.
+   *
+   * The turn-count ceiling therefore acts as an initial split, not a sliding
+   * window: a conversation of small turns may keep more than ten of them raw,
+   * which is exactly dsh's compact-only-under-pressure behaviour and is what
+   * `fitsBudget` reports on honestly.
+   */
+  private chooseOlderTurnCountSticky(
+    conversationId: string,
+    split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+    mode: ContextBuildMode,
+    budget: ContextBudget | undefined,
+  ): number {
+    const maxOlder = Math.max(0, split.turns.length - 1);
+    const key = `${conversationId}\u0000${mode}`;
+    const sticky = this.boundaries.get(key);
+
+    if (sticky) {
+      // Clamp to "everything but the newest turn" once history shrinks below
+      // the remembered boundary (a fork cut, a pruned side thread).
+      let olderCount = Math.min(sticky.olderCount, maxOlder);
+      if (budget && !this.fitsWithOlder(split, mode, budget, olderCount)) {
+        olderCount = walkToBudget(split, mode, budget, olderCount);
+      }
+      this.rememberBoundary(key, { mode, olderCount });
+      return olderCount;
+    }
+
+    const olderCount = chooseOlderTurnCount(split, mode, budget);
+    this.rememberBoundary(key, { mode, olderCount });
+    return olderCount;
+  }
+
+  private fitsWithOlder(
+    split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+    mode: ContextBuildMode,
+    budget: ContextBudget,
+    olderCount: number,
+  ): boolean {
+    const available = budget.totalTokens - budget.reservedTokens;
+    // The pressure line, not the wall: the boundary moves while the kept
+    // slice still *fits*, once it has eaten into the headroom. See
+    // `PRESSURE_RATIO`.
+    return costFrom(split, mode, olderCount) <= available * PRESSURE_RATIO;
+  }
+
+  /** Insertion-ordered cap shared by both per-conversation maps. */
+  private rememberBoundary(key: string, boundary: StickyBoundary) {
+    this.boundaries.delete(key);
+    this.boundaries.set(key, boundary);
+    while (this.boundaries.size > MEMORY_CACHE_LIMIT * 3) {
+      const oldest = this.boundaries.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.boundaries.delete(oldest);
+    }
   }
 
   /**
@@ -312,6 +435,45 @@ export class ContextManager {
 }
 
 /**
+ * What keeping `older` turns compressed costs against the budget: the kept
+ * turns, plus the addendum reserve once anything is being compressed.
+ */
+function costFrom(
+  split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+  mode: ContextBuildMode,
+  older: number,
+): number {
+  const available = (turnCosts: number[]) =>
+    turnCosts.slice(older).reduce((total, cost) => total + cost, 0);
+  const turnCosts = split.turns.map((turn) => estimateMessagesTokens([turn.user, ...turn.followUps]));
+  const prefaceCost = estimateMessagesTokens(split.prefaceMessages);
+  const addendumReserve = Math.ceil(CONTEXT_ADDENDUM_MAX_CHARS[mode] / 3);
+
+  const raw = older === 0 ? prefaceCost + available(turnCosts) : available(turnCosts);
+  return raw + (older > 0 ? addendumReserve : 0);
+}
+
+/**
+ * Walks the boundary upward — compressing more — until the request fits.
+ * Starts from `from`, so a sticky boundary under pressure escalates from its
+ * own position rather than recomputing from scratch.
+ */
+function walkToBudget(
+  split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+  mode: ContextBuildMode,
+  budget: ContextBudget,
+  from: number,
+): number {
+  const available = (budget.totalTokens - budget.reservedTokens) * PRESSURE_RATIO;
+  const maxOlder = Math.max(0, split.turns.length - 1);
+  let older = Math.min(from, maxOlder);
+  while (older < maxOlder && costFrom(split, mode, older) > available) {
+    older += 1;
+  }
+  return older;
+}
+
+/**
  * How many of the oldest turns to compress rather than send raw.
  *
  * The turn-count ceiling is the floor of this decision, not the whole of it:
@@ -331,29 +493,7 @@ function chooseOlderTurnCount(
     return byTurnCount;
   }
 
-  const available = budget.totalTokens - budget.reservedTokens;
-  const turnCosts = split.turns.map((turn) => estimateMessagesTokens([turn.user, ...turn.followUps]));
-  const prefaceCost = estimateMessagesTokens(split.prefaceMessages);
-
-  // Summarising costs the addendum, so it only pays off once it displaces more
-  // than it adds; reserve its ceiling whenever any turn is being compressed.
-  const addendumReserve = Math.ceil(CONTEXT_ADDENDUM_MAX_CHARS[mode] / 3);
-
-  const costFrom = (older: number) => {
-    let total = older === 0 ? prefaceCost : 0;
-    for (let index = older; index < turnCosts.length; index += 1) {
-      total += turnCosts[index] ?? 0;
-    }
-    return total + (older > 0 ? addendumReserve : 0);
-  };
-
-  let older = byTurnCount;
-  const maxOlder = Math.max(0, split.turns.length - 1);
-  while (older < maxOlder && costFrom(older) > available) {
-    older += 1;
-  }
-
-  return older;
+  return walkToBudget(split, mode, budget, byTurnCount);
 }
 
 function splitHistoryIntoTurns(history: ModelMessage[]) {

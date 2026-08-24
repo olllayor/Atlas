@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -22,6 +22,7 @@ import type {
 } from '../../../shared/contracts';
 import {
   finalizeMessageParts,
+  finalizeInterruptedParts,
   getReasoningContentFromParts,
   getTextContentFromParts,
 } from '../../../shared/messageParts';
@@ -188,6 +189,26 @@ function formatToolNameForDeniedCopy(toolName?: string) {
  */
 const TITLE_GENERATION_TIMEOUT_MS = 90_000;
 
+/** 16 hex chars: enough to tell "changed" from "unchanged", small in a log. */
+function sha256Short(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function messageContentChars(message: ModelMessage) {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === 'string') {
+    return content.length;
+  }
+  try {
+    return JSON.stringify(content ?? '').length;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * How many turns may stream at once, across all conversations.
  *
@@ -202,6 +223,33 @@ export class ChatEngine {
   private readonly runningRequestIds = new Set<string>();
   /** Requests accepted but waiting for a slot, oldest first. */
   private readonly queuedRequestIds: string[] = [];
+  /**
+   * Follow-ups: messages accepted while their conversation already had a turn
+   * in flight. Unlike the slot queue above, these are deferred whole — no turn
+   * row, no assistant placeholder — so a queued message never renders as an
+   * empty assistant bubble. Oldest first, and strictly per-conversation FIFO:
+   * a conversation's second follow-up cannot start before its first.
+   */
+  private readonly followupQueue: Array<{
+    requestId: string;
+    request: ChatStartRequest;
+    window: BrowserWindow;
+  }> = [];
+  /**
+   * The `closed` listener registered per follow-up, kept keyed by requestId so
+   * dispatch can remove exactly the closure it registered — a fresh arrow per
+   * call would make removeListener a silent no-op.
+   */
+  private readonly followupCloseListeners = new Map<string, () => void>();
+
+  private dropFollowupListener(requestId: string) {
+    let listener = this.followupCloseListeners.get(requestId);
+    if (!listener) {
+      listener = () => this.dropFollowup(requestId);
+      this.followupCloseListeners.set(requestId, listener);
+    }
+    return listener;
+  }
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
   private readonly backgroundLiveness: import('./BackgroundLivenessService').BackgroundLivenessService;
   private readonly continuationManager: SubagentContinuationManager;
@@ -604,8 +652,6 @@ export class ChatEngine {
     }
 
     const requestId = randomUUID();
-    const assistantMessageId = randomUUID();
-    const turnId = randomUUID();
 
     // What the turn is carrying, recorded before anything can go wrong with it.
     // Attachment bytes are the first thing worth knowing when a send takes
@@ -623,14 +669,6 @@ export class ChatEngine {
       attachmentTypes: fileParts.map((part) => part.mediaType),
     });
 
-    const controller = new AbortController();
-    const onWindowClosed = () => {
-      void this.subagentRuntime.interruptAll(request.conversationId, 'Window closed');
-      controller.abort();
-      this.cleanupRequest(requestId);
-    };
-    window.once('closed', onWindowClosed);
-
     const persistedParts = this.persistInputParts(request.conversationId, requestId, inputParts);
     this.conversationsRepo.setDefaults(request.conversationId, request.providerId, request.modelId);
     this.conversationsRepo.addMessage({
@@ -642,6 +680,71 @@ export class ChatEngine {
       providerId: request.providerId,
       modelId: request.modelId
     });
+
+    // Name the session from the prompt right now, before a single token is
+    // streamed. Waiting for the model meant every in-flight thread sat in
+    // the sidebar as `Session · <date>` — the title arrived, if at all,
+    // long after the user had stopped looking for it.
+    this.applyLocalTitle(window, request.conversationId, previewContent);
+
+    // A conversation with a turn already open takes this message as a
+    // follow-up rather than a competing turn: two live streams in one thread
+    // would interleave answers out of order and race each other's tool calls.
+    // The message above is durable, so nothing is lost waiting; the turn's own
+    // rows are created only when the follow-up actually starts.
+    if (this.isConversationBusy(request.conversationId)) {
+      const onWindowClosed = this.dropFollowupListener(requestId);
+      window.once('closed', onWindowClosed);
+      const index = this.followupQueue.findIndex((entry) => entry.request.conversationId === request.conversationId);
+      this.followupQueue.splice(index + 1, 0, { requestId, request, window });
+      this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
+      return { requestId, queued: true };
+    }
+
+    this.prepareTurn(window, requestId, request);
+
+    return { requestId };
+  }
+
+  /** Does this conversation have a turn open or a follow-up already waiting? */
+  private isConversationBusy(conversationId: string) {
+    return this.hasLiveTurn(conversationId) || this.followupQueue.some((entry) => entry.request.conversationId === conversationId);
+  }
+
+  /** Does this conversation currently hold an ActiveRequest (running, awaiting approval, or parked for a slot)? */
+  private hasLiveTurn(conversationId: string) {
+    for (const active of this.activeRequests.values()) {
+      if (active.request.conversationId === conversationId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private dropFollowup(requestId: string) {
+    const index = this.followupQueue.findIndex((entry) => entry.requestId === requestId);
+    if (index >= 0) {
+      this.removeFollowupAt(index);
+    }
+  }
+
+  /**
+   * Creates everything a running turn needs — abort wiring, the assistant
+   * placeholder, the turn and session rows, the baseline checkpoint — and then
+   * either starts it or parks it for the next free concurrency slot.
+   */
+  private prepareTurn(window: BrowserWindow, requestId: string, request: ChatStartRequest) {
+    const assistantMessageId = randomUUID();
+    const turnId = randomUUID();
+
+    const controller = new AbortController();
+    const onWindowClosed = () => {
+      void this.subagentRuntime.interruptAll(request.conversationId, 'Window closed');
+      controller.abort();
+      this.cleanupRequest(requestId);
+    };
+    window.once('closed', onWindowClosed);
+
     this.conversationsRepo.addMessage({
       id: assistantMessageId,
       conversationId: request.conversationId,
@@ -652,12 +755,6 @@ export class ChatEngine {
       providerId: request.providerId,
       modelId: request.modelId,
     });
-
-    // Name the session from the prompt right now, before a single token is
-    // streamed. Waiting for the model meant every in-flight thread sat in
-    // the sidebar as `Session · <date>` — the title arrived, if at all,
-    // long after the user had stopped looking for it.
-    this.applyLocalTitle(window, request.conversationId, previewContent);
 
     this.runtimeStateRepo.createTurn({
       id: turnId,
@@ -692,9 +789,9 @@ export class ChatEngine {
 
     // Awaited, not fired off: the baseline has to be on disk before the first
     // tool can touch a file, or the turn's own edits end up inside its own
-    // "before" snapshot and the diff comes out empty.
-    await this.checkpoints.captureTurnStart(request.conversationId, turnId);
-
+    // "before" snapshot and the diff comes out empty. The capture is awaited
+    // inside runRequest instead of here so queuing for a concurrency slot
+    // never blocks the caller on filesystem work.
     this.activeRequests.set(requestId, {
       requestId,
       controller,
@@ -718,19 +815,30 @@ export class ChatEngine {
         : null,
     });
 
-    // Turns run in parallel across conversations, but not without a ceiling:
-    // each one holds a provider stream and a tool runtime, and a user who
-    // fires off six tasks should get four of them queued rather than six
-    // fighting for the same rate limit.
-    if (this.runningRequestIds.size >= MAX_CONCURRENT_TURNS) {
-      this.queuedRequestIds.push(requestId);
-      this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
-      return { requestId };
+    void this.prepareAndRun(window, requestId, request, turnId, assistantMessageId, controller);
+  }
+
+  private async prepareAndRun(
+    window: BrowserWindow,
+    requestId: string,
+    request: ChatStartRequest,
+    turnId: string,
+    assistantMessageId: string,
+    controller: AbortController,
+  ) {
+    try {
+      await this.checkpoints.captureTurnStart(request.conversationId, turnId);
+    } catch (error) {
+      logger.warn('checkpoint.capture_failed', { conversationId: request.conversationId, turnId, error });
+    }
+
+    // The conversation may have been aborted or the window closed while the
+    // baseline was being captured; do not resurrect it.
+    if (!this.activeRequests.has(requestId)) {
+      return;
     }
 
     this.beginRun(requestId, request);
-
-    return { requestId };
   }
 
   /** Marks a request as occupying a slot and starts it. */
@@ -747,13 +855,49 @@ export class ChatEngine {
   }
 
   /**
-   * Hands the freed slot to the next queued turn.
+   * Hands freed capacity to the next piece of work.
    *
-   * Requests that were aborted while queued have already been dropped from
-   * `activeRequests`, so they are skipped rather than resurrected.
+   * Follow-ups go first: a conversation that just finished owes its own queued
+   * messages an answer before some other conversation's slot-waiting turn.
+   * Within the follow-up queue the order is strict FIFO, and a conversation
+   * with a turn still open is skipped — its earlier message must finish being
+   * a turn before the next one becomes one.
+   *
+   * Requests aborted while queued were already dropped from `activeRequests`,
+   * so they are skipped rather than resurrected.
    */
   private startNextQueuedRequest() {
+    // Prune entries whose window died before dispatch — the `closed` listener
+    // usually removes them first, but a destroyed-window check costs nothing
+    // and keeps the scan from skipping over a corpse forever.
+    for (let index = this.followupQueue.length - 1; index >= 0; index -= 1) {
+      if (this.followupQueue[index].window.isDestroyed()) {
+        this.removeFollowupAt(index);
+      }
+    }
+
     while (this.runningRequestIds.size < MAX_CONCURRENT_TURNS) {
+      // Dispatchability looks only at live turns: the entry being considered
+      // sits in this very queue, so counting queued siblings here would make
+      // every head block itself forever. Ordering within the queue is already
+      // guaranteed by scanning from the front — an earlier same-conversation
+      // entry is either dispatched first or blocks this one through its own
+      // live turn.
+      const followupIndex = this.followupQueue.findIndex(
+        (entry) => !this.hasLiveTurn(entry.request.conversationId),
+      );
+      if (followupIndex >= 0) {
+        const [{ requestId, request, window }] = this.followupQueue.splice(followupIndex, 1);
+        window.removeListener('closed', this.dropFollowupListener(requestId));
+        this.followupCloseListeners.delete(requestId);
+        // Held synchronously: prepareTurn's beginRun only fires after the
+        // checkpoint capture resolves, and without this the dispatch loop
+        // would keep reading the slot as free and over-fill it.
+        this.runningRequestIds.add(requestId);
+        this.prepareTurn(window, requestId, request);
+        continue;
+      }
+
       const nextId = this.queuedRequestIds.shift();
       if (!nextId) {
         return;
@@ -765,6 +909,17 @@ export class ChatEngine {
         return;
       }
     }
+  }
+
+  private removeFollowupAt(index: number) {
+    const [entry] = this.followupQueue.splice(index, 1);
+    if (!entry) {
+      return;
+    }
+    if (!entry.window.isDestroyed()) {
+      entry.window.removeListener('closed', this.dropFollowupListener(entry.requestId));
+    }
+    this.followupCloseListeners.delete(entry.requestId);
   }
 
   /**
@@ -825,6 +980,28 @@ export class ChatEngine {
   }
 
   async abort(requestId: string) {
+    // A follow-up that never started has no stream and no rows to close — the
+    // user message stays in the transcript, unanswered, which is the honest
+    // record of a message withdrawn before its turn began.
+    const followupEntry = this.followupQueue.find((entry) => entry.requestId === requestId);
+    if (followupEntry) {
+      this.dropFollowup(requestId);
+      this.markConversationStatus(followupEntry.request.conversationId, 'idle', {
+        completedAt: new Date().toISOString(),
+      });
+      // Same shape the renderer already handles for an aborted live stream:
+      // its error path clears the draft and refetches, so no new state or
+      // branch is needed on the other side of the IPC.
+      this.sendEvent(followupEntry.window, {
+        type: 'error',
+        requestId,
+        code: 'aborted',
+        message: 'Message was cancelled while waiting to be sent.',
+        retryable: false,
+      });
+      return;
+    }
+
     const active = this.activeRequests.get(requestId);
     if (active) {
       await this.subagentRuntime.interruptAll(active.request.conversationId, 'Parent turn aborted');
@@ -1064,6 +1241,9 @@ export class ChatEngine {
         emitEvent: (event) => {
           this.handleRuntimeStreamEvent(active, event);
         },
+        onRequestHeader: (header) => {
+          this.recordRequestHeader(active, header);
+        },
       });
 
       active.parts = result.parts ?? active.parts;
@@ -1169,7 +1349,11 @@ export class ChatEngine {
         messageId: active.assistantMessageId,
         status: 'error',
         errorCode: normalized.code,
-        parts: finalizeMessageParts(active.parts),
+        // Interrupted-turn finalization, not the plain one: tool calls that
+        // never finished are closed with a synthetic error here so neither
+        // the UI nor any later reconstruction of this turn sees a call
+        // stuck "in progress" forever.
+        parts: finalizeInterruptedParts(active.parts),
       });
       this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(active.request.conversationId), 'aborted');
       this.runtimeStateRepo.updateProviderSession(requestId, { status: 'aborted' });
@@ -1331,8 +1515,40 @@ export class ChatEngine {
     this.startNextQueuedRequest();
   }
 
-  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {
-    active.tracker?.handleEvent(event);
+  /**
+   * Writes the envelope snapshot of one provider attempt as a `request.header`
+   * event. Sizes are stored raw; content is reduced to two hashes — the system
+   * prompt and the tail of the history — because comparing those across turns
+   * is the whole point: equal hashes mean an unchanged prefix, which is what
+   * provider prompt caches key on and what BYOK bills quietly depend on.
+   */
+  private recordRequestHeader(
+    active: ActiveRequest,
+    header: { attempt: number; systemPrompt: string | undefined; messages: ModelMessage[] },
+  ) {
+    const tail = header.messages.slice(-8);
+    this.recordRuntimeEnvelope(active, {
+      eventId: randomUUID(),
+      conversationId: active.request.conversationId,
+      turnId: active.turnId,
+      requestId: active.requestId,
+      activityType: 'request.header',
+      tone: 'info',
+      provider: active.request.providerId,
+      providerEventType: 'request.header',
+      messageId: active.assistantMessageId,
+      payload: {
+        attempt: header.attempt,
+        messageCount: header.messages.length,
+        historyChars: header.messages.reduce((total, message) => total + messageContentChars(message), 0),
+        systemChars: header.systemPrompt?.length ?? 0,
+        systemHash: sha256Short(header.systemPrompt),
+        historyTailHash: sha256Short(JSON.stringify(tail)),
+      },
+    });
+  }
+
+  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {    active.tracker?.handleEvent(event);
 
     if (
       event.type === 'meta' ||

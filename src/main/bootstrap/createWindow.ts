@@ -150,13 +150,17 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
     minHeight: 760,
     show: false,
     autoHideMenuBar: true,
+    // Passed unconditionally: the constructor stores it and re-applies it when
+    // vibrancy is switched on mid-session (settings IPC), so a live toggle gets
+    // the same always-active material a restart would have created. Inert while
+    // no vibrancy view exists.
+    visualEffectState: 'active',
     ...(withVibrancy
       ? {
           vibrancy: 'sidebar' as const,
           // Without this the material desaturates to flat grey the moment the
           // app loses focus, which reads as the sidebar having changed colour
           // rather than as the window being in the background.
-          visualEffectState: 'active' as const,
           backgroundColor: VIBRANT_WINDOW_BACKGROUND,
         }
       : { backgroundColor: OPAQUE_WINDOW_BACKGROUND }),

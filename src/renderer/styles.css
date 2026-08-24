@@ -814,6 +814,52 @@ select {
 }
 
 /* ============================================
+   Scroll-edge fade
+
+   The transcript slides behind the floating composer slab; a hard clip at
+   the slab's top edge makes text stop mid-line with a razor cut. A gradient
+   overlay — an ::after on the pane, not a mask on the scroller — fades the
+   last lines into the background instead. Overlay rather than mask because
+   the fade only reads correctly while docked to the bottom: masked content
+   would fade even when the reader has scrolled up and nothing is hidden.
+   The element toggles with the same hysteresis state as the jump-to-latest
+   button, so the two never disagree about whether there is something under
+   the slab.
+
+   `color-mix` keeps the gradient honest in every theme without hardcoding
+   one; the transparent stop uses the same colour so the ramp stays in one
+   hue instead of greying out mid-gradient.
+   ============================================ */
+
+.scroll-edge-fade-bottom {
+  pointer-events: none;
+}
+
+.scroll-edge-fade-bottom::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2.5rem;
+  /* Alpha-ramped copies of one colour (srgb, so the hue cannot drift across
+     the ramp the way it can through oklab-mixed transparency). */
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-base) 0%, transparent) 0%,
+    color-mix(in srgb, var(--bg-base) 55%, transparent) 45%,
+    var(--bg-base) 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-edge-fade-bottom::after {
+    /* Static dimming is still motion-adjacent for some readers; the fade is
+       decoration, not information, so reduced motion removes it entirely. */
+    display: none;
+  }
+}
+
+/* ============================================
    View transitions
    ============================================ */
 

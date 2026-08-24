@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import Database from 'better-sqlite3';
+import { createAppliedSqliteTestDatabase } from './helpers/sqliteTestDb';
 import { applySchema } from '../src/main/db/schema';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo';
 import { SubagentContinuationManager } from '../src/main/ai/agents/SubagentContinuationManager';
 
 function makeManagerWithDb(executeImpl?: any) {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});

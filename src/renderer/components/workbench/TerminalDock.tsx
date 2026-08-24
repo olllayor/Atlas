@@ -63,11 +63,14 @@ export function TerminalDock({
 
   const onCwd = useCallback((next: string) => setActualCwd(next), []);
 
-  // Opening the dock is an act of wanting to type in it.
+  // Opening the dock is an act of wanting to type in it — mount only. Keyed
+  // on `conversationId` it used to steal focus from the composer on every
+  // thread switch (sidebar click, palette jump) with the dock open.
   useEffect(() => {
     const frame = requestAnimationFrame(() => panelRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [conversationId]);
+    // Mount == open: the dock is conditionally rendered by App.
+  }, []);
 
   return (
     <section

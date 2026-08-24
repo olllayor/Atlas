@@ -110,7 +110,6 @@ export type ThemeExport = {
   backgroundColor: string | null;
   foregroundColor: string | null;
   contrast: number;
-  translucentSidebar: boolean;
   uiFontFamily: string | null;
   codeFontFamily: string | null;
 };
@@ -121,13 +120,18 @@ export function exportTheme(appearance: SettingsAppearanceSummary): ThemeExport 
     backgroundColor: appearance.backgroundColor,
     foregroundColor: appearance.foregroundColor,
     contrast: appearance.contrast,
-    translucentSidebar: appearance.translucentSidebar,
     uiFontFamily: appearance.uiFontFamily,
     codeFontFamily: appearance.codeFontFamily
   };
 }
 
-/** Parses pasted theme JSON; returns null when nothing usable is present. */
+/**
+ * Parses pasted theme JSON; returns null when nothing usable is present.
+ *
+ * `translucentSidebar` is deliberately outside this contract: it is a window
+ * material for one platform, not a theme colour, and a pasted JSON used to be
+ * able to flip it (and live-apply vibrancy) as a side effect of importing.
+ */
 export function parseThemeImport(raw: string): Partial<ThemeExport> | null {
   let parsed: unknown;
   try {
@@ -151,10 +155,6 @@ export function parseThemeImport(raw: string): Partial<ThemeExport> | null {
 
   if (typeof source.contrast === 'number' && Number.isFinite(source.contrast)) {
     result.contrast = Math.min(100, Math.max(0, Math.round(source.contrast)));
-  }
-
-  if (typeof source.translucentSidebar === 'boolean') {
-    result.translucentSidebar = source.translucentSidebar;
   }
 
   for (const key of ['uiFontFamily', 'codeFontFamily'] as const) {

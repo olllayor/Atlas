@@ -592,7 +592,7 @@ test('ChatSessionRuntime does not retry when the request signal is already abort
   assert.equal(attempts, 1);
 });
 
-test('ChatSessionRuntime compiles older history into system addendum and keeps recent messages raw', async () => {
+test('ChatSessionRuntime sends the compaction handoff in history and keeps the system prompt stable', async () => {
   const history = createHistory(12);
   let capturedMessages: ModelMessage[] | null = null;
   let capturedSystem: string | undefined;
@@ -623,8 +623,15 @@ test('ChatSessionRuntime compiles older history into system addendum and keeps r
   });
 
   assert.ok(capturedMessages);
-  assert.equal(capturedMessages!.length, 20);
-  assert.ok(capturedSystem?.includes('Another language model started to solve this problem'));
+  // The kept turns plus one leading handoff message summarizing the older ones.
+  assert.equal(capturedMessages!.length, 21);
+  // The summary rides IN the history, not in the system prompt: a per-turn
+  // volatile block at position 0 would re-key the provider's prompt cache on
+  // every turn the compaction boundary moves.
+  assert.ok(!capturedSystem?.includes('Another language model started to solve this problem'));
+  const first = capturedMessages![0];
+  assert.equal(first.role, 'user');
+  assert.ok(String((first as { content?: unknown }).content).includes('Another language model started to solve this problem'));
 });
 
 test('ChatSessionRuntime retries once with aggressive compaction when prompt is too long before streaming', async () => {
@@ -663,8 +670,10 @@ test('ChatSessionRuntime retries once with aggressive compaction when prompt is 
   });
 
   assert.equal(attempts, 2);
-  assert.equal(messageCounts[0], 20);
-  assert.equal(messageCounts[1], 12);
+  // Both counts include the handoff message; aggressive keeps six turns (12
+  // messages) where standard keeps ten (20).
+  assert.equal(messageCounts[0], 21);
+  assert.equal(messageCounts[1], 13);
 });
 
 test('ChatSessionRuntime does not retry prompt-too-long compaction after partial streamed output', async () => {
@@ -735,9 +744,9 @@ test('ChatSessionRuntime escalates to maximal compaction when aggressive still o
   });
 
   assert.equal(attempts, 3);
-  assert.equal(messageCounts[0], 20, 'standard keeps ten turns raw');
-  assert.equal(messageCounts[1], 12, 'aggressive keeps six turns raw');
-  assert.equal(messageCounts[2], 2, 'maximal keeps only the newest turn raw');
+  assert.equal(messageCounts[0], 21, 'standard keeps ten turns raw plus the handoff');
+  assert.equal(messageCounts[1], 13, 'aggressive keeps six turns raw plus the handoff');
+  assert.equal(messageCounts[2], 3, 'maximal keeps only the newest turn raw plus the handoff');
 });
 
 test('ChatSessionRuntime gives up after the maximal compaction step still overflows', async () => {

@@ -760,7 +760,7 @@ function AppearancePage({
           title="Translucent sidebar"
           description={
             isMacPlatform
-              ? 'Let the desktop show through the sidebar. Applies fully after restart.'
+              ? 'Let the desktop show through the sidebar.'
               : 'Unavailable on this platform — window vibrancy is macOS-only.'
           }
         >

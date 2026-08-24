@@ -54,6 +54,7 @@ import { prewarmMessageRendering } from './lib/messageRendering';
 import { notify, notifyError } from './lib/notify';
 import { isMacPlatform } from './lib/platform';
 import { buildThemeOverrides } from './lib/themeOverrides';
+import { stampTranslucentSidebar } from './lib/translucentSidebar';
 import { runViewTransition } from './lib/viewTransitions';
 import { cn } from './lib/utils';
 import {
@@ -1094,10 +1095,11 @@ export default function App() {
 
   // Vibrancy is a macOS window material. Off macOS the window stays opaque, so
   // a see-through sidebar would blend into a hardcoded window colour instead of
-  // the desktop — the setting is stored but never stamped there.
+  // the desktop — the setting is stored but never stamped there. The stamp also
+  // mirrors to localStorage, which main.tsx reads synchronously on the next
+  // launch so the first frame is already glass.
   useEffect(() => {
-    document.documentElement.dataset.translucentSidebar =
-      appearance.translucentSidebar && isMacLike ? 'true' : 'false';
+    stampTranslucentSidebar(appearance.translucentSidebar && isMacLike);
   }, [appearance.translucentSidebar]);
 
   useEffect(() => {
@@ -1408,6 +1410,7 @@ export default function App() {
             />
           }
           width={sidebarResize.width}
+          translucent={appearance.translucentSidebar && isMacLike}
         />
 
         {/* Resizing is meaningless while the rail is collapsed. */}

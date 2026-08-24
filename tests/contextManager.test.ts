@@ -38,7 +38,10 @@ test('ContextManager keeps recent turns raw and unchanged in standard mode', () 
     mode: 'standard',
   });
 
-  assert.deepEqual(input.recentMessages, expectedRecent);
+  // The handoff leads the kept turns; everything after it is raw history.
+  assert.equal(input.recentMessages.length, expectedRecent.length + 1);
+  assert.match(String(input.recentMessages[0].content), /Another language model started/);
+  assert.deepEqual(input.recentMessages.slice(1), expectedRecent);
   assert.ok(input.rollingSummary);
   assert.equal(input.toolSummaries.length, 0);
 });
@@ -179,8 +182,9 @@ test('ContextManager aggressive mode tightens recent raw window and tool summary
     mode: 'aggressive',
   });
 
-  assert.equal(standard.recentMessages.length, 20);
-  assert.equal(aggressive.recentMessages.length, 12);
+  // Kept turns plus the handoff message that leads them.
+  assert.equal(standard.recentMessages.length, 21);
+  assert.equal(aggressive.recentMessages.length, 13);
   assert.ok((standard.toolSummaries.length ?? 0) >= (aggressive.toolSummaries.length ?? 0));
   assert.ok(aggressive.toolSummaries.every((summary) => summary.purpose.length <= 96));
   assert.ok(aggressive.toolSummaries.every((summary) => summary.keyResult.length <= 140));
@@ -228,8 +232,11 @@ test('a generous budget leaves the turn-count behaviour untouched', () => {
     budget: { totalTokens: 200_000, reservedTokens: 2_000 },
   });
 
-  // Still exactly the turn-count split: the budget only ever tightens.
-  assert.deepEqual(bounded.recentMessages, history.slice(4));
+  // Still exactly the turn-count split: the budget only ever tightens. The
+  // handoff message leads the kept slice.
+  assert.equal(bounded.recentMessages.length, history.slice(4).length + 1);
+  assert.match(String(bounded.recentMessages[0].content), /Another language model started/);
+  assert.deepEqual(bounded.recentMessages.slice(1), history.slice(4));
   assert.equal(bounded.usage.droppedTurnCount, 2);
   assert.equal(bounded.usage.keptTurnCount, 10);
   assert.equal(bounded.usage.fitsBudget, true);
@@ -438,7 +445,7 @@ test('maximal mode keeps only the newest turn raw', () => {
     mode: 'maximal',
   });
 
-  assert.equal(input.recentMessages.length, 2, 'one turn = its user message plus follow-up');
+  assert.equal(input.recentMessages.length, 3, 'one handoff message plus the newest turn (user + follow-up)');
   assert.equal(input.usage.keptTurnCount, 1);
   assert.equal(input.usage.droppedTurnCount, 11);
   assert.ok(input.systemContextAddendum);
@@ -492,4 +499,21 @@ test('compaction never splits a tool call from its result', () => {
     // Every retained call has its result and vice versa — turns move whole.
     assert.deepEqual([...callIds].sort(), [...resultIds].sort(), `pairing broken in ${mode}`);
   }
+});
+
+test('the handoff message is byte-stable across consecutive builds with unchanged older turns', () => {
+  // This is the prefix-cache guarantee: while the compaction boundary and the
+  // mode hold, the handoff must serialize identically so the provider caches
+  // everything above it instead of re-reading the whole conversation.
+  const manager = new ContextManager();
+  const history = createHistory(12);
+
+  const first = manager.buildModelInput({ conversationId: 'conversation-stable', history, mode: 'standard' });
+  const second = manager.buildModelInput({ conversationId: 'conversation-stable', history, mode: 'standard' });
+
+  assert.equal(first.recentMessages[0].role, 'user');
+  assert.equal(
+    JSON.stringify(first.recentMessages[0]),
+    JSON.stringify(second.recentMessages[0])
+  );
 });

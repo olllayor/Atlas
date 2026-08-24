@@ -28,6 +28,7 @@ import {
 } from '../../shared/attachments';
 import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParameters';
 import { planImageDownscale } from '../../shared/imageDownscale';
+import { cn } from '../lib/utils';
 import type {
   ConversationDetail,
   CustomProvider,
@@ -130,6 +131,12 @@ export type ComposerProps = {
   /** One-click posture from the chip's menu: writes both access axes at once. */
   onPermissionPresetSelect?: (preset: PermissionPreset) => void;
   onOpenGallery: () => void;
+  /**
+   * How many follow-ups are waiting to run in this conversation. Drives the
+   * placeholder: while a turn is live, the empty composer should teach the
+   * queue rather than sit silent about where the next message will land.
+   */
+  queuedCount?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -511,6 +518,7 @@ export function Composer({
   onToolPermissionModeChange,
   onPermissionPresetSelect,
   onOpenGallery,
+  queuedCount = 0,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isComposing, setIsComposing] = useState(false);
@@ -1128,8 +1136,18 @@ export function Composer({
                 aria-autocomplete="list"
                 // "Do anything", not "Message…": the composer drives tools and
                 // file edits, not just chat, and the reference names the
-                // capability rather than the widget.
-                placeholder={disabled ? 'Select or start a conversation' : 'Do anything'}
+                // capability rather than the widget. While a turn is live the
+                // placeholder becomes the one sentence this state needs — the
+                // next message will not start a second stream, it will queue.
+                placeholder={
+                  disabled
+                    ? 'Select or start a conversation'
+                    : isStreaming
+                      ? queuedCount > 0
+                        ? 'Queued — add another, or Esc to stop'
+                        : 'Atlas is replying — your message will queue'
+                      : 'Do anything'
+                }
                 // Bare textarea per spec §4: no inner bg, border, or focus ring —
                 // the slab itself is the only chrome.
                 className="max-h-composer-max-height min-h-6 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -1139,9 +1157,9 @@ export function Composer({
             </div>
 
             {/* Control row: plain glyph buttons left, model chip + send right.
-                `-mx-1.5` pulls the round buttons out so their glyphs land on the
-                same 18px inset as the text above them. */}
-            <div className="-mx-1.5 flex items-center gap-0.5 pt-1.5">
+                `-mx-1` pulls the 32px round buttons out so their glyphs land on
+                the same 18px inset as the text above them. */}
+            <div className="-mx-1 flex items-center gap-0.5 pt-1.5">
               <DropdownMenu>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1149,7 +1167,7 @@ export function Composer({
                       <button
                         type="button"
                         aria-label="Add to message"
-                        className="group flex size-9 shrink-0 items-center justify-center rounded-full text-text-secondary transition hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+                        className="group flex size-8 shrink-0 items-center justify-center rounded-full text-text-secondary transition hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Plus className="size-4" strokeWidth={1.75} />
                       </button>
@@ -1268,14 +1286,23 @@ export function Composer({
                         if (!canSend) return;
                         void submit();
                       }}
-                      className="ml-1.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse transition hover:bg-bg-button-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-bg-button"
+                      className={cn(
+                        'ml-1.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse shadow-sm transition-all duration-150 ease-out hover:bg-bg-button-hover motion-reduce:transition-colors',
+                        // Press physics only when the button can actually act.
+                        // It uses aria-disabled rather than `disabled` so its
+                        // tooltip stays reachable, which means the `enabled:`
+                        // variant is always on — the gate has to be canSend.
+                        canSend
+                          ? 'hover:scale-105 active:scale-95 active:shadow-none'
+                          : 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50'
+                      )}
                     >
                       {isStreaming ? (
                         <Square className="size-3 fill-current" />
                       ) : isSubmitting ? (
-                        <Loader2 className="size-4.5 animate-spin" strokeWidth={2} />
+                        <Loader2 className="size-4 animate-spin" strokeWidth={2} />
                       ) : (
-                        <ArrowUp className="size-4.5" strokeWidth={2.25} />
+                        <ArrowUp className="size-4" strokeWidth={2.25} />
                       )}
                     </button>
                   </TooltipTrigger>

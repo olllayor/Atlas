@@ -735,7 +735,11 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
         />
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      {/* Paints its own opaque background: under the translucent sidebar the
+          shell is punched transparent, and chat and Settings re-paint their
+          content columns — this one must too, or the whole Sites workspace
+          turns into glass with the desktop showing through it. */}
+      <main className="flex min-w-0 flex-1 flex-col bg-bg-base">
         <header
           // Borderless, like the chat and Settings headers: the reference
           // header floats over the content background (spec §1).

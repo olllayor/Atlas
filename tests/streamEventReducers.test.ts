@@ -300,3 +300,62 @@ test('applyRecoveredRuntimeEventsToStore maps recovered requestIds to the conver
   assert.equal(next.requestToConversation['r1'], 'c1');
   assert.equal(next.runtimeSequenceByConversation['c1'], 1);
 });
+
+test('applyStreamingEvent does not bleed a running turn into a queued follow-up draft', () => {
+  // Turn A (r1) is streaming; the follow-up B (r2) is queued, so the live
+  // draft carries r2. A's deltas must patch only A's message row.
+  const state = makeFanOut({
+    draftsByConversation: {
+      c1: {
+        requestId: 'r2',
+        providerId: 'openrouter',
+        modelId: 'm1',
+        parts: [],
+        status: 'streaming',
+        startedAt: new Date(0).toISOString(),
+      },
+    },
+    conversationDetails: {
+      c1: {
+        conversation: { id: 'c1', title: 't', createdAt: '', updatedAt: '', status: 'running' },
+        messages: [
+          makeMessage({ id: 'assistant-a', status: 'streaming' }),
+        ],
+        hasOlder: false,
+        nextCursor: null,
+        limit: DEFAULT_CONVERSATION_PAGE_SIZE,
+      },
+    },
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const chunkA = { type: 'chunk', requestId: 'r1', id: 'i1', delta: 'hello' } as StreamEvent;
+  const patch = applyStreamingEvent(state, 'c1', chunkA);
+  assert.ok(patch);
+
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+  // The draft is untouched — same reference out means no write happened.
+  assert.equal(next.draftsByConversation.c1, state.draftsByConversation.c1);
+  // The streaming message row still receives the delta.
+  assert.equal((next.conversationDetails.c1.messages[0].parts[0] as { text: string }).text, 'hello');
+});
+
+test('applyStreamingEvent still feeds its own request draft', () => {
+  const state = makeFanOut({
+    draftsByConversation: {
+      c1: {
+        requestId: 'r1',
+        providerId: 'openrouter',
+        modelId: 'm1',
+        parts: [],
+        status: 'streaming',
+        startedAt: new Date(0).toISOString(),
+      },
+    },
+  });
+  const chunk = { type: 'chunk', requestId: 'r1', id: 'i1', delta: 'hi' } as StreamEvent;
+  const patch = applyStreamingEvent(state, 'c1', chunk);
+  assert.ok(patch);
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+  const draft = next.draftsByConversation.c1!;
+  assert.equal((draft.parts[0] as { text: string }).text, 'hi');
+});

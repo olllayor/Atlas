@@ -78,9 +78,17 @@ export function ActivityBlock({
       <button
         type="button"
         onClick={toggleOpen}
+        // Forced open (a pending approval) makes the toggle a silent no-op —
+        // the state would flip in the store while the screen stays put, and
+        // `aria-expanded` would keep reporting true. Disabled tells mouse,
+        // keyboard and AT the same truth.
+        disabled={forceOpen}
         aria-expanded={open}
         aria-label={`${label}. ${open ? 'Hide' : 'Show'} the steps`}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm text-left text-sm font-normal text-text-tertiary transition-colors hover:text-text-secondary"
+        className={cn(
+          'flex w-full min-w-0 items-center gap-1.5 rounded-sm text-left text-sm font-normal text-text-tertiary transition-colors hover:text-text-secondary',
+          forceOpen ? 'cursor-default' : 'cursor-pointer'
+        )}
       >
         <span className={cn('shrink-0', isStreaming && 'motion-shimmer')}>{label}</span>
         <ChevronRight

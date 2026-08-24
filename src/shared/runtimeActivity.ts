@@ -380,6 +380,11 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     // Return null so the activity list does not render it; it lives in runtime_events for catalog reads.
     return null;
   }
+  if (event.activityType === 'request.header') {
+    // Envelope telemetry, not work: rendering it would put a "Request Header"
+    // row between the user's message and the answer for every single turn.
+    return null;
+  }
 
   const title =
     typeof event.payload.title === 'string' && event.payload.title.trim()

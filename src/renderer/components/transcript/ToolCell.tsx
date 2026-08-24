@@ -320,8 +320,11 @@ function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCe
         </button>
       ) : (
         // No `cursor-pointer` here: a row with nothing to reveal must not
-        // advertise itself as clickable.
-        <div className={rowClassName} aria-label={accessibleName}>
+        // advertise itself as clickable. The status rides in a real text
+        // node — ARIA forbids author naming on a `generic` div, so an
+        // `aria-label` here would never be announced.
+        <div className={rowClassName}>
+          <span className="sr-only">{accessibleName}</span>
           {rowContent}
         </div>
       )}
@@ -404,8 +407,11 @@ function McpUiSlot({ cell }: { cell: ToolCellModel }) {
 function DiffSummary({ added, removed }: { added: number; removed: number }) {
   return (
     <span className="app-code-compact shrink-0">
-      <span className="text-diff-add-fg">+{added}</span>{' '}
-      <span className="text-diff-del-fg">
+      {/* The `-count` tokens exist so themes can quieten the numbers next to
+          the full-strength diff body (codex does); falling back to the body
+          colour keeps themes that never defined them correct. */}
+      <span className="text-[var(--diff-add-fg-count,var(--diff-add-fg))]">+{added}</span>{' '}
+      <span className="text-[var(--diff-del-fg-count,var(--diff-del-fg))]">
         {MINUS}
         {removed}
       </span>
@@ -577,6 +583,24 @@ function DiffFileBlock({ file, showHeader }: { file: DiffFile; showHeader: boole
  */
 const focusedApprovals = new Set<string>();
 
+/** Bound on the once-focused set, so a long session cannot grow it forever. */
+const FOCUSED_APPROVALS_CAP = 256;
+
+/**
+ * Records an approval id as seen, pruning the oldest entries once the set
+ * outlives its cap. Eviction can re-arm auto-focus for a very old prompt
+ * scrolled back into view — a one-time caret move, and only for prompts
+ * older than hundreds of newer ones.
+ */
+function rememberApprovalFocus(approvalId: string) {
+  if (focusedApprovals.size >= FOCUSED_APPROVALS_CAP) {
+    for (const id of [...focusedApprovals].slice(0, FOCUSED_APPROVALS_CAP / 2)) {
+      focusedApprovals.delete(id);
+    }
+  }
+  focusedApprovals.add(approvalId);
+}
+
 /** True when the caret is somewhere the user is actively typing. */
 function isTypingElsewhere(): boolean {
   const active = document.activeElement as HTMLElement | null;
@@ -609,7 +633,7 @@ function ApprovalPrompt({
   useEffect(() => {
     if (!approvalId) return;
     if (focusedApprovals.has(approvalId)) return;
-    focusedApprovals.add(approvalId);
+    rememberApprovalFocus(approvalId);
     if (isTypingElsewhere()) return;
     primaryRef.current?.focus();
   }, [approvalId]);

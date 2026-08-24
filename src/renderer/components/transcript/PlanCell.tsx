@@ -74,7 +74,9 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
         aria-label={`${label}. ${isOpen ? 'Hide' : 'Show'} steps`}
         className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-left text-sm font-normal leading-relaxed text-text-tertiary transition-colors hover:text-text-secondary"
       >
-        <span title={label} className={cn('min-w-0 truncate', view.updating && 'motion-shimmer')}>
+        {/* `tabular-nums`: the completed/total fraction changes every step,
+            and proportional digits re-truncate the label each time. */}
+        <span title={label} className={cn('min-w-0 truncate tabular-nums', view.updating && 'motion-shimmer')}>
           {label}
         </span>
         <ChevronRight

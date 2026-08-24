@@ -167,6 +167,13 @@ type SidebarProps = {
   modeSwitcher?: React.ReactNode;
   /** Live width in px, driven by the drag handle in App. */
   width: number;
+  /**
+   * Whether the rail is translucent (macOS vibrancy on). Decides the scroll
+   * mask: with translucency the section headings scroll away, so rows reach
+   * the top edge and need the fade; with an opaque rail the sticky headings
+   * already hide them, and the mask only erases the heading's own fill.
+   */
+  translucent?: boolean;
 };
 
 function SidebarToggleIcon() {
@@ -331,6 +338,7 @@ export function Sidebar({
   onToggleCollapsed,
   modeSwitcher,
   width,
+  translucent = false,
 }: SidebarProps) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -1141,7 +1149,7 @@ export function Sidebar({
             }}
             className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto px-3 pb-2"
             style={
-              isScrolled
+              isScrolled && translucent
                 ? ({
                     maskImage: 'linear-gradient(to bottom, transparent 0, black 20px)',
                     WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, black 20px)',

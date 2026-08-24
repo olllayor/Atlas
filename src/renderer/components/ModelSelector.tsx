@@ -54,6 +54,20 @@ const extractModelName = (modelId: string): string => {
   return parts.length > 1 ? parts.slice(1).join('/') : modelId;
 };
 
+/**
+ * The chip names the model the way a person would, not the way the gateway
+ * does. The catalog's `label` is the human name ("DeepSeek V4 Flash"); a raw
+ * id segment ("DeepSeek-V4-Flash-01:free") is what filled the chip before,
+ * and its length is why the name truncated mid-word. The gateway suffix only
+ * ever marked pricing, which the menu's Free badge already says.
+ */
+const compactChipLabel = (model: ModelSummary): string => {
+  if (model.label && model.label !== model.id) {
+    return model.label;
+  }
+  return extractModelName(model.id).replace(/[:@](free|beta|preview|latest)$/i, '');
+};
+
 export function ModelSelector({
   models,
   selectedModelId,
@@ -106,7 +120,7 @@ export function ModelSelector({
   // just picked from — and truncated the name that actually identifies it. It
   // still names the endpoint in the tooltip, in the menu's group headings, and
   // in the accessible name.
-  const chipLabel = selectedModel ? extractModelName(selectedModel.id) : 'Choose model';
+  const chipLabel = selectedModel ? compactChipLabel(selectedModel) : 'Choose model';
   const effortLabel = effectiveEffort
     ? REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label
     : null;
@@ -124,7 +138,7 @@ export function ModelSelector({
               // the quietest thing in the control row — a tinted chip plus a
               // chevron made the least-changed setting the loudest. Hover and
               // the open state still light the hit area.
-              className="group flex h-9 min-w-0 max-w-[240px] items-center gap-1.5 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="group flex h-8 min-w-0 max-w-[240px] items-center gap-2 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={
                 selectedModel
                   ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${

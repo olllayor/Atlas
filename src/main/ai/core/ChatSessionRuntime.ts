@@ -111,6 +111,19 @@ export type ExecuteTurnRequest = {
   /** Nesting depth: root turn = 0, child agent = 1, grandchild = 2, … */
   depth?: number;
   allowedTools?: string[];
+  /**
+   * Called once per attempt with the exact request envelope about to go to
+   * the provider. Observational only — the harness records it as a
+   * `request.header` event so prefix stability across turns is checkable.
+   */
+  onRequestHeader?: (header: RequestHeader) => void;
+};
+
+/** Envelope snapshot for one provider attempt; see `onRequestHeader`. */
+export type RequestHeader = {
+  attempt: number;
+  systemPrompt: string | undefined;
+  messages: ModelMessage[];
 };
 
 export type ExecuteTurnResult = {
@@ -838,6 +851,7 @@ export class ChatSessionRuntime {
     parentAgentId,
     depth,
     allowedTools,
+    onRequestHeader,
   }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
     const apiKey = await this.keychain.getSecret(request.providerId);
     const provider = getProviderOrThrow(this.providers, request.providerId);
@@ -861,6 +875,7 @@ export class ChatSessionRuntime {
       parentAgentId,
       depth,
       allowedTools,
+      onRequestHeader,
     });
 
     const status: ExecuteTurnResult['status'] = result.pendingApprovals.length > 0 ? 'awaiting_approval' : 'completed';
@@ -969,7 +984,6 @@ export class ChatSessionRuntime {
     );
     const baseSystemPrompt = this.buildSystemPrompt(
       request.enableTools,
-      null,
       siteTools != null,
       toolPermissionMode,
       workspace,
@@ -1064,7 +1078,6 @@ export class ChatSessionRuntime {
 
   private buildSystemPrompt(
     enableTools: boolean | undefined,
-    contextAddendum: string | null,
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
@@ -1121,10 +1134,13 @@ export class ChatSessionRuntime {
     // The visual spec goes last of the Atlas-owned blocks and only when this
     // turn asked for a visual, so an ordinary question is not carrying two
     // thousand tokens of SVG instructions it will never use.
+    //
+    // No compaction summary here on purpose: the handoff rides in the history
+    // (see `ContextManager`), because a per-turn-volatile block at the head of
+    // the request would re-key the provider's prompt cache on every turn.
     const sections = [
       ...(enableTools ? [toolPrompt] : []),
       ...(visualsEnabled ? [VISUAL_PROMPT] : []),
-      ...(contextAddendum ? [contextAddendum] : []),
     ];
 
     return sections.join('\n\n');
@@ -1160,6 +1176,7 @@ export class ChatSessionRuntime {
     parentAgentId,
     depth,
     allowedTools,
+    onRequestHeader,
   }: {
     requestId: string;
     request: ChatStartRequest;
@@ -1177,6 +1194,7 @@ export class ChatSessionRuntime {
     /** Nesting depth of the current turn (0 = root, 1 = first child agent, …). */
     depth?: number;
     allowedTools?: string[];
+    onRequestHeader?: (header: RequestHeader) => void;
   }): Promise<ProviderStreamResult & { parts: ChatMessagePart[]; pendingApprovals: PendingToolApproval[] }> {
     let attempt = 0;
     let streamedAnyResponse = false;
@@ -1376,7 +1394,6 @@ export class ChatSessionRuntime {
             estimateTextTokens(
               this.buildSystemPrompt(
                 request.enableTools,
-                null,
                 siteTools != null,
                 toolPermissionMode,
                 workspace,
@@ -1401,20 +1418,26 @@ export class ChatSessionRuntime {
       });
 
       try {
+        const systemPrompt =
+          this.buildSystemPrompt(
+            request.enableTools,
+            siteTools != null,
+            toolPermissionMode,
+            workspace,
+            visualsEnabled,
+            pluginMentions,
+          ) || undefined;
+        onRequestHeader?.({
+          attempt,
+          systemPrompt,
+          messages: modelInput.recentMessages,
+        });
+
         const result = await provider.streamChat({
           apiKey,
           modelId: request.modelId,
           messages: modelInput.recentMessages,
-          system:
-            this.buildSystemPrompt(
-              request.enableTools,
-              modelInput.systemContextAddendum,
-              siteTools != null,
-              toolPermissionMode,
-              workspace,
-              visualsEnabled,
-              pluginMentions,
-            ) || undefined,
+          system: systemPrompt,
           tools,
           toolChoice: inferToolChoice(request),
           temperature: request.temperature,

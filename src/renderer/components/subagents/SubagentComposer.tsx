@@ -105,7 +105,7 @@ export function SubagentComposer({ takeover, onSend, onStop }: SubagentComposerP
                   className="max-h-composer-max-height min-h-6 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none"
                 />
               </div>
-              <div className="-mx-1.5 flex items-center gap-1 pt-1.5">
+              <div className="-mx-1 flex items-center gap-1 pt-1.5">
                 {takeover.running ? (
                   <button type="button" onClick={onStop} className={`${STOP_BUTTON} ml-0.5`}>
                     <Square className="size-3 fill-current" />
@@ -119,9 +119,9 @@ export function SubagentComposer({ takeover, onSend, onStop }: SubagentComposerP
                     aria-label="Send message"
                     aria-disabled={!canSend}
                     onClick={() => void submit()}
-                    className="flex size-9 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse transition hover:bg-bg-button-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-bg-button"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse transition hover:bg-bg-button-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-bg-button"
                   >
-                    <ArrowUp className="size-4.5" strokeWidth={2.25} />
+                    <ArrowUp className="size-4" strokeWidth={2.25} />
                   </button>
                 </div>
               </div>

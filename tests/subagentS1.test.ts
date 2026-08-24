@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import Database from 'better-sqlite3';
+import { createAppliedSqliteTestDatabase } from './helpers/sqliteTestDb';
 import { applySchema } from '../src/main/db/schema';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo';
 import { SubagentRuntime } from '../src/main/ai/agents/SubagentRuntime';
@@ -81,7 +81,7 @@ test('validateSpawnRequest covers depth, background, maxSteps', () => {
 // ── background surfaces ───────────────────────────────────────────────────
 
 function makeRuntimeWithDb(opts: { maxConcurrent?: number, childExecutor?: any } = {}) {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -156,7 +156,7 @@ test('rollback: capacity failure deletes child row (no orphan)', async () => {
 });
 
 test('rollback: descriptor recordEvent failure deletes child row', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -219,7 +219,7 @@ test('background surfaces: list, interrupt, readOutput, wait, drain, clear', asy
   assert.equal(runtime.listBackgroundAgents(parent.id).length, 0);
   // normal completion drain: spawn short task that completes without interrupt, then drain should find it
   const { convRepo: cr2, parent: p2, runtime: rt2 } = (() => {
-    const db2 = new Database(':memory:');
+    const db2 = createAppliedSqliteTestDatabase().database;
     applySchema(db2);
     const cr = new ConversationsRepo(db2);
     const par = cr.create({});
@@ -239,7 +239,7 @@ test('background surfaces: list, interrupt, readOutput, wait, drain, clear', asy
 });
 
 test('descriptor persistence under child conversation cascades on delete', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});

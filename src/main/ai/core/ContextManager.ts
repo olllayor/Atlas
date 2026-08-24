@@ -62,9 +62,22 @@ export type ContextUsageBreakdown = {
 };
 
 export type BuildModelInputResult = {
+  /**
+   * Exactly what goes on the wire: the kept turns, with the compaction
+   * handoff message — when one exists — inserted between the preface and the
+   * first kept turn.
+   *
+   * The handoff rides *in the history* rather than in the system prompt on
+   * purpose. A summary that changes every turn, injected at position 0 of the
+   * request, re-key's the provider's prompt cache on the whole conversation
+   * every time the older-turn boundary shifts; placed after the raw history,
+   * everything before it stays byte-identical and cacheable, and only the
+   * tail re-pays.
+   */
   recentMessages: ModelMessage[];
   rollingSummary: string | null;
   toolSummaries: ToolSummary[];
+  /** The handoff text itself, for display and token accounting. */
   systemContextAddendum: string | null;
   usage: ContextUsageBreakdown;
 };
@@ -166,7 +179,7 @@ export class ContextManager {
     const olderTurns = split.turns.slice(0, olderTurnCount);
     const recentTurns = split.turns.slice(olderTurnCount);
     const olderMessages = [...split.prefaceMessages, ...olderTurns.flatMap((turn) => [turn.user, ...turn.followUps])];
-    const recentMessages = recentTurns.flatMap((turn) => [turn.user, ...turn.followUps]);
+    const keptMessages = recentTurns.flatMap((turn) => [turn.user, ...turn.followUps]);
     const fingerprint = buildOlderTurnsFingerprint(olderMessages);
 
     let cached = this.cache.get(conversationId);
@@ -196,12 +209,25 @@ export class ContextManager {
     const rollingSummary = cached.rollingSummary;
     const systemContextAddendum = buildSystemContextAddendum(rollingSummary, toolSummaries, mode);
 
-    const sentMessages = recentMessages.length > 0 ? recentMessages : history;
-    const historyTokens = estimateMessagesTokens(sentMessages);
+    // The handoff is a positioned history message: after any preface (which it
+    // also summarizes), before the first kept turn. Deterministic given
+    // (fingerprint, mode), so identical requests carry identical bytes and the
+    // provider's prefix cache survives everything above this point.
+    const handoffMessage: ModelMessage | null = systemContextAddendum
+      ? { role: 'user', content: systemContextAddendum }
+      : null;
+    const recentMessages =
+      handoffMessage && split.prefaceMessages.length > 0
+        ? [...split.prefaceMessages, handoffMessage, ...keptMessages]
+        : handoffMessage
+          ? [handoffMessage, ...keptMessages]
+          : keptMessages;
+
+    const historyTokens = estimateMessagesTokens(keptMessages);
     const addendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
 
     return {
-      recentMessages: sentMessages,
+      recentMessages,
       rollingSummary,
       toolSummaries,
       systemContextAddendum,

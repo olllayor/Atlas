@@ -302,6 +302,9 @@ function CopyAction({ text, label }: { text: string; label: string }) {
       onClick={() => void copy(text)}
       className={cn(ACTION_BUTTON, copied && 'text-success hover:text-success')}
       aria-label={label}
+      // The visible label swaps to "Copied"; this is what makes the swap
+      // audible instead of a silent icon change.
+      aria-live="polite"
     >
       {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
       <span className={cn('text-2xs', copied ? 'inline' : 'sr-only')}>{copied ? 'Copied' : label}</span>
@@ -1545,6 +1548,20 @@ export function ChatWindow({
           <div className="mx-auto flex w-full max-w-content-max flex-1 flex-col">{body}</div>
         </div>
       </div>
+
+      {/*
+        Fades the last transcript lines into the background where they pass
+        under the floating composer slab. Shares the jump button's hysteresis:
+        only while docked to the bottom is anything actually hidden, and a
+        fade with nothing under it would just dim live text.
+      */}
+      <div
+        aria-hidden
+        className={cn(
+          'scroll-edge-fade-bottom pointer-events-none absolute inset-x-0 bottom-[var(--composer-dock-height,7rem)] z-[5] transition-opacity duration-150 ease-out motion-reduce:transition-none',
+          isDetached ? 'opacity-0' : 'opacity-100'
+        )}
+      />
 
       {/*
         Always mounted so it can animate, and hysteretic (show past 120px,

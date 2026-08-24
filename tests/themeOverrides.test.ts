@@ -118,6 +118,15 @@ test('theme export → import round-trips', () => {
   assert.deepEqual(imported, exported);
 });
 
+test('theme contract excludes translucentSidebar — a pasted theme cannot flip vibrancy', () => {
+  const appearance = { ...DEFAULT_SETTINGS_APPEARANCE, translucentSidebar: true };
+
+  assert.ok(!('translucentSidebar' in exportTheme(appearance)));
+  assert.deepEqual(parseThemeImport(JSON.stringify({ accentColor: '#0169cc', translucentSidebar: true })), {
+    accentColor: '#0169cc'
+  });
+});
+
 test('parseThemeImport rejects garbage and normalizes bad colors to null', () => {
   assert.equal(parseThemeImport('not json'), null);
   assert.equal(parseThemeImport('42'), null);

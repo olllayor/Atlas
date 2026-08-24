@@ -320,7 +320,13 @@ export function applyStreamingEvent(
   const nextDetails = { ...state.conversationDetails };
   let changed = false;
 
-  if (draft) {
+  // Events belong to their own request. While a follow-up sits queued behind
+  // a running turn, the live draft carries the follow-up's id — without this
+  // guard the running turn's deltas would bleed into the queued draft and
+  // render as phantom text over a turn that has not started. The two
+  // conversation-level events carry `conversationId` instead of `requestId`
+  // and are fan-out concerns, not draft content.
+  if (draft && 'requestId' in event && event.requestId === draft.requestId) {
     nextDrafts[conversationId] = {
       ...draft,
       // Progress retires the notice: whatever it was warning about is over the
@@ -374,7 +380,9 @@ export function applyNoticeEvent(
   event: Extract<StreamEvent, { type: 'notice' }>,
 ): RuntimeEventFanOutPatch | null {
   const draft = state.draftsByConversation[conversationId];
-  if (!draft) {
+  // Same request-scoping as streaming events: an attempt notice belongs to
+  // the turn it describes, never to a queued follow-up's placeholder draft.
+  if (!draft || event.requestId !== draft.requestId) {
     return null;
   }
 

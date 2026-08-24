@@ -1376,6 +1376,13 @@ export type ChatStartRequest = {
 
 export type ChatStartResponse = {
   requestId: string;
+  /**
+   * True when the conversation already had a turn in flight and this message
+   * was accepted as a follow-up instead of starting its own turn. The main
+   * process will start it when the current one closes; the renderer keeps the
+   * composer usable and shows the message as sent.
+   */
+  queued?: boolean;
 };
 
 export type VisualThemeTokens = {
@@ -1693,6 +1700,13 @@ export type ActivityType =
   | 'runtime.error'
   | 'turn.started'
   | 'turn.completed'
+  /**
+   * Envelope snapshot taken immediately before a provider call: model, sizes,
+   * and content hashes of the system prompt and history tail. Comparing these
+   * across turns shows whether the request prefix stayed stable — the thing
+   * provider-side prompt caches pay on. Purely observational.
+   */
+  | 'request.header'
   | 'task.started'
   | 'task.progress'
   | 'task.updated'

@@ -34,6 +34,7 @@ import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+import { getNormalizedEventKey } from '../../lib/keybindings';
 import { TerminalSearchBar } from './TerminalSearchBar';
 
 export type TerminalPanelHandle = {
@@ -362,14 +363,20 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
           return true;
         }
 
+        // Matched on `event.code` (via the same normalizer as the app's
+        // keybindings), not `event.key`: on a Cyrillic or Greek layout the
+        // physical C/V/F/K keys produce native characters, and key-based
+        // matching silently killed every one of these shortcuts.
+        const key = getNormalizedEventKey(event);
+
         // ⌘C with a selection copies; without one it must still reach the
         // shell as an interrupt.
-        if (event.key === 'c' && event.metaKey && terminal.hasSelection()) {
+        if (key === 'c' && event.metaKey && terminal.hasSelection()) {
           void navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
           return false;
         }
 
-        if (event.key === 'v' && event.metaKey) {
+        if (key === 'v' && event.metaKey) {
           void navigator.clipboard
             .readText()
             .then((text) => {
@@ -379,27 +386,27 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
           return false;
         }
 
-        if (event.key === 'f' && event.metaKey) {
+        if (key === 'f' && event.metaKey) {
           setSearchOpen(true);
           return false;
         }
 
-        if (event.key === 'k' && event.metaKey) {
+        if (key === 'k' && event.metaKey) {
           terminal.clear();
           return false;
         }
 
-        if (event.key === '=' || event.key === '+') {
+        if (key === '=' || key === '+') {
           zoom('in');
           return false;
         }
 
-        if (event.key === '-') {
+        if (key === '-') {
           zoom('out');
           return false;
         }
 
-        if (event.key === '0') {
+        if (key === '0') {
           zoom('reset');
           return false;
         }

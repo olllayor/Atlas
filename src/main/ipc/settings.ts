@@ -121,10 +121,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       if (typeof appearancePatch?.translucentSidebar === 'boolean') {
         settingsRepo.setTranslucentSidebar(appearancePatch.translucentSidebar);
 
-        // Best-effort live apply. A fresh window still renders it better:
-        // `visualEffectState: 'active'` is a construction-time option with no
-        // setter, so a window switched on mid-session desaturates its material
-        // whenever it loses focus until the next launch.
+        // Live apply. The window was constructed with `visualEffectState:
+        // 'active'` regardless of the setting, so the vibrancy created here
+        // carries the same always-active material a restart would have made —
+        // this used to need a restart for exactly that reason.
         if (process.platform === 'darwin') {
           for (const window of BrowserWindow.getAllWindows()) {
             window.setVibrancy(appearancePatch.translucentSidebar ? 'sidebar' : null);

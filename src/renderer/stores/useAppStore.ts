@@ -81,6 +81,15 @@ export type ComposerAttachmentDraft = {
 /** Stable identity so consumers do not re-render on every empty read. */
 export const EMPTY_COMPOSER_ATTACHMENTS: ComposerAttachmentDraft[] = [];
 
+/** One queued follow-up as the composer dock shows it. */
+export type QueuedFollowupEntry = {
+  requestId: string;
+  preview: string;
+};
+
+/** Immutable empty list so selectors return a stable reference when idle. */
+export const EMPTY_QUEUED_FOLLOWUPS: QueuedFollowupEntry[] = [];
+
 type AppState = {
   bootstrapping: boolean;
   initialized: boolean;
@@ -134,6 +143,14 @@ type AppState = {
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
+  /**
+   * Follow-ups accepted while a conversation's turn was still running, keyed
+   * by conversation, oldest first. The main process owns the real queue; this
+   * mirrors it just enough for the composer dock to list and cancel entries.
+   * An entry disappears the moment any main-side event carries its requestId —
+   * that is either dispatch (its turn started) or a terminal event.
+   */
+  queuedByConversation: Record<string, QueuedFollowupEntry[]>;
   /** Every folder the user has attached, most recently used first. */
   projects: WorkspaceProject[];
   updateState: AppUpdateSnapshot;
@@ -234,6 +251,7 @@ type AppState = {
   }) => Promise<void>;
   resendLastUserMessage: () => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
+  cancelQueuedFollowup: (requestId: string) => Promise<void>;
   respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -506,6 +524,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   draftsByConversation: {},
   requestToConversation: {},
   runtimeSequenceByConversation: {},
+  queuedByConversation: {},
   projects: [],
   updateState: { status: 'idle' },
 
@@ -1507,11 +1526,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       throw new Error('No conversation selected.');
     }
 
-    const draft = state.draftsByConversation[conversationId];
-    if (draft?.status === 'streaming') {
-      return;
-    }
-
     const detail =
       state.conversationDetails[conversationId] ??
       (await window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }));
@@ -1605,6 +1619,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       throw error;
     }
 
+    // The main process queues a message sent while the conversation's turn is
+    // still running; it starts automatically when that turn closes. The draft
+    // below flips to streaming either way — from the user's side "waiting for
+    // its turn" and "streaming" are the same waiting state until tokens land.
+    if (request.queued) {
+      notify({
+        tone: 'info',
+        title: 'Message queued',
+        description: 'It will be sent when the current reply finishes.',
+      });
+    }
+
     const now = new Date().toISOString();
     const optimisticId = `optimistic-${request.requestId}`;
     const optimisticMessage = {
@@ -1647,6 +1673,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           startedAt: now
         }
       },
+      queuedByConversation:
+        request.queued
+          ? {
+              ...current.queuedByConversation,
+              [conversationId]: [
+                ...(current.queuedByConversation[conversationId] ?? []),
+                { requestId: request.requestId, preview: previewContent }
+              ]
+            }
+          : current.queuedByConversation,
       requestToConversation: { ...current.requestToConversation, [request.requestId]: conversationId },
       conversations: current.conversations
         .map((conversation) =>
@@ -1697,6 +1733,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     await window.atlasChat.chat.abort(draft.requestId);
+  },
+
+  /**
+   * Cancels one queued follow-up before its turn ever starts. The main
+   * process answers with the same `error` event an aborted live stream uses,
+   * so the dock entry prunes itself through the central event path.
+   */
+  cancelQueuedFollowup: async (requestId) => {
+    const state = get();
+    const conversationId = resolveConversationIdForRequest(requestId, state);
+    if (conversationId) {
+      // Optimistic removal — waiting for the IPC round trip would leave a
+      // dead row in the dock for the length of a round trip.
+      set((current) => ({
+        queuedByConversation: {
+          ...current.queuedByConversation,
+          [conversationId]: (current.queuedByConversation[conversationId] ?? []).filter(
+            (entry) => entry.requestId !== requestId
+          )
+        }
+      }));
+    }
+    await window.atlasChat.chat.abort(requestId);
   },
 
   respondToolApproval: async (request) => {
@@ -1908,6 +1967,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     }
 
+    // Any main-side event naming a queued follow-up retires it from the dock:
+    // a runtime-sync means the turn was dispatched, streaming events mean its
+    // tokens are landing, and error/done mean it finished or died. One check
+    // here covers every path instead of one per branch below.
+    const queuedList = state.queuedByConversation[conversationId];
+    if (queuedList?.some((entry) => entry.requestId === event.requestId)) {
+      set((current) => ({
+        queuedByConversation: {
+          ...current.queuedByConversation,
+          [conversationId]: (current.queuedByConversation[conversationId] ?? []).filter(
+            (entry) => entry.requestId !== event.requestId
+          )
+        }
+      }));
+    }
+
     if (event.type === 'runtime-sync') {
       const currentSequence = get().runtimeSequenceByConversation[conversationId] ?? 0;
       if (event.sequence <= currentSequence) {
@@ -2013,7 +2088,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
         const nextDrafts = { ...s.draftsByConversation };
 
-        if (draft) {
+        // The error names one request. A draft carrying a different request's
+        // id is a queued follow-up still waiting to run — failing turn A must
+        // not mark it failed, let alone clear it.
+        if (draft && draft.requestId === event.requestId) {
           nextDrafts[conversationId] = {
             ...draft,
             status: event.code === 'aborted' ? 'aborted' : 'error',
@@ -2024,7 +2102,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               retryable: event.retryable,
             },
           };
-        } else {
+        } else if (!draft) {
           delete nextDrafts[conversationId];
         }
 
@@ -2059,12 +2137,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     ]);
 
     set((s) => {
-      const { [conversationId]: draft, ...restDrafts } = s.draftsByConversation;
+      const draft = s.draftsByConversation[conversationId];
+      // Same request-scoping as the error branch: a terminal event for turn A
+      // must not drop the queued follow-up's placeholder draft. The follow-up
+      // keeps its own draft until its own terminal event arrives.
+      const { [conversationId]: _droptDraft, ...restDrafts } = s.draftsByConversation;
+      const nextDrafts = draft && draft.requestId === event.requestId ? restDrafts : s.draftsByConversation;
       const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
 
       return {
         requestToConversation: restRequests,
-        draftsByConversation: restDrafts,
+        draftsByConversation: nextDrafts,
         conversationDetails: {
           ...s.conversationDetails,
           [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
@@ -2149,6 +2232,14 @@ export function selectDiagnosticsSummary(state: AppState) {
 
 export function selectCompactedConversationForCache(detail: ConversationPage) {
   return compactConversationPage(detail);
+}
+
+/** The conversation's queued follow-ups, or a stable empty list. */
+export function selectQueuedFollowups(state: AppState, conversationId: string | null): QueuedFollowupEntry[] {
+  if (!conversationId) {
+    return EMPTY_QUEUED_FOLLOWUPS;
+  }
+  return state.queuedByConversation[conversationId] ?? EMPTY_QUEUED_FOLLOWUPS;
 }
 
 // Re-export helper for tests that need to drive the pure reducers directly.

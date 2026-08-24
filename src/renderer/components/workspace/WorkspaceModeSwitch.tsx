@@ -441,7 +441,7 @@ export function WorkspaceAccessChip({
               // `group` so the chevron can react to the open state Radix stamps
               // on the button (the SVG itself never gets `data-state`).
               className={cn(
-                'group flex h-9 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-sm font-normal outline-none transition',
+                'group flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-sm font-normal outline-none transition',
                 'focus-visible:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-bg-hover',
                 state.showFullAccessWarning
                   ? 'text-warning-text hover:bg-bg-hover'

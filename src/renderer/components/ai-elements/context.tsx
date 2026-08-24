@@ -237,13 +237,13 @@ export const ContextTrigger = ({
         aria-label={`Context: ${toSpokenPercentage(remainingLabel)}% left, ${formatTokenCount(
           usedTokens
         )} of ${formatTokenCount(maxTokens)} used`}
-        // Borderless size-9 circle so it reads as one of the row's ghost
+        // Borderless size-8 circle so it reads as one of the row's ghost
         // buttons instead of the only bordered, square, press-animated control.
         // The dial is the whole control: the figure it used to carry was three
         // glyphs of noise next to the model name, and the hover card already
         // states it exactly, alongside the breakdown that explains it.
         className={cn(
-          "group relative inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-bg-hover hover:text-[var(--text-primary)]",
+          "group relative inline-flex size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-bg-hover hover:text-[var(--text-primary)]",
           className
         )}
         {...props}
@@ -251,7 +251,7 @@ export const ContextTrigger = ({
         {/* Main progress ring */}
         <svg
           aria-hidden="true"
-          className="absolute inset-[3px] -rotate-90"
+          className="absolute inset-[2px] -rotate-90"
           viewBox="0 0 32 32"
         >
           {/* Background track — becomes the alarm once nothing is left */}

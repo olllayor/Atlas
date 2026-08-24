@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import Database from 'better-sqlite3';
+import { createAppliedSqliteTestDatabase } from './helpers/sqliteTestDb';
 import { applySchema } from '../src/main/db/schema';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo';
 import { SubagentRuntime } from '../src/main/ai/agents/SubagentRuntime';
 import { SubagentContinuationManager } from '../src/main/ai/agents/SubagentContinuationManager';
 
 function makeDbWithManager(executeImpl?: any) {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -121,7 +121,7 @@ test('S2: manager bounded inbox and interrupt', async () => {
 });
 
 test('S2: cold resume after manager restart', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -144,7 +144,7 @@ test('S2: cold resume after manager restart', async () => {
 test('S2: SubagentRuntime + manager integration via send_message tool', async () => {
   // Verify that the model-facing control tools are wired via builtInTools
   const { convRepo, parent } = (() => {
-    const db = new Database(':memory:');
+    const db = createAppliedSqliteTestDatabase().database;
     applySchema(db);
     const cr = new ConversationsRepo(db);
     const p = cr.create({});
@@ -175,7 +175,7 @@ function captureEvents() {
 }
 
 test('fix: agentIndex keeps agentIds distinct across a fan-out batch', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -194,7 +194,7 @@ test('fix: agentIndex keeps agentIds distinct across a fan-out batch', async () 
 test('fix: interrupt parks the queue — no auto-run until a waking send', async () => {
   let started = 0;
   const { parent, manager } = (() => {
-    const db = new Database(':memory:');
+    const db = createAppliedSqliteTestDatabase().database;
     applySchema(db);
     const cr = new ConversationsRepo(db);
     const p = cr.create({});
@@ -228,7 +228,7 @@ test('fix: interrupt parks the queue — no auto-run until a waking send', async
 });
 
 test('fix: interruptForParent fences by parent conversation', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parentA = convRepo.create({});
@@ -246,7 +246,7 @@ test('fix: interruptForParent fences by parent conversation', async () => {
 
 test('fix: followup turns carry durable depth and captured model/tools', async () => {
   const seen: any[] = [];
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -273,7 +273,7 @@ test('fix: followup turns carry durable depth and captured model/tools', async (
 });
 
 test('fix: cold resume restores persisted depth floor', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -293,7 +293,7 @@ test('fix: cold resume restores persisted depth floor', async () => {
 });
 
 test('fix: clearConversationBackground resolves for continuable records (no deadlock)', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});

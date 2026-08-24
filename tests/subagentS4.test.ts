@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import Database from 'better-sqlite3';
+import { createAppliedSqliteTestDatabase } from './helpers/sqliteTestDb';
 import { applySchema } from '../src/main/db/schema';
 import { ConversationsRepo } from '../src/main/db/repositories/conversationsRepo';
 import { SubagentContinuationManager } from '../src/main/ai/agents/SubagentContinuationManager';
 import { enrichSubagentEntries, computeHasChildrenMap } from '../src/main/ai/agents/subagentProjections';
 
 test('S4: hasChildren batched GROUP BY header-only', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -31,7 +31,7 @@ test('S4: hasChildren batched GROUP BY header-only', async () => {
 });
 
 test('S4: status reflects live manager state (running vs inactive)', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -56,7 +56,7 @@ test('S4: status reflects live manager state (running vs inactive)', async () =>
 });
 
 test('S4: queued work counts as running even when parked mid-drain', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -82,7 +82,7 @@ test('S4: queued work counts as running even when parked mid-drain', async () =>
 });
 
 test('S4: ChatEngine listSubagents enriches via manager', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   // Mock ChatEngine listSubagents path: just test enrich directly via ChatEngine
@@ -108,7 +108,7 @@ test('S4: ChatEngine listSubagents enriches via manager', async () => {
 });
 
 test('S4: timing reflects real turn start while processing, absent when idle', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});
@@ -139,7 +139,7 @@ test('S4: timing reflects real turn start while processing, absent when idle', a
 });
 
 test('S4: settledMs sums persisted assistant-turn latencies', async () => {
-  const db = new Database(':memory:');
+  const db = createAppliedSqliteTestDatabase().database;
   applySchema(db);
   const convRepo = new ConversationsRepo(db);
   const parent = convRepo.create({});

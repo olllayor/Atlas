@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
 
-import { EMPTY_COMPOSER_ATTACHMENTS, useAppStore } from '../stores/useAppStore';
+import { EMPTY_COMPOSER_ATTACHMENTS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
 import { Composer, type ComposerAttachment, type ComposerProps } from './Composer';
+import { QueueDock } from './transcript/QueueDock';
 
 /**
  * Everything the composer needs that is *not* the half-typed message itself.
@@ -51,7 +52,9 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
   );
   const setComposerDraft = useAppStore((state) => state.setComposerDraft);
   const setComposerAttachments = useAppStore((state) => state.setComposerAttachments);
-
+  const cancelQueuedFollowup = useAppStore((state) => state.cancelQueuedFollowup);
+  // Queued follow-ups for this thread — the dock between transcript and slab.
+  const queuedFollowups = useAppStore((state) => selectQueuedFollowups(state, conversationId));
   const handleChange = useCallback(
     (next: string) => {
       if (conversationId) {
@@ -71,12 +74,19 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
   );
 
   return (
-    <Composer
-      {...composerProps}
-      attachments={attachments}
-      onAttachmentsChange={handleAttachmentsChange}
-      onChange={handleChange}
-      value={value}
-    />
+    <>
+      <QueueDock
+        entries={queuedFollowups}
+        onCancel={(requestId) => void cancelQueuedFollowup(requestId)}
+      />
+      <Composer
+        {...composerProps}
+        queuedCount={queuedFollowups.length}
+        attachments={attachments}
+        onAttachmentsChange={handleAttachmentsChange}
+        onChange={handleChange}
+        value={value}
+      />
+    </>
   );
 }

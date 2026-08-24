@@ -1563,17 +1563,26 @@ export class ConversationsRepo {
     const rows = this.db
       .prepare<
         { conversationId: string },
-        Pick<MessageRow, 'role' | 'content' | 'parts_json' | 'response_messages_json'>
+        Pick<MessageRow, 'role' | 'content' | 'parts_json' | 'response_messages_json' | 'status' | 'error_code'>
       >(
         `
           SELECT
             role,
             content,
             parts_json,
-            response_messages_json
+            response_messages_json,
+            status,
+            error_code
           FROM messages
           WHERE conversation_id = @conversationId
-            AND status = 'complete'
+            AND (
+              status = 'complete'
+              OR (
+                role = 'assistant'
+                AND status = 'error'
+                AND error_code IN ('aborted', 'interrupted')
+              )
+            )
           ORDER BY created_at ASC
         `
       )
@@ -1584,6 +1593,27 @@ export class ConversationsRepo {
     for (const row of rows) {
       const responseMessages = parseJson<ModelMessage[]>(row.response_messages_json);
       const parts = parseJson<ChatMessagePart[]>(row.parts_json);
+      const isInterruptedPartial =
+        row.role === 'assistant' && row.status === 'error';
+
+      if (isInterruptedPartial) {
+        // A turn that stopped mid-stream still said things worth remembering:
+        // dropping the delivered prefix made the model restate work it had
+        // already done. Rebuild from parts only — response_messages_json is
+        // deliberately ignored, because an interrupted turn can hold tool
+        // calls with no results, and replaying those would hand the provider
+        // a request it must reject.
+        const text = (parts ?? [])
+          .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+          .map((part) => part.text)
+          .join('\n\n')
+          .trim();
+
+        if (text) {
+          history.push({ role: 'assistant', content: text });
+        }
+        continue;
+      }
 
       if (row.role === 'assistant' && responseMessages?.length) {
         history.push(...responseMessages);

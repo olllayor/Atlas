@@ -9,6 +9,7 @@ import type {
 } from '../../shared/contracts';
 import { applyStreamEventToParts } from '../../shared/messageParts';
 import { applyRuntimeEventToMessageParts, deriveWorkLogEntry, getWorkLogEntryId } from '../../shared/runtimeActivity';
+import type { QueuedFollowupEntry } from './useAppStore';
 
 import {
   getReasoningContentFromParts,
@@ -35,7 +36,7 @@ export type DraftState = {
   providerId: ProviderId;
   modelId: string;
   parts: ChatMessagePart[];
-  status: 'streaming' | 'error' | 'aborted';
+  status: 'queued' | 'streaming' | 'error' | 'aborted';
   errorMessage?: string;
   error?: {
     code?: string;
@@ -64,11 +65,12 @@ export type RuntimeEventFanOut = {
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
   activitiesByConversation?: Record<string, WorkLogEntry[]>;
+  queuedByConversation?: Record<string, QueuedFollowupEntry[]>;
 };
 
 export type RuntimeEventFanOutPatch = Partial<Pick<
   RuntimeEventFanOut,
-  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation'
+  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation' | 'queuedByConversation'
 >>;
 
 export type Patch = RuntimeEventFanOutPatch | ((state: RuntimeEventFanOut) => RuntimeEventFanOutPatch | RuntimeEventFanOut);
@@ -128,6 +130,12 @@ export function applyRuntimeSnapshotToStore(
     runtimeSequenceByConversation: {
       ...state.runtimeSequenceByConversation,
       [conversationId]: snapshot.lastSequence,
+    },
+    queuedByConversation: {
+      ...(state.queuedByConversation ?? {}),
+      // The durable fold wins over whatever the live session accumulated: a
+      // restart's snapshot is the only complete view of the waiting line.
+      [conversationId]: snapshot.pendingFollowups ?? [],
     },
   };
 }
@@ -329,6 +337,9 @@ export function applyStreamingEvent(
   if (draft && 'requestId' in event && event.requestId === draft.requestId) {
     nextDrafts[conversationId] = {
       ...draft,
+      // Dispatch happened: a queued follow-up receiving its own first event is
+      // streaming now. Streaming drafts stay untouched here.
+      status: draft.status === 'queued' ? 'streaming' : draft.status,
       // Progress retires the notice: whatever it was warning about is over the
       // moment tokens arrive.
       notice: null,

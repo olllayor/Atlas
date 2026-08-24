@@ -1669,7 +1669,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           providerId,
           modelId,
           parts: [],
-          status: 'streaming',
+          // A queued follow-up is not streaming yet — no tokens exist and the
+          // stop button must not offer to abort a turn that has not started.
+          // The first event for this requestId promotes it (see the reducer).
+          status: request.queued ? 'queued' : 'streaming',
           startedAt: now
         }
       },
@@ -2075,6 +2078,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (event.type === 'error') {
+      // A cancelled follow-up never created rows — its draft is still marked
+      // `queued`, which is what distinguishes it from an aborted live turn
+      // (whose partial output must be refetched). Dropping the draft and
+      // returning avoids four IPC roundtrips for a no-op.
+      const cancelTarget = state.draftsByConversation[conversationId];
+      if (
+        event.code === 'aborted' &&
+        cancelTarget &&
+        cancelTarget.requestId === event.requestId &&
+        cancelTarget.status === 'queued'
+      ) {
+        set((s) => {
+          const { [conversationId]: _dropped, ...restDrafts } = s.draftsByConversation;
+          return { draftsByConversation: restDrafts };
+        });
+        return;
+      }
+
       const [page, conversations, conversationStats, diagnostics] = await Promise.all([
         window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
         window.atlasChat.conversations.list(),

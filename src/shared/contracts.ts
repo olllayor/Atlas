@@ -1701,6 +1701,21 @@ export type ActivityType =
   | 'turn.started'
   | 'turn.completed'
   /**
+   * Durable follow-up queue lifecycle. The queue itself lives in memory, but
+   * every transition is an append-only event so a restart can fold the log
+   * back into the same waiting line (dsh's durable-inbox pattern):
+   *
+   * - `queued`: a message was accepted behind a running turn.
+   * - `started`: the deferred turn was created and dispatched.
+   * - `cancelled`: the user withdrew it before dispatch.
+   *
+   * Pending = queued minus started minus cancelled, per conversation, in
+   * sequence order.
+   */
+  | 'turn.followup_queued'
+  | 'turn.followup_started'
+  | 'turn.followup_cancelled'
+  /**
    * Envelope snapshot taken immediately before a provider call: model, sizes,
    * and content hashes of the system prompt and history tail. Comparing these
    * across turns shows whether the request prefix stayed stable — the thing
@@ -1921,6 +1936,17 @@ export type RuntimeStateSnapshot = {
   pendingApprovals: ApprovalRequestRecord[];
   providerSession: RuntimeProviderSession | null;
   latestCheckpoint: RuntimeCheckpointSummary | null;
+  /**
+   * Follow-ups waiting behind a running turn, folded from the durable queue
+   * events (pending = queued − started − cancelled). Lets the renderer's
+   * queued dock survive its own restart instead of only the main process.
+   */
+  pendingFollowups: PendingFollowup[];
+};
+
+export type PendingFollowup = {
+  requestId: string;
+  preview: string;
 };
 
 export type RuntimeStateRequest = {

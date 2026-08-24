@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   ApprovalDecision,
   ApprovalRequestRecord,
+  PendingFollowup,
   RecoverEventsResponse,
   RuntimeCheckpointSummary,
   RuntimeEventEnvelope,
@@ -928,8 +929,138 @@ export class RuntimeStateRepo {
     };
   }
 
-  getLatestCheckpoint(conversationId: string) {
+  /**
+   * Folds the durable follow-up queue for one conversation.
+   *
+   * The queue's live state is in-memory, but every transition is an event
+   * (dsh's durable-inbox shape): `turn.followup_queued` appends, and
+   * `started`/`cancelled` are pure deletions from the pending set. Reading the
+   * whole history is bounded by an index on (conversation_id, sequence) and
+   * these events are a handful per conversation at most.
+   */
+  listPendingFollowups(conversationId: string): PendingFollowup[] {
+    const rows = this.db
+      .prepare<{ conversationId: string }, { request_id: string; activity_type: string; payload_json: string }>(
+        `
+          SELECT
+            request_id,
+            activity_type,
+            payload_json
+          FROM conversation_events
+          WHERE conversation_id = @conversationId
+            AND activity_type IN (
+              'turn.followup_queued',
+              'turn.followup_started',
+              'turn.followup_cancelled'
+            )
+          ORDER BY sequence ASC
+        `,
+      )
+      .all({ conversationId });
+
+    const pending = new Map<string, PendingFollowup>();
+    for (const row of rows) {
+      if (row.activity_type === 'turn.followup_queued') {
+        let preview = '';
+        try {
+          const payload = JSON.parse(row.payload_json) as { preview?: unknown };
+          if (typeof payload.preview === 'string') {
+            preview = payload.preview;
+          }
+        } catch {
+          // A torn payload still leaves the entry listable, just untitled.
+        }
+        pending.set(row.request_id, { requestId: row.request_id, preview });
+        continue;
+      }
+
+      pending.delete(row.request_id);
+    }
+
+    return [...pending.values()];
+  }
+
+  /** Conversations that have at least one durable queue event to fold. */
+  listConversationsWithFollowups(): string[] {
+    return this.db
+      .prepare<[], { conversation_id: string }>(
+        `
+          SELECT DISTINCT conversation_id
+          FROM conversation_events
+          WHERE activity_type IN (
+            'turn.followup_queued',
+            'turn.followup_started',
+            'turn.followup_cancelled'
+          )
+        `,
+      )
+      .all()
+      .map((row) => row.conversation_id);
+  }
+
+  /** The stored enqueue payload for one follow-up, or null when absent/torn. */
+  getFollowupQueuedEvent(
+    conversationId: string,
+    requestId: string,
+  ): { preview: string; request: unknown } | null {
     const row = this.db
+      .prepare<{ conversationId: string; requestId: string }, { payload_json: string }>(
+        `
+          SELECT payload_json
+          FROM conversation_events
+          WHERE conversation_id = @conversationId
+            AND request_id = @requestId
+            AND activity_type = 'turn.followup_queued'
+          ORDER BY sequence DESC
+          LIMIT 1
+        `,
+      )
+      .get({ conversationId, requestId });
+
+    if (!row) {
+      return null;
+    }
+
+    try {
+      const payload = JSON.parse(row.payload_json) as { preview?: unknown; request?: unknown };
+      if (typeof payload.preview !== 'string' || typeof payload.request !== 'object' || payload.request === null) {
+        return null;
+      }
+      return { preview: payload.preview, request: payload.request };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Caps `request.header` telemetry per conversation. The envelope snapshots
+   * are diagnostic — useful for the most recent turns, noise a thousand turns
+   * later — so the log keeps only the newest `keep` per conversation. Called
+   * opportunistically after writes.
+   */
+  pruneRequestHeaders(keep = 100) {
+    // SQLite has no LIMIT-on-aggregate delete; rank per conversation instead.
+    this.db.exec(`
+      DELETE FROM conversation_events
+      WHERE activity_type = 'request.header'
+        AND event_id IN (
+          SELECT event_id
+          FROM (
+            SELECT
+              event_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY conversation_id
+                ORDER BY sequence DESC
+              ) AS recency
+            FROM conversation_events
+            WHERE activity_type = 'request.header'
+          )
+          WHERE recency > ${Math.max(0, Math.floor(keep))}
+        )
+    `);
+  }
+
+  getLatestCheckpoint(conversationId: string) {    const row = this.db
       .prepare<{ conversationId: string }, CheckpointRow>(
         `
           SELECT

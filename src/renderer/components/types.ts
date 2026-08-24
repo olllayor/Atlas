@@ -5,7 +5,7 @@ export type DraftStateLike = {
   modelId: string;
   providerId: ProviderId;
   parts: ChatMessagePart[];
-  status: 'streaming' | 'error' | 'aborted';
+  status: 'queued' | 'streaming' | 'error' | 'aborted';
   errorMessage?: string;
   error?: {
     code?: string;

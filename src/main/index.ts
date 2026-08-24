@@ -559,6 +559,11 @@ app.whenReady().then(async () => {
 
       return plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null;
     },
+    // Resumed follow-ups borrow the frontmost window for event delivery.
+    () => {
+      const windows = BrowserWindow.getAllWindows();
+      return windows.length > 0 ? windows[windows.length - 1] : null;
+    },
   );
 
   registerSettingsIpc({
@@ -618,6 +623,10 @@ app.whenReady().then(async () => {
   registerTerminalIpc(database, ptyService);
   registerJobsIpc(jobRegistry);
   registerChatIpc(chatEngine);
+  // Fold the durable follow-up queue back in and start draining it. The
+  // window resolver lets a resumed entry borrow the frontmost window for
+  // event delivery; entries wait in the queue until one exists.
+  chatEngine.resumePersistedFollowups();
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);

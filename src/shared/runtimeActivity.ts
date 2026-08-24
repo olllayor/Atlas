@@ -385,6 +385,12 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     // row between the user's message and the answer for every single turn.
     return null;
   }
+  if (event.activityType.startsWith('turn.followup_')) {
+    // Durable-queue bookkeeping. The waiting state is rendered by the
+    // composer's queued dock; a "Followup Queued" row inside the transcript
+    // would say it twice.
+    return null;
+  }
 
   const title =
     typeof event.payload.title === 'string' && event.payload.title.trim()

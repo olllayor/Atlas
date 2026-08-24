@@ -75,7 +75,8 @@ type ActiveRequest = {
   requestId: string;
   controller: AbortController;
   window: BrowserWindow;
-  onWindowClosed: () => void;
+  /** Null when the submitting window was already gone at prepare time. */
+  onWindowClosed: (() => void) | null;
   request: ChatStartRequest;
   turnId: string;
   assistantMessageId: string;
@@ -106,6 +107,9 @@ const NOOP_RUNTIME_STATE_REPO: Pick<
   | 'completeTurn'
   | 'updateProviderSession'
   | 'createCheckpoint'
+  | 'listPendingFollowups'
+  | 'listConversationsWithFollowups'
+  | 'getFollowupQueuedEvent'
 > = {
   createTurn: () => undefined,
   startProviderSession: () => 'noop-session',
@@ -123,6 +127,9 @@ const NOOP_RUNTIME_STATE_REPO: Pick<
   completeTurn: () => undefined,
   updateProviderSession: () => undefined,
   createCheckpoint: () => randomUUID(),
+  listPendingFollowups: () => [],
+  listConversationsWithFollowups: () => [],
+  getFollowupQueuedEvent: () => null,
 };
 
 /**
@@ -229,11 +236,17 @@ export class ChatEngine {
    * row, no assistant placeholder — so a queued message never renders as an
    * empty assistant bubble. Oldest first, and strictly per-conversation FIFO:
    * a conversation's second follow-up cannot start before its first.
+   *
+   * Every transition is also an append-only event (`turn.followup_*`), and
+   * `resumePersistedFollowups` folds those back after a restart — the queue's
+   * live state is disposable, its log is not (dsh's durable-inbox pattern).
    */
   private readonly followupQueue: Array<{
     requestId: string;
     request: ChatStartRequest;
-    window: BrowserWindow;
+    /** The submitting window; null after a restart-resume until one exists. */
+    window: BrowserWindow | null;
+    preview: string;
   }> = [];
   /**
    * The `closed` listener registered per follow-up, kept keyed by requestId so
@@ -241,6 +254,8 @@ export class ChatEngine {
    * call would make removeListener a silent no-op.
    */
   private readonly followupCloseListeners = new Map<string, () => void>();
+  /** Counts envelope writes for the periodic retention prune. */
+  private headerWrites = 0;
 
   private dropFollowupListener(requestId: string) {
     let listener = this.followupCloseListeners.get(requestId);
@@ -281,6 +296,9 @@ export class ChatEngine {
       | 'completeTurn'
       | 'updateProviderSession'
       | 'createCheckpoint'
+      | 'listPendingFollowups'
+      | 'listConversationsWithFollowups'
+      | 'getFollowupQueuedEvent'
     > = NOOP_RUNTIME_STATE_REPO,
     private readonly toolStateStore?: ToolStateStore,
     private readonly approvalController = new ToolApprovalController(),
@@ -315,7 +333,13 @@ export class ChatEngine {
      * against what is installed *now* rather than what was installed when the
      * engine was constructed.
      */
-    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null
+    private readonly pluginLookup?: (toolName: string) => { name: string; version: string | null } | null,
+    /**
+     * Where resumed follow-ups find a window to deliver events through.
+     * Injected rather than imported so plain-Node tests (which cannot load
+     * Electron's module) can run the queue; main passes the live lookup.
+     */
+    private readonly resolveEventWindow?: () => BrowserWindow | null
   ) {
     this.backgroundLiveness = new BackgroundLivenessService();
     this.continuationManager = new SubagentContinuationManager({
@@ -696,7 +720,12 @@ export class ChatEngine {
       const onWindowClosed = this.dropFollowupListener(requestId);
       window.once('closed', onWindowClosed);
       const index = this.followupQueue.findIndex((entry) => entry.request.conversationId === request.conversationId);
-      this.followupQueue.splice(index + 1, 0, { requestId, request, window });
+      this.followupQueue.splice(index + 1, 0, { requestId, request, window, preview: previewContent });
+      // Durable enqueue: the fold at boot rebuilds the waiting line from this.
+      this.recordFollowupEvent(request.conversationId, 'turn.followup_queued', requestId, {
+        preview: previewContent,
+        request,
+      });
       this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
       return { requestId, queued: true };
     }
@@ -732,18 +761,39 @@ export class ChatEngine {
    * Creates everything a running turn needs — abort wiring, the assistant
    * placeholder, the turn and session rows, the baseline checkpoint — and then
    * either starts it or parks it for the next free concurrency slot.
+   *
+   * `origin` distinguishes a direct submit from a queue dispatch so the
+   * durable log can mark the follow-up consumed (`turn.followup_started`),
+   * which is what keeps a restarted fold from resurrecting it.
    */
-  private prepareTurn(window: BrowserWindow, requestId: string, request: ChatStartRequest) {
+  private prepareTurn(
+    window: BrowserWindow | null,
+    requestId: string,
+    request: ChatStartRequest,
+    origin: 'direct' | 'followup' = 'direct',
+  ) {
+    // A resumed follow-up has no submitting window; its events still have to
+    // reach the user, so they ride the frontmost window instead. With no
+    // window at all there is nowhere to deliver events — bail before any row
+    // is created and let the dispatcher retry once one exists.
+    const effectiveWindow = window ?? this.resolveMainWindow();
+    if (!effectiveWindow) {
+      return;
+    }
+
     const assistantMessageId = randomUUID();
     const turnId = randomUUID();
 
     const controller = new AbortController();
-    const onWindowClosed = () => {
-      void this.subagentRuntime.interruptAll(request.conversationId, 'Window closed');
-      controller.abort();
-      this.cleanupRequest(requestId);
-    };
-    window.once('closed', onWindowClosed);
+    let onWindowClosed: (() => void) | null = null;
+    if (window && !window.isDestroyed()) {
+      onWindowClosed = () => {
+        void this.subagentRuntime.interruptAll(request.conversationId, 'Window closed');
+        controller.abort();
+        this.cleanupRequest(requestId);
+      };
+      window.once('closed', onWindowClosed);
+    }
 
     this.conversationsRepo.addMessage({
       id: assistantMessageId,
@@ -786,6 +836,11 @@ export class ChatEngine {
         modelId: request.modelId,
       },
     });
+    if (origin === 'followup') {
+      // Marks the durable queue entry consumed. Without this, a restart fold
+      // would see the follow-up as still pending and run it twice.
+      this.recordFollowupEvent(request.conversationId, 'turn.followup_started', requestId, {});
+    }
 
     // Awaited, not fired off: the baseline has to be on disk before the first
     // tool can touch a file, or the turn's own edits end up inside its own
@@ -795,7 +850,7 @@ export class ChatEngine {
     this.activeRequests.set(requestId, {
       requestId,
       controller,
-      window,
+      window: effectiveWindow,
       onWindowClosed,
       request,
       turnId,
@@ -815,7 +870,84 @@ export class ChatEngine {
         : null,
     });
 
-    void this.prepareAndRun(window, requestId, request, turnId, assistantMessageId, controller);
+    void this.prepareAndRun(effectiveWindow, requestId, request, turnId, assistantMessageId, controller);
+  }
+
+  /** Frontmost window for event delivery when the submitter is gone. */
+  private resolveMainWindow(): BrowserWindow | null {
+    return this.resolveEventWindow?.() ?? null;
+  }
+
+  /**
+   * One writer for the three queue-lifecycle events. Failures are swallowed:
+   * the log is how a restart rebuilds the queue, but a failed append must not
+   * break the live dispatch it describes.
+   */
+  private recordFollowupEvent(
+    conversationId: string,
+    activityType: 'turn.followup_queued' | 'turn.followup_started' | 'turn.followup_cancelled',
+    requestId: string,
+    payload: Record<string, unknown>,
+  ) {
+    try {
+      this.runtimeStateRepo.recordEvent({
+        eventId: randomUUID(),
+        conversationId,
+        turnId: requestId,
+        requestId,
+        activityType,
+        tone: 'info',
+        provider: 'system',
+        providerEventType: activityType,
+        payload,
+      });
+    } catch (error) {
+      logger.warn('followup.event_failed', { conversationId, activityType, requestId, error });
+    }
+  }
+
+  /**
+   * Rebuilds the waiting line from the log after a restart.
+   *
+   * Pending = queued − started − cancelled per conversation, in sequence
+   * order — exactly what `listPendingFollowups` folds. Entries re-enqueue with
+   * their original requestIds so renderer-side optimistic state keeps matching;
+   * they carry no window and borrow one at dispatch. Auto-resumed on purpose:
+   * the user asked for these sends before the app closed (dsh resumes its
+   * durable inbox the same way).
+   */
+  resumePersistedFollowups() {
+    let resumed = 0;
+
+    for (const conversationId of this.runtimeStateRepo.listConversationsWithFollowups()) {
+      const pending = this.runtimeStateRepo.listPendingFollowups(conversationId);
+      for (const entry of pending) {
+        const stored = this.runtimeStateRepo.getFollowupQueuedEvent(conversationId, entry.requestId);
+        if (!stored) {
+          // The enqueue payload was torn or predates durability; drop the
+          // entry from the fold rather than dispatching a half-known request.
+          continue;
+        }
+
+        this.followupQueue.push({
+          requestId: entry.requestId,
+          request: stored.request as ChatStartRequest,
+          window: null,
+          preview: stored.preview,
+        });
+        resumed += 1;
+      }
+
+      if (pending.length > 0) {
+        this.markConversationStatus(conversationId, 'queued', { lastError: null });
+      }
+    }
+
+    if (resumed > 0) {
+      logger.info('followup.resumed', { count: resumed });
+      // Slots are free at boot; start draining immediately.
+      this.startNextQueuedRequest();
+    }
   }
 
   private async prepareAndRun(
@@ -871,7 +1003,8 @@ export class ChatEngine {
     // usually removes them first, but a destroyed-window check costs nothing
     // and keeps the scan from skipping over a corpse forever.
     for (let index = this.followupQueue.length - 1; index >= 0; index -= 1) {
-      if (this.followupQueue[index].window.isDestroyed()) {
+      const window = this.followupQueue[index]?.window;
+      if (window?.isDestroyed()) {
         this.removeFollowupAt(index);
       }
     }
@@ -887,14 +1020,24 @@ export class ChatEngine {
         (entry) => !this.hasLiveTurn(entry.request.conversationId),
       );
       if (followupIndex >= 0) {
-        const [{ requestId, request, window }] = this.followupQueue.splice(followupIndex, 1);
-        window.removeListener('closed', this.dropFollowupListener(requestId));
+        const [entry] = this.followupQueue.splice(followupIndex, 1);
+        const { requestId, request, window } = entry;
+        if (window && !window.isDestroyed()) {
+          window.removeListener('closed', this.dropFollowupListener(requestId));
+        }
         this.followupCloseListeners.delete(requestId);
+        // A resumed entry has no submitting window; without any window to
+        // deliver events through there is nothing to dispatch into yet, so it
+        // goes back and waits for one to exist.
+        if (!window && !this.resolveMainWindow()) {
+          this.followupQueue.splice(followupIndex, 0, entry);
+          return;
+        }
         // Held synchronously: prepareTurn's beginRun only fires after the
         // checkpoint capture resolves, and without this the dispatch loop
         // would keep reading the slot as free and over-fill it.
         this.runningRequestIds.add(requestId);
-        this.prepareTurn(window, requestId, request);
+        this.prepareTurn(window, requestId, request, 'followup');
         continue;
       }
 
@@ -916,7 +1059,8 @@ export class ChatEngine {
     if (!entry) {
       return;
     }
-    if (!entry.window.isDestroyed()) {
+    // A resumed entry has no window registered against its removal.
+    if (entry.window && !entry.window.isDestroyed()) {
       entry.window.removeListener('closed', this.dropFollowupListener(entry.requestId));
     }
     this.followupCloseListeners.delete(entry.requestId);
@@ -982,23 +1126,33 @@ export class ChatEngine {
   async abort(requestId: string) {
     // A follow-up that never started has no stream and no rows to close — the
     // user message stays in the transcript, unanswered, which is the honest
-    // record of a message withdrawn before its turn began.
+    // record of a message withdrawn before its turn began. The cancellation
+    // is durable so a restart fold does not resurrect it.
     const followupEntry = this.followupQueue.find((entry) => entry.requestId === requestId);
     if (followupEntry) {
       this.dropFollowup(requestId);
+      this.recordFollowupEvent(
+        followupEntry.request.conversationId,
+        'turn.followup_cancelled',
+        requestId,
+        {},
+      );
       this.markConversationStatus(followupEntry.request.conversationId, 'idle', {
         completedAt: new Date().toISOString(),
       });
       // Same shape the renderer already handles for an aborted live stream:
       // its error path clears the draft and refetches, so no new state or
       // branch is needed on the other side of the IPC.
-      this.sendEvent(followupEntry.window, {
-        type: 'error',
-        requestId,
-        code: 'aborted',
-        message: 'Message was cancelled while waiting to be sent.',
-        retryable: false,
-      });
+      if (followupEntry.window && !followupEntry.window.isDestroyed()) {
+        this.sendEvent(followupEntry.window, {
+          type: 'error',
+          requestId,
+          code: 'aborted',
+          message: 'Message was cancelled while waiting to be sent.',
+          retryable: false,
+        });
+      }
+      this.clearBufferedEvents(requestId);
       return;
     }
 
@@ -1048,6 +1202,7 @@ export class ChatEngine {
       pendingApprovals: this.runtimeStateRepo.listPendingApprovals(conversationId),
       providerSession: this.runtimeStateRepo.getLatestProviderSession(conversationId),
       latestCheckpoint,
+      pendingFollowups: this.runtimeStateRepo.listPendingFollowups(conversationId),
     };
   }
 
@@ -1506,7 +1661,9 @@ export class ChatEngine {
       return;
     }
 
-    target.window.removeListener('closed', target.onWindowClosed);
+    if (target.onWindowClosed) {
+      target.window.removeListener('closed', target.onWindowClosed);
+    }
     this.flushBufferedEvents(requestId);
     this.bufferedEvents.delete(requestId);
     this.activeRequests.delete(requestId);
@@ -1527,8 +1684,7 @@ export class ChatEngine {
     header: { attempt: number; systemPrompt: string | undefined; messages: ModelMessage[] },
   ) {
     const tail = header.messages.slice(-8);
-    this.recordRuntimeEnvelope(active, {
-      eventId: randomUUID(),
+    this.recordRuntimeEnvelope(active, {      eventId: randomUUID(),
       conversationId: active.request.conversationId,
       turnId: active.turnId,
       requestId: active.requestId,
@@ -1546,6 +1702,18 @@ export class ChatEngine {
         historyTailHash: sha256Short(JSON.stringify(tail)),
       },
     });
+
+    // Envelope snapshots are diagnostic with a short shelf life; without a
+    // cap they are the one unbounded growth vector in the event log. Prune
+    // opportunistically — every Nth write, cheap even when it runs.
+    this.headerWrites += 1;
+    if (this.headerWrites % 25 === 0 && 'pruneRequestHeaders' in this.runtimeStateRepo) {
+      try {
+        (this.runtimeStateRepo as RuntimeStateRepo).pruneRequestHeaders();
+      } catch {
+        // Retention is housekeeping, never correctness.
+      }
+    }
   }
 
   private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {    active.tracker?.handleEvent(event);
@@ -1639,7 +1807,11 @@ export class ChatEngine {
     if (active.window.isDestroyed() || active.window.webContents.isDestroyed()) {
       void this.subagentRuntime.interruptAll(active.request.conversationId, 'Window closed');
       active.controller.abort();
-      active.window.removeListener('closed', active.onWindowClosed);
+      if (active.onWindowClosed) {
+        if (active.onWindowClosed) {
+          active.window.removeListener('closed', active.onWindowClosed);
+        }
+      }
       this.clearBufferedEvents(requestId);
       this.activeRequests.delete(requestId);
       return;
@@ -1651,7 +1823,11 @@ export class ChatEngine {
       } catch {
         void this.subagentRuntime.interruptAll(active.request.conversationId, 'Window closed');
         active.controller.abort();
-        active.window.removeListener('closed', active.onWindowClosed);
+        if (active.onWindowClosed) {
+        if (active.onWindowClosed) {
+          active.window.removeListener('closed', active.onWindowClosed);
+        }
+      }
         this.clearBufferedEvents(requestId);
         this.activeRequests.delete(requestId);
         return;

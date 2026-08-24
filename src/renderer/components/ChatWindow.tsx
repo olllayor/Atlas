@@ -697,13 +697,19 @@ function StreamingRow({
   errorMessage?: string;
   /** Why this turn is taking longer than it looks like it should. */
   notice?: DraftStateLike['notice'];
-  status: 'streaming' | 'error' | 'aborted';
+  status: 'queued' | 'streaming' | 'error' | 'aborted';
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onRetry?: () => void;
   onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
 }) {
   const isError = status === 'error';
   const isAborted = status === 'aborted';
+  // A queued draft has no tokens and no turn — rendering an empty streaming
+  // shell would invent a bubble for work that has not begun. The QueueDock
+  // above the composer is the waiting state's home.
+  if (status === 'queued') {
+    return null;
+  }
   const hasParts = hasRenderableAssistantParts(parts);
 
   return (

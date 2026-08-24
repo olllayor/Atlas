@@ -329,9 +329,9 @@ async function createQueuedEngineHarness() {
   return { engine, addedMessages, runtimeCalls, releaseFirst: releaseFirst as unknown as () => void };
 }
 
-function createEngineRequest(text: string): ChatStartRequest {
+function createEngineRequest(text: string, conversationId = 'conversation-1'): ChatStartRequest {
   return {
-    conversationId: 'conversation-1',
+    conversationId,
     providerId: 'openrouter',
     modelId: 'openrouter/test-model',
     messages: [{ role: 'user', content: text }],
@@ -411,3 +411,117 @@ test('two follow-ups for one conversation start strictly in submission order', a
 
   assert.equal(runtimeCalls.length, 3);
 });
+
+import { RuntimeStateRepo } from '../src/main/db/repositories/runtimeStateRepo.js';
+
+// ---------------------------------------------------------------------------
+// Durable follow-up queue: the log outlives the process
+// ---------------------------------------------------------------------------
+
+test('a queued follow-up survives an engine restart via the event-log fold', async () => {
+  const { database, cleanup } = createDatabase();
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+  const conversation = conversations.create();
+
+  const first = await makeEngineWithRepos(conversations, runtimeState, null);
+  const { window } = createFakeWindow();
+
+  await first.engine.start(window as never, createEngineRequest('First question', conversation.id));
+  await delay(10);
+  const second = await first.engine.start(window as never, createEngineRequest('Follow-up question', conversation.id));
+  assert.equal(second.queued, true);
+
+  // The snapshot is the renderer's restart-time source of truth for its dock.
+  const snap = first.engine.getRuntimeState({ conversationId: conversation.id });
+  assert.equal(snap.pendingFollowups.length, 1);
+  assert.equal(snap.pendingFollowups[0].preview, 'Follow-up question');
+
+  // "Restart": a brand-new engine over the same database folds the log back.
+  let dispatchedPrompt = '';
+  const resumed = await makeEngineWithRepos(
+    conversations,
+    runtimeState,
+    () => window as never,
+    (req) => {
+      dispatchedPrompt = req.request.messages[0].content;
+      return { messageId: 'resumed' };
+    },
+  );
+  resumed.engine.resumePersistedFollowups();
+  await delay(20);
+
+  assert.equal(dispatchedPrompt, 'Follow-up question');
+  // Consumed at dispatch: the fold no longer reports it as pending.
+  assert.equal(resumed.engine.getRuntimeState({ conversationId: conversation.id }).pendingFollowups.length, 0);
+});
+
+test('cancelling a queued follow-up is durable — a restart does not resurrect it', async () => {
+  const { database, cleanup } = createDatabase();
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+  const conversation = conversations.create();
+
+  const harness = await makeEngineWithRepos(conversations, runtimeState, null);
+  const { window } = createFakeWindow();
+
+  await harness.engine.start(window as never, createEngineRequest('First question', conversation.id));
+  await delay(10);
+  const second = await harness.engine.start(window as never, createEngineRequest('To be cancelled', conversation.id));
+  await harness.engine.abort(second.requestId);
+  await delay(5);
+
+  assert.equal(harness.engine.getRuntimeState({ conversationId: conversation.id }).pendingFollowups.length, 0);
+
+  const restarted = await makeEngineWithRepos(conversations, runtimeState, () => window as never);
+  restarted.engine.resumePersistedFollowups();
+  await delay(20);
+  assert.equal(restarted.runtimeCalls.length, 0, 'cancelled follow-up must not run');
+});
+
+// Harness helpers for the durable-queue tests above.
+
+async function makeEngineWithRepos(
+  conversationsRepoInstance: ConversationsRepo,
+  runtimeStateRepoInstance: RuntimeStateRepo,
+  resolveEventWindow: (() => unknown) | null,
+  executeTurnImpl?: (req: ExecuteTurnRequest) => Promise<ExecuteTurnResult>,
+) {
+  const runtimeCalls: ExecuteTurnRequest[] = [];
+  let releaseFirst: (() => void) | null = null;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstCall = true;
+
+  const engine = new ChatEngine(
+    conversationsRepoInstance as never,
+    { getById: () => ({ supportsTools: false }) } as never,
+    {} as never,
+    new Map() as never,
+    { persistAttachment: () => ({}) } as never,
+    {
+      async executeTurn(input: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
+        runtimeCalls.push(input);
+        if (executeTurnImpl) return executeTurnImpl(input);
+        if (firstCall) {
+          firstCall = false;
+          await firstGate;
+          return { messageId: 'first' };
+        }
+        return { messageId: `next-${runtimeCalls.length}` };
+      },
+    },
+    // Real RuntimeStateRepo over the shared database — the whole point.
+    runtimeStateRepoInstance as never,
+    undefined, // toolStateStore
+    undefined, // approvalController
+    undefined, // onCapabilityRejected
+    undefined, // checkpoints
+    undefined, // auditLog
+    undefined, // pluginLookup
+    (resolveEventWindow ?? null) as never, // resolveEventWindow
+  );
+
+  return { engine, runtimeCalls, releaseFirst: releaseFirst as unknown as () => void };
+}

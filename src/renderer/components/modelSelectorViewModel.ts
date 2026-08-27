@@ -1,5 +1,15 @@
 import type { CustomProvider, ModelSummary, ProviderCredentialSummary } from '../../shared/contracts';
+import { OPENCODE_PROVIDER_ID } from '../../shared/opencodeSettings';
 import { resolveProviderLabel } from '../../shared/providerMetadata';
+
+/**
+ * OpenCode signs in on its own (`opencode auth login`), so Atlas never holds a
+ * key for it. Without this its models would sort below the configured ones and
+ * offer an API-key prompt that fixes nothing.
+ */
+function providerAuthenticatesItself(providerId: string) {
+  return providerId === OPENCODE_PROVIDER_ID;
+}
 
 export type ProviderRef = Pick<CustomProvider, 'id' | 'name'>;
 
@@ -42,7 +52,9 @@ export function buildModelSelectorViewModel({
     (credentials ?? []).filter((entry) => entry.hasSecret).map((entry) => entry.providerId)
   );
   const isConfigured = (model: ModelSummary) =>
-    !knowsCredentials || configuredProviderIds.has(model.providerId);
+    !knowsCredentials ||
+    providerAuthenticatesItself(model.providerId) ||
+    configuredProviderIds.has(model.providerId);
 
   const filtered = models.filter((model) => !freeFilterActive || model.isFree);
 
@@ -81,7 +93,7 @@ export function buildModelSelectorViewModel({
 
 /** True when the model's provider has no key saved and we know that for sure. */
 export function modelNeedsApiKey(model: ModelSummary, credentials?: ProviderCredentialSummary[]) {
-  if ((credentials?.length ?? 0) === 0) {
+  if ((credentials?.length ?? 0) === 0 || providerAuthenticatesItself(model.providerId)) {
     return false;
   }
 

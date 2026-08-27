@@ -160,3 +160,21 @@ test('a new chat opens on the model the user last picked', async () => {
   ] as never;
   assert.equal(chooseDefaultModel(archived, null, 'gateway/stale'), 'gateway/cheap-free');
 });
+
+test('OpenCode models group under their own name and never ask for an API key', () => {
+  const viewModel = buildModelSelectorViewModel({
+    models: [
+      model('opencode/claude-opus-4-7', { providerId: 'opencode', label: 'Claude Opus 4.7' }),
+      model('gpt-5', { providerId: 'custom:openai' })
+    ],
+    customProviders: [{ id: 'custom:openai', name: 'OpenAI' }],
+    credentials: [credential('custom:openai', true)],
+    showFreeOnly: false
+  });
+
+  const opencode = viewModel.groups.find((group) => group.label === 'OpenCode');
+  assert.ok(opencode, 'OpenCode group is present');
+  // opencode signs itself in, so it counts as configured without a stored key.
+  assert.equal(opencode.configured, true);
+  assert.equal(modelNeedsApiKey(opencode.models[0]!, [credential('custom:openai', true)]), false);
+});

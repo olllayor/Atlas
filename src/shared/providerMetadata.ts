@@ -1,6 +1,7 @@
 import type { ProviderId } from './contracts';
 import type { CustomProvider } from './customProviders';
 import { isCustomProviderId } from './customProviders';
+import { OPENCODE_PROVIDER_ID } from './opencodeSettings';
 
 export type ProviderMetadata = {
   id: ProviderId;
@@ -35,6 +36,12 @@ export function resolveProviderMetadata(
   const configured = customProviders.find((provider) => provider.id === providerId);
   if (configured) {
     return buildProviderMetadata(providerId, configured.name);
+  }
+
+  // OpenCode is not a saved endpoint — it is its own integration, with its own
+  // credentials — so its display name comes from here rather than the table.
+  if (providerId === OPENCODE_PROVIDER_ID) {
+    return buildProviderMetadata(providerId, 'OpenCode');
   }
 
   // A provider that was deleted, or a legacy id from before the migration.

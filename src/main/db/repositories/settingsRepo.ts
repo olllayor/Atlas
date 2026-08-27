@@ -18,6 +18,8 @@ import type { VisualMode } from '../../../shared/visualIntent';
 import { DEFAULT_VISUAL_MODE, isVisualMode } from '../../../shared/visualIntent';
 import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isExecutionTarget, isWorkspaceMode } from '../../../shared/workspaceModes';
+import type { OpenCodeSettings, ParseOpenCodeSettingsResult } from '../../../shared/opencodeSettings.js';
+import { parseOpenCodeSettings } from '../../../shared/opencodeSettings.js';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
@@ -712,6 +714,19 @@ export class SettingsRepo {
       status: row.status,
       validatedAt: row.validated_at
     };
+  }
+
+  /**
+   * OpenCode integration settings (deep-integration plan T0). Persisted as a
+   * JSON blob under `providers.opencode`; the server password intentionally
+   * lives in the keychain, never here.
+   */
+  getOpenCodeSettings(): ParseOpenCodeSettingsResult {
+    return parseOpenCodeSettings(this.getJsonSetting<unknown>('providers.opencode', null));
+  }
+
+  setOpenCodeSettings(settings: OpenCodeSettings) {
+    this.setJsonSetting('providers.opencode', settings);
   }
 
   /**

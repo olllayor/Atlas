@@ -27,6 +27,7 @@ export type ProviderId = string;
 export type * from './sites';
 export type * from './mentions';
 export type * from './customProviders';
+export * from './opencodeSettings';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';

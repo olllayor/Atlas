@@ -127,6 +127,24 @@ export function openCodeServerMode(settings: Pick<OpenCodeSettings, 'serverUrl'>
   return settings.serverUrl.trim().length > 0 ? 'external' : 'spawned';
 }
 
+/**
+ * What "Test connection" answers, shaped exactly like t3code's probe result so
+ * the Settings card can render every state without extra round trips. Declared
+ * in shared because both the main-process probe and the renderer read it.
+ */
+export type OpenCodeProbeStatus = 'ready' | 'warning' | 'error';
+
+export interface OpenCodeProbeResult {
+  readonly installed: boolean;
+  readonly version: string | null;
+  readonly status: OpenCodeProbeStatus;
+  readonly auth: { readonly status: 'authenticated' | 'unknown' };
+  readonly connectedProviders: readonly string[];
+  readonly modelCount: number;
+  readonly baseUrlUsed?: string;
+  readonly message?: string;
+}
+
 /** Derived view exposed over IPC/UI so the renderer learns password *presence* only. */
 export interface OpenCodeStatusView extends OpenCodeSettings {
   hasServerPassword: boolean;

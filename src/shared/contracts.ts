@@ -28,6 +28,11 @@ export type * from './sites';
 export type * from './mentions';
 export type * from './customProviders';
 export * from './opencodeSettings';
+import type {
+  OpenCodeProbeResult,
+  OpenCodeSettings,
+  OpenCodeStatusView
+} from './opencodeSettings';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';
@@ -2241,6 +2246,14 @@ export type RendererApi = {
     testCloudSandbox: (url?: string, secret?: string) => Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
     deployCloudSandbox: () => Promise<{ success: boolean; url?: string; secret?: string; error?: string }>;
     generateCloudSandboxSecret: () => Promise<string>;
+    /** Deep OpenCode integration (Beta). Absent settings read back as defaults. */
+    opencode: {
+      get: () => Promise<OpenCodeStatusView>;
+      update: (patch: Partial<OpenCodeSettings>) => Promise<OpenCodeStatusView>;
+      /** Empty or null clears the stored password. */
+      setPassword: (secret: string | null) => Promise<OpenCodeStatusView>;
+      probe: () => Promise<OpenCodeProbeResult>;
+    };
   };
   models: {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;

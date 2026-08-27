@@ -19,6 +19,7 @@ import { FileChangesRepo } from './repositories/fileChangesRepo';
 import { WorkspaceCheckpointsRepo } from './repositories/workspaceCheckpointsRepo';
 import { TerminalHistoryRepo } from './repositories/terminalHistoryRepo';
 import { PluginAuditRepo } from './repositories/pluginAuditRepo';
+import { OpenCodeSessionsRepo } from './repositories/opencodeSessionsRepo';
 import { applySchema } from './schema';
 
 export type SqliteDatabase = InstanceType<typeof Database>;
@@ -40,6 +41,7 @@ export type AppDatabase = {
   visuals: VisualsRepo;
   sites: SitesRepo;
   pluginAudit: PluginAuditRepo;
+  opencodeSessions: OpenCodeSessionsRepo;
 };
 
 export function createAppDatabase(databasePath: string, attachmentStore: AttachmentStore): AppDatabase {
@@ -67,6 +69,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     settings: new SettingsRepo(raw),
     visuals: new VisualsRepo(raw),
     pluginAudit: new PluginAuditRepo(raw),
+    opencodeSessions: new OpenCodeSessionsRepo(raw),
     sites: new SitesRepo(raw),
   };
 }

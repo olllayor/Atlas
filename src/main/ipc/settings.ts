@@ -1,9 +1,10 @@
 import { BrowserWindow, ipcMain } from 'electron/main';
 
 import { IPC_CHANNELS } from '../../shared/ipc';
-import type { ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
+import type { OpenCodeSettings, ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
 import { isVisualMode } from '../../shared/visualIntent';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
+import type { OpenCodeController } from '../ai/providers/opencode/openCodeController';
 import {
   OPAQUE_WINDOW_BACKGROUND,
   VIBRANT_WINDOW_BACKGROUND,
@@ -18,9 +19,59 @@ type SettingsIpcDeps = {
   settingsRepo: SettingsRepo;
   modelRegistry: ModelRegistry;
   keychain: KeychainStore;
+  /** Absent when the OpenCode integration was not wired (tests, headless). */
+  opencode?: OpenCodeController;
 };
 
-export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: SettingsIpcDeps) {
+export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, opencode }: SettingsIpcDeps) {
+  function requireOpenCode(): OpenCodeController {
+    if (!opencode) {
+      throw new Error('The OpenCode integration is not available in this build.');
+    }
+    return opencode;
+  }
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeGet,
+    withUserFacingErrors(IPC_CHANNELS.settingsOpenCodeGet, async (event) => {
+      assertTrustedSender(event);
+      return requireOpenCode().getStatusView();
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeUpdate,
+    withUserFacingErrors(
+      IPC_CHANNELS.settingsOpenCodeUpdate,
+      async (event, patch: Partial<OpenCodeSettings>) => {
+        assertTrustedSender(event);
+        return requireOpenCode().updateSettings(patch ?? {});
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeSetPassword,
+    withUserFacingErrors(
+      IPC_CHANNELS.settingsOpenCodeSetPassword,
+      async (event, secret: string | null) => {
+        assertTrustedSender(event);
+        const controller = requireOpenCode();
+        // Never echoed back: the renderer only ever learns that one is stored.
+        await controller.setServerPassword(secret);
+        return controller.getStatusView();
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeProbe,
+    withUserFacingErrors(IPC_CHANNELS.settingsOpenCodeProbe, async (event) => {
+      assertTrustedSender(event);
+      return requireOpenCode().probe();
+    })
+  );
+
   ipcMain.handle(
     IPC_CHANNELS.settingsGetSummary,
     withUserFacingErrors(IPC_CHANNELS.settingsGetSummary, (event) => {

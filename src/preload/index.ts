@@ -17,7 +17,14 @@ const api: RendererApi = {
     deployCloudSandbox: () =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsDeployCloudSandbox),
     generateCloudSandboxSecret: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.settingsGenerateCloudSandboxSecret)
+      ipcRenderer.invoke(IPC_CHANNELS.settingsGenerateCloudSandboxSecret),
+    opencode: {
+      get: () => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeGet),
+      update: (patch) => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeUpdate, patch),
+      setPassword: (secret) =>
+        ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeSetPassword, secret),
+      probe: () => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeProbe)
+    }
   },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),

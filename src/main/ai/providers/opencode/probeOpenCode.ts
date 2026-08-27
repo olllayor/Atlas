@@ -21,23 +21,16 @@ import {
   createOpenCodeInventoryClient,
   type OpenCodeInventoryClient
 } from './OpenCodeClient.js';
-import type { OpenCodeSettings } from '../../../../shared/opencodeSettings.js';
+import type {
+  OpenCodeProbeResult,
+  OpenCodeProbeStatus,
+  OpenCodeSettings
+} from '../../../../shared/opencodeSettings.js';
 import { openCodeServerMode } from '../../../../shared/opencodeSettings.js';
 
 export const MIN_OPENCODE_VERSION = '1.14.19';
 
-export type OpenCodeProbeStatus = 'ready' | 'warning' | 'error';
-
-export interface OpenCodeProbeResult {
-  readonly installed: boolean;
-  readonly version: string | null;
-  readonly status: OpenCodeProbeStatus;
-  readonly auth: { readonly status: 'authenticated' | 'unknown' };
-  readonly connectedProviders: readonly string[];
-  readonly modelCount: number;
-  readonly baseUrlUsed?: string;
-  readonly message?: string;
-}
+export type { OpenCodeProbeResult, OpenCodeProbeStatus };
 
 export interface ReadBinaryVersionOutcome {
   readonly version: string | null;

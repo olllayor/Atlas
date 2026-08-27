@@ -33,6 +33,7 @@ import { registerModelsIpc } from './ipc/models';
 import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
+import { initializeOpenCode } from './ai/providers/opencode/openCodeController';
 import { registerWorkspaceIpc } from './ipc/workspace';
 import { registerGitIpc } from './ipc/git';
 import { registerGitHubIpc } from './ipc/github';
@@ -330,6 +331,20 @@ app.whenReady().then(async () => {
       }
     })
     .catch(() => undefined);
+  // Deep OpenCode integration (Beta, off by default): while it is disabled the
+  // adapter stays out of the registry and nothing spawns or probes.
+  const opencodeController = await initializeOpenCode({
+    settingsRepo: database.settings,
+    keychain,
+    sessions: database.opencodeSessions,
+    registry: providers,
+    defaultDirectory: () => app.getPath('home'),
+    onRegistryChanged: async () => {
+      await modelRegistry.refresh().catch(() => undefined);
+      broadcastModelsChanged();
+    }
+  });
+
   // Drop cached models left behind by providers that no longer exist, so the
   // catalog does not carry entries nothing can serve.
   database.models.deleteOrphanedModels();
@@ -502,6 +517,8 @@ app.whenReady().then(async () => {
 
   app.on('will-quit', () => {
     ptyService.disposeAll();
+    // An `opencode serve` child Atlas spawned outlives the window otherwise.
+    void opencodeController.shutdown();
     // Spawned servers outlive the window otherwise: the transport keeps the
     // child alive, and nothing else would reap it.
     void mcpManager.disposeAll();
@@ -674,7 +691,8 @@ app.whenReady().then(async () => {
   registerSettingsIpc({
     settingsRepo: database.settings,
     modelRegistry,
-    keychain
+    keychain,
+    opencode: opencodeController
   });
   registerModelsIpc(modelRegistry);
   registerProvidersIpc(customProviderService);

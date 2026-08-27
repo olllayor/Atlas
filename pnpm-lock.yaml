@@ -26,6 +26,9 @@ importers:
       '@opencode-ai/models':
         specifier: ^0.0.25
         version: 0.0.25
+      '@opencode-ai/sdk':
+        specifier: ^1.18.23
+        version: 1.18.23
       '@openrouter/ai-sdk-provider':
         specifier: ^2.3.3
         version: 2.3.3(ai@6.0.141(zod@4.3.6))(zod@4.3.6)
@@ -823,6 +826,9 @@ packages:
     peerDependenciesMeta:
       effect:
         optional: true
+
+  '@opencode-ai/sdk@1.18.23':
+    resolution: {integrity: sha512-VouYbL8O2ynLq0atr5fjzCv8YLtFi/zKLQ/uYkCvTJ4CmUdA01XwPn8om+u3TvxnGEfQsBfmThGU141vt3sg5w==}
 
   '@openrouter/ai-sdk-provider@2.3.3':
     resolution: {integrity: sha512-4fVteGkVedc7fGoA9+qJs4tpYwALezMq14m2Sjub3KmyRlksCbK+WJf67NPdGem8+NZrV2tAN42A1NU3+SiV3w==}
@@ -5889,6 +5895,10 @@ snapshots:
       rimraf: 3.0.2
 
   '@opencode-ai/models@0.0.25': {}
+
+  '@opencode-ai/sdk@1.18.23':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@openrouter/ai-sdk-provider@2.3.3(ai@6.0.141(zod@4.3.6))(zod@4.3.6)':
     dependencies:

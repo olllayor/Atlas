@@ -21,7 +21,7 @@ import { REASONING_EFFORTS, clampReasoningEffort, resolveReasoningEffortMenu } f
 import type { ModelSummary, ProviderCredentialSummary } from '../../shared/contracts';
 import { resolveProviderLabel } from '../../shared/providerMetadata';
 import type { ProviderRef } from './modelSelectorViewModel';
-import { buildModelSelectorViewModel } from './modelSelectorViewModel';
+import { buildModelSelectorViewModel, isSelfManagedProvider } from './modelSelectorViewModel';
 
 type ModelSelectorProps = {
   models: ModelSummary[];
@@ -115,6 +115,9 @@ export function ModelSelector({
     reasoningEffort && effortMenu.length > 0 ? clampReasoningEffort(reasoningEffort, effortMenu) : undefined;
 
   const selectedProviderLabel = selectedModel ? resolveProviderLabel(selectedModel.providerId, providerRefs) : null;
+  // Which OpenCode answered matters once one is also configured as a plain
+  // base-URL provider, and the chip shows no provider name at all.
+  const selectedIsAgent = selectedModel ? isSelfManagedProvider(selectedModel.providerId) : false;
   // Model name only. The provider used to be prefixed here, which spent most of
   // a 240px chip on a word that is the same for every model in the list you
   // just picked from — and truncated the name that actually identifies it. It
@@ -141,7 +144,7 @@ export function ModelSelector({
               className="group flex h-8 min-w-0 max-w-[240px] items-center gap-2 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={
                 selectedModel
-                  ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${
+                  ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${selectedIsAgent ? ', run by the agent' : ''}${
                       effortLabel ? `, reasoning effort ${effortLabel}` : ''
                     }. Click to change model.`
                   : 'Choose a model'
@@ -173,7 +176,8 @@ export function ModelSelector({
           // every render. The full id comes along because the chip shows the
           // name with any vendor segment stripped.
           <TooltipContent side="top" className="max-w-[280px]">
-            {selectedProviderLabel} · {selectedModel.id}
+            {selectedProviderLabel}
+            {selectedIsAgent ? ' (agent)' : ''} · {selectedModel.id}
             {effortLabel ? ` · ${effortLabel} reasoning` : ''}
           </TooltipContent>
         ) : null}
@@ -203,9 +207,20 @@ export function ModelSelector({
             const isActiveProvider = selectedModel != null && group.models.some((m) => m.id === selectedModel.id);
 
             return (
-              <DropdownMenuSub key={group.label}>
+              <DropdownMenuSub key={group.providerId}>
                 <DropdownMenuSubTrigger className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary">
                   <span className="min-w-0 flex-1 truncate">{group.label}</span>
+                  {/*
+                    The same OpenCode can be reached two ways: as this
+                    integration, or as a base-URL provider someone added by
+                    hand. They can even carry the same name, so the one that
+                    runs the turn itself says so.
+                  */}
+                  {group.selfManaged ? (
+                    <span className="shrink-0 rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
+                      Agent
+                    </span>
+                  ) : null}
                   {group.configured ? null : (
                     <span className="shrink-0 rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
                       No key

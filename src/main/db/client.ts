@@ -8,7 +8,7 @@ import { ConversationsRepo } from './repositories/conversationsRepo';
 import { ConversationGoalsRepo } from './repositories/conversationGoalsRepo';
 import { ConversationSummariesRepo } from './repositories/conversationSummariesRepo';
 import { CustomProvidersRepo } from './repositories/customProvidersRepo';
-import { ModelsRepo } from './repositories/modelsRepo';
+import { ModelsRepo, type SelfManagedProviders } from './repositories/modelsRepo';
 import { ProjectsRepo } from './repositories/projectsRepo';
 import { RuntimeStateRepo } from './repositories/runtimeStateRepo';
 import { SettingsRepo } from './repositories/settingsRepo';
@@ -44,7 +44,16 @@ export type AppDatabase = {
   opencodeSessions: OpenCodeSessionsRepo;
 };
 
-export function createAppDatabase(databasePath: string, attachmentStore: AttachmentStore): AppDatabase {
+/**
+ * `selfManagedProviders` names the providers that are servable without a
+ * `custom_providers` row — see `ModelsRepo`. The app passes the live set from
+ * the provider registry; tests and tools can leave it out.
+ */
+export function createAppDatabase(
+  databasePath: string,
+  attachmentStore: AttachmentStore,
+  selfManagedProviders: SelfManagedProviders = () => []
+): AppDatabase {
   mkdirSync(dirname(databasePath), { recursive: true });
 
   const raw = new Database(databasePath);
@@ -63,7 +72,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
     fileChanges: new FileChangesRepo(raw),
     workspaceCheckpoints: new WorkspaceCheckpointsRepo(raw),
     terminalHistory: new TerminalHistoryRepo(raw),
-    models: new ModelsRepo(raw),
+    models: new ModelsRepo(raw, selfManagedProviders),
     projects: new ProjectsRepo(raw),
     customProviders: new CustomProvidersRepo(raw),
     settings: new SettingsRepo(raw),

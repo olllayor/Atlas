@@ -11,14 +11,32 @@ function providerAuthenticatesItself(providerId: string) {
   return providerId === OPENCODE_PROVIDER_ID;
 }
 
+/**
+ * True for a provider that is an integration rather than an endpoint: it holds
+ * its own credentials and runs the turn itself. Exported so the chip can mark
+ * a selected model the same way the menu marks its group.
+ */
+export function isSelfManagedProvider(providerId: string): boolean {
+  return providerAuthenticatesItself(providerId);
+}
+
 export type ProviderRef = Pick<CustomProvider, 'id' | 'name'>;
 
 export type ModelGroup = {
+  /** Identity of the group. Two providers may share a display name. */
+  providerId: string;
   /** Provider display name, used as the group heading. */
   label: string;
   models: ModelSummary[];
   /** False when no API key is saved for the provider backing this group. */
   configured: boolean;
+  /**
+   * The provider is an integration that runs the turn itself, not an endpoint
+   * Atlas calls. Worth marking: the same OpenCode can also be reached as an
+   * ordinary base-URL provider, and the two behave nothing alike — this one
+   * brings its own tools, approvals and sampling.
+   */
+  selfManaged: boolean;
 };
 
 export type ModelSelectorViewModel = {
@@ -58,22 +76,26 @@ export function buildModelSelectorViewModel({
 
   const filtered = models.filter((model) => !freeFilterActive || model.isFree);
 
-  const byLabel = new Map<string, ModelSummary[]>();
+  // Grouped by provider id, not by display name: a user-configured endpoint
+  // may well be called "OpenCode" too, and merging it with the integration
+  // would put models that behave differently under one heading.
+  const byProvider = new Map<string, ModelSummary[]>();
   for (const model of filtered) {
-    const label = resolveProviderLabel(model.providerId, customProviders);
-    const bucket = byLabel.get(label);
+    const bucket = byProvider.get(model.providerId);
     if (bucket) {
       bucket.push(model);
     } else {
-      byLabel.set(label, [model]);
+      byProvider.set(model.providerId, [model]);
     }
   }
 
-  const groups = [...byLabel.entries()]
-    .map<ModelGroup>(([label, groupModels]) => ({
-      label,
+  const groups = [...byProvider.entries()]
+    .map<ModelGroup>(([providerId, groupModels]) => ({
+      providerId,
+      label: resolveProviderLabel(providerId, customProviders),
       models: groupModels,
-      configured: groupModels.some(isConfigured)
+      configured: groupModels.some(isConfigured),
+      selfManaged: providerAuthenticatesItself(providerId)
     }))
     // Providers you can actually send to come first.
     .sort((a, b) => {

@@ -228,7 +228,17 @@ app.whenReady().then(async () => {
 
   const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
   registerAttachmentProtocolHandler(attachmentStore);
-  const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
+  // Every provider is user-configured; the registry starts empty and is filled
+  // from the database by CustomProviderService below. Declared before the
+  // database because the model cache asks it which providers are servable
+  // without a saved endpoint (OpenCode signs itself in), and that answer has
+  // to stay live as the integration is switched on and off.
+  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>();
+  const database = createAppDatabase(await resolveDatabasePath(), attachmentStore, () =>
+    [...providers.entries()]
+      .filter(([, adapter]) => adapter.capabilities?.authenticatesItself === true)
+      .map(([providerId]) => providerId)
+  );
   const spillStore = new SpillStore(await resolveSpillsDirectory());
   // One registry for every long-running producer (background bash today;
   // subagents and terminals can register as kinds later). Conversation-fenced:
@@ -264,9 +274,6 @@ app.whenReady().then(async () => {
     console.warn('[startup] primeCloudSandboxSecret failed:', err);
   });
   const updateService = new UpdateService();
-  // Every provider is user-configured; the registry starts empty and is filled
-  // from the database by CustomProviderService below.
-  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>();
 
   // Upgrade path: convert the former built-in providers into ordinary entries.
   await migrateLegacyBuiltInProviders({

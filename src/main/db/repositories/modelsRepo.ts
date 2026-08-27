@@ -69,12 +69,48 @@ function toSummary(row: ModelRow): ModelSummary {
   };
 }
 
+/**
+ * Provider ids that are servable without a `custom_providers` row.
+ *
+ * Every provider used to be a saved endpoint, so "is this provider real?" was
+ * answerable with a join. OpenCode broke that: it is an integration that
+ * brings its own configuration and its own credentials, so its models were
+ * written by a refresh, hidden from every `configuredOnly` read, and then
+ * deleted by the orphan sweep in the same call.
+ *
+ * Read through a callback because the answer changes at runtime — switch the
+ * integration off and its models go back to being orphans, exactly like a
+ * deleted endpoint's.
+ */
+export type SelfManagedProviders = () => readonly ProviderId[];
+
 export class ModelsRepo {
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(
+    private readonly db: SqliteDatabase,
+    private readonly selfManagedProviders: SelfManagedProviders = () => []
+  ) {}
+
+  /**
+   * `provider_id IN (…)` for the self-managed set, with its bound parameters.
+   * Collapses to the false literal when the set is empty, which keeps every
+   * query one shape whether or not an integration is on.
+   */
+  private selfManagedMatch(): { sql: string; params: Record<string, string> } {
+    const ids = [...this.selfManagedProviders()];
+    if (ids.length === 0) {
+      return { sql: '0', params: {} };
+    }
+
+    return {
+      sql: `model_cache.provider_id IN (${ids.map((_, index) => `@self${index}`).join(', ')})`,
+      params: Object.fromEntries(ids.map((id, index) => [`self${index}`, id]))
+    };
+  }
 
   getById(modelId: string) {
+    const selfManaged = this.selfManagedMatch();
     const row = this.db
-      .prepare<{ modelId: string }, ModelRow>(
+      .prepare<Record<string, string>, ModelRow>(
         `
           SELECT ${MODEL_COLUMNS}
           FROM model_cache
@@ -85,11 +121,11 @@ export class ModelsRepo {
           ORDER BY CASE WHEN EXISTS (
             SELECT 1 FROM custom_providers c
             WHERE c.id = model_cache.provider_id AND c.enabled = 1
-          ) THEN 0 ELSE 1 END ASC, provider_id ASC
+          ) OR ${selfManaged.sql} THEN 0 ELSE 1 END ASC, provider_id ASC
           LIMIT 1
         `
       )
-      .get({ modelId });
+      .get({ modelId, ...selfManaged.params });
 
     if (!row) {
       return null;
@@ -123,8 +159,9 @@ export class ModelsRepo {
     const includeArchived = options.includeArchived ? 1 : 0;
     const configuredOnly = options.configuredOnly ? 1 : 0;
 
+    const selfManaged = this.selfManagedMatch();
     const rows = this.db
-      .prepare<{ freeOnly: number; includeArchived: number; configuredOnly: number }, ModelRow>(
+      .prepare<Record<string, string | number>, ModelRow>(
         `
           SELECT ${MODEL_COLUMNS}
           FROM model_cache
@@ -137,11 +174,12 @@ export class ModelsRepo {
                 WHERE custom_providers.id = model_cache.provider_id
                   AND custom_providers.enabled = 1
               )
+              OR ${selfManaged.sql}
             )
           ORDER BY is_free DESC, COALESCE(last_seen_free_at, '') DESC, label ASC
         `
       )
-      .all({ freeOnly, includeArchived, configuredOnly });
+      .all({ freeOnly, includeArchived, configuredOnly, ...selfManaged.params });
 
     return rows.map<ModelSummary>(toSummary);
   }
@@ -149,17 +187,22 @@ export class ModelsRepo {
   /**
    * Drops cached models whose provider no longer exists at all. Disabled
    * providers are left alone: their models come back when re-enabled, without
-   * needing another catalog fetch.
+   * needing another catalog fetch. A self-managed provider counts as existing
+   * for as long as its integration is on.
    */
   deleteOrphanedModels() {
-    this.db.exec(
-      `
-        DELETE FROM model_cache
-        WHERE NOT EXISTS (
-          SELECT 1 FROM custom_providers WHERE custom_providers.id = model_cache.provider_id
-        )
-      `
-    );
+    const selfManaged = this.selfManagedMatch();
+    this.db
+      .prepare<Record<string, string>, unknown>(
+        `
+          DELETE FROM model_cache
+          WHERE NOT EXISTS (
+            SELECT 1 FROM custom_providers WHERE custom_providers.id = model_cache.provider_id
+          )
+          AND NOT ${selfManaged.sql}
+        `
+      )
+      .run(selfManaged.params);
   }
 
   /**

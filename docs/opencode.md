@@ -17,9 +17,15 @@ turn it on in Settings → Beta.
 3. In Atlas, open Settings → Beta → OpenCode and turn it on.
 4. Press **Test connection**. A healthy install reports the version and how many
    upstream providers OpenCode has connected.
-5. Refresh the model list. OpenCode's models appear in the picker under
-   "OpenCode", addressed as `<provider>/<model>` (for example
-   `opencode/claude-opus-4-7`).
+5. OpenCode's models appear in the picker under "OpenCode", addressed as
+   `<provider>/<model>` (for example `opencode/claude-opus-4-7`). The catalog
+   refreshes itself when you turn the integration on.
+
+The group is badged **Agent**, because nothing stops you from also pointing an
+ordinary base-URL provider at the same OpenCode server. Those two entries can
+even carry the same name, and they behave nothing alike: the badged one runs
+the turn inside OpenCode, with OpenCode's tools, approvals and sampling. The
+other is a plain HTTP endpoint Atlas calls itself.
 
 ### Integration mode
 

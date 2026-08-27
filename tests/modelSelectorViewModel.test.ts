@@ -178,3 +178,29 @@ test('OpenCode models group under their own name and never ask for an API key', 
   assert.equal(opencode.configured, true);
   assert.equal(modelNeedsApiKey(opencode.models[0]!, [credential('custom:openai', true)]), false);
 });
+
+test('the integration and a same-named endpoint stay separate, and the agent one says so', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      model('opencode/mimo', { providerId: 'opencode' }),
+      // Someone pointed a plain base-URL provider at their OpenCode server and
+      // named it the same thing. Same heading, nothing else in common.
+      model('mimo', { providerId: 'custom:oc' })
+    ],
+    customProviders: [{ id: 'custom:oc', name: 'OpenCode' }],
+    credentials: [credential('custom:oc', true)],
+    showFreeOnly: false
+  });
+
+  assert.equal(view.groups.length, 2, 'grouped by provider, not by display name');
+  const agent = view.groups.find((group) => group.providerId === 'opencode');
+  const endpoint = view.groups.find((group) => group.providerId === 'custom:oc');
+  assert.ok(agent && endpoint);
+  assert.equal(agent.label, 'OpenCode');
+  assert.equal(endpoint.label, 'OpenCode');
+  assert.equal(agent.selfManaged, true);
+  assert.equal(endpoint.selfManaged, false);
+  // Neither is missing a key: one holds its own, the other has one saved.
+  assert.equal(agent.configured, true);
+  assert.equal(endpoint.configured, true);
+});

@@ -10,6 +10,9 @@ export default defineConfig({
   main: {
     build: {
       sourcemap: true,
+      externalizeDeps: {
+        exclude: ['@opencode-ai/sdk']
+      },
       rollupOptions: {
         output: {
           format: 'cjs',

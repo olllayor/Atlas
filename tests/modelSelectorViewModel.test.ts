@@ -204,3 +204,13 @@ test('the integration and a same-named endpoint stay separate, and the agent one
   assert.equal(agent.configured, true);
   assert.equal(endpoint.configured, true);
 });
+
+test('the send gate exempts a provider that signs itself in', () => {
+  // Exactly what the composer asks before starting a turn (`useAppStore`):
+  // OpenCode holds its own credentials, so there is no Atlas key to save and
+  // the turn must not be refused for the lack of one.
+  const credentials = [credential('custom:one', true), credential('custom:two', false)];
+
+  assert.equal(modelNeedsApiKey(model('opencode/mimo', { providerId: 'opencode' }), credentials), false);
+  assert.equal(modelNeedsApiKey(model('m', { providerId: 'custom:two' }), credentials), true);
+});

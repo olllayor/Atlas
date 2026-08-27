@@ -46,6 +46,7 @@ import {
   mergeConversationPage,
   reconcileConversationCache
 } from './conversationCache';
+import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
 import { notify, notifyError } from '../lib/notify';
 import {
   applyMetaEvent,
@@ -308,10 +309,6 @@ function getErrorMessage(error: unknown) {
     return error.message;
   }
   return 'Unexpected error';
-}
-
-function findCredential(settings: SettingsSummary | null, providerId: ProviderId): ProviderCredentialSummary | null {
-  return settings?.providers.find((provider) => provider.providerId === providerId) ?? null;
 }
 
 function getModelById(models: ModelSummary[], modelId: string | null) {
@@ -1760,8 +1757,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const credential = findCredential(state.settings, providerId);
-    if (!credential?.hasSecret) {
+    // One rule for "can this model be sent to", shared with the picker's own
+    // marker: a provider that signs itself in (OpenCode) has no Atlas key to
+    // find, and demanding one refused its every turn before it left the
+    // renderer.
+    if (modelNeedsApiKey(selectedModel, state.settings?.providers)) {
       notify({ tone: 'error', title: 'API key required', description: `Save a ${resolveProviderMetadata(providerId, state.settings?.customProviders ?? []).label} key to use this model` });
       set({ activeCredentialProviderId: providerId });
       return;

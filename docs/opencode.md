@@ -51,6 +51,9 @@ the settings file, and the renderer only ever learns that one is stored.
   other project's history onto the chat.
 - **OpenCode runs the tools**, not Atlas. Your Atlas toolset is left behind for
   the turn and a one-line notice says so.
+- **OpenCode owns sampling.** Its prompt API takes no temperature, output
+  ceiling, effort level or tool choice, so Atlas' controls for those do not
+  apply to an OpenCode model. Configure them in OpenCode's own config instead.
 - Permission requests surface as ordinary Atlas approvals. Your decision goes
   back over the wire and the same turn continues — the request is not re-run.
 - Stopping a turn aborts the OpenCode session first, then unwinds locally.

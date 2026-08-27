@@ -125,8 +125,10 @@ export function flattenOpenCodeModels(input: FlattenOpenCodeModelsInput): ModelS
         lastSyncedAt: syncedAt,
         lastSeenFreeAt: null,
         maxOutputTokens: model.maxOutputTokens,
-        // opencode reports these as facts, so absent means "no", not "unknown".
-        supportsTemperature: model.capabilities.temperature !== false,
+        // Sampling belongs to opencode: `session/prompt` takes no temperature,
+        // token ceiling, or effort, so Atlas has nothing to offer here however
+        // the upstream model is described (see `OpenCodeAgentAdapter`).
+        supportsTemperature: false,
         supportsReasoning: model.capabilities.reasoning === true,
         reasoningEfforts: null
       });
@@ -152,6 +154,7 @@ export function flattenOpenCodeModels(input: FlattenOpenCodeModelsInput): ModelS
       lastSyncedAt: syncedAt,
       lastSeenFreeAt: null,
       reasoningEfforts: null,
+      supportsTemperature: false,
       ...DEFAULT_OPENCODE_MODEL_CAPABILITIES
     });
   }

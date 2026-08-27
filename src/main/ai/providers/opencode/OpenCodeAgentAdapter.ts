@@ -6,9 +6,17 @@
  * Blueprint: pingdotgg/t3code `Layers/OpenCodeAdapter.ts` — session resume
  * rules, recreate-only-on-confirmed-miss, abort ordering, one-shot guards.
  *
- * What is deliberately *not* here: tool execution. During an opencode turn the
- * agent runs its own tools and Atlas renders them (plan D4), so the toolset
- * Atlas would normally send is left behind and the user is told once.
+ * What is deliberately *not* here:
+ *
+ * - **Tool execution.** During an opencode turn the agent runs its own tools
+ *   and Atlas renders them (plan D4), so the toolset Atlas would normally send
+ *   is left behind and the user is told once.
+ * - **Sampling.** `session/prompt` accepts a model, an agent, a system prompt
+ *   and parts — there is no temperature, output ceiling, effort or tool-choice
+ *   on the wire. opencode applies its own config, so `request.temperature`,
+ *   `maxOutputTokens`, `reasoningEffort` and `toolChoice` have nowhere to go.
+ *   The catalog says so too: opencode rows report `supportsTemperature: false`
+ *   and no effort ladder, so the UI never offers a control that does nothing.
  */
 
 import type { ModelSummary, ProviderId } from '../../../../shared/contracts.js';
@@ -160,13 +168,20 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
 
     const streamAbort = new AbortController();
     let onAbort: (() => void) | null = null;
+    let disposableSessionId: string | null = null;
 
     try {
-      const { sessionId, seeded } = await this.resolveSession({
+      const { sessionId, seeded, ephemeral } = await this.resolveSession({
         client,
         conversationId,
         directory
       });
+      // A context-less call (title, summary) has no conversation to resume
+      // into, so its session is scratch and must not pile up in opencode's
+      // own history.
+      if (ephemeral) {
+        disposableSessionId = sessionId;
+      }
 
       // Abort ordering copied from t3: tell opencode first (best effort), then
       // let the local event stream unwind.
@@ -258,6 +273,9 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
         request.signal.removeEventListener('abort', onAbort);
       }
       streamAbort.abort();
+      if (disposableSessionId) {
+        await client.deleteSession(disposableSessionId).catch(() => undefined);
+      }
       release();
     }
   }
@@ -294,25 +312,27 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
     client: OpenCodeAgentClient;
     conversationId: string | null;
     directory: string;
-  }): Promise<{ sessionId: string; seeded: boolean }> {
+  }): Promise<{ sessionId: string; seeded: boolean; ephemeral: boolean }> {
     const stored = input.conversationId ? this.deps.sessions.get(input.conversationId) : null;
 
     if (stored && stored.directory === input.directory) {
       const existing = await input.client.getSession(stored.sessionId);
       if (existing) {
-        return { sessionId: existing.id, seeded: false };
+        return { sessionId: existing.id, seeded: false, ephemeral: false };
       }
     }
 
     const created = await input.client.createSession({ title: 'Atlas' });
-    if (input.conversationId) {
-      this.deps.sessions.set({
-        conversationId: input.conversationId,
-        sessionId: created.id,
-        directory: input.directory
-      });
+    if (!input.conversationId) {
+      return { sessionId: created.id, seeded: true, ephemeral: true };
     }
-    return { sessionId: created.id, seeded: true };
+
+    this.deps.sessions.set({
+      conversationId: input.conversationId,
+      sessionId: created.id,
+      directory: input.directory
+    });
+    return { sessionId: created.id, seeded: true, ephemeral: false };
   }
 
   /**

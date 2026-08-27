@@ -51,6 +51,7 @@ type FakeClientOptions = {
 function fakeClient(options: FakeClientOptions = {}) {
   const calls = {
     created: 0,
+    deleted: [] as string[],
     aborted: [] as string[],
     prompts: [] as OpenCodePromptInput[],
     replies: [] as Array<{ requestId: string; reply: string }>
@@ -73,6 +74,10 @@ function fakeClient(options: FakeClientOptions = {}) {
       const id = `ses_new_${calls.created}`;
       sessions.add(id);
       return { id };
+    },
+    async deleteSession(sessionId) {
+      calls.deleted.push(sessionId);
+      sessions.delete(sessionId);
     },
     async prompt(input) {
       calls.prompts.push(input);
@@ -391,4 +396,74 @@ test('attachments ride along as file parts, tool traffic does not', () => {
   assert.equal(parts[1]!.type, 'file');
   assert.equal(parts[1]!.mime, 'image/png');
   assert.match(String(parts[1]!.url), /^data:image\/png;base64,/);
+});
+
+test('a turn with no conversation uses a scratch session and cleans it up', async () => {
+  const { client, calls } = fakeClient();
+  const store = memoryStore();
+  const { adapter, store: sessions } = buildAdapter({ client, store });
+
+  // Titles and summary refreshes call the adapter without an agent context.
+  const { request } = streamRequest({ agentContext: undefined });
+  await adapter.streamChat(request);
+
+  assert.equal(calls.created, 1);
+  assert.deepEqual(calls.deleted, ['ses_new_1'], 'the scratch session was removed');
+  assert.equal(sessions.rows.size, 0, 'and no cursor was written for it');
+});
+
+test('a conversation session survives the turn that created it', async () => {
+  const { client, calls } = fakeClient();
+  const store = memoryStore();
+  const { adapter } = buildAdapter({ client, store });
+
+  await adapter.streamChat(streamRequest().request);
+
+  assert.equal(calls.created, 1);
+  assert.deepEqual(calls.deleted, [], 'a real conversation keeps its session');
+  assert.equal(store.get('conv_1')!.sessionId, 'ses_new_1');
+});
+
+test('a stored attachment arrives as bytes and rides along as a data URL', () => {
+  // The exact shape `ConversationsRepo.getModelHistory` produces: the store has
+  // already resolved `atlas-attachment://` into bytes by this point (see
+  // `buildModelMessageContent`), so the adapter never sees an Atlas URL.
+  const parts = buildOpenCodePromptParts({
+    seedHistory: false,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this pdf' },
+          {
+            type: 'file',
+            data: Buffer.from('hello'),
+            filename: 'notes.pdf',
+            mediaType: 'application/pdf'
+          }
+        ]
+      } as ModelMessage
+    ]
+  });
+
+  assert.deepEqual(parts[0], { type: 'text', text: 'what is in this pdf' });
+  assert.equal(parts[1]!.type, 'file');
+  assert.equal(parts[1]!.mime, 'application/pdf');
+  assert.equal(parts[1]!.filename, 'notes.pdf');
+  assert.equal(parts[1]!.url, `data:application/pdf;base64,${Buffer.from('hello').toString('base64')}`);
+});
+
+test('an attachment already encoded as a data URL is passed through unchanged', () => {
+  const url = 'data:image/png;base64,AAAA';
+  const parts = buildOpenCodePromptParts({
+    seedHistory: false,
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'file', data: url, mediaType: 'image/png' }]
+      } as ModelMessage
+    ]
+  });
+
+  assert.equal(parts[0]!.url, url);
 });

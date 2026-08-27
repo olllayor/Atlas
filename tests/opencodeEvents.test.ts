@@ -258,3 +258,32 @@ test('synthetic parts opencode injects are not part of the answer', () => {
 
   assert.equal(translator.assistantText, '');
 });
+
+test('a delta belonging to the user\'s message is dropped like its snapshot', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  translator.handle(nextEvent('message.updated', { info: { id: 'msg_user', role: 'user' } }));
+  translator.handle(
+    nextEvent('message.part.delta', {
+      partID: 'p_user',
+      messageID: 'msg_user',
+      field: 'text',
+      delta: 'Reply with exactly: pong'
+    })
+  );
+  translator.handle(
+    nextEvent('message.part.delta', {
+      partID: 'p_assistant',
+      messageID: 'msg_assistant',
+      field: 'text',
+      delta: 'pong'
+    })
+  );
+
+  assert.equal(translator.assistantText, 'pong');
+  assert.deepEqual(
+    events.map((event) => event.payload.delta),
+    ['pong']
+  );
+});

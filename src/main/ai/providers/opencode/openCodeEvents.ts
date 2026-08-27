@@ -468,6 +468,13 @@ export class OpenCodeEventTranslator {
     const delta = String(properties.delta ?? '');
     if (!partId || delta.length === 0) return;
 
+    // Deltas carry their message id too, and the snapshot guard alone would
+    // miss a server that streams the user's own message this way.
+    const messageId = asString(properties.messageID);
+    if (messageId && this.userMessages.has(messageId)) {
+      return;
+    }
+
     // Kind wins over field name; the field is only a fallback for a delta that
     // arrived before its part was announced.
     const kind = this.partKinds.get(partId);

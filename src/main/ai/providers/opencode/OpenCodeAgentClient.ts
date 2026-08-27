@@ -42,6 +42,8 @@ export interface OpenCodeAgentClient {
   /** Resolves null when opencode no longer knows the session (confirmed miss). */
   getSession(sessionId: string): Promise<{ id: string } | null>;
   createSession(input: { title?: string }): Promise<{ id: string }>;
+  /** Used to clean up one-shot sessions; failures are not worth a turn. */
+  deleteSession(sessionId: string): Promise<void>;
   prompt(input: OpenCodePromptInput): Promise<OpenCodePromptResult>;
   abort(sessionId: string): Promise<void>;
   replyToPermission(input: { requestId: string; reply: OpenCodePermissionReply }): Promise<void>;
@@ -121,6 +123,10 @@ export function createOpenCodeAgentClient(input: {
         throw new Error('OpenCode did not return a session id.');
       }
       return { id: data.id };
+    },
+
+    async deleteSession(sessionId) {
+      await client.session.delete({ sessionID: sessionId });
     },
 
     async prompt({ sessionId, model, parts, system }) {

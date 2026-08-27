@@ -123,11 +123,13 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
   };
 
   const binaryCommand = input.settings.binaryPath.trim() || 'opencode';
-
-  // 1) Binary presence + version floor (skippable for pure-external servers).
   const isExternal = openCodeServerMode(input.settings) === 'external';
+  // Only a pure-external deployment may skip the CLI: a spawned server has to
+  // come from a local binary, so there is nothing to skip.
   const skipBinary = input.skipBinaryVersionCheck === true && isExternal;
 
+  // 1) Binary presence + version floor.
+  let version: string | null = null;
   if (!skipBinary) {
     const binary = await deps.readBinaryVersion(binaryCommand);
     if (binary.executableMissing) {
@@ -147,61 +149,22 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
     if (compareOpenCodeVersions(binary.version, MIN_OPENCODE_VERSION) < 0) {
       return tooOld(binary.version);
     }
-
-    // 2) Inventory via the server (external URL or spawned-by-runtime).
-    const isExternal = openCodeServerMode(input.settings) === 'external';
-    const serverUrl = isExternal ? input.settings.serverUrl.trim() : undefined;
-
-    try {
-      let baseUrl = serverUrl;
-      if (!baseUrl) {
-        if (!deps.connectOwnedServer) {
-          throw new Error('OpenCodeRuntime was not wired into the probe for spawned mode.');
-        }
-        baseUrl = (await deps.connectOwnedServer()).baseUrl;
-      }
-
-      const client = deps.createClient({
-        baseUrl,
-        directory: input.directory,
-        ...(input.serverPassword ? { serverPassword: input.serverPassword } : {})
-      });
-      const inventory = await client.listProviders();
-      const connectedCount = inventory.connected.length;
-
-      return {
-        installed: true,
-        version: binary.version,
-        status: connectedCount > 0 ? 'ready' : 'warning',
-        auth: { status: connectedCount > 0 ? 'authenticated' : 'unknown' },
-        connectedProviders: [...inventory.connected],
-        modelCount: inventory.modelCount,
-        baseUrlUsed: baseUrl,
-        message:
-          connectedCount > 0
-            ? `${connectedCount} upstream provider${connectedCount === 1 ? '' : 's'} connected through ${isExternal ? 'the configured OpenCode server' : 'OpenCode'}.`
-            : isExternal
-              ? 'Connected to the configured OpenCode server, but it did not report any connected upstream providers.'
-              : 'OpenCode is available, but it did not report any connected upstream providers. Run `opencode auth login`.'
-      };
-    } catch (cause) {
-      const report = describeOpenCodeFailure(cause, { isExternalServer: !!serverUrl, serverUrl: serverUrl ?? '' });
-      return {
-        installed: report.installed,
-        version: binary.version,
-        status: 'error',
-        auth: { status: 'unknown' },
-        connectedProviders: [],
-        modelCount: 0,
-        message: report.message
-      };
-    }
+    version = binary.version;
   }
 
-  // Pure-external probe with no local binary check requested by caller.
-  const isExternalProbe = openCodeServerMode(input.settings) === 'external';
+  // 2) Inventory over the server, external or spawned. One path for both, so
+  // the two branches cannot drift apart in what they report.
+  const serverUrl = isExternal ? input.settings.serverUrl.trim() : undefined;
+
   try {
-    const baseUrl = input.settings.serverUrl.trim();
+    let baseUrl = serverUrl;
+    if (!baseUrl) {
+      if (!deps.connectOwnedServer) {
+        throw new Error('OpenCodeRuntime was not wired into the probe for spawned mode.');
+      }
+      baseUrl = (await deps.connectOwnedServer()).baseUrl;
+    }
+
     const client = deps.createClient({
       baseUrl,
       directory: input.directory,
@@ -209,9 +172,12 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
     });
     const inventory = await client.listProviders();
     const connectedCount = inventory.connected.length;
+
     return {
+      // The server answered, so an OpenCode is installed somewhere — here when
+      // we checked the binary, at the other end of the URL when we skipped it.
       installed: true,
-      version: null,
+      version,
       status: connectedCount > 0 ? 'ready' : 'warning',
       auth: { status: connectedCount > 0 ? 'authenticated' : 'unknown' },
       connectedProviders: [...inventory.connected],
@@ -219,17 +185,19 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
       baseUrlUsed: baseUrl,
       message:
         connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? '' : 's'} connected through the configured OpenCode server.`
-          : 'Connected to the configured OpenCode server, but it did not report any connected upstream providers.'
+          ? `${connectedCount} upstream provider${connectedCount === 1 ? '' : 's'} connected through ${isExternal ? 'the configured OpenCode server' : 'OpenCode'}.`
+          : isExternal
+            ? 'Connected to the configured OpenCode server, but it did not report any connected upstream providers.'
+            : 'OpenCode is available, but it did not report any connected upstream providers. Run `opencode auth login`.'
     };
   } catch (cause) {
     const report = describeOpenCodeFailure(cause, {
-      isExternalServer: isExternalProbe,
-      serverUrl: input.settings.serverUrl.trim()
+      isExternalServer: isExternal,
+      serverUrl: serverUrl ?? ''
     });
     return {
       installed: report.installed,
-      version: null,
+      version,
       status: 'error',
       auth: { status: 'unknown' },
       connectedProviders: [],
@@ -238,4 +206,3 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
     };
   }
 }
-

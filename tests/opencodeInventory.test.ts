@@ -123,6 +123,7 @@ test('flatten lists only connected providers, skipping deprecated models', () =>
   assert.equal(opus!.supportsVision, true);
   assert.equal(opus!.supportsDocumentInput, true);
   assert.equal(opus!.supportsTools, true);
+  // Atlas cannot pass sampling parameters to opencode, so no model claims it.
   assert.equal(opus!.supportsTemperature, false);
   assert.equal(opus!.supportsReasoning, true);
   assert.equal(opus!.isFree, false);
@@ -140,6 +141,9 @@ test('flatten can include unconnected providers and reads free pricing', () => {
   assert.ok(tiny);
   assert.equal(tiny.isFree, true);
   assert.equal(tiny.supportsTools, false);
+  // opencode advertises temperature support for this one; Atlas still cannot
+  // send a value, so the catalog must not promise the control works.
+  assert.equal(tiny.supportsTemperature, false);
 });
 
 test('labels disambiguate only when two providers ship the same model name', () => {

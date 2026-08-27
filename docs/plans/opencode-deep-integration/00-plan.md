@@ -307,6 +307,14 @@ free model, two turns on one conversation:
   workspace root). The SPI carried neither, and session resume needs both.
 - **Resume cursor lives in its own table** (`opencode_sessions`), not in the
   settings blob: it is per conversation and cascades on delete.
+- **Sampling is delegated, not mapped.** `session/prompt` carries no
+  temperature, output ceiling, effort or tool choice, so §T5.5's parameter
+  mapping has nothing to map onto. The catalog reports
+  `supportsTemperature: false` and no effort ladder so the UI stops offering
+  controls that cannot reach the model.
+- **Context-less calls use a scratch session.** Title and summary generation
+  reach the adapter without an `agentContext`; each creates a session and
+  deletes it afterwards rather than accumulating junk in opencode's history.
 
 ## 3) Test strategy summary
 

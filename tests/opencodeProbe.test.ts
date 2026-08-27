@@ -182,3 +182,66 @@ test('unparsable version output fails loudly with floor guidance', async () => {
   assert.equal(result.status, 'error');
   assert.match(result.message!, /Unable to determine OpenCode version/);
 });
+
+test('a pure-external probe can skip the CLI check and still report the server', async () => {
+  let versionReads = 0;
+  const result = await probeOpenCode({
+    settings: { ...defaultOpenCodeSettings(), serverUrl: 'http://oc.example.io' },
+    directory: '/proj',
+    skipBinaryVersionCheck: true,
+    deps: {
+      readBinaryVersion: async () => {
+        versionReads += 1;
+        return { version: null, executableMissing: true };
+      },
+      createClient: () => fakeInventory(['anthropic'], 4)
+    }
+  });
+
+  assert.equal(versionReads, 0, 'the local binary was never consulted');
+  assert.equal(result.status, 'ready');
+  assert.equal(result.version, null, 'no version was checked, so none is claimed');
+  assert.equal(result.baseUrlUsed, 'http://oc.example.io');
+});
+
+test('skipping the CLI check is refused for a spawned server', async () => {
+  let versionReads = 0;
+  const result = await probeOpenCode({
+    settings: defaultOpenCodeSettings(),
+    directory: '/proj',
+    // There is no external server to stand in for the binary, so the flag must
+    // not let a missing CLI through as healthy.
+    skipBinaryVersionCheck: true,
+    deps: {
+      readBinaryVersion: async () => {
+        versionReads += 1;
+        return { version: null, executableMissing: true };
+      }
+    }
+  });
+
+  assert.equal(versionReads, 1);
+  assert.equal(result.installed, false);
+  assert.equal(result.status, 'error');
+});
+
+test('an unreachable external server is reported against its URL either way', async () => {
+  for (const skipBinaryVersionCheck of [false, true]) {
+    const result = await probeOpenCode({
+      settings: { ...defaultOpenCodeSettings(), serverUrl: 'http://oc.example.io' },
+      directory: '/proj',
+      skipBinaryVersionCheck,
+      deps: {
+        readBinaryVersion: async () => VERSION_OK,
+        createClient: () => ({
+          async listProviders() {
+            throw new Error('fetch failed');
+          }
+        })
+      }
+    });
+
+    assert.equal(result.status, 'error');
+    assert.match(result.message!, /Couldn't reach the configured OpenCode server at http:\/\/oc\.example\.io/);
+  }
+});

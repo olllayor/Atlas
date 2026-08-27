@@ -151,7 +151,9 @@ export function startBackgroundBashJob(
             return `…[${dropped} bytes of unread output dropped — the job produces more than the read cursor holds; read more often]…\n${text}`;
           }
           return text;
-        }
+        },
+        // UI previews only: never consumes from the `job_output` cursor.
+        peekTail: (lines: number) => fullLog.tailLines(lines)
       };
     }
   });

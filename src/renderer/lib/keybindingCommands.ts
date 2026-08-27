@@ -62,6 +62,36 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     keywords: ['terminal', 'shell', 'console', 'bash', 'zsh', 'command line', 'panel', 'bottom'],
   },
   {
+    command: 'workbench.review.open',
+    title: 'Open review panel',
+    description:
+      'Open the workbench on the Review tab — repository diffs by scope, with stage, revert, and line comments.',
+    section: 'General',
+    allowWhileEditable: true,
+    keywords: [
+      'review',
+      'diff',
+      'changes',
+      'git',
+      'stage',
+      'unstage',
+      'revert',
+      'commit',
+      'worktree',
+      'comments',
+      'panel',
+    ],
+  },
+  {
+    command: 'chat.side.toggle',
+    title: 'Toggle side chat',
+    description:
+      'Open or close an ephemeral side chat beside the transcript. It inherits this conversation; promote it to keep it.',
+    section: 'General',
+    allowWhileEditable: true,
+    keywords: ['side', 'parallel', 'second chat', 'tangent', 'aside', 'split', 'column', 'promote'],
+  },
+  {
     command: 'transcript.raw.toggle',
     title: 'Toggle raw transcript',
     description: 'Render every transcript cell as plain text, so selections copy cleanly.',
@@ -145,6 +175,15 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: 'Select the next conversation in the sidebar.',
     section: 'Navigation',
     keywords: ['forward', 'down', 'following chat'],
+  },
+  {
+    command: 'conversation.nextAttention',
+    title: 'Next chat needing attention',
+    description:
+      'Jump to the next conversation with an approval, error, running work, or unread output — approvals first.',
+    section: 'Navigation',
+    allowWhileEditable: true,
+    keywords: ['activity', 'attention', 'unread', 'approval', 'pending', 'running', 'bell'],
   },
   ...Array.from({ length: 9 }, (_value, index) => ({
     command: `conversation.jump.${index + 1}` as KeybindingCommand,

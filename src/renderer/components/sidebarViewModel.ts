@@ -4,6 +4,8 @@ import type {
   WorkspaceProject,
   WorkspaceMode,
 } from '../../shared/contracts';
+import { deriveAttentionState, hasPendingApprovalInParts, type AttentionLevel } from '../lib/attention';
+import { liveJobCountFor, type ConversationJobSummary } from '../lib/jobActivity';
 import type { DraftStateLike } from './types';
 
 export type SidebarConversationItem = {
@@ -14,6 +16,14 @@ export type SidebarConversationItem = {
   /** The turn ended in an error the user has not seen yet. */
   isFailed: boolean;
   status: DraftStateLike['status'] | 'idle';
+  /**
+   * What this thread needs from a human right now (Codex "Activity" model):
+   * an approval/error to answer, work in flight, a queued turn, or unread
+   * output. Rows render one mark for it; the popover groups by it.
+   */
+  attention: AttentionLevel;
+  /** Finished turns nobody has read yet; >0 pairs with `attention: 'unread'`. */
+  unreadCount: number;
   primaryLabel: string;
   secondaryLabel: string | null;
   timestampLabel: string | null;
@@ -57,6 +67,11 @@ type BuildSidebarConversationItemsParams = {
   draftsByConversation: Record<string, DraftStateLike | undefined>;
   now: number;
   livenessByConversation?: Map<string, 'working' | 'monitoring' | null>;
+  /** Whole-window background-job rollups (`useConversationJobSummaries`). */
+  jobSummariesByConversation?: ReadonlyMap<string, ConversationJobSummary>;
+  unreadByConversation?: Record<string, number>;
+  /** Per-conversation /goal projections; active goals suppress unread bumps. */
+  goalsByConversation?: Record<string, import('../../shared/contracts').ConversationGoalView>;
 };
 
 const MONTHS = [
@@ -389,7 +404,13 @@ export function buildSidebarConversationItems({
   draftsByConversation,
   now,
   livenessByConversation,
-}: BuildSidebarConversationItemsParams & { livenessByConversation?: Map<string, 'working' | 'monitoring' | null> }) {
+  jobSummariesByConversation,
+  unreadByConversation,
+  goalsByConversation,
+  queuedByConversation,
+}: BuildSidebarConversationItemsParams & {
+  queuedByConversation?: Record<string, readonly unknown[]>;
+}) {
   return conversations.map<SidebarConversationItem>((conversation) => {
     const draft = draftsByConversation[conversation.id];
     // No pre-clipping: the row truncates with CSS, and the `title` tooltip
@@ -409,11 +430,31 @@ export function buildSidebarConversationItems({
     // (S6) outranks a settled draft: a parent with a running subagent is still
     // working even after its own turn settles.
     const backgroundLiveness = livenessByConversation?.get(conversation.id) ?? null;
-    const isRunning = backgroundLiveness === 'working' ? true : draft ? draft.status === 'streaming' : conversation.status === 'running';
+    const backgroundJobsLive = liveJobCountFor(jobSummariesByConversation, conversation.id);
+    // A live background job is work in progress exactly like a running turn —
+    // the row dot and the bell must agree with the chip about it.
+    const isRunning =
+      backgroundLiveness === 'working' || backgroundJobsLive > 0
+        ? true
+        : draft
+          ? draft.status === 'streaming'
+          : conversation.status === 'running';
     const isFailed = draft ? draft.status === 'error' : conversation.status === 'failed';
     const startedMs = isRunning
       ? parseTimestamp(draft?.startedAt ?? conversation.startedAt ?? null)
       : null;
+
+    const unreadCount = unreadByConversation?.[conversation.id] ?? 0;
+    const attention = deriveAttentionState({
+      draftStatus: draft?.status,
+      hasPendingApproval: hasPendingApprovalInParts(draft?.parts),
+      backgroundLiveness,
+      backgroundJobsLive,
+      conversationStatus: conversation.status,
+      queuedFollowups: queuedByConversation?.[conversation.id]?.length ?? 0,
+      unreadCount,
+      hasActiveGoal: goalsByConversation?.[conversation.id]?.status === 'active',
+    });
 
     return {
       id: conversation.id,
@@ -421,6 +462,8 @@ export function buildSidebarConversationItems({
       isRunning,
       isFailed,
       status: draft?.status ?? 'idle',
+      attention,
+      unreadCount,
       primaryLabel,
       secondaryLabel: buildSecondaryLabel(conversation, draft, primaryLabel),
       // A running task reports how long it has been going, which is the only

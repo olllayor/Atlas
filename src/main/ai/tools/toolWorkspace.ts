@@ -58,6 +58,17 @@ export type ToolWorkspace = {
    * truncation only.
    */
   spillStore?: Pick<SpillStore, 'openStream'> | null;
+  /**
+   * Read-only view into the conversation's interactive terminal, present when
+   * the PTY substrate is wired. `terminal_read` snapshots its buffered output;
+   * nothing here can reach the shell's stdin.
+   */
+  terminalReadback?: TerminalReadback | null;
+  /**
+   * Goal-mode seam (`/goal`): present only while the conversation has an
+   * active goal, so `update_goal` is withheld — uncallable — otherwise.
+   */
+  goalTools?: import('./goalTools').GoalToolContext | null;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;
@@ -80,6 +91,17 @@ export const DEFAULT_TOOL_WORKSPACE: ToolWorkspace = {
   mode: DEFAULT_WORKSPACE_MODE,
   executionTarget: DEFAULT_EXECUTION_TARGET,
   root: null
+};
+
+/**
+ * The subset of PtyService the agent's `terminal_read` tool may touch. A
+ * structural type keeps the tools module free of any node-pty transitive
+ * import, and makes the read-only boundary explicit: there is no write or
+ * signal member to reach for.
+ */
+export type TerminalReadback = {
+  /** Buffered output and liveness for the conversation's shell; null cwd when never spawned. */
+  snapshot(conversationId: string): { alive: boolean; cwd: string | null; scrollback: string };
 };
 
 /**

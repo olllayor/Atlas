@@ -237,7 +237,7 @@ export function CommandPalette({
                       {item.title}
                     </span>
                     {item.shortcutLabel ? (
-                      <CommandShortcut className="ml-auto shrink-0 pl-3 text-sm tracking-normal text-text-faint">
+                      <CommandShortcut className="ml-auto shrink-0 pl-3 text-sm tracking-normal text-text-muted">
                         {item.shortcutLabel}
                       </CommandShortcut>
                     ) : null}

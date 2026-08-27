@@ -26,13 +26,16 @@ function createRequest(overrides: Partial<ChatStartRequest> = {}): ChatStartRequ
 function createHistory(turnCount: number): ModelMessage[] {
   const history: ModelMessage[] = [];
   for (let index = 0; index < turnCount; index += 1) {
+    // Long turns: the shrink guard reverts compaction when the summary would
+    // cost as much as the turns it replaces, so compaction tests need spans
+    // worth summarising.
     history.push({
       role: 'user',
-      content: `User turn ${index}: include bounded context management`,
+      content: `User turn ${index}: include bounded context management. ${'Requirement. '.repeat(48)}`,
     });
     history.push({
       role: 'assistant',
-      content: `Assistant turn ${index}: acknowledged with concise plan`,
+      content: `Assistant turn ${index}: acknowledged with concise plan. ${'Step. '.repeat(48)}`,
     });
   }
   return history;

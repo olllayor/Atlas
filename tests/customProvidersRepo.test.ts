@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
 import { CustomProviderService } from '../src/main/ai/core/CustomProviderService.js';
@@ -378,16 +379,40 @@ test('CustomProviderService syncRegistry rebuilds adapters saved in a previous s
 test('CustomProviderService probes unsaved form values so a provider can be tested first', async (t) => {
   const { service } = createHarness(t);
 
-  // No providerId and no key: the form has not supplied enough to probe.
-  await assert.rejects(
-    service.discoverModels({ baseUrl: 'https://api.example.com/v1', apiFormat: 'chat-completions' }),
-    /Enter an API key/
-  );
-
   await assert.rejects(
     service.discoverModels({ apiFormat: 'chat-completions', apiKey: FAKE_SHORT_KEY }),
     /Enter the API base URL/
   );
+});
+
+test('CustomProviderService probes a keyless local endpoint without demanding a key', async (t) => {
+  const { service } = createHarness(t);
+
+  // A loopback endpoint that answers /models with no credential at all —
+  // the Ollama/LM Studio shape the form advertises as key-optional.
+  const seenHeaders: Record<string, string | undefined> = {};
+  const server = createServer((request, response) => {
+    seenHeaders.authorization = request.headers.authorization;
+    seenHeaders['x-api-key'] = request.headers['x-api-key'];
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ data: [{ id: 'local-model' }] }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const discovered = await service.discoverModels({ baseUrl, apiFormat: 'chat-completions' });
+  assert.deepEqual(
+    discovered.map((model) => model.id),
+    ['local-model']
+  );
+  // No credential was invented for the request.
+  assert.equal(seenHeaders.authorization, undefined);
+  assert.equal(seenHeaders['x-api-key'], undefined);
 });
 
 test('ModelRegistry refreshes user-configured providers alongside the built-ins', async (t) => {

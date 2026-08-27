@@ -171,10 +171,106 @@ Effect-TS framework, Cordis kernel itself (reimplement 3 ideas: registrations-un
 
 ## Item-3 candidates, scoped for next session
 
-Both are builds needing visual verification in the running app — do not land blind:
+Both are builds needing visual verification in the running app:
 
-- **Timeline minimap** (t3code): left-rail jump scrubber beside the transcript virtualizer. Needs: row-position source from `useVirtualizer` (virtual items already measured), tick widths shrinking by distance from hovered item, `data-in-view` sync on scroll, keyboard nav (arrows/Home/End/Enter), glass preview card. Est. ~250 LOC + integration into `ChatWindow`'s scroll container.
-- **Concession-chain layout solver** (dsh `columns.ts` port): pure function over min/max/default widths with auto-collapse under pressure and preference preservation. Atlas's panes differ from dsh's AppFrame — map onto sidebar + workbench panel first, transcript stays center-fixed. Drag-handle CSS rules carry over verbatim: pause grid transitions during drag, keep collapsed pane mounted at width 0.
+- **Timeline minimap** (t3code) — **Built** (`src/renderer/lib/timelineMinimap.ts` + `components/transcript/TimelineMinimap.tsx`, tests `tests/timelineMinimap.test.ts`). One tick per user turn at even spacing, active-distance width falloff, `data-in-view` synced from the virtualizer range (+1 row slack), gutter-capped hit strip via ResizeObserver on the scroller, keyboard nav on a single focusable button, flat popover preview (no glass, per codex-parity direction), jump = `stopScroll()` + `scrollToIndex(start)`. **Pixels not yet verified in the running app.**
+- **Concession-chain layout solver** (dsh `columns.ts` port) — **Built** (`src/renderer/lib/columns.ts`, tests `tests/columns.test.ts`, wired in `App.tsx`). Atlas constants: sidebar 208/284/460 rail 56, workbench 300/420/720, CENTER_MIN 560. Workbench shrinks to min then derived-closes (kept mounted at width 0, `inert`, handle hidden) before the transcript drops below its floor; preferences never rewritten, so re-widening restores. Sidebar never concedes. **Pixels not yet verified in the running app.**
+
+---
+
+# Codex desktop app — second-pass research (2026-08-25)
+
+Sources: openai.com launch posts, learn.chatgpt.com/codex/* docs (projects, slash-commands, permission-modes, git-worktrees, integrated-terminal, notifications, code-review), MacStories launch review, HN threads, GitHub issues. Supersedes parts of `docs/codex-parity/gap-analysis.md`: its "Not building" verdicts for git/diff/worktree were written pre-`CheckpointCoordinator`/`GitPanel`/`ReviewPanel`; those surfaces now exist, so the structural items below are live again.
+
+## C1 — Review pane scopes + inline comments (highest value) — **Already built; entry point added**
+Codex review pane reflects full git state with scope switcher: Unstaged (default) / Staged / Commit / Branch-vs-base / **Last turn**; actions at whole-diff / per-file / per-hunk granularity. Killer loop: line-anchored comments → "address inline comments" prompt.
+**Found already implemented** across prior sessions: `shared/review.ts` (five `ReviewScope`s, per-hunk applyable patches, `ReviewComment` + `formatReviewComments()` path:line anchors), `GitReviewService` (base-branch detection, stage/unstage/revert/hunk IPC), `workbench/ReviewPanel.tsx` (scope tabs, three-level actions, comment cards → composer injection via `onSendComments`). Tested by `tests/gitReview.test.ts` + `tests/gitApplyRoundTrip.test.ts`.
+**Shipped this pass**: `workbench.review.open` command (⌘⌥B, Codex's binding) opening the workbench on Review tab — the discoverable keyboard/palette entry point the pane lacked.
+Deliberately skipped: composer pending-comment chip (comments land as visible editable composer text — a chip would be redundant chrome); `/review` agent-driven presets (needs a reviewer subagent, own feature); multi-repo selector (one project per conversation).
+
+## C2 — Attention model (Activity feed) — **Built**
+Per-thread unread badges; running/waiting/blocked states; ⌘⌥A jumps to next chat needing attention; Activity view lists unread/running/waiting with Mark-all-read.
+Lesson from their bug tracker: thread↔project grouping keyed off cwd path broke constantly — key our grouping by stable project id, never path.
+**Shipped** (`lib/attention.ts` pure projection + tests, `SidebarActivityBell.tsx` popover, `StatusDot` attention/unread tones, row mark precedence needsInput > failed > running > unread, `unreadByConversation` store field marked on background terminal events and cleared on open/mark-all-read, `conversation.nextAttention` command bound to ⌘⌥A). Pixels not yet verified in the running app.
+
+## C3 — Worktree UX depth — **Built (GC, includes, base-branch); promotion/handoff deferred**
+Codex semantics: managed detached-HEAD worktrees, disposable by default with retention (~15) + snapshot-before-delete + restore offer; `.worktreeinclude` copies gitignored paths into fresh checkouts; composer flow picks Worktree → base branch.
+**Shipped** (`WorktreeService` + IPC + context-bar UI, tests in `tests/worktreeService.test.ts`):
+- `.worktreeinclude` copy step — pathspec-per-line (`#` comments), only ignored-untracked files copied via `git ls-files --others --ignored`, best-effort (never blocks provisioning).
+- Retention GC — `gcManagedWorktrees()` runs on every worktree provisioning: stale managed checkouts (no conversation row references them) beyond the newest-15 window get a deterministic snapshot branch (`atlas/wt-snapshot/<id>`), then force-removed with their per-conversation branch deleted; user-created worktrees outside `.atlas-worktrees/` are permanent by definition and never touched.
+- Base-branch provisioning — `SetConversationWorkspaceRequest.worktreeBaseBranch`; execution-target chip menu gains a "New worktree from branch" section (local branches, managed/snapshot branches excluded, current first) wired through `onWorktreeFromBranch`.
+**Deferred**: permanent-worktree-as-sidebar-project; Local↔Worktree handoff (needs conversation↔cwd rebinding design); restore-from-snapshot UI (snapshots exist only as `atlas/wt-snapshot/<id>` refs — GitPanel shows the checked-out branch, not snapshot listings).
+
+## C4 — Composer command surface — **Built (this pass verified + doc'd)**
+Slash grammar beyond Atlas's current set: `/fork` (copy chat into new chat *or* new worktree preserving context), `/goal` persistent objective with progress row above composer (pause/resume/edit/clear while steering continues), `/compact` manual trigger, `/review`, `/init`. Model control presented as **slider metaphor** Power↔Smarter↔Faster with Advanced disclosure for exact model + reasoning effort. Permission modes grayed-not-hidden when policy disallows. Enter approves pending approval, Esc declines (Atlas has this). ↑ recalls last prompt.
+Atlas mapping: segmented model picker kept (t3code pattern beats slider for discoverability). Shipped in `lib/slashCommands.ts` builtin registry + `CommandAutocomplete` popup, standalone-command parse consumed before send (`Composer.tsx`), handlers in `App.tsx handleSlashAction`: `/compact` → `chat:compact` IPC → forced compaction boundary; `/review` → workbench Review tab; `/fork` → full-stack fork (messages/events/activities/turns/tool executions/attachments); `/model`, `/plan`. Plugin template commands keep insert-as-text behavior alongside. **`/goal` shipped 2026-08-26** — see `docs/superpowers/plans/2026-08-26-goal-mode.md`: `conversation_goals` table (revision-guarded CAS transitions, one-live-goal partial unique index), `GoalRuntime` admission gate (`admitContinuation`, table-tested), continuation turns ride the followup queue as unpersisted tagged steers, `update_goal` tool gated on active goals, GoalDock strip above the composer, ⌘⌥A/sidebar unread suppressed while a goal runs. Not built: `/init`.
+
+## C5 — Side chat — **Built**
+⌘⌥S opens temporary parallel chat beside main transcript without interrupting it; `/side` promotes. Not a fork: throwaway, no sidebar entry unless promoted.
+**Shipped**: backend was already latent (`startSide`/`listSide` IPC over fork-kind `'side'`, `side_of_conversation_id` CASCADE column) — this pass added the missing pieces: `promoteSideConversation` repo fn (refuses subagent rows sharing the column), `conversations:promoteSide` IPC + preload, store `openSideChat/closeSideChat/promoteSideChat` (reuses the parent's most recent side chat before minting another), `SideChatPane.tsx` second ChatWindow+ChatComposerSlot instance mounted as an app-shell-level right column, `chat.side.toggle` ⌘⌥S keybinding, `/side` slash command (opens when closed, promotes when open). Tests: `tests/sideChatPromote.test.ts`.
+
+## C6 — Deep links (`atlas://`) — **Built + hardened**
+Entire scheme: open thread by id, threads/new with prompt+path params, settings panes, install flows. Makes app scriptable; agents can hand users links.
+**Shipped earlier**: grammar in `shared/atlasDeepLink.ts`, privileged registration + protocol handler in `main/bootstrap/deepLink.ts`, renderer fold into store actions.
+**Hardened this pass**: single-create + working prompt seeding for `atlas://chat/new?prompt=` (store `createConversation` now returns the created summary); `requestSingleInstanceLock` so `second-instance` handoff actually fires on Windows/Linux; cold-start links (`open-url` before any window, argv on Win/Linux) park in main and are pulled by the renderer's first `deepLink.consumePending()` instead of broadcasting into the void; grammar tests in `tests/atlasDeepLink.test.ts`.
+
+## C7 — Terminal drawer scoping — **Built (read-back added)**
+Terminal is per-chat scoped to that chat's project/worktree cwd; agent can read terminal output; multiple tabs. Bottom-panel toggle ⌘J.
+**Was already wired**: one shell per conversation, cwd resolved in main from the workspace row (worktree target → worktree root), ⌘J toggle. **Added this pass**: `terminal_read` agent tool (`tools/terminalTools.ts`) over a new read-only `PtyService.snapshot` seam on `ToolWorkspace.terminalReadback` — bounded tail of scrollback with ANSI stripped, fenced to the calling conversation, no stdin path so reading can never inject keystrokes; TerminalDock header now shows the worktree path on first paint (mirrors main's spawn rule) instead of always the project root. Tests: `tests/terminalReadbackTool.test.ts`.
+
+## C8 — Lessons from their failure modes (design constraints, not features)
+- Electron weight: unified app went 478MB→1.27GB RAM and users noticed. Keep lazy-loading views; avoid shipping landing/marketing bundles in prod path (`XAILandingPage` is a candidate for removal).
+- Sidebar-as-source-of-truth fragility: identity keys must be ids, not paths.
+- Keyboard regressions in model picker: every composer control must be fully keyboard-reachable; ship dedicated increase/cycle-reasoning actions bound from day one.
+
+# Second-pass repo investigations (2026-08-25, fresh clones)
+
+Full extraction reports in session transcript; distillation below. Clones: `/tmp/opencode/steal/{t3code,dsh}` (t3 @ f035a0f4 Aug 24, dsh @ b150a55 Aug 21).
+
+## D1 — Slash commands: build a small built-in grammar (dsh shapes, t3code scale)
+
+Neither repo copies threads wholesale on fork; both treat slash as *mode/control* surface, not content.
+
+Steal:
+- **Builtins as data** (dsh `CommandDefinition`, scaled down like t3code's 3 inline builtins): `{ name, description, run }` array in one renderer module. Start set: `/compact`, `/review` (opens review tab), `/fork` (existing `forkConversation`), `/model` (opens picker), `/plan` (workspace-mode flip).
+- **Standalone-command parse before send** (t3code `parseStandaloneComposerSlashCommand`, `composer-logic.ts:271`): draft matching `/^\/(name)\s*$/` is consumed as a control action instead of sent. Plugin template commands stay text-insertion as today.
+- **Log-only lifecycle pair** (dsh `command/run|done` with correlation id + `sourceEventSeq`): append two conversation events around each builtin run so the activity is reconstructable from the ledger. Maps onto Atlas's event table directly.
+- **`/compact` end-to-end** (dsh `compactNow`): main-process forced ContextManager walk (the long-deferred slice-1 item, now fully specified); result surfaces as a notice row "Compacted N older turns (~T tokens)". dsh renders it as a dedicated card pairing the summary event — Atlas's existing `compacting` notice suffices v1.
+- **KV-cache-aligned summarize call** (dsh `compaction-basic/src/region.ts:488` `buildSummarizationInput`): replay system+tools+region verbatim so the summarizer request itself is a value-prefix of the conversation and reuses provider cache. Direct upgrade to Atlas's shrink-guarded compaction — the summary call currently re-pays full input.
+
+Skip: dsh's Typert remote CommandRuntime service (host-side execution layer — Atlas builtins are renderer-local actions); t3code has no /compact or /fork to steal.
+
+## D2 — Deep links: `atlas://` mirroring web-style routes (t3code pattern)
+
+t3code registers `t3code://app` (+ `-dev` twin) via privileged scheme + `protocol.handle` proxying to the same origin/routes the web app uses — desktop URLs are literally web URLs under a custom scheme. OAuth callbacks land via single-instance lock + second-instance reveal.
+
+Atlas mapping: register `atlas://` privileged in main; routes `atlas://chat/<id>`, `atlas://chat/new?prompt=…`, `atlas://settings/<section>`, `atlas://plugins`, `atlas://sites`. Handler parses and folds into existing `activeView`/`selectedConversationId` store fields over IPC. Copy their Linux `.desktop` handler note when packaging day comes.
+
+## D3 — Terminal: bind cwd to the conversation, user-driven read-back (t3code model)
+
+dsh keeps agent PTYs owner-scoped and invisible to users; t3code binds terminals to threads and lets *users* pipe context. Take t3code's:
+
+- **Session identity `(threadId, terminalId)` with stored `{cwd, worktreePath}`** (`Manager.ts:241`): on open, if the conversation's project/worktree changed since spawn → stop, wipe+persist history, respawn at new cwd (`openLocked:2214`). Atlas `TerminalDock` gains this binding via attached workspace description.
+- **History ring**: 5000-line cap, persisted raw per session, replayed on attach; sanitize capture of query/response escape sequences (DSR/CPR/DA/DECRQM/XTVERSION/OSC 10|11) so replayed bytes never re-trigger queries (`sanitizeTerminalHistoryChunk:885`). Atlas xterm dock can reuse its own scrollback buffer for v1; sanitization matters when persisting.
+- **Agent reads output only through the user's hand**: selection → `<terminal_context>` block appended after prompt, inline chip placeholder U+FFFC materializing to `@zsh:10-12`, expired selections dropped with toast (`lib/terminalContext.ts`). No automatic injection in either repo — do not invent one.
+
+## D4 — Upgrades to shipped features (better solutions found)
+
+- **Revert UX** (t3code beats ours): hover-button per user message mapping `messageId → turnCount`; guardrails (offline check, running-turn refusal, destructive confirm listing consequences); every revert failure lands as a timeline activity, never a silent no-op (`CheckpointReactor.ts:690-818`). Atlas undo exists via ChangedFilesBar; add the per-message hover entry point + consequence-listing confirm.
+- **Review scope list** (t3code `DiffPanel.tsx:512`): scope switcher includes *numbered per-turn checkpoints*, not just "last turn" — Atlas checkpoints are per-turn refs already; expose them as scope entries.
+- **Queued-turns as derived truth** (t3code `threadHasQueuedTurnStart`): derived from timestamps within grace window rather than an explicit client list — noted, but Atlas's durable event-sourced queue is stronger (survives restart by construction). No action.
+- **Composer takeover election** (dsh slots chain, priority approval > question > default bar, fallback bar kept mounted hidden): cleaner than swapping panels ad hoc if Atlas grows more takeover kinds; file for when subagent questions arrive.
+- **Spill policy** (dsh `spill-policy` post-execute transformer): oversized tool outputs → head/tail preview + locator notice inside the byte cap, retrieval = ordinary read tool. Stays Tier 2 until Atlas tool outputs actually hurt.
+
+## Implementation order (proposed)
+
+| # | Item | Size |
+|---|---|---|
+| 1 | D3 terminal cwd binding + respawn-on-change | M |
+| 2 | D1 slash grammar (builtins data + standalone parse + lifecycle pairs) + `/compact` forced walk + cache-aligned summarize | M-L |
+| 3 | D4 revert hover entry + per-turn checkpoint scopes in ReviewPanel | S-M |
+| 4 | D2 `atlas://` deep links | S |
+
 
 Phase notes:
 - Atlas was already further along than the research assumed: `conversation_events` is a seq-contiguous append-only log, compaction is request-copy-only (never mutates the transcript), checkpoints per turn exist, and the summary cache has a fingerprint crash lock. The dsh surface-projection design is therefore *not* needed as-is — the remaining value was in loop semantics, not storage.

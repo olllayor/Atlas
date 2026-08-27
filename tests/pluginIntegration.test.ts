@@ -98,6 +98,10 @@ test('install → real subprocess tool call → UI capture → durable audit →
   const servers = createPluginMcpSource(registry)();
   assert.equal(servers.length, 1, 'the fixture declares exactly one MCP server');
 
+  // The beta switch off empties the source — no server config exists to
+  // connect, spawn, or list tools for, whatever the plugins directory holds.
+  assert.deepEqual(createPluginMcpSource(registry, () => false)(), []);
+
   const manager = new McpClientManager(() => servers);
   t.after(() => manager.disposeAll());
 

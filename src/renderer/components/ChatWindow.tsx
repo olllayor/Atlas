@@ -5,7 +5,7 @@ import {
   type Virtualizer,
   useVirtualizer,
 } from '@tanstack/react-virtual';
-import { AlertCircle, ArrowDown, Check, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
+import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -39,6 +39,8 @@ import { ConversationEmptyState } from './ai-elements/conversation';
 import { ImageLightbox } from './ai-elements/image-lightbox';
 import { MessageResponse } from './ai-elements/message';
 import { PluginInvocationRow } from './transcript/PluginInvocationRow';
+import { TimelineMinimap } from './transcript/TimelineMinimap';
+import { deriveMinimapItems } from '../lib/timelineMinimap';
 import { VisualBlock } from './ai-elements/visual';
 import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
@@ -96,27 +98,44 @@ const HISTORY_TRAILING_OVERSCAN = 2;
 const HISTORY_GAP_PX = 40;
 
 /**
+ * The history fold (the Codex transcript's "N previous messages" row).
+ *
+ * Past this many messages the thread opens scrolled to the live end with
+ * everything older collapsed behind one disclosure row — the work you are
+ * doing now is the part that matters, and a two-hundred-row transcript makes
+ * the scrollbar the only navigation. Expanding is one click and stays
+ * expanded for the visit; the fold re-arms on conversation switch.
+ */
+const HISTORY_FOLD_THRESHOLD = 20;
+/** How many recent messages stay visible while folded. */
+const HISTORY_FOLD_KEEP = 12;
+
+/**
  * Column geometry.
  *
- * The transcript and the composer are one column: the composer wraps
- * `max-w-content-max` in a `px-5 lg:px-6` full-bleed row (`Composer.tsx`),
- * so the transcript does exactly the same — padding *outside* the max
- * width, not inside it. Putting the padding inside (as this file used to,
- * `px-6 lg:px-7 xl:px-8`) narrowed the message column ~32px per side
- * relative to the composer slab, and the mismatch grew at every
- * breakpoint.
+ * The transcript and the composer share one axis but not one measure: both
+ * are centred full-bleed rows with the padding *outside* the max width
+ * (`px-5 lg:px-6`), and the composer caps itself narrower (`max-w-composer`,
+ * 48rem — the t3code composer form's `max-w-3xl`) than the transcript's
+ * `content-max`. Panels opening and closing re-centre both automatically —
+ * `mx-auto` is the whole mechanism. Putting the padding inside (as this
+ * file used to, `px-6 lg:px-7 xl:px-8`) narrowed the message column ~32px
+ * per side relative to the composer slab, and the mismatch grew at every
+ * breakpoint; keep padding outside whatever the caps become.
  */
 const COLUMN_PADDING = 'px-5 lg:px-6';
 
 /**
- * The single text measure — the column itself.
+ * The single text measure — the transcript column.
  *
- * Assistant content and user bubbles share one right rail, and that rail is
- * now the composer's. This used to cap at `76ch` inside a `max-w-content-max`
- * column, so on a wide window the text stopped ~170px short of the composer
- * slab below it and left a dead vertical strip down the right of every
- * conversation. `content-max` is already a readable measure (860px at its
- * widest); capping it twice only broke the alignment.
+ * Assistant content and user bubbles share one right rail at `content-max`
+ * (860px at its widest). This used to cap at `76ch` inside that column, so
+ * on a wide window the text stopped ~170px short of the composer slab below
+ * it and left a dead vertical strip down the right of every conversation.
+ * The composer has since taken its own narrower cap (`--composer-max`), so
+ * the rail intentionally overhangs the slab by a few dozen pixels per side —
+ * a centred column inside a slightly wider centred column reads as one
+ * object, not as a misalignment.
  */
 const MEASURE = 'w-full';
 
@@ -175,7 +194,7 @@ function Spinner({ className }: { className?: string }) {
     <span
       aria-hidden
       className={cn(
-        'inline-block shrink-0 animate-spin rounded-full border border-border-strong border-t-transparent motion-reduce:animate-none',
+        'inline-block shrink-0 motion-spin-steps rounded-full border border-border-strong border-t-transparent',
         className
       )}
     />
@@ -1048,6 +1067,21 @@ export function ChatWindow({
   const hasOlder = detail?.hasOlder ?? false;
   const nextCursor = detail?.nextCursor ?? null;
   const isStreaming = draft?.status === 'streaming';
+
+  /**
+   * The folded view is a *suffix* of the real history. Every index the
+   * virtualizer sees — rows, minimap, jump targets — is an index into this
+   * array; the fold row itself lives outside the list as ordinary flow, so
+   * the virtualizer never counts it.
+   */
+  const [foldExpanded, setFoldExpanded] = useState(false);
+  const folded = messages.length > HISTORY_FOLD_THRESHOLD && !foldExpanded;
+  const visibleMessages = useMemo(
+    () => (folded ? messages.slice(-HISTORY_FOLD_KEEP) : messages),
+    [folded, messages]
+  );
+  const hiddenMessageCount = messages.length - visibleMessages.length;
+
   const showSetupPrompt = Boolean(detail && !hasCredential && messages.length === 0);
   const showSuggestions = Boolean(detail && hasCredential && messages.length === 0 && !draft);
 
@@ -1076,7 +1110,7 @@ export function ChatWindow({
 
   const estimateSize = useCallback(
     (index: number) => {
-      const message = messages[index];
+      const message = visibleMessages[index];
       const base = message ? estimateHistoryRowHeight(message, rawTranscript) : 120;
       const { measured, estimated, count } = estimateScaleRef.current;
       if (count < 4 || estimated <= 0) {
@@ -1085,7 +1119,7 @@ export function ChatWindow({
       const scale = Math.min(4, Math.max(0.4, measured / estimated));
       return Math.round(base * scale);
     },
-    [messages, rawTranscript]
+    [visibleMessages, rawTranscript]
   );
 
   const measureRow = useCallback(
@@ -1096,7 +1130,7 @@ export function ChatWindow({
     ) => {
       const size = measureElementDefault(element, entry, instance);
       const index = Number(element.getAttribute('data-index'));
-      const message = Number.isFinite(index) ? messages[index] : undefined;
+      const message = Number.isFinite(index) ? visibleMessages[index] : undefined;
 
       if (message && size > 0) {
         const stats = estimateScaleRef.current;
@@ -1114,15 +1148,15 @@ export function ChatWindow({
 
       return size;
     },
-    [messages, rawTranscript]
+    [visibleMessages, rawTranscript]
   );
 
   const rowVirtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
-    count: messages.length,
+    count: visibleMessages.length,
     estimateSize,
     measureElement: measureRow,
     getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => messages[index]?.id ?? index,
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
     gap: HISTORY_GAP_PX,
     overscan: 0,
     scrollMargin,
@@ -1131,6 +1165,22 @@ export function ChatWindow({
   const virtualItems = rowVirtualizer.getVirtualItems();
   const visibleRange = rowVirtualizer.range;
   const totalSize = rowVirtualizer.getTotalSize();
+
+  // ---------------------------------------------------------------------
+  // Timeline minimap
+  // ---------------------------------------------------------------------
+
+  const minimapItems = useMemo(() => deriveMinimapItems(visibleMessages), [visibleMessages]);
+  const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+
+  /** Manual navigation: detach from the bottom first or stick-to-bottom wins. */
+  const jumpToRowIndex = useCallback(
+    (rowIndex: number) => {
+      stopScroll();
+      rowVirtualizer.scrollToIndex(rowIndex, { align: 'start' });
+    },
+    [stopScroll, rowVirtualizer]
+  );
 
   /*
    * Toggling raw mode rewrites the height of every row in the transcript, and
@@ -1170,6 +1220,9 @@ export function ChatWindow({
     pendingPrependRef.current = null;
     lastAutoLoadCursorRef.current = null;
     userHasScrolledRef.current = false;
+    // The fold re-arms per conversation: a thread you fully expanded stays
+    // expanded for the visit, but the next thread opens at the live end.
+    setFoldExpanded(false);
 
     const element = scrollRef.current;
     if (!element) {
@@ -1189,7 +1242,7 @@ export function ChatWindow({
     }
     const offset = Math.round(list.offsetTop);
     setScrollMargin((current) => (current === offset ? current : offset));
-  }, [conversationId, hasOlder, showSuggestions, showSetupPrompt, isLoadingConversation, messages.length]);
+  }, [conversationId, hasOlder, showSuggestions, showSetupPrompt, isLoadingConversation, messages.length, folded]);
 
   /**
    * Restore the reading position after older messages are prepended.
@@ -1240,6 +1293,12 @@ export function ChatWindow({
    * nobody asked for on every conversation open.
    */
   useEffect(() => {
+    // While folded, the top of the *visible* list is the fold boundary, not
+    // the top of the history — auto-loading there would page messages the
+    // fold is hiding. Expansion is what reopens the paging path.
+    if (folded) {
+      return;
+    }
     if (!hasOlder || isLoadingOlder || !nextCursor || visibleRange?.startIndex !== 0) {
       return;
     }
@@ -1253,6 +1312,7 @@ export function ChatWindow({
     lastAutoLoadCursorRef.current = nextCursor;
     void loadOlderMessages();
   }, [
+    folded,
     hasOlder,
     isLoadingOlder,
     nextCursor,
@@ -1354,18 +1414,49 @@ export function ChatWindow({
     );
   }, [draft?.status]);
 
+  /**
+   * Expanding the fold inserts the hidden rows *above* the viewport; without
+   * compensation the reader is thrown to a different part of the thread.
+   * Scroll-height delta keeps the on-screen content pixel-stable — the same
+   * trick the pagination prepend uses, applied to a one-shot reveal. The
+   * virtualizer's first paint runs on estimates; `measureElement` settles
+   * the real heights right after, so any drift is a few pixels of estimate
+   * error, not a jump.
+   */
+  const preExpandScrollRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const expandFold = useCallback(() => {
+    const element = scrollRef.current;
+    preExpandScrollRef.current = element
+      ? { scrollHeight: element.scrollHeight, scrollTop: element.scrollTop }
+      : null;
+    setFoldExpanded(true);
+  }, []);
+
+  useLayoutEffect(() => {
+    const captured = preExpandScrollRef.current;
+    if (!foldExpanded || !captured) {
+      return;
+    }
+    preExpandScrollRef.current = null;
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = captured.scrollTop + (element.scrollHeight - captured.scrollHeight);
+  }, [foldExpanded]);
+
   // ---------------------------------------------------------------------
   // Body
   // ---------------------------------------------------------------------
 
   const lastAssistantIndex = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index]?.role === 'assistant') {
+    for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
+      if (visibleMessages[index]?.role === 'assistant') {
         return index;
       }
     }
     return -1;
-  }, [messages]);
+  }, [visibleMessages]);
 
   const viewportHeight = rowVirtualizer.scrollRect?.height ?? 0;
   const scrollOffset = rowVirtualizer.scrollOffset ?? 0;
@@ -1395,7 +1486,10 @@ export function ChatWindow({
     );
   } else if (emptyKind === 'setup') {
     body = (
-      <div className="mx-auto w-full max-w-2xl rounded-xl border border-warning-border bg-warning-bg p-6 text-center">
+      // Neutral surface, not the warning palette: a missing key is first-run
+      // onboarding with a CTA, not something that broke. Warning colours here
+      // read as an error state on the very first screen.
+      <div className="mx-auto w-full max-w-2xl rounded-xl border border-border-subtle bg-bg-surface p-6 text-center">
         <h2 className="text-lg font-normal text-text-primary">Add your API key to start</h2>
         <p className="mt-2 text-sm text-text-tertiary">
           Credentials are stored in your OS keychain. Nothing leaves your machine.
@@ -1433,9 +1527,33 @@ export function ChatWindow({
           </div>
         ) : null}
 
+        {folded ? (
+          /*
+            The history fold — one row where the collapsed older messages
+            would be. Hairline underneath, per the reference: the rule is the
+            seam, the label is the affordance. Sits in ordinary flow above the
+            virtual list, so it scrolls away with the content it introduces.
+          */
+          <div className="relative mb-5">
+            <button
+              type="button"
+              onClick={expandFold}
+              className="group inline-flex h-7 items-center gap-1 rounded-sm px-1 text-sm text-text-tertiary transition-colors hover:text-text-secondary"
+            >
+              {hiddenMessageCount} previous{' '}
+              {hiddenMessageCount === 1 ? 'message' : 'messages'}
+              <ChevronRight
+                className="h-3.5 w-3.5 transition-transform duration-fast motion-reduce:transition-none group-hover:translate-x-0.5"
+                aria-hidden
+              />
+            </button>
+            <span aria-hidden className="absolute inset-x-0 -bottom-2 h-px bg-border-subtle" />
+          </div>
+        ) : null}
+
         <div ref={listRef} className="relative w-full" style={{ height: totalSize }}>
           {virtualItems.map((virtualItem) => {
-            const message = messages[virtualItem.index];
+            const message = visibleMessages[virtualItem.index];
             if (!message) {
               return null;
             }
@@ -1527,6 +1645,7 @@ export function ChatWindow({
           a 2px ring hanging off the pane edge would be clipped.
         */
         tabIndex={0}
+        role="region"
         aria-label="Conversation transcript"
         className="scrollbar-auto-hide relative min-h-0 flex-1 overflow-y-auto focus-visible:[outline-offset:-2px]"
       >
@@ -1540,13 +1659,15 @@ export function ChatWindow({
 
               Exactly, not plus a margin: the composer floats over this
               scroller, so the pad is only there to stop the last message
-              being stranded underneath it. Any extra — here, or as padding
-              above the slab in `Composer.tsx` — reopens the band of empty
-              background this layout exists to remove. The transcript stops
-              at the slab's own top edge, and anything scrolled past it goes
-              behind the slab.
+              being stranded underneath it. The fade band above the dock is
+              part of that pad: docked, the newest line rests at the *top* of
+              the ramp, so live text is never dimmed and the gradient shows
+              only background (invisible); scrolled up, content slides under
+              the band and dissolves instead of hard-clipping at the slab
+              edge. Keep the two in sync — the band is `3.5rem`
+              (`.scroll-edge-fade-bottom`).
             */
-            'flex w-full flex-col pt-8 pb-[var(--composer-dock-height,7rem)]',
+            'flex w-full flex-col pt-8 pb-[calc(var(--composer-dock-height,7rem)+3.5rem)]',
             COLUMN_PADDING,
             emptyKind && 'min-h-full justify-center'
           )}
@@ -1556,17 +1677,31 @@ export function ChatWindow({
       </div>
 
       {/*
-        Fades the last transcript lines into the background where they pass
-        under the floating composer slab. Shares the jump button's hysteresis:
-        only while docked to the bottom is anything actually hidden, and a
-        fade with nothing under it would just dim live text.
+        Jump rail in the side gutter. Sits outside the scroller so it never
+        scrolls away; its own hit-strip capping keeps it clear of the text.
+      */}
+      <TimelineMinimap
+        items={minimapItems}
+        stripMap={minimapStripMap}
+        viewportElement={scrollNode}
+        range={visibleRange}
+        onSelect={jumpToRowIndex}
+      />
+
+      {/*
+        Fades transcript lines into the background where they pass under the
+        floating composer slab — dsh's composer-seat ramp. Always on, not
+        scroll-conditional: detached, mid-transcript content slides under the
+        slab and would otherwise hard-clip at its top edge (the cut lands
+        mid-glyph, inset from the content edges, because the slab is narrower
+        than the transcript column); docked, the band overlaps only the tail
+        of the newest message, where a soft dissolve reads as depth rather
+        than as loss. A state-dependent seam flickers on every scroll-state
+        flip; a constant one is furniture.
       */}
       <div
         aria-hidden
-        className={cn(
-          'scroll-edge-fade-bottom pointer-events-none absolute inset-x-0 bottom-[var(--composer-dock-height,7rem)] z-[5] transition-opacity duration-150 ease-out motion-reduce:transition-none',
-          isDetached ? 'opacity-0' : 'opacity-100'
-        )}
+        className="scroll-edge-fade-bottom pointer-events-none absolute inset-x-0 bottom-[var(--composer-dock-height,7rem)] z-[5]"
       />
 
       {/*

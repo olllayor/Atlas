@@ -6,7 +6,7 @@ import {
   designThemeSupportsLight,
   resolveAppliedThemeMode,
 } from '../shared/contracts';
-import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
+import type { AppUpdateSnapshot, AtlasDeepLink, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
@@ -14,6 +14,13 @@ import type { PermissionPreset } from '../shared/permissionPresets';
 import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
+import {
+  deriveAttentionState,
+  hasPendingApprovalInParts,
+  pickNextAttentionConversation,
+} from './lib/attention';
+import { liveJobCountFor } from './lib/jobActivity';
+import { useConversationJobSummaries } from './hooks/useConversationJobSummaries';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindow } from './components/ChatWindow';
 import { CommandPalette } from './components/CommandPalette';
@@ -21,6 +28,7 @@ import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
+import { SideChatPane } from './components/side/SideChatPane';
 import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
 import { SitesWorkspace } from './components/sites/SitesWorkspace';
 import { PluginsWorkspace } from './components/plugins/PluginsWorkspace';
@@ -30,14 +38,16 @@ import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/Workbe
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
 import { TerminalDock } from './components/workbench/TerminalDock';
 import { OpenInIdeButton } from './components/workspace/OpenInIdeButton';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
 import { useMeasuredHeight } from './hooks/useMeasuredHeight';
-import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
+import { usePersistentFlag, useResizablePanel, useViewportWidth } from './hooks/useResizablePanel';
+import { computeColumns } from './lib/columns';
 import { useSubagentComposerState } from './hooks/useSubagentComposerState';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
 import { VisualGallery } from './components/ai-elements/visual-gallery';
 import { AtlasToaster } from './components/ui/sonner';
-import { TooltipProvider } from './components/ui/tooltip';
+import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip';
 import { XAILandingPage } from './components/XAILandingPage';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
 import {
@@ -75,7 +85,7 @@ function LoadingScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center">
       <div className="flex items-center gap-2 text-text-muted">
-        <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+        <svg className="h-4 w-4 motion-spin-steps" viewBox="0 0 24 24" fill="none">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
@@ -186,6 +196,26 @@ export default function App() {
    */
   const terminalRestoreHeightRef = useRef<number | null>(null);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
+
+  /*
+    Concession-chain solver (dsh port): the workbench yields before the
+    transcript ever drops below CENTER_MIN, and closes entirely under real
+    pressure — derived only, so re-widening the window restores it. The
+    sidebar never concedes; center absorbs any final deficit.
+  */
+  const viewportWidth = useViewportWidth();
+  const solvedColumns = useMemo(
+    () =>
+      computeColumns(
+        viewportWidth,
+        sidebarCollapsed ? 0 : sidebarResize.width,
+        workbenchOpen ? workbenchResize.width : 0
+      ),
+    [viewportWidth, sidebarCollapsed, sidebarResize.width, workbenchOpen, workbenchResize.width]
+  );
+  /** Solver closed the workbench to protect the transcript — keep it mounted at zero (state survives) but hide its handle. */
+  const workbenchDerivedClosed = workbenchOpen && solvedColumns.details === 0;
+
   const toggleTerminalExpanded = useCallback(() => {
     setTerminalExpanded((current) => {
       if (current) {
@@ -252,8 +282,11 @@ export default function App() {
     isLoadingOlderByConversation,
     isLoadingConversationId,
     selectedConversationId,
+    unreadByConversation,
+    queuedByConversation,
     selectedModelIdByConversation,
     draftsByConversation,
+    goalsByConversation,
     conversationStats,
     diagnostics,
     updateState,
@@ -336,12 +369,15 @@ export default function App() {
       isLoadingOlderByConversation: state.isLoadingOlderByConversation,
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
+      unreadByConversation: state.unreadByConversation,
+      queuedByConversation: state.queuedByConversation,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
       // `composerDraftsByConversation` / `composerAttachmentsByConversation` are
       // deliberately absent: they change on every keystroke, and this selector
       // is shallow-compared, so subscribing to them here re-rendered the whole
       // window per character. `ChatComposerSlot` reads them instead.
       draftsByConversation: state.draftsByConversation,
+      goalsByConversation: state.goalsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
       refreshModels: state.refreshModels,
@@ -399,6 +435,70 @@ export default function App() {
   const diagnosticsSummary = useAppStore(useShallow(selectDiagnosticsSummary));
 
   const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
+  /**
+   * The context strip above the composer is pre-flight chrome — folder,
+   * execution target, branch, PR, all there to aim the first message. Once
+   * the conversation has history it collapses to its minimal form (jobs and
+   * plugin-tool chips only): the chips that remain are ones with no other
+   * home, and the slab below gets the composer row to itself.
+   */
+  const conversationStarted = (activeConversation?.messages.length ?? 0) > 0;
+
+  /**
+   * Back/forward through the conversations visited this session — the Codex
+   * titlebar's arrows. A browser-history shape, not a stack: picking an item
+   * from the middle truncates everything forward of it, and the buttons
+   * simply enable and disable at the two ends. `navLock` marks the one
+   * selection change that a back/forward click itself causes, so restoring
+   * position does not re-push the entry it is restoring.
+   */
+  const [navigation, setNavigation] = useState<{ history: string[]; index: number }>({
+    history: [],
+    index: -1,
+  });
+  const navLockRef = useRef(false);
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    if (navLockRef.current) {
+      navLockRef.current = false;
+      return;
+    }
+    setNavigation((current) => {
+      const history = current.history.slice(0, current.index + 1);
+      if (history[history.length - 1] === selectedConversationId) {
+        return current;
+      }
+      history.push(selectedConversationId);
+      return { history, index: history.length - 1 };
+    });
+  }, [selectedConversationId]);
+
+  const navigateConversationHistory = useCallback(
+    (direction: -1 | 1) => {
+      setNavigation(({ history, index }) => {
+        const nextIndex = index + direction;
+        if (nextIndex < 0 || nextIndex >= history.length) {
+          return { history, index };
+        }
+        const target = history[nextIndex];
+        if (target !== selectedConversationId) {
+          navLockRef.current = true;
+          void loadConversation(target).catch(() => {
+            // A dead target (deleted mid-session) must not leave the lock
+            // latched — that would silently swallow the next real push.
+            navLockRef.current = false;
+          });
+        }
+        return { history, index: nextIndex };
+      });
+    },
+    [loadConversation, selectedConversationId]
+  );
+  const canNavigateBack = navigation.index > 0;
+  const canNavigateForward = navigation.index < navigation.history.length - 1;
   const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
 
   /**
@@ -512,6 +612,102 @@ export default function App() {
     },
     [selectedConversationId, setConversationWorkspace]
   );
+  /** Codex's "from develop": provision the worktree off an explicit branch. */
+  const handleWorktreeFromBranch = useCallback(
+    (branch: string) => {
+      if (!selectedConversationId) return;
+      void setConversationWorkspace(selectedConversationId, {
+        executionTarget: 'worktree',
+        worktreeBaseBranch: branch,
+      });
+    },
+    [selectedConversationId, setConversationWorkspace]
+  );
+
+  /*
+    Built-in slash commands — control actions, never prompt text. Each one is a
+    verb the app already knows; the grammar just gives it a keyboard-reachable
+    name inside the composer.
+  */
+  const handleSlashAction = useEffectEvent((name: string, args?: string) => {
+    const live = useAppStore.getState();
+    const conversationId = live.selectedConversationId;
+    switch (name) {
+      case 'model':
+        live.setModelPickerOpen(true);
+        break;
+      case 'review':
+        setWorkbenchOpen(true);
+        setWorkbenchTab('review');
+        break;
+      case 'fork':
+        if (conversationId) void live.forkConversation(conversationId);
+        break;
+      case 'plan': {
+        const current =
+          live.conversations.find((conversation) => conversation.id === conversationId)
+            ?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
+        if (conversationId) {
+          void live.setConversationWorkspace(conversationId, {
+            mode: current === 'code' ? 'work' : 'code',
+          });
+        }
+        break;
+      }
+      case 'compact':
+        if (conversationId) {
+          window.atlasChat.chat.compact(conversationId).catch(() => {});
+          notify({
+            tone: 'info',
+            title: 'Compacting on next message',
+            description: 'Older turns will be compressed when you send.',
+          });
+        }
+        break;
+      case 'goal': {
+        if (!conversationId) break;
+        const text = (args ?? '').trim();
+        if (!text) {
+          void live.loadGoal(conversationId);
+          notify({ tone: 'info', title: '/goal', description: 'Usage: /goal <objective> · /goal pause · resume · clear' });
+          break;
+        }
+        const sub = text.split(/\s+/)[0]?.toLowerCase();
+        if (sub === 'pause') {
+          void live.pauseGoal(conversationId);
+        } else if (sub === 'resume') {
+          void live.resumeGoal(conversationId);
+        } else if (sub === 'clear') {
+          void live.clearGoal(conversationId);
+        } else if (sub === 'edit') {
+          const replacement = text.slice(('edit'.length + 1)).trim();
+          if (replacement) {
+            // Edit mode: same goal row, counters kept — mirrors the dock's save.
+            live.setGoal(conversationId, replacement, 'edit').catch((error) => {
+              notifyError('/goal edit failed', error);
+            });
+          } else {
+            notify({ tone: 'info', title: '/goal edit', description: 'Usage: /goal edit <new objective>' });
+          }
+        } else {
+          void live.setGoal(conversationId, text);
+          notify({ tone: 'info', title: 'Goal set', description: 'The agent keeps working toward it across turns. /goal pause stops the loop.' });
+        }
+        break;
+      }
+      case 'side':
+        // One command, two jobs by state: nothing open → open the side chat
+        // for this conversation; a pane is up → promote it into a real chat.
+        if (live.sideChat?.parentId === conversationId) {
+          void live.promoteSideChat();
+        } else {
+          void live.openSideChat();
+        }
+        break;
+      default:
+        break;
+    }
+  });
   const handleRemoveWorktree = useCallback(() => {
     if (!selectedConversationId) return;
     void removeConversationWorktree(selectedConversationId);
@@ -638,6 +834,9 @@ export default function App() {
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
   const [livenessMap, setLivenessMap] = useState<Map<string, 'working' | 'monitoring' | null>>(new Map());
+  // Whole-window background-job rollups: sidebar rows, the bell, and ⌘⌥A all
+  // project this one map, so no surface can disagree about liveness.
+  const jobSummaries = useConversationJobSummaries();
   useEffect(() => {
     let cancelled = false;
     const fetchLiveness = async () => {
@@ -658,6 +857,67 @@ export default function App() {
     };
   }, []);
 
+  /*
+    `atlas://` deep links (t3code pattern): one subscription folds a route
+    into whatever store actions already exist. Live reads via getState — the
+    handler must not go stale on conversation switches.
+  */
+  useEffect(() => {
+    const foldDeepLink = (link: AtlasDeepLink) => {
+      const live = useAppStore.getState();
+      switch (link.kind) {
+        case 'chat':
+          if (link.conversationId) {
+            void live.loadConversation(link.conversationId);
+            if (link.prompt) {
+              live.setComposerDraft(link.conversationId, link.prompt);
+            }
+          } else if (link.prompt) {
+            // createConversation resolves with the new summary; seed its draft
+            // once, after the single create (never create twice per link).
+            void live.createConversation().then((conversation) => {
+              if (conversation) {
+                useAppStore.getState().setComposerDraft(conversation.id, link.prompt!);
+              }
+            });
+          } else {
+            void live.createConversation();
+          }
+          break;
+        case 'settings':
+          // The grammar already rejects unknown sections; the cast narrows the
+          // shared string type to the renderer's union.
+          runViewTransition(() => openSettings((link.section ?? 'general') as Parameters<typeof openSettings>[0]));
+          break;
+        case 'plugins':
+          live.openPlugins();
+          break;
+        case 'sites':
+          live.openSites();
+          break;
+      }
+    };
+    // A link that arrived before this subscription existed (cold start) was
+    // parked in main; pull it once so the first launch still lands.
+    void window.atlasChat.deepLink?.consumePending?.().then((pending) => {
+      if (pending) foldDeepLink(pending);
+    });
+    const off = window.atlasChat.deepLink?.onDeepLink(foldDeepLink);
+    return off;
+  }, []);
+
+  /*
+    /goal projections: bind the push channel once, and refresh the visible
+    conversation's projection whenever the selection moves.
+  */
+  useEffect(() => {
+    useAppStore.getState().bindGoalEvents();
+  }, []);
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    void useAppStore.getState().loadGoal(selectedConversationId);
+  }, [selectedConversationId]);
+
   const sidebarItems = useMemo(
     () =>
       buildSidebarConversationItems({
@@ -665,8 +925,21 @@ export default function App() {
         draftsByConversation,
         now: nowMs,
         livenessByConversation: livenessMap,
+        jobSummariesByConversation: jobSummaries,
+        unreadByConversation,
+        queuedByConversation,
+        goalsByConversation,
       }),
-    [conversations, draftsByConversation, nowMs, livenessMap]
+    [
+      conversations,
+      draftsByConversation,
+      nowMs,
+      livenessMap,
+      jobSummaries,
+      unreadByConversation,
+      queuedByConversation,
+      goalsByConversation,
+    ]
   );
   /**
    * Archived chats get the same row view model as live ones — they are the same
@@ -681,8 +954,9 @@ export default function App() {
         draftsByConversation,
         now: nowMs,
         livenessByConversation: livenessMap,
+        unreadByConversation,
       }),
-    [archivedConversations, draftsByConversation, nowMs, livenessMap]
+    [archivedConversations, draftsByConversation, nowMs, livenessMap, unreadByConversation, goalsByConversation]
   );
   const hasArchivedChats = hasArchivedConversations({
     storedConversationCount: conversationStats?.storedConversationCount ?? null,
@@ -766,7 +1040,8 @@ export default function App() {
           ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
             !selectedConversationId) ||
           ((definition.command === 'workspace.mode.toggle' || definition.command === 'workspace.project.attach') &&
-            (activeView !== 'chat' || !selectedConversationId)),
+            (activeView !== 'chat' || !selectedConversationId)) ||
+          (definition.command === 'plugins.open' && !(settings?.pluginsBetaEnabled ?? false)),
         section: definition.section,
         shortcutLabel: shortcutLabelForCommand(resolvedKeybindings, definition.command, {
           context: keybindingContext,
@@ -876,6 +1151,32 @@ export default function App() {
       return;
     }
 
+    if (command === 'workbench.review.open') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      setWorkbenchOpen(true);
+      setWorkbenchTab('review');
+      return;
+    }
+
+    if (command === 'chat.side.toggle') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      // Open when closed, close when open — the pane is the state.
+      if (live.sideChat) {
+        live.closeSideChat();
+      } else {
+        void live.openSideChat();
+      }
+      return;
+    }
+
     if (command === 'transcript.raw.toggle') {
       live.setCommandPaletteOpen(false);
       // Persisted rather than held in component state: a reader who turned the
@@ -907,6 +1208,9 @@ export default function App() {
     }
 
     if (command === 'plugins.open') {
+      if (!(settings?.pluginsBetaEnabled ?? false)) {
+        return;
+      }
       live.setCommandPaletteOpen(false);
       runViewTransition(() => {
         live.openPlugins();
@@ -945,6 +1249,33 @@ export default function App() {
       live.setCommandPaletteOpen(false);
       live.setModelPickerOpen(false);
       void live.selectAdjacentConversation('next');
+      return;
+    }
+
+    if (command === 'conversation.nextAttention') {
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(false);
+      const attentionItems = live.conversations.map((conversation) => {
+        const draft = live.draftsByConversation[conversation.id];
+        return {
+          id: conversation.id,
+          level: deriveAttentionState({
+            draftStatus: draft?.status,
+            hasPendingApproval: hasPendingApprovalInParts(draft?.parts),
+            backgroundLiveness: livenessMap.get(conversation.id) ?? null,
+            backgroundJobsLive: liveJobCountFor(jobSummaries, conversation.id),
+            conversationStatus: conversation.status,
+            queuedFollowups: live.queuedByConversation[conversation.id]?.length ?? 0,
+            unreadCount: live.unreadByConversation[conversation.id] ?? 0,
+            hasActiveGoal: live.goalsByConversation[conversation.id]?.status === 'active',
+          }),
+          timestampMs: Date.parse(conversation.updatedAt) || null,
+        };
+      });
+      const targetId = pickNextAttentionConversation(attentionItems, live.selectedConversationId);
+      if (targetId) {
+        void live.loadConversation(targetId);
+      }
       return;
     }
 
@@ -1049,9 +1380,10 @@ export default function App() {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
-      // Clamped against the design theme: `default` and `xai` have no light
-      // palette, and `color-scheme: light` under them turned native controls
-      // white while every app surface stayed dark.
+      // Clamped against the design theme: a theme with no light palette
+      // must not get `color-scheme: light`, which turns native controls
+      // white while every app surface stays dark. All shipped themes carry
+      // both palettes; the clamp remains for any future dark-only one.
       const resolved = resolveAppliedThemeMode(themeMode, appearance.designTheme, mediaQuery.matches);
       document.documentElement.dataset.theme = resolved;
       document.documentElement.style.colorScheme = resolved;
@@ -1379,6 +1711,7 @@ export default function App() {
           workspaceMode={workspaceMode}
           onOpenSites={() => runViewTransition(() => openSites())}
           onOpenPlugins={() => runViewTransition(() => openPlugins())}
+          showPlugins={settings?.pluginsBetaEnabled ?? false}
           onOpenSearch={() => {
             setModelPickerOpen(false);
             captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
@@ -1398,6 +1731,12 @@ export default function App() {
               executionTarget={executionTarget}
               cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
               isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
+              conversationId={selectedConversationId ?? undefined}
+              currentBranch={activeProject?.exists ? activeProject.branch : null}
+              onBranchChanged={() => {
+                void refreshProjectContext();
+                void refreshProjects();
+              }}
               onChange={handleWorkspaceModeChange}
               onPermissionModeChange={handleToolPermissionModeChange}
               onPresetSelect={handlePermissionPresetSelect}
@@ -1418,7 +1757,7 @@ export default function App() {
           <PanelResizeHandle
             ariaLabel="Resize sidebar"
             isResizing={sidebarResize.isResizing}
-            width={sidebarResize.width}
+          width={solvedColumns.sidebar}
             minWidth={sidebarResize.minWidth}
             maxWidth={sidebarResize.maxWidth}
             onPointerDown={sidebarResize.onPointerDown}
@@ -1442,7 +1781,10 @@ export default function App() {
             the catalogue and stayed focusable behind it; stacking order is the
             wrong tool for "this view is not the chat".
           */}
-          {activeView === 'plugins' ? (
+          {/* The beta switch is checked here as well as in the sidebar: a
+              window sitting on the plugins view while the flag turns off falls
+              back to the chat rather than squatting on a hidden feature. */}
+          {activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
             <PluginsWorkspace />
           ) : (
             <>
@@ -1466,8 +1808,42 @@ export default function App() {
             )}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
-            {/* Title + streaming badge are inert text: they drag the window. */}
+            {/* Title + streaming badge are inert text: they drag the window.
+                The back/forward pair before them is the session's conversation
+                history — the same controls the Codex titlebar carries. */}
             <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => navigateConversationHistory(-1)}
+                      disabled={!canNavigateBack}
+                      aria-label="Go back"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                      className="flex size-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <ArrowLeft className="size-4" strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Back</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => navigateConversationHistory(1)}
+                      disabled={!canNavigateForward}
+                      aria-label="Go forward"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                      className="flex size-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <ArrowRight className="size-4" strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Forward</TooltipContent>
+                </Tooltip>
+              </div>
               {activeConversation?.conversation ? (
                 <h2 className="truncate text-md font-medium text-text-primary">
                   {activeConversation.conversation.title}
@@ -1583,8 +1959,10 @@ export default function App() {
                 executionTarget={executionTarget}
                 worktreeRoot={activeWorktreeRoot}
                 cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
+                minimal={conversationStarted}
                 onOpenSettings={() => runViewTransition(() => openSettings('beta'))}
                 onExecutionTargetChange={handleExecutionTargetChange}
+                onWorktreeFromBranch={handleWorktreeFromBranch}
                 onRemoveWorktree={handleRemoveWorktree}
                 project={activeProject}
                 projects={projects}
@@ -1628,6 +2006,7 @@ export default function App() {
                   conversationId={selectedConversationId}
                   disabled={!selectedConversationId}
                 isStreaming={activeDraft?.status === 'streaming'}
+                onSlashAction={handleSlashAction}
                 models={models}
                 selectedModelId={selectedModelId}
                 modelPickerOpen={modelPickerOpen}
@@ -1716,8 +2095,19 @@ export default function App() {
               <RendererErrorBoundary resetKey={selectedConversationId}>
                 <TerminalDock
                   conversationId={selectedConversationId ?? undefined}
-                  workspacePath={activeProject?.exists ? activeProject.root : null}
+                  // First-paint cwd must mirror main's spawn rule (worktree
+                  // target resolves to the worktree, not the project root);
+                  // the PTY's report corrects it afterwards if they differ.
+                  workspacePath={
+                    activeProject?.exists
+                      ? activeConversationSummary?.executionTarget === 'worktree' &&
+                          activeWorktreeRoot
+                        ? activeWorktreeRoot
+                        : activeProject.root
+                      : null
+                  }
                   onClose={() => setTerminalOpen(false)}
+                  onAddSelectionToPrompt={appendToComposer}
                   expanded={terminalExpanded}
                   onToggleExpanded={toggleTerminalExpanded}
                   shortcutLabel={shortcutLabelForCommand(resolvedKeybindings, 'terminal.toggle', {
@@ -1736,20 +2126,26 @@ export default function App() {
 
         {workbenchOpen && (
           <>
-            <PanelResizeHandle
-              ariaLabel="Resize workbench"
-              isResizing={workbenchResize.isResizing}
-              width={workbenchResize.width}
-              minWidth={workbenchResize.minWidth}
-              maxWidth={workbenchResize.maxWidth}
-              onPointerDown={workbenchResize.onPointerDown}
-              onKeyDown={workbenchResize.onKeyDown}
-              onReset={workbenchResize.reset}
-            />
+            {/* Derived-closed: pane stays mounted at zero so its state
+                survives, but the handle would be a dead control. */}
+            {!workbenchDerivedClosed && (
+              <PanelResizeHandle
+                ariaLabel="Resize workbench"
+                isResizing={workbenchResize.isResizing}
+                width={solvedColumns.details}
+                minWidth={workbenchResize.minWidth}
+                maxWidth={workbenchResize.maxWidth}
+                onPointerDown={workbenchResize.onPointerDown}
+                onKeyDown={workbenchResize.onKeyDown}
+                onReset={workbenchResize.reset}
+              />
+            )}
             <aside
               className="shrink-0 overflow-hidden border-l border-border-default"
-              style={{ width: workbenchResize.width }}
+              style={{ width: workbenchDerivedClosed ? 0 : solvedColumns.details }}
               aria-label="Workbench"
+              aria-hidden={workbenchDerivedClosed || undefined}
+              inert={workbenchDerivedClosed || undefined}
             >
               <RendererErrorBoundary resetKey={selectedConversationId}>
                 <WorkbenchPanel
@@ -1767,6 +2163,11 @@ export default function App() {
             </aside>
           </>
         )}
+
+        {/* The side chat (C5): a parallel transcript beside the main one.
+            A sibling of the main panel rather than a child, so it spans the
+            full window height and the chat's internal layout is untouched. */}
+        <SideChatPane />
       </div>
     );
 

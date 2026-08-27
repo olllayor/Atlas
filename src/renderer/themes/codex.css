@@ -75,6 +75,9 @@
   --accent: #83c3ff;
   --accent-hover: color-mix(in oklab, #83c3ff 85%, #ffffff);
   --accent-text: #0d0d0d;
+  /* Chip ink on the accent surface; the accent itself already clears AA
+     there (8.13:1), so the strong slot simply restates it. */
+  --accent-strong: #83c3ff;
   --accent-surface: #0d273f; /* --accent: tinted accent surface */
   --ring: rgba(131, 195, 255, 0.76);
 
@@ -223,18 +226,31 @@
   --text-secondary: rgba(26, 28, 31, 0.76);
   --text-tertiary: rgba(26, 28, 31, 0.494);
   /* Dark text on white is harder than the mirror case: the reference's
-     0.494 is only 3.27:1 here and 0.32 only 2.02:1. Raised to 4.55:1 and
-     3.87:1 respectively. --text-tertiary keeps the reference value since
-     it is used decoratively rather than for body copy. */
-  --text-muted: rgba(26, 28, 31, 0.6); /* 4.55:1 */
+     0.494 is only 3.27:1 here and 0.32 only 2.02:1. Raised above those
+     floors. --text-tertiary keeps the reference value since it is used
+     decoratively rather than for body copy. The muted alpha carries two
+     extra points past the reference value: composited over white, 0.6
+     lands at 4.48:1 — a rounding step under AA — while 0.62 clears it
+     with room to spare (4.65:1). */
+  --text-muted: rgba(26, 28, 31, 0.62); /* 4.65:1 */
   --text-faint: rgba(26, 28, 31, 0.55); /* 3.87:1 */
   --text-inverse: #ffffff;
 
-  --accent: #339cff;
-  --accent-hover: color-mix(in oklab, #339cff 85%, #000000);
+  /*
+   * The accent is GitHub's light blue (#0969da), not a straight darkening
+   * of the dark variant's #83c3ff. It has to clear three pairings at once:
+   * 5.19:1 as text on white, 4.57:1 on --accent-surface, and 5.19:1 under
+   * --accent-text. The old #339cff managed only 2.52:1 on the surface,
+   * which is where the file-ref chips and gallery badges paint.
+   */
+  --accent: #0969da;
+  --accent-hover: color-mix(in oklab, #0969da 85%, #000000);
   --accent-text: #ffffff;
+  /* Chip ink on the surface tint — the accent itself doubles here since
+     it already clears 4.57:1 against #e5f2ff. */
+  --accent-strong: #0969da;
   --accent-surface: #e5f2ff;
-  --ring: #339cff;
+  --ring: #0969da;
 
   --success: #1f8a65;
   --success-bg: color-mix(in oklab, #1f8a65 10%, transparent);
@@ -263,7 +279,7 @@
   --diff-add-fg-count: #1f8a65;
   --diff-del-fg-count: #d1242f;
 
-  --tool-read: #339cff;
+  --tool-read: #0969da;
   --tool-search: #3ab9b1;
   --tool-edit: #9b79ec;
   --tool-command: #f3883b;
@@ -280,4 +296,15 @@
   --overlay: rgba(0, 0, 0, 0.25);
   --scrollbar: rgba(26, 28, 31, 0.16);
   --scrollbar-hover: rgba(26, 28, 31, 0.26);
+
+  /*
+   * Light needs real elevation. The dark block's whisper shadow survives
+   * on this theme because dark surfaces separate by tone; a white popover
+   * over a white page with the same shadow reads as glued to it. Soft and
+   * close rather than tall: the reference stays a quiet, hairline-led
+   * system even in light mode.
+   */
+  --shadow-elevated:
+    0 8px 24px rgba(17, 20, 24, 0.12),
+    0 2px 6px rgba(17, 20, 24, 0.08);
 }

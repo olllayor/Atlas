@@ -5,6 +5,7 @@ import type {
   ChatInputFilePart,
   ChatMessagePart,
   ConversationPage,
+  ConversationGoalView,
   ConversationSummary,
   ConversationStats,
   DiagnosticsSnapshot,
@@ -151,6 +152,14 @@ type AppState = {
    * that is either dispatch (its turn started) or a terminal event.
    */
   queuedByConversation: Record<string, QueuedFollowupEntry[]>;
+  /**
+   * The open side chat (C5): an ephemeral parallel transcript hanging off a
+   * parent chat. Null when closed. The side row lives outside every listing;
+   * promoting it is what gives it a sidebar life of its own.
+   */
+  sideChat: { parentId: string; sideId: string } | null;
+  /** Per-conversation persistent objective (/goal), projected from main. */
+  goalsByConversation: Record<string, ConversationGoalView>;
   /** Every folder the user has attached, most recently used first. */
   projects: WorkspaceProject[];
   updateState: AppUpdateSnapshot;
@@ -169,6 +178,14 @@ type AppState = {
   refreshDiagnostics: () => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
   /**
+   * Assistant turns that finished while their conversation was not the
+   * selected one, per conversation. The attention model (activity popover,
+   * ⌘⌥A) reads this; opening a conversation clears its count.
+   */
+  unreadByConversation: Record<string, number>;
+  markConversationRead: (conversationId: string) => void;
+  markAllConversationsRead: () => void;
+  /**
    * Refetches one conversation's page into the cache without touching the
    * selection or drafts. The subagent composer uses it to pull followup turns
    * into an open child transcript — child turns run outside the normal
@@ -176,7 +193,8 @@ type AppState = {
    */
   reloadConversationDetail: (conversationId: string) => Promise<void>;
   loadOlderMessages: (conversationId: string) => Promise<void>;
-  createConversation: () => Promise<void>;
+  /** Creates a conversation, opens it, and resolves with the created summary (deep links seed drafts from it). */
+  createConversation: () => Promise<import('../../shared/contracts').ConversationSummary>;
   /** New conversation already bound to a project and set to Code mode. */
   createConversationInProject: (projectId: string) => Promise<void>;
   /**
@@ -184,6 +202,24 @@ type AppState = {
    * away. The original is untouched.
    */
   forkConversation: (conversationId: string) => Promise<void>;
+  /**
+   * Opens the side chat for a conversation (defaulting to the one on screen):
+   * reuses its most recent side chat when one exists, otherwise starts a new
+   * one. The parent's selection never moves.
+   */
+  openSideChat: (parentConversationId?: string) => Promise<void>;
+  /** Closes the side pane. The side row survives, still hidden from listings. */
+  closeSideChat: () => void;
+  /** Promotes the open side chat into a normal conversation and opens it. */
+  promoteSideChat: () => Promise<void>;
+  /** Fetches the conversation's goal projection into the map (null clears it). */
+  loadGoal: (conversationId: string) => Promise<void>;
+  setGoal: (conversationId: string, objective: string, mode?: 'replace' | 'edit') => Promise<ConversationGoalView>;
+  pauseGoal: (conversationId: string) => Promise<void>;
+  resumeGoal: (conversationId: string) => Promise<void>;
+  clearGoal: (conversationId: string) => Promise<void>;
+  /** Idempotent: binds the goalsEvent push exactly once per session. */
+  bindGoalEvents: () => void;
   refreshProjects: () => Promise<void>;
   /** Opens the native folder picker unless a root is supplied. Null when cancelled. */
   attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
@@ -195,7 +231,13 @@ type AppState = {
   setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
-    patch: { mode?: WorkspaceMode; executionTarget?: import('../../shared/workspaceModes').ExecutionTarget; projectId?: string | null }
+    patch: {
+      mode?: WorkspaceMode;
+      executionTarget?: import('../../shared/workspaceModes').ExecutionTarget;
+      projectId?: string | null;
+      /** Commitish a fresh worktree starts from; ignored if one already exists. */
+      worktreeBaseBranch?: string | null;
+    }
   ) => Promise<void>;
   /** Deletes the conversation's git worktree and resets its target to local, with an optimistic list update. */
   removeConversationWorktree: (conversationId: string) => Promise<void>;
@@ -488,6 +530,8 @@ function resolveConversationIdForRequest(
 // =============================================================================
 /** The OS shows one folder picker; a second request while it is up joins the first. */
 let attachProjectInFlight: Promise<WorkspaceProject | null> | null = null;
+/** Module-level once-guard: the goalsEvent push is bound for the app's lifetime. */
+let goalEventsBound = false;
 
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
@@ -525,6 +569,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   requestToConversation: {},
   runtimeSequenceByConversation: {},
   queuedByConversation: {},
+  unreadByConversation: {},
+  sideChat: null,
+  goalsByConversation: {},
+  markConversationRead: (conversationId) => {
+    set((current) => {
+      if (!(conversationId in current.unreadByConversation)) return {};
+      const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
+      return { unreadByConversation: rest };
+    });
+  },
+  markAllConversationsRead: () => {
+    set({ unreadByConversation: {} });
+  },
   projects: [],
   updateState: { status: 'idle' },
 
@@ -751,6 +808,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set((current) => ({
       selectedConversationId: conversationId,
+      // Opening a thread is reading it.
+      unreadByConversation: current.unreadByConversation[conversationId]
+        ? (() => {
+            const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
+            return rest;
+          })()
+        : current.unreadByConversation,
       conversationDetails: cacheState.conversationDetails,
       inactiveConversationIds: cacheState.inactiveConversationIds,
       isLoadingConversationId: cachedDetail ? null : conversationId,
@@ -915,6 +979,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.settings
     }));
     await get().loadConversation(created.id);
+    return created;
   },
 
   createConversationInProject: async (projectId) => {
@@ -945,6 +1010,124 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       notifyError('Could not fork the chat', error);
     }
+  },
+
+  openSideChat: async (parentConversationId) => {
+    const parentId = parentConversationId ?? get().selectedConversationId;
+    if (!parentId) {
+      return;
+    }
+
+    try {
+      const existing = get().sideChat;
+      if (existing?.parentId === parentId) {
+        // Already open on this parent: just make sure its page is fresh.
+        await get().reloadConversationDetail(existing.sideId);
+        return;
+      }
+
+      // Reuse the most recent side chat of this parent before minting another,
+      // or the ⌘⌥S spam leaves a trail of identical hidden rows.
+      const sides = await window.atlasChat.conversations.listSide(parentId);
+      const side = sides[0] ?? (await window.atlasChat.conversations.startSide({ conversationId: parentId }));
+
+      await get().reloadConversationDetail(side.id);
+      set({ sideChat: { parentId, sideId: side.id } });
+    } catch (error) {
+      notifyError('Could not open the side chat', error);
+    }
+  },
+
+  closeSideChat: () => {
+    set({ sideChat: null });
+  },
+
+  promoteSideChat: async () => {
+    const { sideChat } = get();
+    if (!sideChat) {
+      return;
+    }
+
+    try {
+      const promoted = await window.atlasChat.conversations.promoteSide(sideChat.sideId);
+      set({ sideChat: null });
+      if (promoted) {
+        await get().refreshConversationList();
+        await get().loadConversation(sideChat.sideId);
+      } else {
+        notify({ tone: 'error', title: 'Nothing to promote', description: 'This side chat is already a normal conversation.' });
+      }
+    } catch (error) {
+      notifyError('Could not promote the side chat', error);
+    }
+  },
+
+  loadGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.get(conversationId);
+    set((current) => {
+      const next = { ...current.goalsByConversation };
+      if (goal) {
+        next[conversationId] = goal;
+      } else if (conversationId in current.goalsByConversation) {
+        delete next[conversationId];
+      } else {
+        return {};
+      }
+      return { goalsByConversation: next };
+    });
+  },
+
+  setGoal: async (conversationId, objective, mode) => {
+    const goal = await window.atlasChat.goals.set(conversationId, objective, mode);
+    set((current) => ({
+      goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal },
+    }));
+    return goal;
+  },
+
+  pauseGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.pause(conversationId);
+    if (goal) {
+      set((current) => ({ goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal } }));
+    }
+  },
+
+  resumeGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.resume(conversationId);
+    if (goal) {
+      set((current) => ({ goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal } }));
+    }
+  },
+
+  clearGoal: async (conversationId) => {
+    await window.atlasChat.goals.clear(conversationId);
+    set((current) => {
+      const { [conversationId]: _cleared, ...rest } = current.goalsByConversation;
+      return { goalsByConversation: rest };
+    });
+  },
+
+  bindGoalEvents: () => {
+    if (goalEventsBound) return;
+    goalEventsBound = true;
+    window.atlasChat.goals.onGoalEvent((event) => {
+      // A rejection that stops the loop without changing goal state (turn cap)
+      // leaves no other trace — surface it here or the user sees silence.
+      if (event.notice) {
+        notify({ tone: 'info', title: '/goal', description: event.notice });
+      }
+      set((current) => {
+        const next = { ...current.goalsByConversation };
+        if (event.goal) {
+          next[event.conversationId] = event.goal;
+        } else if (event.conversationId in current.goalsByConversation) {
+          delete next[event.conversationId];
+        } else {
+          return {};
+        }
+        return { goalsByConversation: next };
+      });
+    });
   },
 
   refreshProjects: async () => {
@@ -1872,6 +2055,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         archivedConversations: current.archivedConversations.filter(
           (conversation) => conversation.id !== conversationId
         ),
+        // The side pane hangs off its parent; CASCADE deletes the row, so the
+        // pane must not outlive it either. A deleted *side* id closes it too.
+        sideChat:
+          current.sideChat?.parentId === conversationId || current.sideChat?.sideId === conversationId
+            ? null
+            : current.sideChat,
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
@@ -2166,9 +2355,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextDrafts = draft && draft.requestId === event.requestId ? restDrafts : s.draftsByConversation;
       const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
 
+      // The turn finished somewhere the user is not looking: it is unread.
+      const isBackgroundTurn =
+        conversationId !== s.selectedConversationId &&
+        (!draft || draft.requestId === event.requestId);
+      const unreadByConversation = isBackgroundTurn
+        ? {
+            ...s.unreadByConversation,
+            [conversationId]: (s.unreadByConversation[conversationId] ?? 0) + 1,
+          }
+        : s.unreadByConversation;
+
       return {
         requestToConversation: restRequests,
         draftsByConversation: nextDrafts,
+        unreadByConversation,
         conversationDetails: {
           ...s.conversationDetails,
           [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)

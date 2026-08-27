@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { RendererApi } from '../shared/contracts';
+import type { AtlasDeepLink, RendererApi } from '../shared/contracts';
 import { IPC_CHANNELS } from '../shared/ipc';
 
 const api: RendererApi = {
@@ -61,10 +61,27 @@ const api: RendererApi = {
     fork: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsFork, request),
     startSide: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsStartSide, request),
     listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId),
+    promoteSide: (sideConversationId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.conversationsPromoteSide, sideConversationId),
     removeWorktree: (conversationId, force) =>
       ipcRenderer.invoke(IPC_CHANNELS.worktreeRemove, { conversationId, force }),
     listWorktrees: (conversationId) =>
       ipcRenderer.invoke(IPC_CHANNELS.worktreeList, conversationId)
+  },
+  goals: {
+    set: (conversationId: string, objective: string, mode?: 'replace' | 'edit') =>
+      ipcRenderer.invoke(IPC_CHANNELS.goalsSet, { conversationId, objective, ...(mode ? { mode } : {}) }),
+    pause: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsPause, conversationId),
+    resume: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsResume, conversationId),
+    clear: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsClear, conversationId),
+    get: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsGet, conversationId),
+    onGoalEvent: (listener: (event: import('../shared/contracts').GoalEvent) => void) => {
+      const handler = (_event: unknown, payload: import('../shared/contracts').GoalEvent) => listener(payload);
+      ipcRenderer.on(IPC_CHANNELS.goalsEvent, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.goalsEvent, handler);
+      };
+    }
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
@@ -82,6 +99,7 @@ const api: RendererApi = {
     respondToolApproval: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRespondToolApproval, request),
     getRuntimeState: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetRuntimeState, request),
     getContextUsage: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetContextUsage, request),
+    compact: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.chatCompact, conversationId),
     recoverEvents: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRecoverEvents, request),
     openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {
@@ -183,6 +201,8 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.gitCreateBranch, conversationId, name),
     commit: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitCommit, request),
     review: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitReview, request),
+    listReviewTurns: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitListReviewTurns, conversationId),
     stage: (conversationId: string, paths: string[]) =>
       ipcRenderer.invoke(IPC_CHANNELS.gitStage, conversationId, paths),
     unstage: (conversationId: string, paths: string[]) =>
@@ -226,7 +246,9 @@ const api: RendererApi = {
     configureAuth: (pluginName: string, credentials: Record<string, string>) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsConfigureAuth, pluginName, credentials),
     checkHealth: (pluginName: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckHealth, pluginName)
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckHealth, pluginName),
+    connectServer: (pluginName: string, serverKey: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsConnectServer, pluginName, serverKey)
   },
   mcpUi: {
     // Returns a descriptor, never markup. See `main/ipc/mcpUi.ts`.
@@ -268,6 +290,7 @@ const api: RendererApi = {
   },
   jobs: {
     list: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.jobsList, conversationId),
+    listAll: () => ipcRenderer.invoke(IPC_CHANNELS.jobsListAll),
     kill: (conversationId: string, jobId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.jobsKill, conversationId, jobId),
     subscribe: (listener) => {
@@ -291,6 +314,17 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.subagentsHistory, request),
     getLiveness: () => ipcRenderer.invoke(IPC_CHANNELS.subagentsLiveness) as Promise<Record<string, 'working' | 'monitoring' | null>>,
     getComposerState: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsComposerState, childId)
+  },
+  deepLink: {
+    onDeepLink: (listener: (link: AtlasDeepLink) => void) => {
+      const handler = (_event: unknown, link: AtlasDeepLink) => listener(link);
+      ipcRenderer.on(IPC_CHANNELS.appDeepLink, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.appDeepLink, handler);
+      };
+    },
+    consumePending: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.deepLinkConsume) as Promise<AtlasDeepLink | null>
   }
 };
 

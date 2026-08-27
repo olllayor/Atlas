@@ -193,3 +193,44 @@ test('deleteOrphanedModels drops removed providers but spares disabled ones', as
     ['off-model', 'on-model']
   );
 });
+
+test('the same model id on two providers is two rows, not a clobbered one', async (t) => {
+  const repo = createRepo(t);
+
+  // Both endpoints expose `shared-model`; neither refresh may steal the row
+  // from the other, which the old model_id-only primary key allowed.
+  repo.upsertModels([model('shared-model', { providerId: 'custom:first', label: 'First copy' })]);
+  repo.upsertModels([model('shared-model', { providerId: 'custom:second', label: 'Second copy' })]);
+
+  const rows = repo.list({ includeArchived: true });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((entry) => entry.providerId).sort(),
+    ['custom:first', 'custom:second']
+  );
+
+  // Re-refreshing one provider leaves the other's copy intact.
+  repo.upsertModels([model('shared-model', { providerId: 'custom:first', label: 'First copy' })]);
+  assert.equal(repo.list({ includeArchived: true }).length, 2);
+});
+
+test('getById prefers an enabled provider when a model id is served twice', async (t) => {
+  const repo = createRepo(t);
+
+  configureProvider(repo, 'custom:on');
+  configureProvider(repo, 'custom:off', false);
+  repo.upsertModels([
+    model('dual-model', { providerId: 'custom:off' }),
+    model('dual-model', { providerId: 'custom:on' })
+  ]);
+
+  assert.equal(repo.getById('dual-model')?.providerId, 'custom:on');
+
+  // Deterministic even with nothing enabled: lowest provider id wins.
+  const bareRepo = createRepo(t);
+  bareRepo.upsertModels([
+    model('dual-model', { providerId: 'custom:zzz' }),
+    model('dual-model', { providerId: 'custom:aaa' })
+  ]);
+  assert.equal(bareRepo.getById('dual-model')?.providerId, 'custom:aaa');
+});

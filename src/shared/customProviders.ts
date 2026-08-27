@@ -211,7 +211,7 @@ export function normalizeBaseUrl(value: string) {
   url.search = '';
 
   let path = url.pathname.replace(/\/+$/, '');
-  for (const suffix of ['/chat/completions', '/completions', '/responses', '/messages']) {
+  for (const suffix of ['/chat/completions', '/completions', '/responses', '/messages', '/models']) {
     if (path.endsWith(suffix)) {
       path = path.slice(0, -suffix.length);
       break;

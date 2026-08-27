@@ -40,12 +40,23 @@ export type SkillsSnapshot = PluginSnapshot & {
 };
 
 export class SkillsService {
-  constructor(private readonly registry: PluginRegistry) {}
+  constructor(
+    private readonly registry: PluginRegistry,
+    /**
+     * The beta switch, read live on every access.
+     *
+     * Off, the service is inert: the snapshot is empty, so the prompt index,
+     * the `load_skill` tool and every `@plugin` mention resolve to nothing —
+     * the same shape as a machine with no plugins installed.
+     */
+    private readonly isEnabled: () => boolean = () => true
+  ) {}
 
   /** The registry's view, plus every skill flattened across bundles. */
   snapshot(): SkillsSnapshot {
     const snapshot = this.registry.snapshot();
-    return { ...snapshot, skills: snapshot.plugins.flatMap((plugin) => plugin.skills) };
+    const plugins = this.isEnabled() ? snapshot.plugins : [];
+    return { ...snapshot, plugins, skills: plugins.flatMap((plugin) => plugin.skills) };
   }
 
   /**
@@ -60,7 +71,7 @@ export class SkillsService {
    * a session should see the whole set rather than a guess.
    */
   applicableSkills(context?: SkillContext): LoadedSkill[] {
-    const snapshot = this.registry.snapshot();
+    const snapshot = this.snapshot();
 
     return snapshot.plugins
       .filter((plugin) => !context || pluginApplies(plugin, context))

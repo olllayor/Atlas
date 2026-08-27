@@ -1,11 +1,14 @@
 import type {
   AuthConfig,
   PluginCommandSummary,
+  PluginHealthView,
   PluginLifecycleState,
+  PluginServerHealth,
   PluginServerSummary,
   PluginSummary,
   PluginsView
 } from '../../shared/contracts';
+import type { McpServerHealth } from '../ai/mcp/McpClientManager';
 import { pluginServerName } from '../../shared/plugins';
 import { pluginIconPath } from './PluginLoader';
 import type { LoadedCommand, LoadedMcpServer, LoadedPlugin } from './PluginLoader';
@@ -54,7 +57,15 @@ function toSummary(
   for (const server of plugin.mcpServers) {
     if (server.credentials) {
       credentials.push(...server.credentials);
-    } else if (server.envVars && server.envVars.length > 0) {
+    }
+    if (server.bearerTokenEnvVar) {
+      credentials.push({
+        type: 'api_key',
+        secretName: server.bearerTokenEnvVar,
+        label: server.bearerTokenEnvVar.replace(/_/g, ' ').toLowerCase()
+      });
+    }
+    if (server.envVars && server.envVars.length > 0) {
       for (const envVar of server.envVars) {
         credentials.push({
           type: envVar.toLowerCase().includes('url') ? 'database_url' : 'api_key',
@@ -139,8 +150,49 @@ function toCommandSummary(command: LoadedCommand): PluginCommandSummary {
   };
 }
 
+/**
+ * One plugin's health, from the manager's report.
+ *
+ * The manager answers for every configured server; this narrows to the ones
+ * this plugin owns by its `plugin:<name>:<key>` id prefix and reshapes into
+ * the view the detail panel renders. Pure, so the IPC layer stays a thin
+ * adapter and the mapping stays testable without Electron.
+ */
+export function buildPluginHealth(
+  plugin: LoadedPlugin | undefined,
+  health: McpServerHealth[]
+): PluginHealthView {
+  if (!plugin) {
+    return { ok: false, servers: [], error: 'Plugin not found.' };
+  }
+
+  // A plugin without servers has nothing to connect to, which is health
+  // rather than failure: its skills work with no subprocess at all.
+  if (plugin.mcpServers.length === 0) {
+    return { ok: true, servers: [], error: null };
+  }
+
+  const prefix = `plugin:${plugin.manifest.name}:`;
+  const servers: PluginServerHealth[] = health
+    .filter((server) => server.serverId.startsWith(prefix))
+    .map((server) => ({
+      key: server.serverId.slice(prefix.length),
+      name: server.name,
+      status: server.status,
+      toolCount: server.toolCount,
+      error: server.error
+    }));
+
+  return {
+    ok: servers.length > 0 && servers.every((server) => server.status === 'ready'),
+    servers,
+    error: null
+  };
+}
+
 function toServerSummary(plugin: LoadedPlugin, server: LoadedMcpServer): PluginServerSummary {
   return {
+    key: server.key,
     name: pluginServerName(plugin.manifest.name, server.key),
     transport: server.transport,
     // The exact thing that runs, or the exact host that is reached. A user

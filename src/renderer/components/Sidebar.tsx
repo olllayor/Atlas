@@ -32,6 +32,7 @@ import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
 import { RailSectionLabel } from './railPrimitives';
 import { SidebarConversationRow } from './SidebarConversationRow';
+import { SidebarActivityBell } from './SidebarActivityBell';
 import { SidebarConversationHoverCard, SidebarProjectHoverCard } from './SidebarHoverCard';
 import {
   SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS,
@@ -54,6 +55,7 @@ import {
 } from './ui/dropdown-menu';
 import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { useAppStore } from '../stores/useAppStore';
 import {
   groupSidebarConversationItems,
   sortProjectsByPin,
@@ -145,6 +147,8 @@ type SidebarProps = {
   onOpenLanding: () => void;
   onOpenSites: () => void;
   onOpenPlugins: () => void;
+  /** The plugin system is a beta feature and ships off; off means invisible. */
+  showPlugins: boolean;
   onOpenSearch: () => void;
   /**
    * The open conversation's mode, which decides what the primary nav offers.
@@ -331,6 +335,7 @@ export function Sidebar({
   onOpenLanding,
   onOpenSites,
   onOpenPlugins,
+  showPlugins,
   onOpenSearch,
   workspaceMode = 'work',
   onRefreshModels,
@@ -799,7 +804,7 @@ export function Sidebar({
                     // the next fetch. Restore first, then rename.
                     onDoubleClick={isArchived ? undefined : () => startRename(item)}
                     className={cn(
-                      'relative flex h-8 min-w-0 flex-1 items-center rounded-md pr-2 text-left',
+                      'relative flex min-h-8 min-w-0 flex-1 items-center rounded-md py-1 pr-2 text-left',
                       indentClass,
                       isActive
                         ? 'font-medium text-text-primary'
@@ -810,6 +815,7 @@ export function Sidebar({
                       isRunning={item.isRunning}
                       isFailed={item.isFailed}
                       primaryLabel={item.primaryLabel}
+                      secondaryLabel={item.secondaryLabel}
                       timestampLabel={showTimestamp ? item.timestampLabel : null}
                       jumpLabel={conversationJumpLabelById.get(item.id)}
                       showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
@@ -1023,6 +1029,18 @@ export function Sidebar({
             </Tooltip>
           ) : null}
 
+          {/*
+            Activity (Codex parity): one bell for everything that wants a
+            human — approvals, errors, unread output — grouped by urgency.
+          */}
+          {!collapsed ? (
+            <SidebarActivityBell
+              items={items}
+              onSelect={(conversationId) => onSelect(conversationId)}
+              onMarkAllRead={() => useAppStore.getState().markAllConversationsRead()}
+            />
+          ) : null}
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -1071,11 +1089,13 @@ export function Sidebar({
             />
           ) : null}
 
-          <RailButton
-            icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
-            label="Plugins"
-            onClick={onOpenPlugins}
-          />
+          {showPlugins ? (
+            <RailButton
+              icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+              label="Plugins"
+              onClick={onOpenPlugins}
+            />
+          ) : null}
 
           {runningItem ? (
             <Tooltip>
@@ -1129,12 +1149,15 @@ export function Sidebar({
             ) : null}
 
             {/* Not mode-specific: a plugin's skills apply to any conversation,
-                so hiding this in one mode would hide half the feature. */}
-            <SidebarNavRow
-              icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
-              label="Plugins"
-              onClick={onOpenPlugins}
-            />
+                so hiding this in one mode would hide half the feature. Beta
+                gated: off, the destination does not exist. */}
+            {showPlugins ? (
+              <SidebarNavRow
+                icon={<Plug className="size-4" strokeWidth={1.75} aria-hidden />}
+                label="Plugins"
+                onClick={onOpenPlugins}
+              />
+            ) : null}
           </div>
 
           <nav

@@ -58,13 +58,44 @@
   --error-text: #fecdd3;
 
   /* Accent - vibrant for default */
-  --accent: #3b82f6;
+  /*
+   * #2563eb, not the old #3b82f6: white on the old blue was 3.68:1, an AA
+   * fail on every bg-brand button. This step keeps the hue and clears
+   * 5.17:1 under white while still clearing 3:1 as an icon color on the
+   * near-black page. The surface tint and ring follow the new hue.
+   */
+  --accent: #2563eb;
   --accent-hover: #60a5fa;
   --accent-text: #ffffff;
-  /* Part of the theme contract: every theme owes a tinted accent surface
-     and a focus ring matched to its own accent. */
-  --accent-surface: rgba(59, 130, 246, 0.14);
-  --ring: rgba(59, 130, 246, 0.7);
+  /*
+   * Part of the theme contract: every theme owes a tinted accent surface,
+   * a focus ring matched to its own accent, and a chip-text ink that reads
+   * at AA on the tinted surface (8.21:1 here).
+   */
+  --accent-strong: #7ab0ff;
+  --accent-surface: rgba(37, 99, 235, 0.14);
+  --ring: rgba(37, 99, 235, 0.7);
+
+  /* Diff palette (GitHub's dark values — identical to the :root contract,
+     restated so this theme owns its whole mode palette rather than leaning
+     on contract defaults that exist for its sake). */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #34d399;
+  --diff-del-fg: #fb7185;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(255, 255, 255, 0.4);
+  --diff-add-fg-count: #34d399;
+  --diff-del-fg-count: #fb7185;
+
+  /* Per-tool accent hues for the transcript timeline. */
+  --tool-read: #60a5fa;
+  --tool-search: #2dd4bf;
+  --tool-edit: #a78bfa;
+  --tool-command: #fbbf24;
+  --tool-web: #f472b6;
+  --tool-generic: #94a3b8;
 
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);
@@ -106,4 +137,120 @@
   --duration-normal: 200ms;
   --duration-slow: 400ms;
   --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ============================================
+   Light variant
+
+   Same cool-slate family as the dark palette above, inverted: white page,
+   ink #12151c for text, and the same hue set pulled down to AA. The
+   composer keeps the codex-light pattern — a white slab separated from the
+   white page by a hairline, because tone alone cannot do it here.
+   ============================================ */
+
+[data-theme='light'][data-design-theme='default'] {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --bg-base: #ffffff;
+  --bg-panel: #f6f7f9;
+  --bg-composer: #ffffff;
+  --border-composer: rgba(13, 18, 28, 0.09);
+  --bg-surface: #f2f4f7;
+  --bg-elevated: #eaedf1;
+  --bg-overlay: #ffffff; /* Opaque surface for popovers, dialogs, menus */
+  --bg-code: rgba(13, 18, 28, 0.05);
+
+  --bg-subtle: rgba(13, 18, 28, 0.03);
+  --bg-ghost: rgba(13, 18, 28, 0.04);
+  --bg-hover: rgba(13, 18, 28, 0.06);
+  --bg-active: rgba(13, 18, 28, 0.11);
+  /* Primary buttons invert to dark ink on the white page. */
+  --bg-button: #10131a;
+  --bg-button-hover: #2a2f3a;
+
+  /* Borders */
+  --border-subtle: rgba(13, 18, 28, 0.06);
+  --border-default: rgba(13, 18, 28, 0.11);
+  --border-medium: rgba(13, 18, 28, 0.15);
+  --border-strong: rgba(13, 18, 28, 0.26);
+
+  /* Text — cool slate ink; alphas measured on #ffffff. */
+  --text-primary: #12151c;
+  --text-secondary: rgba(18, 21, 28, 0.78); /* 9.14:1 */
+  --text-tertiary: rgba(18, 21, 28, 0.55); /* decorative tier */
+  /*
+   * Contrast on --bg-base (#ffffff), WCAG AA needs 4.5:1 for body text.
+   * --text-muted backs `text-muted-foreground` (placeholders, dialog
+   * descriptions, menu shortcuts); --text-faint is the decorative floor.
+   */
+  --text-muted: rgba(18, 21, 28, 0.62); /* 5.11:1 */
+  --text-faint: rgba(18, 21, 28, 0.52); /* 3.69:1 */
+  --text-inverse: #ffffff;
+
+  /* Semantic — dark-tuned hues dropped to their AA-on-white anchors. */
+  --success: #1a7f37; /* 5.08:1 */
+  --success-bg: rgba(26, 127, 55, 0.08);
+  --success-border: rgba(26, 127, 55, 0.25);
+  --success-text: #1a7f37;
+
+  --warning: #9a6700; /* 4.87:1 */
+  --warning-bg: rgba(154, 103, 0, 0.08);
+  --warning-border: rgba(154, 103, 0, 0.25);
+  --warning-text: #9a6700;
+
+  --error: #cf222e; /* 5.36:1 */
+  --error-bg: rgba(207, 34, 46, 0.07);
+  --error-border: rgba(207, 34, 46, 0.25);
+  --error-text: #cf222e;
+
+  /* Accent — same blue as the dark block; on white it clears AA under
+     white text at 5.17:1, so fills keep white labels in both modes. */
+  --accent: #2563eb;
+  --accent-hover: color-mix(in oklab, #2563eb 85%, #000000);
+  --accent-text: #ffffff;
+  /* Chip ink on the surface tint (#e0e9fc): the accent itself manages
+     3.73:1 there, short of AA for 10px chip text. */
+  --accent-strong: #1c56c4; /* 5.42:1 */
+  --accent-surface: rgba(37, 99, 235, 0.14);
+  --ring: #2563eb;
+
+  /* Diff palette — GitHub's light values, matching codex/cursor light. */
+  --diff-add-bg: #dafbe1;
+  --diff-del-bg: #ffebe9;
+  --diff-add-fg: inherit;
+  --diff-del-fg: inherit;
+  --diff-add-gutter-bg: #aceebb;
+  --diff-del-gutter-bg: #ffcecb;
+  --diff-gutter-fg: #1f2328;
+  --diff-add-fg-count: #1a7f37;
+  --diff-del-fg-count: #cf222e;
+
+  /* Per-tool accents — cursor-light's lightness-adjusted set; the dark
+     block's pastels vanish against white. */
+  --tool-read: #2563a8;
+  --tool-search: #12796f;
+  --tool-edit: #6d4bc4;
+  --tool-command: #a8651b;
+  --tool-web: #b2427e;
+  --tool-generic: rgba(18, 21, 28, 0.6);
+
+  /* Toasts */
+  --toast-bg: #ffffff;
+  --toast-border: rgba(13, 18, 28, 0.08);
+  --toast-text: rgba(18, 21, 28, 0.76);
+  --toast-icon: rgba(18, 21, 28, 0.55);
+  --toast-close: rgba(18, 21, 28, 0.32);
+  --toast-close-hover: rgba(18, 21, 28, 0.76);
+
+  /* UI elements */
+  --overlay: rgba(0, 0, 0, 0.3);
+  --scrollbar: rgba(13, 18, 28, 0.16);
+  --scrollbar-hover: rgba(13, 18, 28, 0.26);
+
+  /* White popovers need real elevation — the dark block's shadow is tuned
+     for near-black surfaces that separate by tone. */
+  --shadow-elevated:
+    0 8px 24px rgba(13, 18, 28, 0.12),
+    0 2px 6px rgba(13, 18, 28, 0.08);
 }

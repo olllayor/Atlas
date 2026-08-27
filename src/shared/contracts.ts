@@ -157,6 +157,8 @@ export type GitStateSummary = {
 import type { AtlasPluginOptions } from './plugins';
 
 export type PluginServerSummary = {
+  /** The server's key inside its bundle — the `key` in `plugin:<name>:<key>`. */
+  key: string;
   name: string;
   transport: McpTransportKind;
   /** The literal command that will run, or the literal endpoint reached. */
@@ -214,6 +216,29 @@ export type PluginCommandSummary = {
   name: string;
   description: string;
   argumentHint: string;
+};
+
+/**
+ * What one of a plugin's MCP servers reported when actually asked.
+ *
+ * `ready` means a real connection succeeded and `tools/list` answered —
+ * not that the manifest looks plausible.
+ */
+export type PluginServerHealth = {
+  key: string;
+  name: string;
+  status: 'ready' | 'failed' | 'disabled';
+  toolCount: number;
+  error: string | null;
+};
+
+export type PluginHealthView = {
+  /** Every declared server is ready — or the plugin declares none. */
+  ok: boolean;
+  /** A plugin with no MCP servers is healthy by definition; skills need none. */
+  servers: PluginServerHealth[];
+  /** Set only when the check itself could not run. */
+  error: string | null;
 };
 
 export type PluginLifecycleState =
@@ -419,6 +444,16 @@ export type GitReviewRequest = {
   conversationId: string;
   scope: ReviewScope;
   commit?: string | null;
+  /** With `scope: 'lastTurn'`, an explicit checkpointed turn instead of the newest. */
+  turnId?: string | null;
+};
+
+/** One checkpointed, reviewable turn — a row in the review scope list. */
+export type ReviewTurnSummary = {
+  turnId: string;
+  /** Chronological, oldest first; "Turn N" labels derive from this. */
+  index: number;
+  createdAt: string;
 };
 
 /**
@@ -546,12 +581,45 @@ export type JobSnapshotView = {
   startedAt: number;
   /** Epoch ms when the job settled; absent while `running`/`stopping`. */
   finishedAt?: number;
+  /**
+   * Last lines of a live stream job's output — UI preview only, never
+   * consumed from the model's `job_output` cursor. Absent once settled.
+   */
+  tail?: string[];
 };
 
 /** Pushed to every window when a job is registered or settles. */
 export type JobEvent = {
   type: 'started' | 'done';
   snapshot: JobSnapshotView;
+};
+
+/** The conversation's persistent objective (`/goal`), projected for the renderer. */
+export type ConversationGoalView = {
+  id: string;
+  conversationId: string;
+  objective: string;
+  status: 'active' | 'paused_user' | 'paused_stalled' | 'complete' | 'blocked' | 'cleared';
+  blockerKind?:
+    | 'user_decision'
+    | 'missing_authority'
+    | 'external_state'
+    | 'environment_contradiction'
+    | 'unverifiable_requirement';
+  blockerNote?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  turnCount: number;
+  turnCap: number;
+};
+
+/** Goal lifecycle pushes: state transitions plus continuation decisions. */
+export type GoalEvent = {
+  type: 'updated';
+  conversationId: string;
+  goal: ConversationGoalView | null;
+  /** Set on continuation rejections so the UI can explain a silent stop. */
+  notice?: string;
 };
 
 /** Subset of WorktreeService's WorktreeInfo the renderer is allowed to see. */
@@ -584,6 +652,11 @@ export type SetConversationWorkspaceRequest = {
   executionTarget?: ExecutionTarget;
   /** `null` detaches the project; omit to leave it unchanged. */
   projectId?: string | null;
+  /**
+   * Commitish a fresh worktree starts from (Codex's "from develop" flow).
+   * Ignored when a worktree already exists for this conversation.
+   */
+  worktreeBaseBranch?: string | null;
 };
 import type {
   CreateCustomProviderRequest,
@@ -867,6 +940,22 @@ export type ContextUsageSnapshot = {
     inputTokens: number | null;
     outputTokens: number | null;
     reasoningTokens: number | null;
+    cachedInputTokens?: number | null;
+  } | null;
+  /**
+   * Conversation-wide prompt-cache accounting from provider reports. Null
+   * while no turn has reported a cache figure — a provider that stays silent
+   * about caching must not read as 0%.
+   */
+  cache: {
+    /** Total billed input across reported turns, cache hits included. */
+    inputTokens: number;
+    /** Cache-hit tokens, summed over reported turns. */
+    cachedInputTokens: number;
+    /** Turns included in the sums. */
+    reportedTurns: number;
+    /** Cache hits over billed input, as a fraction; null when unmeasurable. */
+    hitRate: number | null;
   } | null;
 };
 
@@ -915,21 +1004,20 @@ export function isDesignTheme(value: unknown): value is DesignTheme {
 }
 
 /**
- * Design themes that actually ship a light palette.
+ * Design themes that ship both a light and a dark palette.
  *
- * `themes/codex.css` carries a `[data-theme='light']` block and `cursor.css` is
- * authored light-first with a dark override; `default.css` and `xai.css` define
- * one dark palette and nothing else. Light mode used to be offered for all four
- * regardless, so picking it under those two set `color-scheme: light` — which
- * repaints native form controls, scrollbars and autofill white — while every
- * app surface stayed dark. The result was white-on-white text in inputs.
- *
- * The list is the single source of truth for both halves of the fix: the
- * settings picker refuses to offer Light for a theme that has none, and
- * `resolveAppliedThemeMode` clamps anything already stored (or arriving from
- * `system`) back to dark.
+ * Every shipped theme is in this list: `codex` carries an explicit light
+ * block, `cursor` is authored light-first with a dark override, and
+ * `default`/`xai` gained light blocks once their dark-only palettes kept
+ * `system` users on light OSes pinned to dark. The list stays as the single
+ * source of truth so a future dark-only theme gets the same clamping that
+ * used to protect these four — `resolveAppliedThemeMode` refuses to paint
+ * light under a theme with no light palette (which used to mean white-on-
+ * white inputs: `color-scheme: light` repainted native controls while every
+ * app surface stayed dark), and the settings picker greys Light out with an
+ * explanation instead of offering a mode that cannot be honoured.
  */
-export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor'];
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor', 'default', 'xai'];
 
 export function designThemeSupportsLight(theme: DesignTheme): boolean {
   return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
@@ -1080,6 +1168,8 @@ export type SettingsSummary = {
   keyboard: SettingsKeyboardSummary;
   chat: SettingsChatSummary;
   showFreeOnlyByDefault: boolean;
+  /** The plugin system is a beta feature and ships switched off. */
+  pluginsBetaEnabled: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
   modelCatalogCount: number;
@@ -1536,6 +1626,12 @@ export type StreamMetaEvent = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Provider-reported prompt-cache hit tokens. Absent when the provider does
+   * not report them; never 0-by-default, so a missing value cannot fake a
+   * 0% hit rate.
+   */
+  cachedInputTokens?: number;
   latencyMs?: number;
 };
 
@@ -1726,7 +1822,22 @@ export type ActivityType =
   | 'task.progress'
   | 'task.updated'
   | 'task.completed'
-  | 'subagent.descriptor';
+  | 'subagent.descriptor'
+  /**
+   * Goal-mode lifecycle (/goal). Same durable-log pattern as the followup
+   * queue: every transition is append-only, so the transcript's activity
+   * stream is the audit trail and nothing needs a second store.
+   */
+  | 'goal.created'
+  | 'goal.edited'
+  | 'goal.paused'
+  | 'goal.resumed'
+  | 'goal.cleared'
+  | 'goal.intent.requested'
+  | 'goal.completed'
+  | 'goal.blocked'
+  | 'goal.continuation.admitted'
+  | 'goal.continuation.rejected';
 
 export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
 
@@ -2028,6 +2139,7 @@ export type DiagnosticsSnapshot = {
 
 export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
+  pluginsBetaEnabled?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
     designTheme?: DesignTheme;
@@ -2112,6 +2224,13 @@ export type AppUpdateSnapshot =
       checkedAt: string;
     };
 
+/** One parsed `atlas://` route, forwarded main → renderer. */
+export type AtlasDeepLink =
+  | { kind: 'chat'; conversationId?: string; prompt?: string }
+  | { kind: 'settings'; section?: string }
+  | { kind: 'plugins' }
+  | { kind: 'sites' };
+
 export type RendererApi = {
   settings: {
     getSummary: () => Promise<SettingsSummary>;
@@ -2177,6 +2296,12 @@ export type RendererApi = {
     /** The side conversations of one chat. They appear in no other listing. */
     listSide: (conversationId: string) => Promise<ConversationSummary[]>;
     /**
+     * Turns a side chat into a normal conversation (it joins the sidebar and
+     * outlives its parent). False when the id is not a promotable side chat —
+     * subagent rows share the same link column and are refused.
+     */
+    promoteSide: (sideConversationId: string) => Promise<boolean>;
+    /**
      * Deletes this conversation's git worktree and resets its execution target
      * to local. No-op when the conversation has no worktree.
      */
@@ -2212,6 +2337,8 @@ export type RendererApi = {
     respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
     getRuntimeState: (request: RuntimeStateRequest) => Promise<RuntimeStateSnapshot>;
     getContextUsage: (request: GetContextUsageRequest) => Promise<ContextUsageSnapshot>;
+    /** Forces the next turn to re-split history from zero (manual /compact). */
+    compact: (conversationId: string) => Promise<void>;
     recoverEvents: (request: RecoverEventsRequest) => Promise<RecoverEventsResponse>;
     openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
@@ -2284,6 +2411,7 @@ export type RendererApi = {
     createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     commit: (request: GitCommitRequest) => Promise<string>;
     review: (request: GitReviewRequest) => Promise<ReviewDiff>;
+    listReviewTurns: (conversationId: string) => Promise<ReviewTurnSummary[]>;
     stage: (conversationId: string, paths: string[]) => Promise<void>;
     unstage: (conversationId: string, paths: string[]) => Promise<void>;
     revert: (conversationId: string, paths: string[]) => Promise<void>;
@@ -2337,7 +2465,12 @@ export type RendererApi = {
     ) => Promise<PluginsView>;
     checkHealth: (
       pluginName: string
-    ) => Promise<{ ok: boolean; toolsCount?: number; error?: string }>;
+    ) => Promise<PluginHealthView>;
+    /** Runs the OAuth consent flow for one of a plugin's remote servers. */
+    connectServer: (
+      pluginName: string,
+      serverKey: string
+    ) => Promise<{ ok: boolean; status?: 'ready' | 'authorization-required'; error?: string }>;
   };
   mcpUi: {
     /**
@@ -2369,6 +2502,8 @@ export type RendererApi = {
   jobs: {
     /** Snapshots of every job the conversation owns, registration order. */
     list: (conversationId: string) => Promise<JobSnapshotView[]>;
+    /** Snapshots of every job across all conversations, registration order. */
+    listAll: () => Promise<JobSnapshotView[]>;
     /** Request cancellation of one job; resolves with the updated snapshot. */
     kill: (conversationId: string, jobId: string) => Promise<JobSnapshotView>;
     /** Push channel for job registration and settlement. */
@@ -2382,5 +2517,25 @@ export type RendererApi = {
     getLiveness: () => Promise<Record<string, 'working' | 'monitoring' | null>>;
     /** Composer takeover input: is this conversation a subagent, and can it still be driven? */
     getComposerState: (childId: string) => Promise<SubagentComposerState | null>;
+  };
+  goals: {
+    /** Creates or replaces the conversation's goal; `edit` rewrites the live row in place (same id, counters kept). */
+    set: (conversationId: string, objective: string, mode?: 'replace' | 'edit') => Promise<ConversationGoalView>;
+    pause: (conversationId: string) => Promise<ConversationGoalView>;
+    resume: (conversationId: string) => Promise<ConversationGoalView>;
+    /** Deletes the goal; resolves null when there was nothing to clear. */
+    clear: (conversationId: string) => Promise<ConversationGoalView | null>;
+    get: (conversationId: string) => Promise<ConversationGoalView | null>;
+    onGoalEvent: (listener: (event: GoalEvent) => void) => () => void;
+  };
+  deepLink: {
+    /** `atlas://` routes, forwarded from the main process. */
+    onDeepLink: (listener: (link: AtlasDeepLink) => void) => () => void;
+    /**
+     * A link that arrived before any window could receive events (cold-start
+     * `open-url` on macOS, argv on Windows/Linux). Pulled once by the
+     * renderer's first subscription; null when there is nothing parked.
+     */
+    consumePending: () => Promise<AtlasDeepLink | null>;
   };
 };

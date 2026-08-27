@@ -241,6 +241,8 @@ type CreateMessageInput = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   reasoningTokens?: number | null;
+  /** Provider-reported prompt-cache hit tokens; undefined leaves the column alone. */
+  cachedInputTokens?: number | null;
   latencyMs?: number | null;
   errorCode?: string | null;
   createdAt?: string;
@@ -258,6 +260,7 @@ type UpdateMessageInput = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   reasoningTokens?: number | null;
+  cachedInputTokens?: number | null;
   latencyMs?: number | null;
   errorCode?: string | null;
 };
@@ -765,6 +768,29 @@ export class ConversationsRepo {
   }
 
   /**
+   * Promote a side conversation into a normal chat: clearing the parent link
+   * is what makes it appear in `list()`, and it then outlives its parent.
+   *
+   * Subagent rows are refused: they share `side_of_conversation_id` as their
+   * provenance marker, but promoting one would leak an internal worker into
+   * the user's sidebar. Only a user-created side chat (`origin` null) qualifies.
+   */
+  promoteSideConversation(sideConversationId: string): boolean {
+    const result = this.db
+      .prepare<{ id: string; now: string }>(
+        `
+          UPDATE conversations
+          SET side_of_conversation_id = NULL, updated_at = @now
+          WHERE id = @id
+            AND side_of_conversation_id IS NOT NULL
+            AND (origin IS NULL OR origin != 'subagent')
+        `
+      )
+      .run({ id: sideConversationId, now: new Date().toISOString() });
+    return result.changes > 0;
+  }
+
+  /**
    * Search message bodies, not titles.
    *
    * Archived chats stay out of the results unless asked for, exactly as in
@@ -1119,6 +1145,27 @@ export class ConversationsRepo {
       projectId: row?.project_id ?? null,
       worktreeRoot: row?.worktree_root ?? null
     };
+  }
+
+  /**
+   * Every conversation still bound to a worktree root, for the GC's active-set:
+   * a checkout no row points at is by definition unreferenced and collectable.
+   */
+  listWorktreeBindings(): Array<{ conversationId: string; projectId: string | null; worktreeRoot: string }> {
+    return this.db
+      .prepare<Record<string, never>, { conversation_id: string; project_id: string | null; worktree_root: string }>(
+        `
+          SELECT id AS conversation_id, project_id AS project_id, worktree_root AS worktree_root
+          FROM conversations
+          WHERE worktree_root IS NOT NULL
+        `
+      )
+      .all({})
+      .map((row) => ({
+        conversationId: row.conversation_id,
+        projectId: row.project_id,
+        worktreeRoot: row.worktree_root
+      }));
   }
 
   /**
@@ -1501,13 +1548,19 @@ export class ConversationsRepo {
     const row = this.db
       .prepare<
         { conversationId: string },
-        { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null }
+        {
+          inputTokens: number | null;
+          outputTokens: number | null;
+          reasoningTokens: number | null;
+          cachedInputTokens: number | null;
+        }
       >(
         `
           SELECT
             input_tokens AS inputTokens,
             output_tokens AS outputTokens,
-            reasoning_tokens AS reasoningTokens
+            reasoning_tokens AS reasoningTokens,
+            cached_input_tokens AS cachedInputTokens
           FROM messages
           WHERE conversation_id = @conversationId
             AND role = 'assistant'
@@ -1526,6 +1579,64 @@ export class ConversationsRepo {
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
       reasoningTokens: row.reasoningTokens,
+      cachedInputTokens: row.cachedInputTokens,
+    };
+  }
+
+  /**
+   * Conversation-wide prompt-cache accounting, summed from provider reports.
+   *
+   * `inputTokens` is the provider's total prompt billing — which INCLUDES
+   * cache hits (AI SDK `inputTokens` ≡ OpenAI `prompt_tokens`; the disjoint
+   * figure is `inputTokenDetails.noCacheTokens`). The hit rate is therefore
+   * cached over input alone, not their sum — summing would double-count the
+   * denominator and halve every displayed percentage. Some adapters report
+   * exclusive figures instead; the guard below self-corrects by falling back
+   * to `input + cached` whenever cached exceeds input. Only turns where the
+   * provider actually reported a cache figure count toward the rate; turns
+   * from providers that stay silent are excluded rather than dragged toward
+   * zero, which keeps an unreported provider from faking a 0% hit rate.
+   */
+  getCacheUsage(conversationId: string) {
+    const row = this.db
+      .prepare<
+        { conversationId: string },
+        { inputTokens: number | null; cachedInputTokens: number | null; reportedTurns: number }
+      >(
+        `
+          SELECT
+            COALESCE(SUM(input_tokens), 0) AS inputTokens,
+            COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+            COUNT(*) AS reportedTurns
+          FROM messages
+          WHERE conversation_id = @conversationId
+            AND role = 'assistant'
+            AND input_tokens IS NOT NULL
+            AND cached_input_tokens IS NOT NULL
+        `
+      )
+      .get({ conversationId });
+
+    if (!row || row.reportedTurns === 0) {
+      return null;
+    }
+
+    const inputTotal = row.inputTokens ?? 0;
+    const cachedTotal = row.cachedInputTokens ?? 0;
+    const denominator = cachedTotal > inputTotal ? inputTotal + cachedTotal : inputTotal;
+
+    return {
+      /** Total billed input across reported turns, cache hits included. */
+      inputTokens: inputTotal,
+      /** Cache-hit tokens across all reported turns. */
+      cachedInputTokens: cachedTotal,
+      /** Turns whose cache figures are in these sums. */
+      reportedTurns: row.reportedTurns,
+      /**
+       * Cache hits over billed input, as a fraction. Null when the provider
+       * reported nothing at all — never coerced to 0.
+       */
+      hitRate: denominator > 0 ? cachedTotal / denominator : null,
     };
   }
 
@@ -1683,6 +1794,7 @@ export class ConversationsRepo {
               input_tokens = COALESCE(@inputTokens, input_tokens),
               output_tokens = COALESCE(@outputTokens, output_tokens),
               reasoning_tokens = COALESCE(@reasoningTokens, reasoning_tokens),
+              cached_input_tokens = COALESCE(@cachedInputTokens, cached_input_tokens),
               latency_ms = COALESCE(@latencyMs, latency_ms),
               error_code = CASE WHEN @errorCodePresent = 1 THEN @errorCode ELSE error_code END
           WHERE id = @messageId
@@ -1702,6 +1814,7 @@ export class ConversationsRepo {
         inputTokens: input.inputTokens ?? null,
         outputTokens: input.outputTokens ?? null,
         reasoningTokens: input.reasoningTokens ?? null,
+        cachedInputTokens: input.cachedInputTokens ?? null,
         latencyMs: input.latencyMs ?? null,
         errorCodePresent: input.errorCode !== undefined ? 1 : 0,
         errorCode: input.errorCode ?? null,
@@ -1778,6 +1891,7 @@ export class ConversationsRepo {
               input_tokens,
               output_tokens,
               reasoning_tokens,
+              cached_input_tokens,
               latency_ms,
               error_code,
               created_at
@@ -1796,6 +1910,7 @@ export class ConversationsRepo {
               @inputTokens,
               @outputTokens,
               @reasoningTokens,
+              @cachedInputTokens,
               @latencyMs,
               @errorCode,
               @createdAt
@@ -1816,6 +1931,7 @@ export class ConversationsRepo {
           inputTokens: input.inputTokens ?? null,
           outputTokens: input.outputTokens ?? null,
           reasoningTokens: input.reasoningTokens ?? null,
+          cachedInputTokens: input.cachedInputTokens ?? null,
           latencyMs: input.latencyMs ?? null,
           errorCode: input.errorCode ?? null,
           createdAt: timestamp

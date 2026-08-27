@@ -52,11 +52,11 @@ export function FileRefChip({
       */}
       <span
         aria-hidden
-        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[4px] bg-brand-surface px-1 font-mono text-[10px] font-semibold leading-none text-brand"
+        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[4px] bg-brand-surface px-1 font-mono text-[10px] font-semibold leading-none text-brand-strong"
       >
         {fileRefBadge(ref.extension)}
       </span>
-      <span className="truncate text-brand">{label}</span>
+      <span className="truncate text-brand-strong">{label}</span>
     </span>
   );
 }

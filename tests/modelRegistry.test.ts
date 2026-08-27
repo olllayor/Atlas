@@ -182,6 +182,50 @@ test('ModelRegistry validateProviderKey updates provider credential status', asy
   assert.equal(settingsRepo.getCredential('glm').status, 'valid');
 });
 
+test('ModelRegistry refresh does not validate a catalog served from configuration', async (t) => {
+  const { tempDir, raw, modelsRepo, settingsRepo, configureProvider } = createDatabase();
+  const keychain = createKeychain({ 'custom:local': 'whatever-key' });
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  configureProvider('custom:local');
+  // What syncRegistry does at startup: the key's presence is known even
+  // though nothing has proven it works.
+  settingsRepo.syncSecretPresence('custom:local', true);
+
+  // The custom adapter answers listModels from its saved model list without
+  // ever contacting the endpoint, so the refresh cannot know the key works —
+  // and must not record that it does.
+  const providers: ProviderRegistry = new Map([
+    [
+      'custom:local',
+      {
+        providerId: 'custom:local',
+        capabilities: { requiresApiKeyForCatalog: false, returnsCompleteCatalog: true, catalogRequiresNetwork: false },
+        async validateCredential() {},
+        async listModels() {
+          return [createModel('llama3', 'custom:local')];
+        },
+        async streamChat() {
+          throw new Error('not implemented');
+        }
+      }
+    ]
+  ]);
+
+  const registry = new ModelRegistry(modelsRepo, settingsRepo, keychain as never, providers);
+  const models = await registry.refresh();
+
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['llama3']
+  );
+  assert.equal(settingsRepo.getCredential('custom:local').status, 'unknown');
+});
+
 test('ModelRegistry refresh returns available catalogs when another provider refresh fails', async (t) => {
   const { tempDir, raw, modelsRepo, settingsRepo, configureProvider } = createDatabase();
   const keychain = createKeychain({ openrouter: 'or-key' });

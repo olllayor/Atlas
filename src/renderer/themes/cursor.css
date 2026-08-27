@@ -11,13 +11,23 @@
   --bg-elevated: #e6e5e0; /* Surface 400 - card backgrounds */
   --bg-overlay: #f7f7f4; /* Opaque surface for popovers, dialogs, menus - lighter than base for visibility */
   --bg-code: #ebeae5; /* Surface 300 - code blocks */
+  /* A light slab cannot separate from a cream page by tone alone — same
+     reason codex's light block carries one. The contract default is
+     transparent because dark themes separate by tone. */
+  --border-composer: rgba(38, 37, 30, 0.09);
 
   --bg-subtle: #ebeae5; /* Surface 300 - button backgrounds */
   --bg-ghost: #e6e5e0; /* Surface 400 - secondary */
   --bg-hover: #dcdbd6; /* Surface 500 - hover state (darkened for better visibility) */
   --bg-active: #d7d6d1; /* Darker for active */
-  --bg-button: #ebeae5; /* Primary button - warm surface */
-  --bg-button-hover: #dcdbd6; /* Button hover (darkened) */
+  /*
+   * Primary buttons are dark ink on cream, not a cream surface. The old
+   * #ebeae5 surface paired with --text-inverse (#f2f1ed, also cream) at
+   * 1.07:1 — every primary CTA (composer send, dialogs, onboarding) was
+   * invisible in this theme's light mode.
+   */
+  --bg-button: #26251e; /* Cursor Dark - primary button ink */
+  --bg-button-hover: #454439; /* Lightened ink for hover */
 
   /* Borders - Warm brown with perceptual uniformity */
   --border-subtle: rgba(38, 37, 30, 0.08); /* 8% warm brown */
@@ -37,7 +47,8 @@
    */
   --text-muted: rgba(38, 37, 30, 0.65); /* 4.66:1 */
   --text-faint: rgba(38, 37, 30, 0.52); /* 3.19:1 */
-  --text-inverse: #f2f1ed; /* Cream text on dark */
+  /* Cream text for dark-ink surfaces (--bg-button). */
+  --text-inverse: #f2f1ed;
 
   /* Semantic - Warm-shifted semantic colors */
   --success: #1f8a65; /* Muted teal-green */
@@ -58,7 +69,17 @@
   /* Accent */
   --accent: #f54e00; /* Cursor Orange - brand accent */
   --accent-hover: #cf2d56; /* Warm crimson for hover states */
-  --accent-text: #ffffff;
+  /*
+   * Warm near-black ink, not white: white on the orange was 3.52:1 (an AA
+   * fail on every bg-brand button). This ink clears 5:1 on the orange and
+   * stays legible on the crimson hover. It also fixes --bg-brand buttons
+   * in the dark variant below, which inherits this token.
+   */
+  --accent-text: #1a1914;
+  /* Chip ink for accent-tinted surfaces (file-ref badges, gallery type
+     chips). The orange itself manages only 2.69:1 on its own tint, so
+     text there uses this darkened orange instead: 4.80:1. */
+  --accent-strong: #ad3802;
   /* Orange-based ring and tinted surface. Without these the contract's
      blue defaults leaked in and every focused control in this warm theme
      drew a cold blue ring. */
@@ -151,8 +172,16 @@
   --bg-ghost: rgba(242, 241, 237, 0.08);
   --bg-hover: rgba(242, 241, 237, 0.08);
   --bg-active: rgba(242, 241, 237, 0.14);
-  --bg-button: #3b3a30;
-  --bg-button-hover: #454439;
+  /* Opaque popover surface — the light block's #f7f7f4 would glow on dark
+     if inherited, and popovers/dialogs need an opaque floor over content. */
+  --bg-overlay: #34332a;
+  /*
+   * Primary buttons invert to a light slab in dark mode. The old #3b3a30
+   * surface paired with --text-inverse (#26251e) at 1.34:1 — the same
+   * invisible-button failure the light block had.
+   */
+  --bg-button: #f2f1ed;
+  --bg-button-hover: #ffffff;
 
   /* Borders in dark mode */
   --border-subtle: rgba(242, 241, 237, 0.06);
@@ -164,16 +193,35 @@
   --text-primary: #f2f1ed;
   --text-secondary: rgba(242, 241, 237, 0.85);
   --text-tertiary: rgba(242, 241, 237, 0.6);
-  --text-muted: rgba(242, 241, 237, 0.5); /* 4.50:1 on --bg-base */
+  --text-muted: rgba(242, 241, 237, 0.52); /* 4.75:1 on --bg-base; 0.5 sat exactly on the AA line */
   --text-faint: rgba(242, 241, 237, 0.45); /* was 0.3 = 2.6:1; now 3.94:1 */
   --text-inverse: #26251e;
 
-  /* Keep semantic colors vibrant in dark */
+  /* Keep semantic colors vibrant in dark. The full trios, not just the
+     base hues: the light block's deep -text variants (#1f8a65 on dark)
+     sat at ~3.5:1, under AA for the text they carry. */
   --success: #34d399;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --success-border: rgba(52, 211, 153, 0.25);
+  --success-text: #34d399;
+
   --warning: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.12);
+  --warning-border: rgba(251, 191, 36, 0.25);
+  --warning-text: #fbbf24;
+
   --error: #fb7185;
+  --error-bg: rgba(251, 113, 133, 0.12);
+  --error-border: rgba(251, 113, 133, 0.25);
+  --error-text: #fb7185;
+
   --accent: #f54e00;
   --accent-hover: #ff6b1a;
+  /* Same warm ink as the light block — it reads on the orange in both
+     modes, whereas white needed 3.52:1 here too before. */
+  --accent-text: #1a1914;
+  /* Chip ink on the dark-mode surface tint: 6.38:1. */
+  --accent-strong: #ffa366;
   --accent-surface: rgba(245, 78, 0, 0.18);
   --ring: rgba(255, 107, 26, 0.8);
 

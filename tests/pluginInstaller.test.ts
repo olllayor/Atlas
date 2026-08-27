@@ -237,6 +237,32 @@ test('the settings view describes servers from resolved values, not author prose
   assert.doesNotMatch(JSON.stringify(plugin), /trust me/, 'author prose must not reach the summary');
 });
 
+test('a bearer token the bundle names becomes a credential the panel asks for', (t) => {
+  const { dir, root, installer } = workspace(t);
+  const bundle = sourceBundle(dir, 'demo', (b) => {
+    write(
+      join(b, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          api: { type: 'http', url: 'https://example.test/mcp', bearer_token_env_var: 'DEMO_TOKEN' }
+        }
+      })
+    );
+  });
+  installer.install(bundle);
+
+  const [plugin] = buildPluginsView(new PluginRegistry({ root })).plugins;
+
+  // The connect path resolves this name from the keychain first and the
+  // process environment second — but neither happens unless the detail panel
+  // knew to ask. This prompt is what closes that loop.
+  assert.deepEqual(
+    plugin?.credentials.map((credential) => ('secretName' in credential ? credential.secretName : credential.type)),
+    ['DEMO_TOKEN']
+  );
+  assert.equal(plugin?.hasCredentials, false);
+});
+
 /* ------------------------------------------------------------------ *
  * Archive/duplicate hardening
  * ------------------------------------------------------------------ */

@@ -335,7 +335,7 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
         {isStreaming ? (
           <div className="flex h-52 w-full items-center justify-center">
             <div className="flex flex-col items-center gap-2">
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-border border-t-text-muted" />
+              <div className="h-4 w-4 motion-spin-steps rounded-full border-2 border-border border-t-text-muted" />
               <span className="text-sm text-text-muted">Building visual...</span>
             </div>
           </div>

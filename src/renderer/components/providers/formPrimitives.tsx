@@ -138,8 +138,8 @@ export function validateBaseUrl(raw: string): string | null {
 /** Non-blocking advice: the app appends the completion path itself. */
 export function baseUrlWarning(raw: string): string | null {
   const value = raw.trim().replace(/\/+$/, '');
-  if (/\/(chat\/completions|messages|responses)$/i.test(value)) {
-    return 'This looks like a completion path. Atlas appends the endpoint itself — use the API root.';
+  if (/\/(chat\/completions|messages|responses|models)$/i.test(value)) {
+    return 'This looks like an endpoint path. Atlas appends the endpoint itself — use the API root.';
   }
 
   return null;

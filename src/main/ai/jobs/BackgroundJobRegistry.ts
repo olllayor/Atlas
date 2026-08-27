@@ -61,6 +61,12 @@ export interface JobHooks {
    * final-output-only job; each job has one consuming cursor.
    */
   readOutput?(): string;
+  /**
+   * Non-destructive look at the last complete lines of a live stream job —
+   * what a UI preview shows without stealing from the consuming cursor
+   * (`readOutput`) that `job_output` drains. Absence means no preview.
+   */
+  peekTail?(lines: number): string[];
 }
 
 export interface JobStart {
@@ -95,6 +101,11 @@ export interface JobSnapshot {
   startedAt: number;
   /** Epoch ms when the job settled; absent while `running`/`stopping`. */
   finishedAt?: number;
+  /**
+   * Last lines of a live stream job's output (UI preview, non-consuming).
+   * Present only while the job runs and its producer exposes `peekTail`.
+   */
+  tail?: string[];
 }
 
 export interface JobRead {
@@ -124,6 +135,7 @@ interface TrackedJob {
   outputLimitBytes: number | undefined;
   cancel: (reason?: string) => void;
   readOutput: (() => string) | undefined;
+  peekTail: ((lines: number) => string[]) | undefined;
   status: JobStatus;
   detail: string | undefined;
   output: string | undefined;
@@ -202,6 +214,7 @@ export class BackgroundJobRegistry {
       outputLimitBytes: spec.outputLimitBytes,
       cancel: hooks.cancel.bind(hooks),
       readOutput: hooks.readOutput?.bind(hooks),
+      peekTail: hooks.peekTail?.bind(hooks),
       status: 'running',
       detail: undefined,
       output: undefined,
@@ -246,6 +259,15 @@ export class BackgroundJobRegistry {
     return [...this.store.values()]
       .filter((job) => job.conversationId === conversationId)
       .map((job) => this.snapshot(job));
+  }
+
+  /**
+   * Snapshots of every job across all conversations, registration order.
+   * Whole-app views (sidebar attention, activity bell) need cross-conversation
+   * truth; per-conversation consumers keep using the fenced `list`.
+   */
+  listAll(): JobSnapshot[] {
+    return [...this.store.values()].map((job) => this.snapshot(job));
   }
 
   /**
@@ -437,6 +459,7 @@ export class BackgroundJobRegistry {
   }
 
   private snapshot(job: TrackedJob): JobSnapshot {
+    const live = !isTerminal(job.status);
     return {
       id: job.id,
       kind: job.kind,
@@ -446,10 +469,23 @@ export class BackgroundJobRegistry {
       status: job.status,
       ...(job.detail !== undefined ? { detail: job.detail } : {}),
       startedAt: job.startedAt,
-      ...(job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {})
+      ...(job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {}),
+      ...(live && job.peekTail
+        ? {
+            tail: job
+              .peekTail(JOB_TAIL_LINES)
+              .slice(0, JOB_TAIL_LINES)
+              .map((line) => (line.length > JOB_TAIL_LINE_MAX_CHARS ? `${line.slice(0, JOB_TAIL_LINE_MAX_CHARS)}…` : line))
+          }
+        : {})
     };
   }
 }
+
+/** Preview lines a snapshot carries for a live stream job. */
+const JOB_TAIL_LINES = 3;
+/** Per-line cap so one runaway line cannot bloat every broadcast. */
+const JOB_TAIL_LINE_MAX_CHARS = 160;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

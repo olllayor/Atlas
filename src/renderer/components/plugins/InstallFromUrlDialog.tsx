@@ -140,7 +140,7 @@ export function InstallFromUrlDialog({ onClose, onInstall }: InstallFromUrlDialo
               type="button"
               onClick={() => void install()}
               disabled={busy || blocked}
-              className="flex shrink-0 items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs text-text-inverse hover:opacity-90 disabled:opacity-50"
+              className="flex shrink-0 items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs text-brand-text hover:opacity-90 disabled:opacity-50"
             >
               <DownloadIcon className="size-3.5" aria-hidden />
               Install {preview.name}

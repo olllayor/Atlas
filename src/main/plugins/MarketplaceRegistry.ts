@@ -82,6 +82,55 @@ export class MarketplaceRegistry {
     return this.listRecords().map((record) => this.resolve(record));
   }
 
+  /**
+   * Every record whose checkout already exists, resolved.
+   *
+   * For startup paths that must not pay for a first clone: a built-in git
+   * marketplace is app content fetched when the directory is first opened, not
+   * something startup should block on. A user-added git marketplace always has
+   * a checkout by now — `add` resolved it before saving, and every resolve
+   * since re-cloned it.
+   */
+  resolveAvailable(): ResolvedMarketplace[] {
+    return this.listRecords()
+      .filter(
+        (record) =>
+          record.source.kind === 'path' ||
+          existsSync(join(this.checkoutRoot, record.name, '.git'))
+      )
+      .map((record) => this.resolve(record));
+  }
+
+  /**
+   * Discards the cached checkouts of built-in git marketplaces.
+   *
+   * The next resolve re-clones them from their remotes. This is how the
+   * official catalogue gets fresh: deliberately, from the update check the
+   * user pressed — never from a page open, which only reads what is on disk.
+   */
+  expireBuiltInCheckouts(): number {
+    let expired = 0;
+
+    for (const record of this.listRecords()) {
+      if (!record.builtIn || record.source.kind !== 'git') {
+        continue;
+      }
+
+      const target = join(this.checkoutRoot, record.name);
+
+      if (existsSync(target)) {
+        rmSync(target, { recursive: true, force: true });
+        expired += 1;
+      }
+    }
+
+    if (expired > 0) {
+      logger.info('marketplace.builtin_checkouts_expired', { count: expired });
+    }
+
+    return expired;
+  }
+
   resolve(record: MarketplaceRecord): ResolvedMarketplace {
     let root: string;
 
@@ -226,6 +275,15 @@ export class MarketplaceRegistry {
     }
 
     const target = join(this.ensureCheckoutRoot(), record.name);
+
+    // A built-in git marketplace is cached app content, not a live remote the
+    // user chose to track: cloned once, then served from disk until the update
+    // check expires it. The official catalogue's checkout is tens of
+    // megabytes — re-fetching that on every page open would turn browsing the
+    // directory into a download.
+    if (record.builtIn === true && existsSync(join(target, '.git'))) {
+      return realpathSync(target);
+    }
 
     // Re-cloned rather than pulled. A clone into a fresh directory cannot be
     // affected by whatever state a previous fetch left behind, and a

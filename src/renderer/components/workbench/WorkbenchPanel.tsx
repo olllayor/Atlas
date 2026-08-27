@@ -23,7 +23,7 @@
  */
 
 import { useMemo } from 'react';
-import { Check, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 import type { ChatMessage, ChatToolPart, WorkspaceMode } from '../../../shared/contracts';
 import {
@@ -37,10 +37,15 @@ import {
 import { cn } from '../../lib/utils';
 import { GitPanel } from './GitPanel';
 import { ReviewPanel } from './ReviewPanel';
+import { JobsSection } from './JobsSection';
+import { TaskStatusGlyph } from './TaskStatusGlyph';
 
 import { AgentsPanel } from '../agents/AgentsPanel';
 import type { WorkLogEntry } from '../../../shared/contracts';
 import { foldAgents } from '../../lib/agentFold';
+import { useConversationJobs } from '../../hooks/useConversationJobs';
+import { activeJobCount } from '../workspace/jobsChipViewModel';
+import { StatusDot } from '../ui/status-dot';
 
 export type WorkbenchTab = 'review' | 'git' | 'tasks' | 'agents';
 
@@ -101,6 +106,21 @@ export function WorkbenchPanel({
   // selected tab that is no longer in the bar.
   const visibleTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : (tabs[0]?.id ?? 'tasks');
 
+  // Background jobs power the Tasks tab's pulse: live work should read as
+  // alive from the tab strip, not only after opening the tab.
+  const { jobs } = useConversationJobs(conversationId);
+  const liveJobs = activeJobCount(jobs);
+  const runningTools = useMemo(
+    () =>
+      toolParts.some((part) => {
+        const status = toolCellStatus(part.state);
+        return status === 'running' || status === 'awaiting-approval';
+      }),
+    [toolParts]
+  );
+  const tasksLive = runningTools || liveJobs > 0;
+  const hasJobs = jobs.length > 0;
+
   // Only Tasks and Agents carry counts.
   const counts: Record<WorkbenchTab, number> = {
     review: 0,
@@ -112,25 +132,60 @@ export function WorkbenchPanel({
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg-base">
       {/* Plain text tabs — active is text-primary, inactive text-tertiary,
-          no pill, no border under the bar (spec §6: no dividers). */}
+          no pill, no border under the bar (spec §6: no dividers). Arrow keys
+          move between tabs per the tablist contract; only the active tab is
+          in the tab order. */}
       <div className="flex h-titlebar-height shrink-0 items-center gap-1 px-3">
-        <div role="tablist" aria-label="Workbench" className="flex min-w-0 flex-1 items-center gap-4 px-1">
+        <div
+          role="tablist"
+          aria-label="Workbench"
+          className="flex min-w-0 flex-1 items-center gap-4 px-1"
+          onKeyDown={(event) => {
+            if (
+              event.key !== 'ArrowLeft' &&
+              event.key !== 'ArrowRight' &&
+              event.key !== 'Home' &&
+              event.key !== 'End'
+            ) {
+              return;
+            }
+            event.preventDefault();
+            const index = tabs.findIndex((tab) => tab.id === visibleTab);
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? tabs.length - 1
+                  : event.key === 'ArrowRight'
+                    ? (index + 1) % tabs.length
+                    : (index - 1 + tabs.length) % tabs.length;
+            const nextTab = tabs[next];
+            if (!nextTab) return;
+            onTabChange(nextTab.id);
+            document.getElementById(`workbench-tab-${nextTab.id}`)?.focus();
+          }}
+        >
           {tabs.map((tab) => {
             const isActive = tab.id === visibleTab;
             const count = counts[tab.id];
+            const live = tab.id === 'tasks' && tasksLive;
 
             return (
               <button
                 key={tab.id}
+                id={`workbench-tab-${tab.id}`}
                 role="tab"
                 type="button"
                 aria-selected={isActive}
+                aria-controls="workbench-panel"
+                tabIndex={isActive ? 0 : -1}
                 onClick={() => onTabChange(tab.id)}
                 className={cn(
                   'inline-flex items-center gap-1.5 py-1.5 text-sm transition-colors',
                   isActive ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
                 )}
               >
+                {live ? <StatusDot tone="running" label="Tasks running" /> : null}
                 <span>{tab.label}</span>
                 {count > 0 && <span className="tabular-nums text-text-faint">{count}</span>}
               </button>
@@ -158,12 +213,17 @@ export function WorkbenchPanel({
           visibleTab === 'review' || visibleTab === 'agents' ? 'overflow-hidden' : 'overflow-y-auto scrollbar-auto-hide'
         )}
         role="tabpanel"
+        id="workbench-panel"
+        aria-labelledby={`workbench-tab-${visibleTab}`}
+        tabIndex={0}
       >
         {visibleTab === 'review' && (
           <ReviewPanel conversationId={conversationId} onSendComments={onSendComments} />
         )}
         {visibleTab === 'git' && <GitPanel conversationId={conversationId} />}
-        {visibleTab === 'tasks' && <TasksTab parts={toolParts} />}
+        {visibleTab === 'tasks' && (
+          <TasksTab parts={toolParts} hasJobs={hasJobs} conversationId={conversationId} />
+        )}
         {visibleTab === 'agents' && (
           <AgentsPanel
             conversationId={conversationId}
@@ -201,58 +261,6 @@ const KIND_LABEL: Record<ToolCellKind, string> = {
   generic: 'Tool',
 };
 
-const STATUS_ARIA_LABEL: Record<ToolCellStatus, string> = {
-  pending: 'Queued',
-  running: 'Running',
-  success: 'Done',
-  failed: 'Failed',
-  'awaiting-approval': 'Awaiting approval',
-};
-
-/**
- * Status glyph vocabulary per the reference status list: spinner ring
- * while running, hollow circle while queued, dim check when done, and the
- * theme's error hue (orange under Codex) on failure.
- */
-function TaskStatusGlyph({ status, className }: { status: ToolCellStatus; className?: string }) {
-  const label = STATUS_ARIA_LABEL[status];
-
-  if (status === 'success') {
-    return <Check role="img" aria-label={label} className={cn('size-3.5 text-text-faint', className)} />;
-  }
-
-  if (status === 'failed') {
-    return <X role="img" aria-label={label} className={cn('size-3.5 text-error', className)} />;
-  }
-
-  if (status === 'running') {
-    return (
-      <span
-        role="img"
-        aria-label={label}
-        className={cn(
-          'size-3 animate-spin rounded-full border-[1.5px] border-text-tertiary border-t-transparent motion-reduce:animate-none',
-          className
-        )}
-      />
-    );
-  }
-
-  // Queued / awaiting approval: hollow circle. Approval borrows the
-  // warning hue so a blocked task is findable without a badge.
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      className={cn(
-        'size-3 rounded-full border-[1.5px]',
-        status === 'awaiting-approval' ? 'border-warning' : 'border-text-faint',
-        className
-      )}
-    />
-  );
-}
-
 function taskStatusText(cell: ToolCell): { text: string; className: string } {
   if (cell.status === 'running') return { text: 'In progress', className: 'text-text-faint' };
   if (cell.status === 'pending') return { text: 'Queued', className: 'text-text-faint' };
@@ -282,10 +290,18 @@ function TaskRow({ cell }: { cell: ToolCell }) {
   );
 }
 
-function TasksTab({ parts }: { parts: ChatToolPart[] }) {
+function TasksTab({
+  parts,
+  hasJobs,
+  conversationId,
+}: {
+  parts: ChatToolPart[];
+  hasJobs: boolean;
+  conversationId?: string;
+}) {
   const cells = useMemo(() => buildToolCells(parts), [parts]);
 
-  if (!cells.length) {
+  if (!cells.length && !hasJobs) {
     return (
       <EmptyState
         title="No agent actions yet"
@@ -310,6 +326,7 @@ function TasksTab({ parts }: { parts: ChatToolPart[] }) {
 
   return (
     <div className="px-4 py-2">
+      <JobsSection conversationId={conversationId} />
       {sections.map((section) => (
         <section key={section.title}>
           <h3 className="pb-1 pt-3 text-sm font-normal text-text-tertiary">{section.title}</h3>

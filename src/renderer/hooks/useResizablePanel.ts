@@ -184,6 +184,23 @@ export function useResizablePanel({
   };
 }
 
+/**
+ * Window width as reactive state, for layout math that must respond to
+ * resizes (the column solver). Passive listener; resize storms are already
+ * cheap at this scale — one `setState` per event on a leaf hook.
+ */
+export function useViewportWidth(): number {
+  const [width, setWidth] = useState(() => window.innerWidth);
+
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize, { passive: true });
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  return width;
+}
+
 /** Boolean UI state that survives a restart. */
 export function usePersistentFlag(storageKey: string, defaultValue: boolean) {
   const [value, setValue] = useState(() => {

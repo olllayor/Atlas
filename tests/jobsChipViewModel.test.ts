@@ -4,13 +4,15 @@ import test from 'node:test';
 import type { JobSnapshotView } from '../src/shared/contracts';
 import {
   activeJobCount,
+  cappedDisplayRows,
   jobElapsedLabel,
   jobIsKillable,
   jobRowView,
   jobsChipLabel,
   jobsChipVisible,
   jobStatusLabel,
-  sortJobsForDisplay
+  sortJobsForDisplay,
+  truncateLabel
 } from '../src/renderer/components/workspace/jobsChipViewModel';
 
 function job(overrides: Partial<JobSnapshotView> = {}): JobSnapshotView {
@@ -25,9 +27,27 @@ function job(overrides: Partial<JobSnapshotView> = {}): JobSnapshotView {
   };
 }
 
+const NOW = 10_000;
+
 test('the chip is hidden when the conversation owns no jobs', () => {
-  assert.equal(jobsChipVisible([]), false);
-  assert.equal(jobsChipVisible([job()]), true);
+  assert.equal(jobsChipVisible([], NOW), false);
+  assert.equal(jobsChipVisible([job()], NOW), true);
+});
+
+test('the chip hides once all jobs settled for > 5 s', () => {
+  const settled = [job({ status: 'completed', startedAt: 1_000, finishedAt: 3_000 })];
+  // 4.9 s after finish — still visible
+  assert.equal(jobsChipVisible(settled, 3_000 + 4_900), true);
+  // 5.1 s after finish — hidden
+  assert.equal(jobsChipVisible(settled, 3_000 + 5_100), false);
+});
+
+test('the chip stays visible while any job is live', () => {
+  const jobs = [
+    job({ id: 'bash-1', status: 'completed', startedAt: 1_000, finishedAt: 2_000 }),
+    job({ id: 'bash-2', status: 'running', startedAt: 3_000 })
+  ];
+  assert.equal(jobsChipVisible(jobs, NOW), true);
 });
 
 test('activeJobCount counts only running and stopping jobs', () => {
@@ -106,4 +126,41 @@ test('display sort does not mutate its input', () => {
 
   sortJobsForDisplay(jobs);
   assert.deepEqual(jobs.map((j) => j.id), ['bash-1', 'bash-2']);
+});
+
+test('truncateLabel returns short labels unchanged', () => {
+  assert.equal(truncateLabel('pnpm build'), 'pnpm build');
+});
+
+test('truncateLabel clips long labels and appends ellipsis', () => {
+  const long = 'a'.repeat(100);
+  const result = truncateLabel(long, 80);
+  assert.equal(result.length, 80 + 3); // 80 chars + '[…]'
+  assert.ok(result.endsWith('[…]'));
+  assert.equal(result, 'a'.repeat(80) + '[…]');
+});
+
+test('cappedDisplayRows returns all rows when under the limit', () => {
+  const jobs = [job({ id: 'bash-1' }), job({ id: 'bash-2', status: 'completed' })];
+  const { rows, overflow } = cappedDisplayRows(jobs);
+  assert.equal(rows.length, 2);
+  assert.equal(overflow, 0);
+});
+
+test('cappedDisplayRows caps at 12 and reports overflow', () => {
+  const jobs = Array.from({ length: 20 }, (_, i) =>
+    job({ id: `bash-${i}`, status: 'completed', startedAt: i * 100 })
+  );
+  const { rows, overflow } = cappedDisplayRows(jobs);
+  assert.equal(rows.length, 12);
+  assert.equal(overflow, 8);
+});
+
+test('cappedDisplayRows still puts live jobs first', () => {
+  const jobs = [
+    job({ id: 'bash-dead', status: 'completed', startedAt: 100, finishedAt: 200 }),
+    job({ id: 'bash-live', status: 'running', startedAt: 300 })
+  ];
+  const { rows } = cappedDisplayRows(jobs);
+  assert.equal(rows[0].id, 'bash-live');
 });

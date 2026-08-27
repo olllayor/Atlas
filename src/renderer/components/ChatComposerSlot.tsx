@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { EMPTY_COMPOSER_ATTACHMENTS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
 import { Composer, type ComposerAttachment, type ComposerProps } from './Composer';
 import { QueueDock } from './transcript/QueueDock';
+import { GoalDock } from './goal/GoalDock';
 
 /**
  * Everything the composer needs that is *not* the half-typed message itself.
@@ -75,6 +76,7 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
 
   return (
     <>
+      <GoalDock conversationId={conversationId} />
       <QueueDock
         entries={queuedFollowups}
         onCancel={(requestId) => void cancelQueuedFollowup(requestId)}

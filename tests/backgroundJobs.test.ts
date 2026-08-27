@@ -24,7 +24,9 @@ import { SIDE_EFFECTING_TOOL_NAMES } from '../src/shared/chatParameters.js';
  */
 
 /** A controllable producer: the test owns cancel/settle/read. */
-function scriptedProducer(options: { output?: string; readOutput?: () => string } = {}) {
+function scriptedProducer(
+  options: { output?: string; readOutput?: () => string; peekTail?: (lines: number) => string[] } = {}
+) {
   let resolveDone!: (outcome: { status: 'completed' | 'killed' | 'failed'; detail?: string; output?: string }) => void;
   const done = new Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string; output?: string }>(
     (resolve) => {
@@ -38,7 +40,8 @@ function scriptedProducer(options: { output?: string; readOutput?: () => string 
       cancels.push(reason);
     },
     done,
-    ...(options.readOutput ? { readOutput: options.readOutput } : {})
+    ...(options.readOutput ? { readOutput: options.readOutput } : {}),
+    ...(options.peekTail ? { peekTail: options.peekTail } : {})
   };
 
   return { hooks, resolveDone, cancels, output: options.output };
@@ -679,4 +682,28 @@ test('job tools are on the side-effecting list (withheld in read-only mode)', ()
   assert.ok(SIDE_EFFECTING_TOOL_NAMES.includes('job_output'));
   assert.ok(SIDE_EFFECTING_TOOL_NAMES.includes('job_list'));
   assert.ok(SIDE_EFFECTING_TOOL_NAMES.includes('job_kill'));
+});
+
+test('live snapshots carry the peek tail; settled snapshots drop it and long lines are capped', async () => {
+  const registry = new BackgroundJobRegistry();
+  const producer = scriptedProducer({
+    readOutput: () => '',
+    peekTail: (lines) =>
+      Array.from({ length: lines + 2 }, (_, i) => (i === 0 ? 'x'.repeat(300) : `line-${i}`))
+  });
+  const id = registry.start({ kind: 'bash', label: 'preview', conversationId: 'c', run: () => producer.hooks });
+
+  const live = registry.get(id)!;
+  assert.ok(Array.isArray(live.tail));
+  assert.equal(live.tail!.length, 3);
+  // One runaway line must not bloat every broadcast.
+  assert.equal(live.tail![0].length, 160 + 1);
+  assert.ok(live.tail![0].endsWith('…'));
+  assert.deepEqual(live.tail!.slice(1), ['line-1', 'line-2']);
+
+  producer.resolveDone({ status: 'completed', detail: 'exit code: 0' });
+  await registry.wait(id, 1_000, 'c');
+
+  const settled = registry.get(id)!;
+  assert.equal(settled.tail, undefined);
 });

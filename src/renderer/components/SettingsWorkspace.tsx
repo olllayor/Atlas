@@ -111,13 +111,24 @@ type NavItem = {
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
   { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
-  { key: 'plugins', label: 'Plugins', icon: BoxIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
   { key: 'usage', label: 'Usage', icon: TimerIcon },
   { key: 'beta', label: 'Beta', icon: RocketIcon },
 ];
+
+/**
+ * The Plugins section exists only while the beta is on.
+ *
+ * A hidden feature keeps no settings page: navigating to it from a stale
+ * deep-link would render a control room for a system that is switched off.
+ */
+function navItemsFor(pluginsBetaEnabled: boolean): NavItem[] {
+  return pluginsBetaEnabled
+    ? [...activeNavItems.slice(0, 2), { key: 'plugins' as const, label: 'Plugins', icon: BoxIcon }, ...activeNavItems.slice(2)]
+    : activeNavItems;
+}
 
 export function SettingsWorkspace({
   settings,
@@ -165,7 +176,7 @@ export function SettingsWorkspace({
           <RailBackButton label="Back to app" onClick={onBack} />
 
           <nav className="mt-5 space-y-1">
-            {activeNavItems.map((item) => {
+            {navItemsFor(settings?.pluginsBetaEnabled ?? false).map((item) => {
               const Icon = item.icon;
               const isActive = activeSection === item.key;
 
@@ -210,7 +221,7 @@ export function SettingsWorkspace({
               </h1>
               {activeSection === 'providers' ? (
                 <ActionButton onClick={onRefreshModels} disabled={isRefreshingModels}>
-                  <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshingModels ? 'animate-spin' : ''}`} />
+                  <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshingModels ? 'motion-spin-steps' : ''}`} />
                   <span>{isRefreshingModels ? 'Refreshing…' : 'Refresh catalog'}</span>
                 </ActionButton>
               ) : null}
@@ -324,6 +335,17 @@ function BetaPage({
     } else if (window.atlasChat?.settings?.updatePreferences) {
       void window.atlasChat.settings.updatePreferences(patch);
     }
+  };
+
+  const handleTogglePlugins = (enabled: boolean) => {
+    updatePref({ pluginsBetaEnabled: enabled });
+    notify({
+      tone: 'success',
+      title: enabled ? 'Plugins enabled' : 'Plugins disabled',
+      description: enabled
+        ? 'The Plugins destination is in the sidebar.'
+        : 'Plugins are hidden and their tools are unavailable.',
+    });
   };
 
   const handleToggleEnabled = (enabled: boolean) => {
@@ -443,6 +465,19 @@ function BetaPage({
 
   return (
     <div className="space-y-6">
+      <SettingsGroup title="Plugins (Beta)">
+        <SettingsRow
+          title="Enable plugins"
+          description="Install plugin bundles: skills, commands, and MCP servers. Off, the feature is invisible everywhere in the app."
+        >
+          <UiSwitch
+            checked={settings?.pluginsBetaEnabled ?? false}
+            onCheckedChange={handleTogglePlugins}
+            aria-label="Enable plugins"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
       <SettingsGroup title="Cloud Sandbox (Experimental)">
         <SettingsRow
           title="Enable Cloud Sandbox"
@@ -466,7 +501,7 @@ function BetaPage({
               disabled={isDeploying}
               className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
             >
-              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'animate-spin' : ''}`} />
+              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'motion-spin-steps' : ''}`} />
               <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
             </button>
             {deployStep ? (
@@ -627,14 +662,14 @@ function GeneralPage({
           description={`Last synced ${lastSyncedLabel}. ${settings?.modelCatalogCount ?? 0} models cached locally.`}
         >
           <ActionButton onClick={onRefreshModels} disabled={isRefreshingModels}>
-            <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshingModels ? 'animate-spin' : ''}`} />
+            <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshingModels ? 'motion-spin-steps' : ''}`} />
             <span>{isRefreshingModels ? 'Refreshing…' : 'Refresh'}</span>
           </ActionButton>
         </SettingsRow>
 
         <SettingsRow title="App updates" description={updateDescription(updateState)}>
           <ActionButton onClick={onUpdateAction} disabled={updateState.status === 'checking'}>
-            <UpdateIcon className={`h-3.5 w-3.5 ${updateState.status === 'checking' ? 'animate-spin' : ''}`} />
+            <UpdateIcon className={`h-3.5 w-3.5 ${updateState.status === 'checking' ? 'motion-spin-steps' : ''}`} />
             <span>{updateLabel}</span>
           </ActionButton>
         </SettingsRow>
@@ -726,6 +761,7 @@ function AppearancePage({
         >
           <DesignThemePicker current={designTheme} onChange={onDesignThemeChange} />
         </SettingsStackedRow>
+        <ThemeSplitPreview designTheme={designTheme} />
       </SettingsGroup>
 
       <SettingsGroup title="Custom colors">
@@ -1421,12 +1457,13 @@ function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: 
 }
 
 /**
- * `designTheme` gates the Light segment: only some themes ship a light palette
- * (see `DESIGN_THEMES_WITH_LIGHT`), and under the others the app painted a dark
- * UI with `color-scheme: light`, which whitened native inputs and scrollbars.
- * Offering a mode that cannot be honoured is worse than not offering it, so the
- * segment is disabled and says why. `System` stays available — it resolves to
- * dark under those themes.
+ * `designTheme` gates the Light segment: a theme with no light palette (see
+ * `DESIGN_THEMES_WITH_LIGHT`) cannot honour it — the app would paint a dark
+ * UI under `color-scheme: light`, whitening native inputs and scrollbars.
+ * Offering a mode that cannot be honoured is worse than not offering it, so
+ * the segment is disabled and says why. Every shipped theme currently ships
+ * both palettes; the gate stays so a future dark-only theme is refused here
+ * rather than half-applied. `System` stays available either way.
  */
 function ThemeModePicker({
   current,
@@ -1521,8 +1558,7 @@ function VisualModePicker({
   );
 }
 
-function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {
-  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
+function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
     { theme: 'codex', label: 'Codex', description: 'Squircle, tinted elevation' },
     { theme: 'xai', label: 'xAI', description: 'Brutalist monochrome' },
     { theme: 'default', label: 'Default', description: 'Modern balanced' },
@@ -1552,6 +1588,61 @@ function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChan
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Live split preview of the selected design theme's light and dark
+ * palettes.
+ *
+ * Each half is a plain element carrying `data-theme` and
+ * `data-design-theme`, so the real stylesheets re-resolve every token
+ * inside it — there is no second copy of any palette in TS, a theme edit
+ * updates the preview for free, and the user's custom-color overrides
+ * (inline custom properties on <html>) flow in through normal inheritance.
+ */
+function ThemeSplitPreview({ designTheme }: { designTheme: DesignTheme }) {
+  return (
+    <div className="grid grid-cols-2 gap-2 pb-3">
+      {(['light', 'dark'] as const).map((mode) => (
+        <div
+          key={mode}
+          data-theme={mode}
+          data-design-theme={designTheme}
+          className="min-w-0 space-y-2 rounded-lg border border-border-subtle bg-bg-base p-3"
+        >
+          <div className="flex items-center justify-between">
+            {/* Sample chrome: title bar with a status dot. */}
+            <span className="text-xs font-medium text-text-primary">Atlas</span>
+            <span className="flex items-center gap-1.5">
+              <span className="size-1.5 rounded-full bg-success" />
+              <span className="text-3xs uppercase tracking-[0.08em] text-text-faint">{mode}</span>
+            </span>
+          </div>
+
+          {/* Sample transcript lines. */}
+          <div className="space-y-1.5 rounded-md bg-bg-subtle p-2">
+            <div className="h-1.5 w-4/5 rounded-full bg-text-secondary/70" />
+            <div className="h-1.5 w-3/5 rounded-full bg-text-tertiary/60" />
+            <div className="h-1.5 w-2/3 rounded-full bg-text-faint/50" />
+          </div>
+
+          {/* Sample actions: primary, accent fill, and an accent chip — the
+              three pairings the WCAG guard measures. */}
+          <div className="flex items-center gap-1.5">
+            <span className="inline-flex h-6 shrink-0 items-center rounded-sm bg-bg-button px-2.5 text-2xs font-medium text-text-inverse">
+              Primary
+            </span>
+            <span className="inline-flex h-6 shrink-0 items-center rounded-sm bg-brand px-2.5 text-2xs font-medium text-brand-text">
+              Accent
+            </span>
+            <span className="inline-flex h-4 min-w-4 shrink-0 items-center rounded-[4px] bg-brand-surface px-1 font-mono text-[10px] font-semibold leading-none text-brand-strong">
+              TS
+            </span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

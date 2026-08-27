@@ -211,6 +211,13 @@ export const ContextTrigger = ({
   const color = TONE_COLOR[tone];
   const circumference = 2 * Math.PI * 11;
 
+  // An untouched thread has no story to tell: a full accent circle reads as
+  // "something is full", when the fact is the opposite. Below ~0.5% used the
+  // ring draws as an empty track — the same neutral grey the dial carries
+  // before the first token — and only starts arcing once there is something
+  // to arc about.
+  const isEmpty = usedTokens <= 0 || remainingPercentage >= 99.5;
+
   // The arc is the headroom, so it drains as the window fills — the ring and
   // the figure it stands for move together, which a consumed arc under a
   // remaining figure would not. Above zero it keeps a 2% floor so the last
@@ -262,25 +269,27 @@ export const ContextTrigger = ({
             fill="none"
             stroke={exhausted ? color : "var(--border-default)"}
             strokeWidth="2.5"
-            opacity={exhausted ? 1 : 0.3}
+            opacity={exhausted ? 1 : isEmpty ? 0.6 : 0.3}
             style={{ filter: exhausted ? glow : "none" }}
           />
-          {/* Remaining arc */}
-          <circle
-            cx="16"
-            cy="16"
-            r="11"
-            fill="none"
-            stroke={color}
-            strokeDasharray={circumference}
-            strokeDashoffset={dashOffset}
-            strokeLinecap="round"
-            strokeWidth="2.5"
-            className="transition-all duration-300"
-            style={{
-              filter: tone !== "normal" && !exhausted ? glow : "none"
-            }}
-          />
+          {/* Remaining arc — not drawn at all while the thread is untouched */}
+          {isEmpty ? null : (
+            <circle
+              cx="16"
+              cy="16"
+              r="11"
+              fill="none"
+              stroke={color}
+              strokeDasharray={circumference}
+              strokeDashoffset={dashOffset}
+              strokeLinecap="round"
+              strokeWidth="2.5"
+              className="transition-all duration-300"
+              style={{
+                filter: tone !== "normal" && !exhausted ? glow : "none"
+              }}
+            />
+          )}
         </svg>
       </button>
     </HoverCardTrigger>
@@ -370,6 +379,7 @@ function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }
 
   return (
     <div className="flex flex-col gap-1">
+      <ContextCompositionBar breakdown={breakdown} />
       {rows.map((row) => (
         <div className="flex items-center justify-between gap-3 text-2xs" key={row.label}>
           <span className="text-text-tertiary">{row.label}</span>
@@ -396,6 +406,61 @@ function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }
   );
 }
 
+/**
+ * The prompt as one stacked bar (dsh's composition strip).
+ *
+ * Proportions read at a glance in a way five rows of numbers do not: a window
+ * dominated by the fixed floor says "this model carries heavy tools", one
+ * dominated by the summary says "this conversation is being compressed hard".
+ * Every segment is an estimate, so the bar carries `~` in its tooltips and
+ * never claims to sum to the anchored total.
+ */
+function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot }) {
+  const segments = [
+    // The fixed floor stays grey: accent is reserved for what the
+    // conversation itself put in the window, so an untouched thread's bar is
+    // all neutral and reads as empty even though the floor is real.
+    { label: "Instructions", tokens: breakdown.systemTokens, color: "var(--text-tertiary)" },
+    { label: "Tools", tokens: breakdown.toolTokens, color: "color-mix(in oklab, var(--text-tertiary) 55%, transparent)" },
+    { label: "Summarised turns", tokens: breakdown.summaryTokens, color: "var(--warning)" },
+    { label: "Recent turns", tokens: breakdown.historyTokens, color: "var(--accent)" },
+    { label: "Not yet sent", tokens: breakdown.pendingTokens, color: "color-mix(in oklab, var(--accent) 55%, transparent)" },
+  ].filter((segment) => segment.tokens > 0);
+
+  const total = segments.reduce((sum, segment) => sum + segment.tokens, 0);
+  if (total <= 0) {
+    return null;
+  }
+
+  return (
+    // Decorative: the rows below carry the same figures as text, so the bar
+    // is a shape, not a second data source screen readers must re-read.
+    <div aria-hidden="true" className="flex h-1.5 w-full gap-px overflow-hidden rounded-full bg-bg-subtle">
+      {segments.map((segment) => (
+        <div
+          key={segment.label}
+          className="h-full first:rounded-l-full last:rounded-r-full"
+          style={{ width: `${(segment.tokens / total) * 100}%`, background: segment.color }}
+          title={`~${segment.label}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One-decimal cache-hit percentage, dsh's high-cache-hit display.
+ *
+ * The decimal is the point: a harness living at 98.2% and one at 94% are both
+ * "high", but only the fraction says which prefix discipline is actually
+ * holding. Whole-number rounding would read both as 98 / 94 — fine — but would
+ * also flatten 97.96 → 98 next to a true 98.0, hiding drift inside the same
+ * glyph.
+ */
+export function formatCacheHitRate(hitRate: number) {
+  return `${(Math.min(1, Math.max(0, hitRate)) * 100).toFixed(1).replace(/\.0$/, "")}%`;
+}
+
 export type ContextContentFooterProps = HTMLAttributes<HTMLDivElement>;
 
 export const ContextContentFooter = ({
@@ -405,6 +470,7 @@ export const ContextContentFooter = ({
 }: ContextContentFooterProps) => {
   const { totalCost, breakdown } = useContextData();
   const formattedCost = formatUsd(totalCost);
+  const cache = breakdown?.cache ?? null;
 
   return (
     <div
@@ -416,6 +482,13 @@ export const ContextContentFooter = ({
     >
       {children ?? (
         <span>
+          {cache && cache.hitRate != null ? (
+            <>
+              {formatCacheHitRate(cache.hitRate)} prompt cache hit across{" "}
+              {cache.reportedTurns} {cache.reportedTurns === 1 ? "turn" : "turns"}.
+              <br />
+            </>
+          ) : null}
           {breakdown?.overflow
             ? "Over the window. The oldest turns are being summarised to fit."
             : formattedCost

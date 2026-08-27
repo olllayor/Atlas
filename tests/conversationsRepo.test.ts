@@ -635,3 +635,83 @@ test('Sites opt-in is sticky per conversation and defaults to off', () => {
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('getCacheUsage treats input as cache-inclusive and skips silent turns', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'atlas-cache-usage-'));
+  const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
+  const database = {
+    exec: (sql: string) => raw.exec(sql),
+    prepare: (sql: string) => raw.prepare(sql),
+    transaction:
+      <TArgs extends unknown[], TResult>(callback: (...args: TArgs) => TResult) =>
+      (...args: TArgs) => {
+        raw.exec('BEGIN');
+        try {
+          const result = callback(...args);
+          raw.exec('COMMIT');
+          return result;
+        } catch (error) {
+          raw.exec('ROLLBACK');
+          throw error;
+        }
+      },
+  };
+  applySchema(database as unknown as SqliteDatabase);
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversations = new ConversationsRepo(database as never);
+  const conversation = conversations.create();
+
+  // No reports yet → null, not a fake 0%.
+  assert.equal(conversations.getCacheUsage(conversation.id), null);
+
+  // Silent provider turn: input only, no cache figure — must stay excluded.
+  conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: 'silent',
+    status: 'complete',
+    providerId: 'openai',
+    modelId: 'gpt-test',
+    inputTokens: 5_000,
+  });
+
+  // Warm turn, inclusive reporting: 900 of 1000 prompt tokens were hits.
+  conversations.addMessage({
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: 'warm',
+    status: 'complete',
+    providerId: 'openai',
+    modelId: 'gpt-test',
+    inputTokens: 1_000,
+    cachedInputTokens: 900,
+  });
+
+  const usage = conversations.getCacheUsage(conversation.id);
+  assert.ok(usage);
+  assert.equal(usage.reportedTurns, 1, 'the silent turn is excluded');
+  assert.equal(usage.inputTokens, 1_000);
+  assert.equal(usage.cachedInputTokens, 900);
+  // Denominator is input alone — summing would report 900/1900 ≈ 47%.
+  assert.ok(Math.abs((usage.hitRate ?? 0) - 0.9) < 1e-9, `expected 90%, got ${usage.hitRate}`);
+
+  // Exclusive-style adapter (cached > input) self-corrects to input + cached.
+  const other = conversations.create();
+  conversations.addMessage({
+    conversationId: other.id,
+    role: 'assistant',
+    content: 'exclusive',
+    status: 'complete',
+    providerId: 'anthropic',
+    modelId: 'claude-test',
+    inputTokens: 400,
+    cachedInputTokens: 600,
+  });
+  const exclusive = conversations.getCacheUsage(other.id);
+  assert.ok(exclusive);
+  assert.ok(Math.abs((exclusive.hitRate ?? 0) - 0.6) < 1e-9, `expected 60%, got ${exclusive.hitRate}`);
+});

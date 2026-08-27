@@ -57,10 +57,23 @@
   --accent: #ffffff;
   --accent-hover: rgba(255, 255, 255, 0.8);
   --accent-text: #1f2228;
-  /* Monochrome ring — the contract default is a blue that belongs to no
-     part of this theme, and it was landing on every focused control. */
+  /* Chip ink on the tinted surface; monochrome theme, so the accent
+     itself (white) already clears AA there at 10.9:1. */
+  --accent-strong: #ffffff;
   --accent-surface: rgba(255, 255, 255, 0.12);
   --ring: rgba(255, 255, 255, 0.75);
+
+  /* Diff palette — the :root contract defaults are this theme's own dark
+     values; restated so both modes here own their palettes explicitly. */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #34d399;
+  --diff-del-fg: #fb7185;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(255, 255, 255, 0.4);
+  --diff-add-fg-count: #34d399;
+  --diff-del-fg-count: #fb7185;
 
   /* Toasts */
   --toast-bg: rgba(31, 34, 40, 0.96);
@@ -110,4 +123,98 @@
   --duration-normal: 150ms;
   --duration-slow: 200ms;
   --easing-default: cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ============================================
+   Light variant
+
+   The monochrome system inverted: white page, near-black ink, the same
+   alpha ladder expressed against rgb(22, 24, 29). Radii, shadows and
+   motion inherit from the dark block above — they are mode-independent,
+   and this theme's zero-radius/no-shadow stance does not change with the
+   sun. Diffs take GitHub's light palette; pure-grey diffs cannot carry
+   add/delete semantics without colour, and unreadable beats purist.
+   ============================================ */
+
+[data-theme='light'][data-design-theme='xai'] {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --bg-base: #ffffff;
+  --bg-panel: var(--bg-base);
+  --bg-surface: var(--bg-base);
+  --bg-elevated: rgba(22, 24, 29, 0.04);
+  --bg-overlay: #ffffff; /* Opaque surface for popovers, dialogs, menus */
+  --bg-code: rgba(22, 24, 29, 0.04);
+
+  --bg-subtle: rgba(22, 24, 29, 0.03);
+  --bg-ghost: rgba(22, 24, 29, 0.04);
+  --bg-hover: rgba(22, 24, 29, 0.07);
+  --bg-active: rgba(22, 24, 29, 0.11);
+  --bg-button: #16181d;
+  --bg-button-hover: #2a2d34;
+
+  /* Borders — this theme runs stronger hairlines than its siblings in
+     both modes; the light block keeps that stance. */
+  --border-subtle: rgba(22, 24, 29, 0.08);
+  --border-default: rgba(22, 24, 29, 0.15);
+  --border-medium: rgba(22, 24, 29, 0.2);
+  --border-strong: rgba(22, 24, 29, 0.35);
+
+  /* Text — alphas measured on #ffffff. */
+  --text-primary: #16181d;
+  --text-secondary: rgba(22, 24, 29, 0.75); /* ~7.8:1 */
+  --text-tertiary: rgba(22, 24, 29, 0.55); /* 3.95:1, decorative tier */
+  --text-muted: rgba(22, 24, 29, 0.62); /* 4.95:1 */
+  --text-faint: rgba(22, 24, 29, 0.47); /* ~3.2:1 */
+  --text-inverse: #ffffff;
+
+  /* Semantic — monochrome like the dark block: status is carried by
+     weight and position here, not hue. */
+  --success: rgba(22, 24, 29, 0.75);
+  --success-bg: rgba(22, 24, 29, 0.04);
+  --success-border: rgba(22, 24, 29, 0.2);
+  --success-text: rgba(22, 24, 29, 0.75);
+
+  --warning: rgba(22, 24, 29, 0.55);
+  --warning-bg: rgba(22, 24, 29, 0.04);
+  --warning-border: rgba(22, 24, 29, 0.2);
+  --warning-text: rgba(22, 24, 29, 0.55);
+
+  --error: rgba(22, 24, 29, 0.75);
+  --error-bg: rgba(22, 24, 29, 0.05);
+  --error-border: rgba(22, 24, 29, 0.3);
+  --error-text: rgba(22, 24, 29, 0.75);
+
+  /* Accent - inverted monochrome: dark fill, light glyph. */
+  --accent: #16181d;
+  --accent-hover: rgba(22, 24, 29, 0.8);
+  --accent-text: #ffffff;
+  --accent-strong: #16181d; /* 15.1:1 on its tint */
+  --accent-surface: rgba(22, 24, 29, 0.08);
+  --ring: rgba(22, 24, 29, 0.7);
+
+  /* Diff palette — GitHub's light values (see codex.css light block). */
+  --diff-add-bg: #dafbe1;
+  --diff-del-bg: #ffebe9;
+  --diff-add-fg: inherit;
+  --diff-del-fg: inherit;
+  --diff-add-gutter-bg: #aceebb;
+  --diff-del-gutter-bg: #ffcecb;
+  --diff-gutter-fg: #1f2328;
+  --diff-add-fg-count: #1a7f37;
+  --diff-del-fg-count: #cf222e;
+
+  /* Toasts */
+  --toast-bg: rgba(255, 255, 255, 0.96);
+  --toast-border: rgba(22, 24, 29, 0.12);
+  --toast-text: rgba(22, 24, 29, 0.75);
+  --toast-icon: rgba(22, 24, 29, 0.5);
+  --toast-close: rgba(22, 24, 29, 0.3);
+  --toast-close-hover: rgba(22, 24, 29, 0.55);
+
+  /* UI elements */
+  --overlay: rgba(22, 24, 29, 0.45);
+  --scrollbar: rgba(22, 24, 29, 0.15);
+  --scrollbar-hover: rgba(22, 24, 29, 0.25);
 }

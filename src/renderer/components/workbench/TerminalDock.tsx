@@ -13,9 +13,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, Eraser, Maximize2, Minimize2, Search, SquareTerminal } from 'lucide-react';
+import { ClipboardPaste, ChevronDown, Eraser, Maximize2, Minimize2, Search, SquareTerminal } from 'lucide-react';
 
 import { cn } from '../../lib/utils';
+import { buildTerminalContextBlock } from '../../lib/terminalContext';
 import { TerminalPanel, type TerminalPanelHandle } from './TerminalPanel';
 
 /**
@@ -38,6 +39,7 @@ export function TerminalDock({
   expanded,
   onToggleExpanded,
   shortcutLabel,
+  onAddSelectionToPrompt,
   className,
   style,
 }: {
@@ -50,6 +52,8 @@ export function TerminalDock({
   onToggleExpanded?: () => void;
   /** e.g. `⌘J` — shown on the close button so the shortcut is discoverable. */
   shortcutLabel?: string | null;
+  /** Pipes the current selection into the composer as a terminal-context block. */
+  onAddSelectionToPrompt?: (selection: string) => void;
   className?: string;
   /** Carries the dragged height from the layout. */
   style?: React.CSSProperties;
@@ -62,6 +66,13 @@ export function TerminalDock({
   const display = cwd ? splitPath(cwd) : null;
 
   const onCwd = useCallback((next: string) => setActualCwd(next), []);
+
+  const addSelectionToPrompt = useCallback(() => {
+    const selection = panelRef.current?.getSelectionText();
+    if (!selection || !onAddSelectionToPrompt) return;
+    onAddSelectionToPrompt(buildTerminalContextBlock({ shell: 'terminal', selection }));
+    panelRef.current?.focus();
+  }, [onAddSelectionToPrompt]);
 
   // Opening the dock is an act of wanting to type in it — mount only. Keyed
   // on `conversationId` it used to steal focus from the composer on every
@@ -102,6 +113,16 @@ export function TerminalDock({
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {onAddSelectionToPrompt ? (
+            <DockButton
+              label="Add selection to prompt"
+              hint="⌘E"
+              onClick={addSelectionToPrompt}
+            >
+              <ClipboardPaste className="size-3.5" aria-hidden />
+            </DockButton>
+          ) : null}
+
           <DockButton
             label="Find in terminal"
             hint="⌘F"
@@ -159,6 +180,7 @@ export function TerminalDock({
             ref={panelRef}
             conversationId={conversationId}
             onCwd={onCwd}
+            onRequestSelectionPrompt={onAddSelectionToPrompt ? addSelectionToPrompt : undefined}
           />
         ) : (
           <p className="px-3 py-2 text-sm text-text-faint">

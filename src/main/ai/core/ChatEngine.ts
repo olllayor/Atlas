@@ -41,6 +41,8 @@ import {
   sumAttachmentSize,
 } from '../../../shared/attachments';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
+import type { GoalRuntime } from '../goal/goalRuntime';
+import { GOAL_CONTINUATION_STEER, GOAL_PROGRESS_TOOLS } from '../goal/goalRuntime';
 import {
   deriveTitleFromUserMessage,
   isPlaceholderSessionTitle,
@@ -84,6 +86,14 @@ type ActiveRequest = {
   responseMessages: ModelMessage[];
   awaitingApproval: boolean;
   tracker: ToolExecutionTracker | null;
+  /**
+   * Set when this turn completed a side-effecting tool call — the one signal
+   * goal mode accepts as substantive progress (prose never resets the stall
+   * streak; Orca's rule). bash counts as a whole here: read-only inspection
+   * still proves the model is engaging with the workspace rather than
+   * restating its plan.
+   */
+  goalProgress?: boolean;
 };
 
 type BufferedRequestEvents = {
@@ -276,7 +286,10 @@ export class ChatEngine {
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
     private readonly attachmentStore: AttachmentStore,
-    private readonly runtime: Pick<ChatSessionRuntime, 'executeTurn' | 'measureContextUsage'> = new ChatSessionRuntime(
+    private readonly runtime: Pick<
+      ChatSessionRuntime,
+      'executeTurn' | 'measureContextUsage' | 'requestForcedCompaction'
+    > = new ChatSessionRuntime(
       conversationsRepo,
       modelsRepo,
       keychain,
@@ -555,6 +568,115 @@ export class ChatEngine {
       },
     });
   }
+
+  /*
+    Goal mode (C4 /goal). Optional and attached after construction: index.ts
+    builds the GoalRuntime over this engine's own callbacks, so a constructor
+    parameter would be circular. Null outside the real app (tests).
+  */
+  private goalRuntime: GoalRuntime | null = null;
+
+  attachGoalRuntime(runtime: GoalRuntime): void {
+    this.goalRuntime = runtime;
+  }
+
+  /**
+   * Durable-log writer for goal lifecycle events. Same repo path the followup
+   * queue uses, so goal rows replay in the transcript's activity stream like
+   * every other work-log entry.
+   */
+  recordGoalActivity(input: {
+    eventId: string;
+    conversationId: string;
+    activityType: string;
+    payload: Record<string, unknown>;
+  }): void {
+    this.runtimeStateRepo.recordEvent({
+      eventId: input.eventId,
+      conversationId: input.conversationId,
+      turnId: input.eventId,
+      requestId: input.eventId,
+      activityType: input.activityType as Parameters<RuntimeStateRepo['recordEvent']>[0]['activityType'],
+      tone: 'info',
+      provider: 'system',
+      providerEventType: input.activityType,
+      payload: input.payload,
+    });
+  }
+
+  /** Public view for the GoalRuntime's admission-gate callbacks. */
+  isBusyForGoal(conversationId: string): boolean {
+    return this.isConversationBusy(conversationId);
+  }
+
+  hasPendingGoalApproval(conversationId: string): boolean {
+    for (const active of this.activeRequests.values()) {
+      if (active.request.conversationId === conversationId && active.awaitingApproval) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Aborts the conversation's live turn, if any. Used by goal pause (persist-before-cancel ordering lives in the IPC handler). */
+  abortActiveTurn(conversationId: string): boolean {
+    for (const [requestId, active] of this.activeRequests) {
+      if (active.request.conversationId === conversationId) {
+        void this.abort(requestId);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Starts the next outer turn of an active goal without a user message.
+   *
+   * The steer text rides only in the request payload — it is never persisted,
+   * so the transcript shows the goal's work, not the harness's nudges (Orca
+   * keeps internal context out of the transcript for the same reason).
+   * Callers must have admitted this continuation via the GoalRuntime gate.
+   */
+  startGoalContinuation(conversationId: string): void {
+    if (this.isConversationBusy(conversationId)) return;
+    const summary = this.conversationsRepo.getSummary(conversationId) as
+      | { defaultProviderId?: string | null; defaultModelId?: string | null }
+      | null;
+    const fallback = this.resolveFallbackModel();
+    const providerId = summary?.defaultProviderId ?? fallback?.providerId;
+    const modelId = summary?.defaultModelId ?? fallback?.modelId;
+    if (!providerId || !modelId) return;
+
+    const requestId = randomUUID();
+    logger.info('goal.turn.continuation', { requestId, conversationId });
+    const window = this.resolveMainWindow();
+    if (!window || window.isDestroyed()) {
+      // Nowhere to stream into (app closing): drop the turn. The goal stays
+      // active; the next user interaction or resume re-admits.
+      return;
+    }
+    const request: ChatStartRequest = {
+      conversationId,
+      providerId,
+      modelId,
+      messages: [{ role: 'user', content: GOAL_CONTINUATION_STEER }],
+      enableTools: true,
+    };
+    this.prepareTurn(window, requestId, request);
+  }
+
+  private notifyGoalSettled(
+    conversationId: string,
+    info: { aborted: boolean; failed: boolean; hadSubstantiveProgress: boolean; tokensIn: number; tokensOut: number },
+  ): void {
+    try {
+      this.goalRuntime?.onTurnSettled(conversationId, info);
+    } catch (error) {
+      // A goal bug must never corrupt the turn teardown it runs inside.
+      logger.warn('goal.settle_failed', { conversationId, error });
+    }
+  }
+
 
   private resolveFallbackModel(): { providerId: string; modelId: string } | null {
     try {
@@ -1188,6 +1310,16 @@ export class ChatEngine {
     return this.runtime.measureContextUsage(request);
   }
 
+  /**
+   * Manual `/compact`: the next turn re-splits from zero and walks to the
+   * pressure line. No out-of-band model call — dsh's compactNow summarizes
+   * immediately, but that requires an idle-turn seam Atlas does not have;
+   * requesting here is cheap and cannot fail.
+   */
+  compactConversation(conversationId: string): void {
+    this.runtime.requestForcedCompaction(conversationId);
+  }
+
   getRuntimeState({ conversationId }: { conversationId: string }): RuntimeStateSnapshot {
     const detail = this.conversationsRepo.get(conversationId);
     const latestCheckpoint = this.runtimeStateRepo.getLatestCheckpoint(conversationId);
@@ -1467,6 +1599,17 @@ export class ChatEngine {
       this.sendCompletionEvents(active.window, requestId, result);
       this.cleanupRequest(requestId, active);
 
+      // Settles AFTER cleanup: admission reads isBusy/approval state, and the
+      // settling request itself must no longer count as busy or its own
+      // continuation would be rejected as a queued steer every turn.
+      this.notifyGoalSettled(request.conversationId, {
+        aborted: false,
+        failed: false,
+        hadSubstantiveProgress: Boolean(active.goalProgress),
+        tokensIn: result.inputTokens ?? 0,
+        tokensOut: result.outputTokens ?? 0,
+      });
+
       // Fire-and-forget: naming must never delay or fail the turn itself.
       void this.maybeGenerateTitle(active).catch(() => undefined);
     } catch (error) {
@@ -1532,6 +1675,15 @@ export class ChatEngine {
         retryable: normalized.retryable
       });
       this.cleanupRequest(requestId, active);
+      // Same post-cleanup ordering as the success path: the gate's busy and
+      // approval reads must see the conversation after teardown.
+      this.notifyGoalSettled(active.request.conversationId, {
+        aborted: normalized.code === 'aborted',
+        failed: normalized.code !== 'aborted',
+        hadSubstantiveProgress: Boolean(active.goalProgress),
+        tokensIn: 0,
+        tokensOut: 0,
+      });
     }
   }
 
@@ -1620,6 +1772,7 @@ export class ChatEngine {
           inputTokens: result.inputTokens ?? null,
           outputTokens: result.outputTokens ?? null,
           reasoningTokens: result.reasoningTokens ?? null,
+          cachedInputTokens: result.cachedInputTokens ?? null,
           latencyMs: result.latencyMs ?? null,
         },
       });
@@ -1645,9 +1798,12 @@ export class ChatEngine {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       reasoningTokens: result.reasoningTokens,
+      cachedInputTokens: result.cachedInputTokens,
       latencyMs: result.latencyMs
     });
 
+    // Goal settle deliberately NOT here: it runs in runRequest after
+    // cleanupRequest so the admission gate reads post-teardown state.
     this.sendEvent(window, {
       type: 'done',
       requestId,
@@ -1716,7 +1872,19 @@ export class ChatEngine {
     }
   }
 
-  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {    active.tracker?.handleEvent(event);
+  private handleRuntimeStreamEvent(active: ActiveRequest, event: StreamEvent) {
+    active.tracker?.handleEvent(event);
+
+    // Goal progress signal (C4): a completed side-effecting tool call is the
+    // one thing that resets the stall streak (bash counts as a whole here;
+    // read-only inspection still proves engagement rather than restating a plan).
+    if (
+      event.type === 'tool-output-available' &&
+      !event.preliminary &&
+      GOAL_PROGRESS_TOOLS.has(event.toolName)
+    ) {
+      active.goalProgress = true;
+    }
 
     if (
       event.type === 'meta' ||

@@ -48,9 +48,16 @@ export function registerTerminalIpc(db: AppDatabase, ptyService: PtyService) {
       async (event, conversationId: string, cols?: number, rows?: number): Promise<TerminalStartResult> => {
         assertTrustedSender(event);
         // The cwd comes from the conversation row, never from the renderer:
-        // the shell starts where the rest of the turn's tools are confined to.
+        // the shell starts where the rest of the turn's tools are confined
+        // to — the worktree root when the conversation runs in one, so a
+        // command typed here lands in the same tree the agent edits.
         const workspace = describeConversationWorkspace(db, conversationId);
-        const cwd = workspace.project?.exists ? workspace.project.root : null;
+        const cwd =
+          workspace.executionTarget === 'worktree' && workspace.worktreeRoot
+            ? workspace.worktreeRoot
+            : workspace.project?.exists
+              ? workspace.project.root
+              : null;
         return ptyService.start(conversationId, cwd, cols, rows);
       }
     )

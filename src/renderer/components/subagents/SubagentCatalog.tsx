@@ -152,7 +152,7 @@ export function SubagentCatalog({ parentId, onSelect }: { parentId: string; onSe
                 <button
                   type="button"
                   onClick={() => onSelect(e.id)}
-                  className="rounded bg-accent px-1.5 py-0.5 text-[10px] text-text-inverse hover:bg-accent-hover"
+                  className="rounded bg-brand px-1.5 py-0.5 text-[10px] text-brand-text hover:opacity-90"
                 >
                   Open
                 </button>

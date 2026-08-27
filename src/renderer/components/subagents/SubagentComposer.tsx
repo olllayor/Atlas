@@ -70,7 +70,7 @@ export function SubagentComposer({ takeover, onSend, onStop }: SubagentComposerP
 
   return (
     <div className="px-5 pb-3 lg:px-6">
-      <div className="mx-auto max-w-content-max">
+      <div className="mx-auto max-w-composer">
         <div className="composer-slab rounded-composer bg-bg-composer px-3.5 pb-2.5 pt-3">
           {takeover.mode === 'readOnly' ? (
             <div className="flex items-center gap-2 px-1 py-1 text-sm text-text-muted">

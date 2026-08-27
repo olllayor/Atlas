@@ -18,8 +18,10 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
 );
 
 CREATE TABLE IF NOT EXISTS model_cache (
-  model_id TEXT PRIMARY KEY,
+  -- Scoped to the provider: two endpoints serving the same model id are two
+  -- catalog entries, not one overwriting the other.
   provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
   label TEXT NOT NULL,
   context_window INTEGER,
   is_free INTEGER NOT NULL DEFAULT 0,
@@ -34,7 +36,8 @@ CREATE TABLE IF NOT EXISTS model_cache (
   max_output_tokens INTEGER,
   supports_temperature INTEGER NOT NULL DEFAULT 1,
   supports_reasoning INTEGER NOT NULL DEFAULT 0,
-  reasoning_efforts TEXT
+  reasoning_efforts TEXT,
+  PRIMARY KEY (provider_id, model_id)
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS messages (
   input_tokens INTEGER,
   output_tokens INTEGER,
   reasoning_tokens INTEGER,
+  cached_input_tokens INTEGER,
   latency_ms INTEGER,
   error_code TEXT,
   created_at TEXT NOT NULL
@@ -215,6 +219,34 @@ CREATE TABLE IF NOT EXISTS conversation_summaries (
   status TEXT NOT NULL DEFAULT 'ready',
   updated_at TEXT NOT NULL
 );
+
+-- One persistent objective per conversation (/goal), plan
+-- docs/superpowers/plans/2026-08-26-goal-mode.md. The partial unique index
+-- below is the "one live goal" rule: cleared rows stay as history, and at most
+-- one row per conversation may hold any other status. The revision column is
+-- the stale update guard (Codex's goal_id protection): transitions carry the
+-- revision they were decided against, so a slow writer cannot clobber a
+-- replacement.
+CREATE TABLE IF NOT EXISTS conversation_goals (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  blocker_kind TEXT,
+  blocker_note TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  turn_cap INTEGER NOT NULL DEFAULT 25,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  last_progress_turn INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_goals_active
+ON conversation_goals (conversation_id)
+WHERE status NOT IN ('cleared');
 
 -- Git snapshots bracketing each turn, so a turn's edits can be shown as one
 -- diff and undone as one act. The status column records the skipped cases (no
@@ -544,6 +576,14 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!columns.includes('reasoning_tokens')) {
     database.exec('ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER');
+  }
+
+  // Provider-reported prompt-cache hits (dsh's `cacheReadTokens` bucket).
+  // NULL means the provider said nothing about caching for that turn; a real
+  // zero is stored as 0. The distinction is what keeps an unreported provider
+  // from faking a 0% hit rate in the stats.
+  if (!columns.includes('cached_input_tokens')) {
+    database.exec('ALTER TABLE messages ADD COLUMN cached_input_tokens INTEGER');
   }
 
   if (!columns.includes('response_messages_json')) {
@@ -988,6 +1028,76 @@ export function applySchema(database: SqliteDatabase) {
     database
       .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
       .run('migrations.toolSupportTriState', 'done');
+  }
+
+  // Migration: the model cache becomes scoped to its provider.
+  //
+  // `model_id` alone was the primary key, so two endpoints exposing the same
+  // model id — Ollama and LM Studio both serving `llama3`, two gateways with
+  // `gpt-4o` — fought over one row: every refresh let the last writer steal
+  // it, and the prune step then archived it back out from under them. The
+  // copy is 1:1 because the old key guaranteed no duplicates; nothing is
+  // dropped or rewritten.
+  if (!settingsKeys.includes('migrations.modelCacheProviderScope')) {
+    const run = () => {
+      database.exec(`
+        ALTER TABLE model_cache RENAME TO model_cache_pre_provider_scope;
+
+        CREATE TABLE model_cache (
+          provider_id TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          context_window INTEGER,
+          is_free INTEGER NOT NULL DEFAULT 0,
+          supports_vision INTEGER,
+          supports_document_input INTEGER,
+          supports_tools INTEGER,
+          archived INTEGER NOT NULL DEFAULT 0,
+          last_synced_at TEXT NOT NULL,
+          last_seen_free_at TEXT,
+          max_output_tokens INTEGER,
+          supports_temperature INTEGER NOT NULL DEFAULT 1,
+          supports_reasoning INTEGER NOT NULL DEFAULT 0,
+          reasoning_efforts TEXT,
+          PRIMARY KEY (provider_id, model_id)
+        );
+
+        INSERT INTO model_cache (
+          provider_id, model_id, label, context_window, is_free,
+          supports_vision, supports_document_input, supports_tools, archived,
+          last_synced_at, last_seen_free_at, max_output_tokens,
+          supports_temperature, supports_reasoning, reasoning_efforts
+        )
+        SELECT
+          provider_id, model_id, label, context_window, is_free,
+          supports_vision, supports_document_input, supports_tools, archived,
+          last_synced_at, last_seen_free_at, max_output_tokens,
+          supports_temperature, supports_reasoning, reasoning_efforts
+        FROM model_cache_pre_provider_scope;
+
+        DROP TABLE model_cache_pre_provider_scope;
+      `);
+      database
+        .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+        .run('migrations.modelCacheProviderScope', 'done');
+    };
+    // better-sqlite3 has transaction; node:sqlite (tests/alt builds) does not.
+    // Use it when present for atomicity, otherwise fall back to manual BEGIN.
+    const tx = (database as unknown as { transaction?: (fn: () => void) => () => void }).transaction;
+    if (typeof tx === 'function') {
+      (tx.call(database, run) as () => void)();
+    } else {
+      database.exec('BEGIN');
+      try {
+        run();
+        database.exec('COMMIT');
+      } catch (e) {
+        try {
+          database.exec('ROLLBACK');
+        } catch {}
+        throw e;
+      }
+    }
   }
 
   // Migration: backfill the diff line counts for rows written before the two

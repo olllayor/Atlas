@@ -1,20 +1,21 @@
 import { Square, Terminal } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { JobSnapshotView } from '../../../shared/contracts';
 import { notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
+import { useConversationJobs } from '../../hooks/useConversationJobs';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
+import { StatusDot } from '../ui/status-dot';
 import {
   activeJobCount,
+  cappedDisplayRows,
   jobRowView,
   jobsChipLabel,
-  jobsChipVisible,
-  sortJobsForDisplay
+  jobsChipVisible
 } from './jobsChipViewModel';
 
 /**
@@ -29,56 +30,34 @@ import {
  * costs no chrome.
  */
 export function JobsChip({ conversationId }: { conversationId?: string }) {
-  const [jobs, setJobs] = useState<JobSnapshotView[]>([]);
+  const { jobs, reload, replace } = useConversationJobs(conversationId);
   const [busy, setBusy] = useState(false);
+  const [, setTick] = useState(0);
+  const nowRef = useRef(Date.now());
 
-  const load = useCallback(async () => {
-    if (!conversationId) {
-      setJobs([]);
+  // Tick every second while there are settled jobs so the 5 s fade-out
+  // works without keeping a permanent interval.
+  useEffect(() => {
+    if (jobs.length === 0 || activeJobCount(jobs) > 0) {
       return;
     }
+    const id = setInterval(() => {
+      nowRef.current = Date.now();
+      setTick((t) => t + 1);
+    }, 1_000);
+    return () => clearInterval(id);
+  }, [jobs]);
 
-    setJobs(await window.atlasChat.jobs.list(conversationId).catch(() => []));
-  }, [conversationId]);
+  nowRef.current = Date.now();
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // Live updates: the registry pushes registration and settlement to every
-  // window; keep only this conversation's snapshots.
-  useEffect(() => {
-    if (!conversationId) {
-      return;
-    }
-
-    return window.atlasChat.jobs.subscribe((event) => {
-      if (event.snapshot.conversationId !== conversationId) {
-        return;
-      }
-
-      setJobs((current) => {
-        const index = current.findIndex((job) => job.id === event.snapshot.id);
-        if (index === -1) {
-          return [...current, event.snapshot];
-        }
-
-        const next = [...current];
-        next[index] = event.snapshot;
-        return next;
-      });
-    });
-  }, [conversationId]);
-
-  if (!conversationId || !jobsChipVisible(jobs)) {
+  if (!conversationId || !jobsChipVisible(jobs, nowRef.current)) {
     return null;
   }
 
   const stop = async (jobId: string) => {
     setBusy(true);
     try {
-      const updated = await window.atlasChat.jobs.kill(conversationId, jobId);
-      setJobs((current) => current.map((job) => (job.id === jobId ? updated : job)));
+      replace(await window.atlasChat.jobs.kill(conversationId, jobId));
     } catch (error) {
       notifyError('Could not stop the background job', error);
     } finally {
@@ -87,10 +66,11 @@ export function JobsChip({ conversationId }: { conversationId?: string }) {
   };
 
   const active = activeJobCount(jobs);
-  const rows = sortJobsForDisplay(jobs).map((job) => jobRowView(job, Date.now()));
+  const { rows, overflow } = cappedDisplayRows(jobs);
+  const rowViews = rows.map((job) => jobRowView(job, Date.now()));
 
   return (
-    <DropdownMenu onOpenChange={(open) => open && void load()}>
+    <DropdownMenu onOpenChange={(open) => open && void reload()}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -101,7 +81,11 @@ export function JobsChip({ conversationId }: { conversationId?: string }) {
           )}
           title="Background jobs for this chat"
         >
-          <Terminal className="size-3.5" strokeWidth={1.75} aria-hidden />
+          {active > 0 ? (
+            <StatusDot tone="running" label="Background jobs running" />
+          ) : (
+            <Terminal className="size-3.5" strokeWidth={1.75} aria-hidden />
+          )}
           <span>{jobsChipLabel(jobs)}</span>
         </button>
       </DropdownMenuTrigger>
@@ -112,15 +96,13 @@ export function JobsChip({ conversationId }: { conversationId?: string }) {
         </p>
 
         <ul className="space-y-1">
-          {rows.map((row) => (
+          {rowViews.map((row) => (
             <li key={row.id} className="rounded-md px-1 py-1 hover:bg-bg-hover">
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-xs text-text-secondary" title={row.label}>
-                    {row.label}
-                  </p>
+                <div className="min-w-0" title={row.id}>
+                  <p className="truncate text-xs text-text-secondary">{row.label}</p>
                   <p className="mt-0.5 text-2xs text-text-faint">
-                    {row.id} · {row.statusLabel} · {row.subtitle}
+                    {row.statusLabel} · {row.subtitle}
                   </p>
                 </div>
 
@@ -140,6 +122,12 @@ export function JobsChip({ conversationId }: { conversationId?: string }) {
             </li>
           ))}
         </ul>
+
+        {overflow > 0 ? (
+          <p className="px-1 pt-1 text-2xs text-text-faint">
+            …and {overflow} more
+          </p>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

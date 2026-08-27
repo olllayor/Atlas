@@ -2,6 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+
+import { completeAuthorization } from './mcpOAuth';
 import { mkdir } from 'node:fs/promises';
 
 import type { McpServerConfig, McpToolAnnotations } from '../../../shared/mcp';
@@ -71,7 +74,14 @@ export class McpClientManager {
      * the configuration a server is listed from must stay free of secrets.
      */
     private readonly resolveEnv: (serverId: string) => Promise<Record<string, string>> = async () => ({}),
-    private readonly now: () => number = () => Date.now()
+    private readonly now: () => number = () => Date.now(),
+    /**
+     * Builds the OAuth client for one remote server, or nothing when the
+     * server should not participate (stdio, or OAuth unavailable). Owned by
+     * the caller because the provider opens a browser and a loopback port —
+     * Electron concerns this class stays free of.
+     */
+    private readonly createAuthProvider?: (server: McpServerConfig) => (OAuthClientProvider & { waitForCallback(): Promise<URL>; cancelWait(): void }) | undefined
   ) {}
 
   /**
@@ -330,10 +340,15 @@ export class McpClientManager {
         throw new Error(urlCheck.error);
       }
 
-      // Read at connect time from the environment the bundle named, never
-      // stored: the configuration carries the variable's name so that the
-      // token itself never has to live anywhere Atlas writes.
-      const token = server.bearerTokenEnvVar ? process.env[server.bearerTokenEnvVar] : undefined;
+      // Read at connect time. The keychain first — the credential panel saves
+      // under the name the bundle declared — with the process environment as
+      // the fallback for a token that was never typed into the UI. The
+      // configuration carries the variable's name so that the token itself
+      // never has to live anywhere Atlas writes.
+      const resolved = await this.resolveEnv(server.id).catch((): Record<string, string> => ({}));
+      const token = server.bearerTokenEnvVar
+        ? (resolved[server.bearerTokenEnvVar] ?? process.env[server.bearerTokenEnvVar])
+        : undefined;
 
       if (server.bearerTokenEnvVar && !token) {
         throw new Error(
@@ -349,7 +364,18 @@ export class McpClientManager {
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       };
 
-      const options = Object.keys(headers).length > 0 ? { requestInit: { headers } } : undefined;
+      // OAuth for remote servers: when a provider factory is wired, a 401
+      // becomes a browser consent flow instead of a dead server. A bearer
+      // token from the environment still wins — an explicit token is a more
+      // specific instruction than a stored grant.
+      const authProvider = this.createAuthProvider?.(server);
+      const baseOptions = authProvider ? { authProvider } : {};
+      const options =
+        Object.keys(headers).length > 0
+          ? { ...baseOptions, requestInit: { headers } }
+          : Object.keys(baseOptions).length > 0
+            ? baseOptions
+            : undefined;
 
       // The declared transport decides the first attempt. Streamable HTTP and
       // the legacy SSE binding are different handshakes, and a server that
@@ -431,6 +457,56 @@ export class McpClientManager {
     const connection = this.connections.get(serverId);
     this.connections.delete(serverId);
     await connection?.close();
+  }
+
+  /**
+   * Runs the OAuth consent flow for one remote server, to completion.
+   *
+   * Opens the browser, waits for the loopback landing, exchanges the code,
+   * and drops any cached connection so the next use starts authorized. Only
+   * meaningful for `http`/`sse` servers with a provider factory wired; a
+   * stdio server has nothing here to authorize.
+   */
+  async authorize(serverId: string): Promise<'ready' | 'authorization-required'> {
+    if (!this.createAuthProvider) {
+      throw new Error('OAuth is not available for this server.');
+    }
+
+    const server = this.listServers().find((candidate) => candidate.id === serverId);
+
+    if (!server) {
+      throw new Error(`No server "${serverId}" is configured.`);
+    }
+
+    if (server.transport !== 'http' && server.transport !== 'sse') {
+      throw new Error(`The server "${server.name}" is not a remote server — it has nothing to authorize.`);
+    }
+
+    if (!server.url) {
+      throw new Error(`The MCP server "${server.name}" has no URL.`);
+    }
+
+    const provider = this.createAuthProvider(server);
+
+    if (!provider) {
+      throw new Error(`The server "${server.name}" does not participate in OAuth.`);
+    }
+
+    try {
+      const serverUrl = server.url;
+      const result = await completeAuthorization(provider, (options) =>
+        auth(provider, { serverUrl, ...options })
+      );
+
+      if (result === 'ready') {
+        await this.reset(serverId);
+      }
+
+      return result;
+    } finally {
+      // The loopback listener exists only for the round trip.
+      (provider as { close?: () => void }).close?.();
+    }
   }
 
   /** Closes every connection. Called on app quit. */

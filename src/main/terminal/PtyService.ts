@@ -185,6 +185,23 @@ export class PtyService {
     this.emit({ conversationId, data: line, kind: 'agent' });
   }
 
+  /**
+   * Read-only view for the agent's `terminal_read` tool: liveness, spawn cwd,
+   * and the capped scrollback buffer. No handle to the shell's stdin leaves
+   * this class, so a reader can observe but never drive the terminal.
+   */
+  snapshot(conversationId: string): { alive: boolean; cwd: string | null; scrollback: string } {
+    const session = this.sessions.get(conversationId);
+    if (!session) {
+      return { alive: false, cwd: null, scrollback: '' };
+    }
+    return {
+      alive: !session.exited,
+      cwd: session.cwd,
+      scrollback: session.scrollback
+    };
+  }
+
   kill(conversationId: string) {
     const session = this.sessions.get(conversationId);
     if (!session) {

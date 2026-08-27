@@ -231,6 +231,24 @@ export class SettingsRepo {
   }
 
   /**
+   * Whether the plugin system is switched on at all.
+   *
+   * A beta feature, and default-off: the flag is read live by every plugin
+   * entry point — the MCP server source, the skills service, the IPC surface —
+   * so turning it off is the feature forgetting itself exists: no scans, no
+   * servers, no prompt sections, no UI. Turning it on needs no restart either;
+   * the next read finds an empty plugins directory exactly as fresh as one
+   * that was never populated.
+   */
+  getPluginsBetaEnabled(): boolean {
+    return Boolean(this.getJsonSetting('plugins.betaEnabled', false));
+  }
+
+  setPluginsBetaEnabled(value: boolean) {
+    this.setJsonSetting('plugins.betaEnabled', value);
+  }
+
+  /**
    * The model the user last picked, so a new conversation opens on it instead of
    * on whatever the catalog happens to sort first. Stored as an id only — it is
    * validated against the live catalog on read, since a model can disappear when

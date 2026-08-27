@@ -197,7 +197,27 @@ export function registerConversationsIpc({
           throw new Error(`Project folder (${targetProject.root}) is not a Git repository.`);
         }
 
-        const wt = await worktreeService.provisionWorktree(targetProject.root, request.conversationId);
+        if (typeof request.worktreeBaseBranch === 'string' && /[^\w.\-/]/.test(request.worktreeBaseBranch)) {
+          throw new Error('Invalid base branch name.');
+        }
+
+        // Collect before creating: checkouts no conversation references are
+        // GC fodder, and the newest `retention` of those stay recoverable.
+        // Snapshotted to a branch first (`atlas/wt-snapshot/<id>`), so agent
+        // work in a stale checkout is never silently destroyed.
+        try {
+          const bindings = conversationsRepo.listWorktreeBindings();
+          const activePaths = bindings
+            .filter((binding) => binding.projectId === targetProject.id)
+            .map((binding) => binding.worktreeRoot);
+          await worktreeService.gcManagedWorktrees(targetProject.root, { activePaths });
+        } catch {
+          // A failed sweep must never block provisioning.
+        }
+
+        const wt = await worktreeService.provisionWorktree(targetProject.root, request.conversationId, {
+          baseBranch: request.worktreeBaseBranch ?? undefined,
+        });
         worktreeRoot = wt.path;
       } else if (
         shouldResetWorktreeOnProjectChange({
@@ -423,6 +443,19 @@ export function registerConversationsIpc({
     withUserFacingErrors(IPC_CHANNELS.conversationsListSide, (event, conversationId: string) => {
       assertTrustedSender(event);
       return conversationsRepo.listSideConversations(conversationId);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsPromoteSide,
+    withUserFacingErrors(IPC_CHANNELS.conversationsPromoteSide, (event, sideConversationId: string) => {
+      assertTrustedSender(event);
+
+      if (typeof sideConversationId !== 'string') {
+        throw new Error('A side conversation id is required.');
+      }
+
+      return conversationsRepo.promoteSideConversation(sideConversationId);
     })
   );
 }

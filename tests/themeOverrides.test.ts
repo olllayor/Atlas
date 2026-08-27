@@ -72,6 +72,73 @@ test('background override synthesizes a foreground ladder from luminance', () =>
   assert.ok(light['--text-secondary']?.includes('#000000'));
 });
 
+test('background-only override also flips primary text, inverse, and button ink', () => {
+  // Regression: only the opacity ladder used to follow the derived
+  // foreground, leaving --text-primary white on the new white background.
+  const overrides = buildThemeOverrides({
+    accentColor: null,
+    backgroundColor: '#fafafa',
+    foregroundColor: null,
+    contrast: 50
+  });
+
+  assert.equal(overrides['--text-primary'], '#000000');
+  assert.equal(overrides['--text-inverse'], '#ffffff');
+  assert.equal(overrides['--bg-button'], '#000000');
+  assert.ok(overrides['--bg-button-hover']?.includes('#000000'));
+});
+
+test('an explicit foreground still wins over the luminance-derived one', () => {
+  const overrides = buildThemeOverrides({
+    accentColor: null,
+    backgroundColor: '#fafafa',
+    foregroundColor: '#1a1c1f',
+    contrast: 50
+  });
+
+  assert.equal(overrides['--text-primary'], '#1a1c1f');
+});
+
+test('a light background override adapts semantic, toast, diff, and terminal palettes', () => {
+  const overrides = buildThemeOverrides({
+    accentColor: null,
+    backgroundColor: '#fafafa',
+    foregroundColor: null,
+    contrast: 50
+  });
+
+  // Semantic text derives from the theme's own base hue, not a hardcoded value.
+  assert.ok(overrides['--success-text']?.startsWith('color-mix(in oklab, var(--success)'));
+  assert.ok(overrides['--warning-text']?.startsWith('color-mix(in oklab, var(--warning)'));
+  assert.ok(overrides['--error-text']?.startsWith('color-mix(in oklab, var(--error)'));
+
+  // Toast ink follows the foreground ladder.
+  assert.ok(overrides['--toast-text']?.includes('#000000'));
+  assert.ok(overrides['--toast-border']?.includes('#000000'));
+
+  // GitHub light diffs.
+  assert.equal(overrides['--diff-add-bg'], '#dafbe1');
+  assert.equal(overrides['--diff-del-bg'], '#ffebe9');
+
+  // Terminal ANSI readable on light.
+  assert.equal(overrides['--term-red'], '#cf222e');
+  assert.equal(overrides['--term-selection'], 'rgba(0, 0, 0, 0.16)');
+});
+
+test('a dark background override keeps the authored dark satellite palettes', () => {
+  const overrides = buildThemeOverrides({
+    accentColor: null,
+    backgroundColor: '#101319',
+    foregroundColor: null,
+    contrast: 50
+  });
+
+  assert.equal(overrides['--success-text'], undefined);
+  assert.equal(overrides['--term-red'], undefined);
+  assert.equal(overrides['--diff-add-bg'], undefined);
+  assert.equal(overrides['--toast-text'], undefined);
+});
+
 test('contrast alone rescales the ladder around the authored foreground', () => {
   const overrides = buildThemeOverrides({
     accentColor: null,

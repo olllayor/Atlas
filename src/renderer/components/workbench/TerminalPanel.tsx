@@ -42,12 +42,16 @@ export type TerminalPanelHandle = {
   clear: () => void;
   openSearch: () => void;
   zoom: (direction: 'in' | 'out' | 'reset') => void;
+  /** The active selection, or null. Feeds the "add to prompt" affordance. */
+  getSelectionText: () => string | null;
 };
 
 type TerminalPanelProps = {
   conversationId: string;
   /** Told the shell's real cwd once the PTY answers, for the dock header. */
   onCwd?: (cwd: string) => void;
+  /** ⌘E with a selection: pipe it to the composer as context. */
+  onRequestSelectionPrompt?: () => void;
 };
 
 /**
@@ -150,7 +154,7 @@ function readTheme(element: HTMLElement): ITheme {
 }
 
 export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
-  function TerminalPanel({ conversationId, onCwd }, ref) {
+  function TerminalPanel({ conversationId, onCwd, onRequestSelectionPrompt }, ref) {
     const hostRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const searchRef = useRef<SearchAddon | null>(null);
@@ -160,6 +164,9 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
     // effect below — that would tear down and re-create the whole terminal.
     const onCwdRef = useRef(onCwd);
     onCwdRef.current = onCwd;
+    // Same story: the xterm key handler is installed once.
+    const onRequestSelectionPromptRef = useRef(onRequestSelectionPrompt);
+    onRequestSelectionPromptRef.current = onRequestSelectionPrompt;
     // Kept in a ref, not in state: the key handler inside the xterm instance
     // is installed once and must read the live value.
     const fontOffsetRef = useRef(0);
@@ -229,6 +236,12 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
         },
         openSearch: () => setSearchOpen(true),
         zoom,
+        getSelectionText: () => {
+          const terminal = terminalRef.current;
+          if (!terminal || !terminal.hasSelection()) return null;
+          const text = terminal.getSelection();
+          return text.trim() ? text : null;
+        },
       }),
       [zoom],
     );
@@ -394,6 +407,15 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
         if (key === 'k' && event.metaKey) {
           terminal.clear();
           return false;
+        }
+
+        // Selection → composer context (t3code's terminal_context gesture).
+        if (key === 'e' && event.metaKey && onRequestSelectionPromptRef.current) {
+          if (terminal.hasSelection()) {
+            onRequestSelectionPromptRef.current();
+            return false;
+          }
+          // No selection: let ⌘E fall through untouched.
         }
 
         if (key === '=' || key === '+') {

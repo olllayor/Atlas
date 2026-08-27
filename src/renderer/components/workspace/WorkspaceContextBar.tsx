@@ -15,7 +15,7 @@ import {
   RotateCcw,
   Unlink,
 } from 'lucide-react';
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useState } from 'react';
 
 import type {
   AgentInstructionsSummary,
@@ -96,7 +96,8 @@ const ContextChip = forwardRef<
  * mode switch stays in the title bar because it describes the conversation,
  * not the turn.
  *
- * It shares the composer's centred column (`max-w-content-max` plus the 6px
+ * It shares the composer's centred column (`max-w-composer`, the 48rem
+ * composer measure, plus the 6px
  * scrollbar rail) so the chips line up with the slab below them.
  */
 export function WorkspaceContextBar({
@@ -109,6 +110,7 @@ export function WorkspaceContextBar({
   projectContext,
   disabled,
   cloudSandboxEnabled = false,
+  minimal = false,
   onAttach,
   onSelect,
   onDetach,
@@ -116,6 +118,7 @@ export function WorkspaceContextBar({
   onRevealTarget,
   onOpenSettings,
   onExecutionTargetChange,
+  onWorktreeFromBranch,
   onRemoveWorktree,
   onProjectContextChanged,
 }: {
@@ -130,6 +133,15 @@ export function WorkspaceContextBar({
   /** Settings → Beta. Gates both the cloud row and, less obviously, selecting
       local while the conversation currently runs in the cloud. */
   cloudSandboxEnabled?: boolean;
+  /**
+   * Post-first-message form: the pre-flight chrome — project, execution
+   * target, branch, PR — is for aiming the *first* message and goes away once
+   * there is history to read; only the event-driven chips (plugin tools,
+   * background jobs) survive, because they surface states the user otherwise
+   * cannot see. The mode menu in the sidebar carries the execution target
+   * from here on.
+   */
+  minimal?: boolean;
   onAttach: () => void;
   onSelect: (projectId: string) => void;
   onDetach: () => void;
@@ -139,6 +151,8 @@ export function WorkspaceContextBar({
   /** Opens Settings → Beta so cloud can be enabled. */
   onOpenSettings?: () => void;
   onExecutionTargetChange?: (target: ExecutionTarget) => void;
+  /** Starts a fresh worktree for this conversation from a chosen branch. */
+  onWorktreeFromBranch?: (branch: string) => void;
   /** Deletes the conversation's worktree on disk; the target then reads local. */
   onRemoveWorktree?: () => void;
   onProjectContextChanged?: () => void;
@@ -170,8 +184,16 @@ export function WorkspaceContextBar({
           elevation scale, so the strip separates from the background without
           competing with the input.
         */}
-        <div className="mx-auto max-w-content-max">
-          <div className="-mb-8 mx-5 rounded-t-2xl bg-bg-surface px-1.5 pb-8 pt-0.5">
+        <div className="mx-auto max-w-composer">
+          <div
+          className={cn(
+            '-mb-8 mx-5 px-1.5 pb-8 pt-0.5',
+            // The tab surface is the pre-flight look — a card peeking out
+            // from behind the slab. Minimal form is a quiet chip row with
+            // no card: there is nothing to tab into anymore.
+            !minimal && 'rounded-t-2xl bg-bg-surface'
+          )}
+        >
             {/*
               `gap-0.5` on top of each chip's own `px-1.5`: ~14px between one
               label and the next icon. No dividers — the reference separates
@@ -179,23 +201,25 @@ export function WorkspaceContextBar({
               doing one job.
             */}
             <div className="flex items-center gap-0.5">
-              <ProjectMenu
-                conversationId={conversationId}
-                project={project}
-                projects={projects}
-                projectType={projectType}
-                envCount={projectContext?.envKeys.length ?? 0}
-                agentInstructions={projectContext?.agentInstructions ?? null}
-                needsProject={needsProject}
-                isMissing={isMissing}
-                disabled={disabled}
-                onAttach={onAttach}
-                onSelect={onSelect}
-                onDetach={onDetach}
-                onReveal={onReveal}
-                onOpenEnvironment={() => setEnvironmentOpen(true)}
-                onInstructionsChanged={onProjectContextChanged}
-              />
+              {!minimal ? (
+                <ProjectMenu
+                  conversationId={conversationId}
+                  project={project}
+                  projects={projects}
+                  projectType={projectType}
+                  envCount={projectContext?.envKeys.length ?? 0}
+                  agentInstructions={projectContext?.agentInstructions ?? null}
+                  needsProject={needsProject}
+                  isMissing={isMissing}
+                  disabled={disabled}
+                  onAttach={onAttach}
+                  onSelect={onSelect}
+                  onDetach={onDetach}
+                  onReveal={onReveal}
+                  onOpenEnvironment={() => setEnvironmentOpen(true)}
+                  onInstructionsChanged={onProjectContextChanged}
+                />
+              ) : null}
 
               {/*
             Where the turn runs — and, unlike its neighbours, also where the
@@ -204,7 +228,7 @@ export function WorkspaceContextBar({
             keyed off the conversation. The admission rules (git for worktree,
             the beta flag for cloud) come from the view model, not the JSX.
           */}
-              {project?.exists && onExecutionTargetChange ? (
+              {!minimal && project?.exists && onExecutionTargetChange ? (
                 <ExecutionTargetChip
                   conversationId={conversationId}
                   executionTarget={executionTarget}
@@ -213,13 +237,18 @@ export function WorkspaceContextBar({
                   cloudSandboxEnabled={cloudSandboxEnabled}
                   hasWorktree={Boolean(worktreeRoot)}
                   onSelect={onExecutionTargetChange}
+                  onSelectWorktreeFromBranch={
+                    onWorktreeFromBranch
+                      ? (branch) => onWorktreeFromBranch(branch)
+                      : undefined
+                  }
                   onReveal={onRevealTarget}
                   onOpenSettings={onOpenSettings}
                   onRemoveWorktree={() => setRemoveConfirmOpen(true)}
                 />
               ) : null}
 
-              {project?.exists && project.branch ? (
+              {!minimal && project?.exists && project.branch ? (
                 <BranchChip
                   branch={project.branch}
                   conversationId={conversationId}
@@ -227,7 +256,7 @@ export function WorkspaceContextBar({
                 />
               ) : null}
 
-              {project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
+              {!minimal && project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
 
               {/* Renders nothing unless an installed plugin carries tools, so a
                   user with no plugins sees no extra chrome. */}
@@ -236,7 +265,7 @@ export function WorkspaceContextBar({
               {/* Renders nothing unless the conversation owns background jobs. */}
               <JobsChip conversationId={conversationId} />
 
-              {needsProject ? (
+              {!minimal && needsProject ? (
                 <span className="flex min-w-0 items-center gap-1.5 text-2xs text-text-faint">
                   <AlertTriangle
                     className="size-3 shrink-0 text-warning-text"
@@ -298,6 +327,7 @@ function ExecutionTargetChip({
   hasWorktree,
   disabled,
   onSelect,
+  onSelectWorktreeFromBranch,
   onReveal,
   onOpenSettings,
   onRemoveWorktree,
@@ -310,6 +340,8 @@ function ExecutionTargetChip({
   hasWorktree: boolean;
   disabled?: boolean;
   onSelect: (target: ExecutionTarget) => void;
+  /** Starts a fresh worktree from a chosen branch (Codex's "from develop"). */
+  onSelectWorktreeFromBranch?: (branch: string) => void;
   onReveal?: (target: 'project' | 'worktree') => void;
   onOpenSettings?: () => void;
   /** Opens the destructive-removal confirmation; removal itself lives in App. */
@@ -320,6 +352,38 @@ function ExecutionTargetChip({
   // A conversation on Worktree reveals its worktree root; anything else (local,
   // cloud, or a worktree label without an actual root) reveals the project root.
   const revealTarget = revealTargetForChip({ executionTarget, hasWorktree });
+  /** Local branches for the "new worktree from…" section, loaded when the menu first opens. */
+  const [baseBranches, setBaseBranches] = useState<GitBranchInfo[] | null>(null);
+
+  useEffect(() => {
+    if (!isGitRepo || !conversationId || baseBranches) return;
+    let cancelled = false;
+    void window.atlasChat.git
+      .getBranches(conversationId)
+      .then((branches) => {
+        if (!cancelled) setBaseBranches(branches);
+      })
+      .catch(() => {
+        // A menu without the branch section still picks Local and Cloud.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [baseBranches, conversationId, isGitRepo]);
+
+  /**
+   * Candidate bases: local branches only (a remote-tracking name creates a
+   * worktree detached from anything pushable), Atlas's own managed/snapshot
+   * branches excluded — branching an agent scratch space off another agent
+   * scratch space is never what "from develop" meant. Current branch first.
+   */
+  const baseBranchChoices = useMemo(() => {
+    if (!baseBranches) return [];
+    return baseBranches
+      .filter((branch) => !branch.remote && !branch.name.startsWith('atlas/'))
+      .sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name))
+      .slice(0, 6);
+  }, [baseBranches]);
 
   return (
     <DropdownMenu>
@@ -378,6 +442,32 @@ function ExecutionTargetChip({
             ),
           )}
         </DropdownMenuRadioGroup>
+
+        {executionTarget !== 'worktree' && onSelectWorktreeFromBranch && baseBranchChoices.length > 0 ? (
+          <>
+            <DropdownMenuSeparator className="my-1" />
+            <DropdownMenuLabel className="px-2.5 pb-1 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
+              New worktree from branch
+            </DropdownMenuLabel>
+            {baseBranchChoices.map((branch) => (
+              <DropdownMenuItem
+                key={branch.name}
+                onSelect={() => onSelectWorktreeFromBranch(branch.name)}
+                className="items-center gap-2 rounded-md px-2.5 py-1.5"
+              >
+                {branch.current ? (
+                  <GitBranch className="size-3.5 shrink-0 text-brand" strokeWidth={1.75} aria-hidden />
+                ) : (
+                  <GitFork className="size-3.5 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
+                )}
+                <span className="min-w-0 truncate text-sm text-text-secondary">{branch.name}</span>
+                {branch.current ? (
+                  <span className="ml-auto shrink-0 text-2xs text-text-faint">current</span>
+                ) : null}
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : null}
 
         {executionTarget === 'cloud' ? (
           <>
@@ -573,19 +663,21 @@ function BranchChip({
       </Tooltip>
 
       <DropdownMenuContent align="start" className="w-56">
-        <div className="flex items-center justify-between px-2 py-1.5 text-xs font-semibold text-text-tertiary">
-          <span>Git Branches</span>
+        {/* Same section-header grammar as the execution-target menu beside
+            it — a raw div here was the one strip menu that drifted. */}
+        <DropdownMenuLabel className="flex items-center justify-between gap-2 px-2.5 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-text-muted">
+          <span className="min-w-0 truncate">Git branches</span>
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               void copy(branch);
             }}
-            className="text-2xs text-text-faint hover:text-text-primary"
+            className="shrink-0 cursor-pointer rounded-sm text-2xs normal-case tracking-normal text-text-faint transition-colors hover:text-text-primary"
           >
             {copied ? 'Copied!' : 'Copy name'}
           </button>
-        </div>
+        </DropdownMenuLabel>
         <DropdownMenuSeparator />
 
         {branches.length > 0 ? (

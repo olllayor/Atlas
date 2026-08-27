@@ -3,15 +3,19 @@ import {
   Check,
   ChevronDown,
   FolderPlus,
+  GitBranch,
   PanelBottom,
   PanelRight,
   ShieldAlert,
   ShieldCheck,
   ShieldQuestion,
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
+import type { GitBranchInfo } from '../../../shared/contracts';
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
+import { notifyError, notify } from '../../lib/notify';
 import {
   PERMISSION_PRESETS,
   matchPermissionPreset,
@@ -48,6 +52,12 @@ type AccessMenuProps = {
   executionTarget?: ExecutionTarget;
   cloudSandboxEnabled?: boolean;
   isGitRepo?: boolean;
+  /** Present when the menu can reach the conversation's git at all. */
+  conversationId?: string;
+  /** The conversation's current branch; the section hides without one. */
+  currentBranch?: string | null;
+  /** Fired after a successful checkout, so project/branch chips re-read. */
+  onBranchChanged?: () => void;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
   /** One-click posture: writes both axes at once. Absent without a handler. */
@@ -56,6 +66,98 @@ type AccessMenuProps = {
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 };
+
+/**
+ * The branch picker, living where the context strip's branch chip used to.
+ * When the strip collapses to its minimal post-first-message form, this is
+ * the surviving way to check out — same IPC, same failure surface, one
+ * section in a menu the user already opens for access and execution target.
+ */
+function BranchMenuSection({
+  conversationId,
+  currentBranch,
+  onBranchChanged,
+}: {
+  conversationId: string;
+  currentBranch: string | null;
+  onBranchChanged?: () => void;
+}) {
+  const [branches, setBranches] = useState<GitBranchInfo[] | null>(null);
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+
+  // Fetched per open: the menu remounts with its content, so mount == open,
+  // and branch state is exactly the thing that can change between opens.
+  useEffect(() => {
+    let cancelled = false;
+    setBranches(null);
+    void window.atlasChat.git
+      .getBranches(conversationId)
+      .then((list) => {
+        if (!cancelled) setBranches(list);
+      })
+      .catch(() => {
+        // An unreadable repo costs the list, never the menu.
+        if (!cancelled) setBranches([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  const switchTo = async (name: string) => {
+    if (switchingTo != null || name === currentBranch) return;
+    setSwitchingTo(name);
+    try {
+      const state = await window.atlasChat.git.switchBranch(conversationId, name);
+      notify({ tone: 'success', title: `Switched to ${state.branch ?? name}` });
+      onBranchChanged?.();
+    } catch (err) {
+      // git refuses a checkout that would discard local changes; that
+      // refusal is the message the user needs.
+      notifyError('Could not switch branch', err);
+    } finally {
+      setSwitchingTo(null);
+    }
+  };
+
+  if (branches == null) {
+    return (
+      <DropdownMenuItem disabled className="px-3 py-2 text-sm text-text-muted">
+        Loading branches…
+      </DropdownMenuItem>
+    );
+  }
+
+  if (branches.length === 0) {
+    return (
+      <DropdownMenuItem disabled className="px-3 py-2 text-sm text-text-muted">
+        No branches found
+      </DropdownMenuItem>
+    );
+  }
+
+  return (
+    <DropdownMenuRadioGroup
+      aria-label="Branch"
+      value={currentBranch ?? ''}
+      onValueChange={(value) => void switchTo(value)}
+    >
+      {branches.map((branch) => (
+        <DropdownMenuRadioItem
+          key={`${branch.remote ? 'remote:' : ''}${branch.name}`}
+          value={branch.name}
+          disabled={switchingTo != null}
+          className="rounded-md py-2 pr-3"
+        >
+          <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+            {branch.name}
+            {branch.remote ? <span className="text-text-faint"> (remote)</span> : null}
+          </span>
+        </DropdownMenuRadioItem>
+      ))}
+    </DropdownMenuRadioGroup>
+  );
+}
 
 /**
  * The menu both triggers share: what the agent is (mode), then what it may do
@@ -75,6 +177,9 @@ function AccessMenuContent({
   executionTarget,
   cloudSandboxEnabled,
   isGitRepo,
+  conversationId,
+  currentBranch,
+  onBranchChanged,
   onModeChange,
   onPermissionModeChange,
   onPresetSelect,
@@ -214,8 +319,7 @@ function AccessMenuContent({
           <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
           <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
             Execution target · also in context bar
-          </DropdownMenuLabel>
-          <DropdownMenuRadioGroup
+          </DropdownMenuLabel>          <DropdownMenuRadioGroup
             aria-label="Execution target"
             value={executionTarget}
             onValueChange={(val) => onExecutionTargetChange(val as ExecutionTarget)}
@@ -249,6 +353,19 @@ function AccessMenuContent({
           </DropdownMenuRadioGroup>
         </>
       ) : null}
+      {conversationId && currentBranch ? (
+        <>
+          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
+          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
+            Branch
+          </DropdownMenuLabel>
+          <BranchMenuSection
+            conversationId={conversationId}
+            currentBranch={currentBranch}
+            onBranchChanged={onBranchChanged}
+          />
+        </>
+      ) : null}
     </>
   );
 }
@@ -277,6 +394,9 @@ export function WorkspaceModeSwitch({
   executionTarget,
   cloudSandboxEnabled,
   isGitRepo,
+  conversationId,
+  currentBranch,
+  onBranchChanged,
   onExecutionTargetChange,
   onRequestProject,
 }: {
@@ -300,6 +420,10 @@ export function WorkspaceModeSwitch({
   executionTarget?: ExecutionTarget;
   cloudSandboxEnabled?: boolean;
   isGitRepo?: boolean;
+  /** When present, the menu grows the "Branch" section. */
+  conversationId?: string;
+  currentBranch?: string | null;
+  onBranchChanged?: () => void;
   onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
@@ -377,6 +501,9 @@ export function WorkspaceModeSwitch({
           executionTarget={executionTarget}
           cloudSandboxEnabled={cloudSandboxEnabled}
           isGitRepo={isGitRepo}
+          conversationId={conversationId}
+          currentBranch={currentBranch}
+          onBranchChanged={onBranchChanged}
           onModeChange={onChange}
           onPermissionModeChange={onPermissionModeChange}
           onPresetSelect={onPresetSelect}

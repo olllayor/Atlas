@@ -54,6 +54,14 @@ export function registerChatIpc(chatEngine: ChatEngine) {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.chatCompact,
+    withUserFacingErrors(IPC_CHANNELS.chatCompact, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+      chatEngine.compactConversation(conversationId);
+    }),
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.chatGetRuntimeState,
     withUserFacingErrors(IPC_CHANNELS.chatGetRuntimeState, async (event, request: { conversationId: string }) => {
       assertTrustedSender(event);

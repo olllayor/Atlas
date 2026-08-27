@@ -9,9 +9,38 @@ import type { JobSnapshotView, JobStatusView } from '../../../shared/contracts';
  * owns fetching and subscription, this module owns the shape of the render.
  */
 
-/** The chip renders nothing unless the conversation owns at least one job. */
-export function jobsChipVisible(jobs: readonly JobSnapshotView[]): boolean {
-  return jobs.length > 0;
+/** Max rows shown in the dropdown before "... and N more". */
+const MAX_DISPLAY_ROWS = 12;
+
+/** Truncate a label to `maxLen` graphemes, appending `[…]` when clipped. */
+export function truncateLabel(label: string, maxLen = 80): string {
+  if (label.length <= maxLen) {
+    return label;
+  }
+  return label.slice(0, maxLen) + '[…]';
+}
+
+/**
+ * The chip renders only while at least one job is live (running/stopping)
+ * or was very recently settled (< 5 s ago).  Once everything has been
+ * settled for longer than that the chrome disappears so the strip stays
+ * quiet — matching t3code's pattern of showing the indicator only while
+ * work is actively happening.
+ */
+const SETTLED_HIDE_MS = 5_000;
+
+export function jobsChipVisible(jobs: readonly JobSnapshotView[], now: number): boolean {
+  if (jobs.length === 0) {
+    return false;
+  }
+  if (activeJobCount(jobs) > 0) {
+    return true;
+  }
+  const mostRecentFinish = jobs.reduce(
+    (latest, j) => Math.max(latest, j.finishedAt ?? 0),
+    0
+  );
+  return now - mostRecentFinish < SETTLED_HIDE_MS;
 }
 
 /** How many jobs are still live (`running` or `stopping`). */
@@ -88,7 +117,7 @@ export function jobRowView(job: JobSnapshotView, now: number): {
 } {
   return {
     id: job.id,
-    label: job.label,
+    label: truncateLabel(job.label),
     status: job.status,
     statusLabel: jobStatusLabel(job.status),
     subtitle: job.detail ?? jobElapsedLabel(job, now),
@@ -112,4 +141,16 @@ export function sortJobsForDisplay(jobs: readonly JobSnapshotView[]): JobSnapsho
     const bTime = b.finishedAt ?? b.startedAt;
     return bTime - aTime;
   });
+}
+
+/** Sort + cap for the dropdown. Excess count available for the "and N more" label. */
+export function cappedDisplayRows(jobs: readonly JobSnapshotView[]): {
+  rows: JobSnapshotView[];
+  overflow: number;
+} {
+  const sorted = sortJobsForDisplay(jobs);
+  if (sorted.length <= MAX_DISPLAY_ROWS) {
+    return { rows: sorted, overflow: 0 };
+  }
+  return { rows: sorted.slice(0, MAX_DISPLAY_ROWS), overflow: sorted.length - MAX_DISPLAY_ROWS };
 }

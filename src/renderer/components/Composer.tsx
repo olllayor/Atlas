@@ -29,6 +29,7 @@ import {
 import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParameters';
 import { planImageDownscale } from '../../shared/imageDownscale';
 import { cn } from '../lib/utils';
+import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
 import type {
   ConversationDetail,
   CustomProvider,
@@ -130,6 +131,11 @@ export type ComposerProps = {
   onToolPermissionModeChange: (value: ToolPermissionMode) => void;
   /** One-click posture from the chip's menu: writes both access axes at once. */
   onPermissionPresetSelect?: (preset: PermissionPreset) => void;
+  /**
+   * Receives built-in slash command names (`compact`, `review`…). A draft that
+   * is exactly one of them is consumed as an action instead of sent.
+   */
+  onSlashAction?: (name: string, args?: string) => void;
   onOpenGallery: () => void;
   /**
    * How many follow-ups are waiting to run in this conversation. Drives the
@@ -517,6 +523,7 @@ export function Composer({
   onReasoningEffortChange,
   onToolPermissionModeChange,
   onPermissionPresetSelect,
+  onSlashAction,
   onOpenGallery,
   queuedCount = 0,
 }: ComposerProps) {
@@ -597,7 +604,13 @@ export function Composer({
   });
   // The two pickers cannot both be open: a mention needs an `@` and a command
   // only ever triggers on a `/` in the first column.
-  const commands = useCommandAutocomplete({ value, onChange, textareaRef, disabled });
+  const commands = useCommandAutocomplete({
+    value,
+    onChange,
+    textareaRef,
+    disabled,
+    onBuiltinCommand: onSlashAction,
+  });
 
   const syncPickerCarets = useCallback(() => {
     mentions.syncCaret();
@@ -746,6 +759,30 @@ export function Composer({
     if (!canSend || isStreaming || isSubmitting) {
       return;
     }
+
+    /*
+      A draft that is exactly a built-in command (`/compact`, `/review`…) is a
+      control action, not a message (t3code's standalone-command parse). It is
+      consumed here — cleared, executed, never sent — while plugin templates
+      keep their insert-as-text behavior.
+    */
+    if (!attachments.files.length && onSlashAction) {
+      // Arg-taking commands (/goal <objective>) parse first; the rest keep
+      // the exact-invocation grammar so trailing text fails loudly.
+      const invocation = parseStandaloneCommandWithArgs(value);
+      if (invocation) {
+        onChange('');
+        onSlashAction(invocation.name, invocation.args || undefined);
+        return;
+      }
+      const builtin = parseStandaloneSlashCommand(value);
+      if (builtin) {
+        onChange('');
+        onSlashAction(builtin.name);
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setAttachmentError(null);
 
@@ -781,7 +818,7 @@ export function Composer({
     } finally {
       setIsSubmitting(false);
     }
-  }, [attachments, canSend, isStreaming, isSubmitting, onSend, value]);
+  }, [attachments, canSend, isStreaming, isSubmitting, onSend, onSlashAction, onChange, value]);
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashStopHint = useCallback(() => {
@@ -948,6 +985,7 @@ export function Composer({
         inputTokens: contextUsage.lastTurn?.inputTokens ?? undefined,
         outputTokens: contextUsage.lastTurn?.outputTokens ?? undefined,
         reasoningTokens: contextUsage.lastTurn?.reasoningTokens ?? undefined,
+        cachedInputTokens: contextUsage.lastTurn?.cachedInputTokens ?? undefined,
       },
       breakdown: contextUsage,
     };
@@ -989,7 +1027,7 @@ export function Composer({
         goes behind the slab rather than halting short of it.
       */}
       <div className="px-5 pb-3 lg:px-6">
-        <div className="mx-auto max-w-content-max">
+        <div className="mx-auto max-w-composer">
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
             aria-label="Upload files"
@@ -1300,7 +1338,7 @@ export function Composer({
                       {isStreaming ? (
                         <Square className="size-3 fill-current" />
                       ) : isSubmitting ? (
-                        <Loader2 className="size-4 animate-spin" strokeWidth={2} />
+                        <Loader2 className="size-4 motion-spin-steps" strokeWidth={2} />
                       ) : (
                         <ArrowUp className="size-4" strokeWidth={2.25} />
                       )}

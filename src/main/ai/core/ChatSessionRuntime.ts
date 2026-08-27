@@ -42,6 +42,8 @@ import {
 } from '../tools/builtInTools';
 import { JOB_TOOL_SYSTEM_PROMPT, buildJobCompletionNoticeMessage } from '../tools/jobTools';
 import { SESSION_SEARCH_SYSTEM_PROMPT } from '../tools/sessionSearchTools';
+import { GOAL_TOOL_SYSTEM_PROMPT } from '../tools/goalTools';
+import { buildGoalEnvelope } from '../goal/goalRuntime';
 import { formatCompletionNotice, type BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
 import type { SkillsService } from '../../plugins/SkillsService';
 import { createSkillTools } from '../../plugins/skillTools';
@@ -135,6 +137,8 @@ export type ExecuteTurnResult = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  /** Provider-reported prompt-cache hit tokens; absent when unreported. */
+  cachedInputTokens?: number;
   latencyMs?: number;
 };
 
@@ -427,7 +431,7 @@ export class ChatSessionRuntime {
     private readonly modelsRepo: ModelsRepo,
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
-    private readonly contextManager: Pick<ContextManager, 'buildModelInput'> = new ContextManager(),
+    private readonly contextManager: Pick<ContextManager, 'buildModelInput' | 'requestForcedCompaction'> = new ContextManager(),
     /**
      * Supplies the Sites toolset for a turn, or null when the user has not
      * opted in. Kept as a provider so tools close over the live service and
@@ -507,6 +511,14 @@ export class ChatSessionRuntime {
      */
     private readonly spillStore: Pick<SpillStore, 'saveText'> | null = null,
   ) {}
+
+  /**
+   * The compaction depth each conversation last went out at, so a turn that
+   * compresses *more* than the previous one can say so. Insertion-ordered
+   * and capped at write time: a deleted conversation's entry is dead
+   * weight, never a leak worth an eviction ceremony.
+   */
+  private readonly lastDroppedTurnsByConversation = new Map<string, number>();
 
   /** The server behind a namespaced tool name, for an audit record. */
   /**
@@ -903,6 +915,7 @@ export class ChatSessionRuntime {
             inputTokens: result.inputTokens ?? null,
             outputTokens: result.outputTokens ?? null,
             reasoningTokens: result.reasoningTokens ?? null,
+            cachedInputTokens: result.cachedInputTokens ?? null,
             latencyMs: result.latencyMs ?? null,
           })
         : requestId);
@@ -920,6 +933,7 @@ export class ChatSessionRuntime {
         inputTokens: result.inputTokens ?? null,
         outputTokens: result.outputTokens ?? null,
         reasoningTokens: result.reasoningTokens ?? null,
+        cachedInputTokens: result.cachedInputTokens ?? null,
         latencyMs: result.latencyMs ?? null,
         errorCode: null,
       });
@@ -934,6 +948,7 @@ export class ChatSessionRuntime {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       reasoningTokens: result.reasoningTokens,
+      cachedInputTokens: result.cachedInputTokens,
       latencyMs: result.latencyMs,
     };
   }
@@ -950,6 +965,10 @@ export class ChatSessionRuntime {
    * displayed number cannot drift from the request. Anything that changes what
    * is actually sent changes this too.
    */
+  requestForcedCompaction(conversationId: string): void {
+    this.contextManager.requestForcedCompaction(conversationId);
+  }
+
   measureContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
     const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
     const maxTokens = positiveOrNull(modelHints.contextWindow);
@@ -987,17 +1006,17 @@ export class ChatSessionRuntime {
       siteTools != null,
       toolPermissionMode,
       workspace,
-      visualsEnabled,
-      // Measured off the *unsent* composer text, exactly like the visual gate
-      // above and for the same reason: a named skill's body is inlined into the
-      // prompt, so the ring has to account for it while the user is still
-      // typing rather than dropping several thousand tokens at send time.
-      // Resolution only — `onPluginMentioned` is deliberately not wired on this
-      // path, so measuring cannot activate a server.
-      this.resolvePluginMentions(request.pendingText ?? '')
+      visualsEnabled
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
-    const pendingTokens = estimatePendingTokens(request);
+    // Mentioned skill bodies no longer ride in the system prompt; they are
+    // counted where they now travel — the pending turn's history snapshot.
+    // Resolution only, and deliberately not wired to `onPluginMentioned` on
+    // this path: measuring cannot activate a server.
+    const pendingMentionTokens = estimateTextTokens(
+      this.describePluginMentionsForPrompt(this.resolvePluginMentions(request.pendingText ?? '')) ?? ''
+    );
+    const pendingTokens = estimatePendingTokens(request) + (pendingMentionTokens > 0 ? pendingMentionTokens : 0);
 
     // Same helper the send path uses, so the ring is sized against the same
     // window the request will be. Unsent composer text joins the floor here but
@@ -1017,6 +1036,7 @@ export class ChatSessionRuntime {
     });
 
     const lastTurn = this.conversationsRepo.getLatestUsage?.(request.conversationId) ?? null;
+    const cache = this.conversationsRepo.getCacheUsage?.(request.conversationId) ?? null;
     const summaryTokens = modelInput.usage.addendumTokens;
     const historyTokens = modelInput.usage.historyTokens;
     const promptTokens = systemTokens + toolTokens + summaryTokens + historyTokens + pendingTokens;
@@ -1036,6 +1056,7 @@ export class ChatSessionRuntime {
       keptTurnCount: modelInput.usage.keptTurnCount,
       overflow: maxTokens != null && promptTokens > maxTokens - reservedOutputTokens,
       lastTurn,
+      cache,
     };
   }
 
@@ -1081,15 +1102,7 @@ export class ChatSessionRuntime {
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
-    visualsEnabled = false,
-    /**
-     * Plugins the user named with `@`.
-     *
-     * Counted by the context meter as well as sent, because a named skill's
-     * body is inlined here — that is real tokens, and a ring that ignored them
-     * would under-report exactly the turns that spend the most.
-     */
-    pluginMentions: PluginMentionTarget[] = [],
+    visualsEnabled = false
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -1111,7 +1124,6 @@ export class ChatSessionRuntime {
         mode: workspace.mode,
         hasProject: workspace.root != null
       }) ?? null;
-    const invokedPluginsPrompt = this.describePluginMentionsForPrompt(pluginMentions);
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,
@@ -1119,18 +1131,37 @@ export class ChatSessionRuntime {
       // tool the model cannot call is noise, and omitting it where the tools
       // exist would leave the model busy-polling.
       ...(workspace.jobRegistry && workspace.conversationId ? [JOB_TOOL_SYSTEM_PROMPT] : []),
+      // Goal mode: static etiquette ships with the update_goal tool (same
+      // conditional); the dynamic envelope rides beside it. Both are gated on
+      // status 'active', not merely "a row exists" — paused and terminal rows
+      // persist as history, and their etiquette would keep telling a finished
+      // goal it is still live. The envelope changes per continued turn, which
+      // re-keys the prompt cache only while a goal is active — a bounded cost
+      // the plan accepted explicitly.
+      ...(workspace.goalTools && workspace.conversationId
+        ? (() => {
+            const goal = workspace.goalTools.getActive(workspace.conversationId);
+            return goal && goal.status === 'active'
+              ? [GOAL_TOOL_SYSTEM_PROMPT, buildGoalEnvelope(goal)]
+              : [];
+          })()
+        : []),
       // session_search rides the always-present conversationsRepo, so its
       // etiquette ships unconditionally, like update_plan's.
       SESSION_SEARCH_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
       ...(skillsPrompt ? [skillsPrompt] : []),
-      // After the index and before the project's own instructions: an explicit
-      // mention outranks what the model might have chosen for itself, and is
-      // still subject to everything Atlas enforces above it.
-      ...(invokedPluginsPrompt ? [invokedPluginsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
+    // Invoked-plugin context is deliberately NOT here. A `@mention` inlines
+    // the named skill's full body, which differs per turn — at position 0 of
+    // the request that would re-key the provider's prefix cache on every
+    // mentioned turn (the whole conversation re-reads). It rides as a derived
+    // user-role snapshot inside the turn's history instead — see
+    // `deriveTurnSnapshot` and `ContextManager.buildModelInput` — the same
+    // cache-safe shape dsh uses for dynamic context: appended after durable
+    // content, byte-stable once written.
     // The visual spec goes last of the Atlas-owned blocks and only when this
     // turn asked for a visual, so an ordinary question is not carrying two
     // thousand tokens of SVG instructions it will never use.
@@ -1144,6 +1175,20 @@ export class ChatSessionRuntime {
     ];
 
     return sections.join('\n\n');
+  }
+
+  /**
+   * Model-facing context for one historical turn's `@mentions`, derived from
+   * that turn's own persisted user text.
+   *
+   * Deterministic given (user text, skill registry): the same bytes rebuild
+   * after a restart, so the snapshot needs no persistence of its own and lands
+   * in the wire request right after its turn's user message — chronologically
+   * where dsh records a pre-step injection. Returns null for mention-free
+   * turns, which contribute nothing and shift nothing.
+   */
+  private deriveTurnSnapshot(userText: string): string | null {
+    return this.describePluginMentionsForPrompt(this.resolvePluginMentions(userText));
   }
 
   private resolveSiteTools(request: {
@@ -1347,6 +1392,18 @@ export class ChatSessionRuntime {
       // deadline covers the spill wrapper too.
       tools = applyTimeoutPolicy(withSpill) as any;
     }
+    if (tools) {
+      // Canonical wire order (dsh invariant): code-unit sort by name, so the
+      // serialized schema block is byte-identical across steps and turns no
+      // matter how the contributing registries were assembled. MCP tools
+      // arrive in server response order, which is exactly the kind of hidden
+      // nondeterminism that silently re-keys a provider's prefix cache.
+      tools = Object.fromEntries(
+        Object.entries(tools).sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0
+        )
+      ) as any;
+    }
     // Catalog-derived limits so the adapter can size the request to this model
     // rather than to a provider-wide constant.
     const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
@@ -1387,6 +1444,9 @@ export class ChatSessionRuntime {
         conversationId: request.conversationId,
         history,
         mode: compactionMode,
+        // Per-turn `@mention` context rides as a derived history snapshot, not
+        // in the system prompt — see `deriveTurnSnapshot`.
+        turnSnapshot: (userText) => this.deriveTurnSnapshot(userText),
         budget: this.resolveContextBudget({
           modelHints,
           requestedMaxOutputTokens: request.maxOutputTokens,
@@ -1397,12 +1457,38 @@ export class ChatSessionRuntime {
                 siteTools != null,
                 toolPermissionMode,
                 workspace,
-                visualsEnabled,
-                pluginMentions
+                visualsEnabled
               )
             ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
         }).budget,
       });
+
+      // First attempt only — a retry re-derives the same split, and the
+      // notice must not re-announce it. Compaction is invisible by default:
+      // the summary replaces turns the user can no longer watch, so the one
+      // moment it happens is the one moment worth saying so (dsh puts a
+      // durable marker in the transcript; this notice is the live half of
+      // that, and the hover card on the context ring is the standing half).
+      if (attempt === 0) {
+        const previousDropped = this.lastDroppedTurnsByConversation.get(request.conversationId) ?? 0;
+        const dropped = modelInput.usage.droppedTurnCount;
+        this.lastDroppedTurnsByConversation.delete(request.conversationId);
+        this.lastDroppedTurnsByConversation.set(request.conversationId, dropped);
+        while (this.lastDroppedTurnsByConversation.size > 500) {
+          const oldest = this.lastDroppedTurnsByConversation.keys().next().value;
+          if (oldest === undefined) break;
+          this.lastDroppedTurnsByConversation.delete(oldest);
+        }
+        if (dropped > previousDropped) {
+          emitEvent({
+            type: 'notice',
+            requestId,
+            code: 'compacting',
+            level: 'info',
+            message: `Compressed ${dropped} older ${dropped === 1 ? 'turn' : 'turns'} to keep the conversation inside the model's window.`,
+          });
+        }
+      }
 
       logger.info('turn.attempt', {
         requestId,
@@ -1425,7 +1511,6 @@ export class ChatSessionRuntime {
             toolPermissionMode,
             workspace,
             visualsEnabled,
-            pluginMentions,
           ) || undefined;
         onRequestHeader?.({
           attempt,

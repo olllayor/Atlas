@@ -14,8 +14,19 @@ import type { PluginRegistry } from './PluginRegistry';
  * ladder — applies to plugin servers without any of it knowing that plugins
  * exist.
  */
-export function createPluginMcpSource(registry: PluginRegistry): () => McpServerConfig[] {
-  return () => registry.snapshot().plugins.flatMap(toServerConfigs);
+export function createPluginMcpSource(
+  registry: PluginRegistry,
+  /**
+   * The beta switch, read live on every server-list build.
+   *
+   * Off means the list is empty — no plugin server exists to connect, spawn or
+   * list tools for, whatever the plugins directory contains.
+   */
+  isEnabled: () => boolean = () => true
+): () => McpServerConfig[] {
+  const source = () => registry.snapshot().plugins.flatMap(toServerConfigs);
+
+  return () => (isEnabled() ? source() : []);
 }
 
 function toServerConfigs(plugin: LoadedPlugin): McpServerConfig[] {

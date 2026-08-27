@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 
 import type { AttachmentStore } from '../attachments/AttachmentStore';
 import { ConversationsRepo } from './repositories/conversationsRepo';
+import { ConversationGoalsRepo } from './repositories/conversationGoalsRepo';
 import { ConversationSummariesRepo } from './repositories/conversationSummariesRepo';
 import { CustomProvidersRepo } from './repositories/customProvidersRepo';
 import { ModelsRepo } from './repositories/modelsRepo';
@@ -25,6 +26,7 @@ export type SqliteDatabase = InstanceType<typeof Database>;
 export type AppDatabase = {
   raw: SqliteDatabase;
   conversations: ConversationsRepo;
+  conversationGoals: ConversationGoalsRepo;
   conversationSummaries: ConversationSummariesRepo;
   runtimeState: RuntimeStateRepo;
   toolExecutions: ToolExecutionsRepo;
@@ -52,6 +54,7 @@ export function createAppDatabase(databasePath: string, attachmentStore: Attachm
   return {
     raw,
     conversations,
+    conversationGoals: new ConversationGoalsRepo(raw),
     conversationSummaries: new ConversationSummariesRepo(raw),
     runtimeState,
     toolExecutions,

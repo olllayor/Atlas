@@ -1,4 +1,5 @@
 import type {
+  ActivityTone,
   ActivityType,
   CanonicalToolType,
   ChatMessagePart,
@@ -371,6 +372,79 @@ function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEve
   };
 }
 
+/**
+ * Goal-mode lifecycle rows (/goal). Each event is an instantaneous marker with
+ * its own row — nothing recurs per turn except `continuation.admitted`, which
+ * is deliberately silent (the turn counter chip already shows that heartbeat;
+ * one transcript row per outer turn would be noise). `intent.requested` is
+ * silent too: it is superseded by the committed `completed`/`blocked` row at
+ * settle, and a rejected claim is worth nothing after the fact.
+ */
+function deriveGoalWorkLogEntry(event: RuntimeEventEnvelope): WorkLogEntry | null {
+  const reason = typeof event.payload.reason === 'string' ? event.payload.reason : null;
+
+  const base = {
+    id: getWorkLogEntryId(event),
+    conversationId: event.conversationId,
+    turnId: event.turnId,
+    requestId: event.requestId,
+    messageId: event.messageId ?? null,
+    activityType: event.activityType,
+    tone: 'info' as ActivityTone,
+    toolType: null,
+    toolCallId: null,
+    approvalId: null,
+    title: '',
+    summary: reason,
+    status: 'completed' as WorkLogEntry['status'],
+    sequence: event.sequence,
+    isFinal: true,
+    payload: event.payload,
+    createdAt: event.occurredAt,
+    updatedAt: event.occurredAt,
+  };
+
+  switch (event.activityType) {
+    case 'goal.created':
+      return { ...base, title: 'Goal set' };
+    case 'goal.edited':
+      return { ...base, title: 'Goal edited' };
+    case 'goal.resumed':
+      return { ...base, title: 'Goal resumed' };
+    case 'goal.cleared':
+      return { ...base, title: 'Goal cleared' };
+    case 'goal.paused':
+      return event.payload.cause === 'stalled'
+        ? { ...base, title: 'Goal stalled out', summary: 'Too many consecutive turns without verifiable progress.' }
+        : { ...base, title: 'Goal paused' };
+    case 'goal.completed':
+      return { ...base, title: 'Goal completed', summary: reason };
+    case 'goal.blocked': {
+      const kind = typeof event.payload.blockerKind === 'string' ? event.payload.blockerKind : null;
+      return {
+        ...base,
+        title: kind ? `Goal blocked (${kind})` : 'Goal blocked',
+        summary: reason,
+        tone: 'error',
+        status: 'error',
+      };
+    }
+    // The one rejection that stops the loop without any other visible state:
+    // the goal stays active but waits forever unless the human knows why.
+    case 'goal.continuation.rejected':
+      if (event.payload.reason !== 'turn_cap_reached') return null;
+      return {
+        ...base,
+        title: 'Goal turn cap reached',
+        summary: 'The goal stays active but waits: send a message or /goal resume to continue.',
+      };
+    default:
+      // goal.intent.requested and goal.continuation.admitted stay out of the
+      // transcript for the reasons above.
+      return null;
+  }
+}
+
 export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEventEnvelope): WorkLogEntry | null {
   if (event.activityType.startsWith('task.')) {
     return deriveTaskWorkLogEntry(previous, event);
@@ -390,6 +464,9 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     // composer's queued dock; a "Followup Queued" row inside the transcript
     // would say it twice.
     return null;
+  }
+  if (event.activityType.startsWith('goal.')) {
+    return deriveGoalWorkLogEntry(event);
   }
 
   const title =

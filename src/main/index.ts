@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserWindow, app, ipcMain } from 'electron/main';
+import { shell } from 'electron/common';
 
 import { ChatEngine } from './ai/core/ChatEngine';
 import { ChatSessionRuntime } from './ai/core/ChatSessionRuntime';
@@ -37,6 +39,7 @@ import { registerGitHubIpc } from './ipc/github';
 import { registerFileChangesIpc } from './ipc/fileChanges';
 import { registerTerminalIpc } from './ipc/terminal';
 import { registerJobsIpc } from './ipc/jobs';
+import { registerGoalsIpc } from './ipc/goals';
 import { IdeLauncher } from './workspace/IdeLauncher';
 import { ProjectDetector } from './workspace/ProjectDetector';
 import { AgentInstructionsService } from './workspace/AgentInstructions';
@@ -70,7 +73,8 @@ import { McpUiStore } from './ai/mcp/McpUiStore';
 import { registerMcpUiProtocolHandler, registerMcpUiScheme } from './ai/mcp/mcpUiProtocol';
 import { createPluginMcpSource } from './plugins/PluginMcpSource';
 import { SkillsService } from './plugins/SkillsService';
-import { McpSecretStore } from './secrets/mcpSecrets';
+import { createKeychainOAuthStore, McpSecretStore } from './secrets/mcpSecrets';
+import { McpOAuthProvider } from './ai/mcp/mcpOAuth';
 import { createMcpToolsProvider } from './ai/mcp/mcpToolsProvider';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
 import { PtyService } from './terminal/PtyService';
@@ -81,10 +85,18 @@ import { registerVisualsIpc } from './ipc/visuals';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
+import {
+  parkColdStartLink,
+  registerAtlasProtocolHandler,
+  registerAtlasScheme,
+  registerDeepLinkIpc,
+  wireOsLaunchLinks,
+} from './bootstrap/deepLink';
 import { SiteService } from './sites/SiteService';
 import { logger } from './observability/logger';
 import { KeychainStore } from './secrets/keychain';
 import { worktreeService } from './workspace/WorktreeService';
+import { GoalRuntime } from './ai/goal/goalRuntime';
 import { resolveConversationWorkspace } from './workspace/conversationWorkspace';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
@@ -113,6 +125,21 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 registerSitePreviewScheme();
 registerAttachmentScheme();
 registerPluginIconScheme();
+// `atlas://` deep links — same privileged-registration constraint, and the
+// OS launch hooks must attach before `whenReady` resolves to catch cold starts.
+registerAtlasScheme();
+wireOsLaunchLinks();
+// Windows and Linux hand an `atlas://` link to a freshly spawned second
+// process's argv; Electron only delivers `second-instance` to a primary that
+// holds the single-instance lock, so without it the handoff is dead code.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  // This primary may itself have been launched from a link (cold start);
+  // park it until the renderer's subscription can pull it.
+  parkColdStartLink(process.argv);
+}
 // Plugin UI components. Must be registered before the app is ready, like the
 // three above, and gets its own scheme for the same reason: the widget's CSP is
 // a response header this process writes, which is a guarantee no `srcdoc`
@@ -176,6 +203,7 @@ async function resolveSpillsDirectory() {
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return; // A second launch: hand over and die.
   // First thing after ready: everything below is worth having a record of, and
   // a failure here is exactly the kind that leaves no other trace.
   logger.configure({
@@ -354,11 +382,17 @@ app.whenReady().then(async () => {
     // load beats loading it without the parts its author relied on.
     appVersion: app.getVersion(),
   });
+  // The beta switch, read live everywhere it matters. Off is not "hidden":
+  // no MCP server source, no skills in the prompt, no IPC answers, no default
+  // installs — the whole pipeline goes inert while the files stay on disk.
+  const pluginsBetaEnabled = () => database.settings.getPluginsBetaEnabled();
   const pluginInstaller = new PluginInstaller(pluginRegistry, pluginOrigins);
   const checkoutRoot = marketplaceCheckoutRoot();
   // Artwork is served from these two roots and nowhere else, whatever a
   // manifest asks for.
   registerPluginIconProtocolHandler(() => [pluginRegistry.root, checkoutRoot]);
+  registerAtlasProtocolHandler();
+  registerDeepLinkIpc();
   // Interrupted installs leave staging directories behind. Upstream documents
   // sweeping them and does not; a machine surveyed for this work still had
   // three from a month earlier.
@@ -396,9 +430,43 @@ app.whenReady().then(async () => {
   // only inside installed plugins, and this manager is the loader internal that
   // runs them.
   const mcpSecrets = new McpSecretStore();
-  const listPluginServers = createPluginMcpSource(pluginRegistry);
-  const mcpManager = new McpClientManager(listPluginServers, (serverId) =>
-    mcpSecrets.getEnv(serverId)
+  const keychainOAuthStore = createKeychainOAuthStore();
+  const listPluginServers = createPluginMcpSource(pluginRegistry, pluginsBetaEnabled);
+  const mcpManager = new McpClientManager(
+    listPluginServers,
+    async (serverId) => {
+      const env = await mcpSecrets.getEnv(serverId);
+      // A plugin server's id is `plugin:<name>:<key>`, and the credential panel
+      // saves per plugin rather than per server. Merged here — the one place
+      // both sides of the id are known — so a token typed into the plugin's
+      // detail panel reaches every server that plugin carries.
+      const pluginName = serverId.startsWith('plugin:') ? serverId.split(':')[1] : null;
+
+      if (!pluginName) {
+        return env;
+      }
+
+      const credentials = await mcpSecrets.getPluginCredentials(pluginName);
+      return { ...credentials, ...env };
+    },
+    undefined,
+    // OAuth for remote servers: a 401 becomes a browser consent flow with a
+    // loopback landing, tokens in the keychain. Stdio servers return nothing —
+    // they have nothing to authorize against.
+    (server) => {
+      if ((server.transport !== 'http' && server.transport !== 'sse') || !server.url) {
+        return undefined;
+      }
+
+      return new McpOAuthProvider({
+        serverId: server.id,
+        serverName: server.name,
+        store: keychainOAuthStore,
+        openExternal: (url) => {
+          void shell.openExternal(url);
+        }
+      });
+    }
   );
   // Gating: a bundle's servers stay unconnected and out of the request until a
   // skill from that plugin is opened. Twenty installed plugins therefore cost
@@ -430,7 +498,7 @@ app.whenReady().then(async () => {
     mcpUiStore,
     mcpAuditLog,
   );
-  const skillsService = new SkillsService(pluginRegistry);
+  const skillsService = new SkillsService(pluginRegistry, pluginsBetaEnabled);
 
   app.on('will-quit', () => {
     ptyService.disposeAll();
@@ -516,6 +584,13 @@ app.whenReady().then(async () => {
         }),
         jobRegistry,
         spillStore,
+        // Read-only: the agent may watch the user's terminal but never type
+        // into it (PtyService.snapshot has no stdin path).
+        terminalReadback: ptyService,
+        // The model side of /goal: without this the update_goal tool is never
+        // advertised and the goal etiquette never ships, so the runtime would
+        // keep admitting continuation turns the model cannot report on.
+        goalTools: goalRuntime,
       }),
       () => database.settings.getVisualMode(),
       mcpToolsProvider,
@@ -566,6 +641,36 @@ app.whenReady().then(async () => {
     },
   );
 
+  /*
+    Goal mode (/goal). The runtime owns every goal state transition; the
+    engine owns turn scheduling. Each is wired to the other here, after both
+    exist — a constructor parameter would be circular.
+  */
+  const pushGoalEvent = (conversationId: string, info?: { notice?: string }): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.goalsEvent, {
+        type: 'updated',
+        conversationId,
+        goal: database.conversationGoals.getActive(conversationId),
+        ...(info?.notice ? { notice: info.notice } : {}),
+      });
+    }
+  };
+  const goalRuntime = new GoalRuntime({
+    goals: database.conversationGoals,
+    randomId: () => randomUUID(),
+    recordActivity: ({ eventId, conversationId, activityType, payload }) => {
+      // Same durable-log writer the followup queue uses: lifecycle rows land
+      // in conversation_activities and replay like any other work log.
+      void chatEngine.recordGoalActivity({ eventId, conversationId, activityType, payload });
+    },
+    isBusy: (conversationId) => chatEngine.isBusyForGoal(conversationId),
+    hasPendingApproval: (conversationId) => chatEngine.hasPendingGoalApproval(conversationId),
+    enqueueContinuation: (conversationId) => chatEngine.startGoalContinuation(conversationId),
+    pushEvent: pushGoalEvent,
+  });
+  chatEngine.attachGoalRuntime(goalRuntime);
+
   registerSettingsIpc({
     settingsRepo: database.settings,
     modelRegistry,
@@ -606,9 +711,14 @@ app.whenReady().then(async () => {
   registerGitHubIpc(database, githubService);
   // Plugins Atlas ships with are present without being asked for. Runs after
   // the staging sweep so a half-finished copy is never mistaken for installed.
-  pluginMarketplaces.installDefaults();
+  // Skipped while the beta is off: a default install is the feature acting,
+  // and an off feature does nothing at all.
+  if (pluginsBetaEnabled()) {
+    pluginMarketplaces.installDefaults();
+  }
 
   registerPluginsIpc({
+    isEnabled: pluginsBetaEnabled,
     registry: pluginRegistry,
     installer: pluginInstaller,
     marketplaces: pluginMarketplaces,
@@ -616,17 +726,23 @@ app.whenReady().then(async () => {
     origins: pluginOrigins,
     activations: pluginActivations,
     secrets: mcpSecrets,
+    mcpManager,
     setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
     setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
   });
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
   registerJobsIpc(jobRegistry);
+  registerGoalsIpc({ goalRuntime, chatEngine });
   registerChatIpc(chatEngine);
   // Fold the durable follow-up queue back in and start draining it. The
   // window resolver lets a resumed entry borrow the frontmost window for
   // event delivery; entries wait in the queue until one exists.
   chatEngine.resumePersistedFollowups();
+  // Boot admission tick (plan §2.7): a crash mid-turn leaves its goal active
+  // with no settle coming. Idle conversations get one admission decision now;
+  // busy ones are skipped because their own settle will decide.
+  goalRuntime.continueIdleGoals();
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);

@@ -1,5 +1,7 @@
 import keytar from 'keytar';
 
+import type { OAuthStateStore } from '../ai/mcp/mcpOAuth';
+
 const SERVICE_NAME = 'atlas-chat';
 
 function accountNameFor(serverId: string) {
@@ -87,5 +89,22 @@ export class McpSecretStore {
   async deletePluginCredentials(pluginName: string): Promise<void> {
     await keytar.deletePassword(SERVICE_NAME, pluginAccountNameFor(pluginName)).catch(() => undefined);
   }
+}
+
+/**
+ * OAuth flow state, kept in the keychain under the same service.
+ *
+ * Tokens, client registrations, PKCE verifiers and discovery caches are all
+ * secrets or near-secrets; the store interface keeps `mcpOAuth.ts` testable
+ * without the keychain underneath it.
+ */
+export function createKeychainOAuthStore(): OAuthStateStore {
+  return {
+    get: (key) => keytar.getPassword(SERVICE_NAME, key).catch(() => null),
+    set: (key, value) => keytar.setPassword(SERVICE_NAME, key, value),
+    remove: async (key) => {
+      await keytar.deletePassword(SERVICE_NAME, key).catch(() => undefined);
+    }
+  };
 }
 

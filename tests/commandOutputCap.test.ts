@@ -133,3 +133,20 @@ test('stdout and stderr are budgeted independently', async () => {
   assert.equal(result.stderrTruncated, undefined);
   assert.equal(result.stderr, 'err-only\n');
 });
+
+test('tailLines previews the last complete lines without consuming', () => {
+  const sink = collect(['one\ntwo\n', 'three\nfour'], 1024);
+
+  assert.deepEqual(sink.tailLines(2), ['three', 'four']);
+  assert.deepEqual(sink.tailLines(10), ['one', 'two', 'three', 'four']);
+  assert.deepEqual(sink.tailLines(0), []);
+
+  // Preview is read-only: the full log is unchanged afterwards.
+  assert.equal(sink.toString(), 'one\ntwo\nthree\nfour');
+});
+
+test('tailLines falls back to the in-progress line before anything commits', () => {
+  const sink = collect(['partia'], 1024);
+  // Nothing has committed yet; under budget the verbatim view still answers.
+  assert.deepEqual(sink.tailLines(3), ['partia']);
+});

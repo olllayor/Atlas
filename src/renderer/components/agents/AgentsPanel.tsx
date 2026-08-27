@@ -38,25 +38,24 @@ export function AgentsPanel({
 
   return (
     <div className="flex h-full flex-col overflow-y-auto p-4 space-y-5 text-sm">
-      {/* Summary Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-border-default">
-        <div className="flex items-center gap-2">
-          <Bot className="h-4 w-4 text-accent" />
-          <span className="font-semibold text-text-primary">Sub-Agents Roster</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <span>{model.agents.length} total</span>
-          <span>•</span>
-          <span>{model.totalTokens.toLocaleString()} tokens</span>
-        </div>
+      {/* One quiet summary line, Tasks-tab header grammar: dim sentence-case,
+          counts tabular, no box (spec §6). */}
+      <div className="flex items-center gap-2 pb-1 text-sm font-normal text-text-tertiary">
+        <Bot className="h-4 w-4 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
+        <span>Sub-agents</span>
+        <span className="tabular-nums text-text-faint">{model.agents.length}</span>
+        <span className="ml-auto shrink-0 pl-3 tabular-nums text-sm text-text-faint">
+          {model.totalTokens.toLocaleString()} tokens
+        </span>
       </div>
 
       {/* Active Agents Section */}
       {model.activeAgents.length > 0 && (
         <div className="space-y-3">
-          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-            Live Agents ({model.activeAgents.length})
-          </div>
+          <h3 className="text-sm font-normal text-text-tertiary">
+            Working now{' '}
+            <span className="tabular-nums text-text-faint">{model.activeAgents.length}</span>
+          </h3>
           <div className="space-y-2">
             {model.activeAgents.map((agent) => (
               <AgentCard
@@ -74,9 +73,9 @@ export function AgentsPanel({
       {/* Settled Agents Section */}
       {model.settledAgents.length > 0 && (
         <div className="space-y-3 pt-2">
-          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-            Earlier ({model.settledAgents.length})
-          </div>
+          <h3 className="text-sm font-normal text-text-tertiary">
+            Earlier <span className="tabular-nums text-text-faint">{model.settledAgents.length}</span>
+          </h3>
           <div className="space-y-2">
             {model.settledAgents.map((agent) => (
               <AgentCard
@@ -212,7 +211,9 @@ function StatusDot({ status }: { status: string }) {
     return <span className="h-2 w-2 rounded-full bg-error shrink-0" />;
   }
   if (status === 'running') {
-    return <span className="h-2 w-2 rounded-full bg-accent animate-pulse shrink-0" />;
+    // `motion-glyph-pulse`, not `animate-pulse`: phase-locked with the rest
+    // of the app's live marks and reduced-motion aware.
+    return <span className="h-2 w-2 rounded-full bg-accent motion-glyph-pulse shrink-0" />;
   }
   return <span className="h-2 w-2 rounded-full bg-warning shrink-0" />;
 }

@@ -354,7 +354,7 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
               {languageLabel}
             </span>
           )}
-          {isIncomplete && <span className="text-2xs text-text-faint">Streaming</span>}
+          {isIncomplete && <span className="text-2xs text-text-muted">Streaming</span>}
         </div>
 
         {/*

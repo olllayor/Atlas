@@ -621,3 +621,132 @@ test('the shrink guard reverts compression that would not shrink anything', () =
   assert.equal(result.usage.droppedTurnCount, 0, 'the raw turns are sent instead');
   assert.equal(result.recentMessages.length, history.length);
 });
+
+test('turn snapshots land after their user message and rebuild byte-identically', () => {
+  const manager = new ContextManager();
+  const history = createHistory(6);
+  const snapshotFor = (text: string) =>
+    text.includes('turn 0') || text.includes('turn 3') ? `<invoked_plugins>for: ${text.slice(0, 24)}</invoked_plugins>` : null;
+
+  const first = manager.buildModelInput({
+    conversationId: 'conversation-snap',
+    history,
+    mode: 'standard',
+    turnSnapshot: snapshotFor,
+  });
+  const second = manager.buildModelInput({
+    conversationId: 'conversation-snap',
+    history,
+    mode: 'standard',
+    turnSnapshot: snapshotFor,
+  });
+
+  assert.deepEqual(first.recentMessages, second.recentMessages, 'rebuild is byte-identical');
+
+  const wire = first.recentMessages;
+  for (let index = 0; index < wire.length; index += 1) {
+    if (typeof wire[index].content === 'string' && String(wire[index].content).startsWith('<invoked_plugins>')) {
+      assert.equal(wire[index - 1].role, 'user', 'snapshot follows its own turn user message');
+      assert.equal(wire[index + 1].role, 'assistant', 'snapshot precedes the reply');
+    }
+  }
+});
+
+test('snapshots stay put as history grows and vanish with compacted turns', () => {
+  const manager = new ContextManager();
+  const snapshotFor = (text: string) => (text.includes('turn 1') ? `<invoked_plugins>t1</invoked_plugins>` : null);
+  const before = manager.buildModelInput({
+    conversationId: 'conversation-sticky-snap',
+    history: createHistory(8),
+    mode: 'standard',
+    turnSnapshot: snapshotFor,
+  });
+
+  const grown = [...createHistory(8), ...createTurn(8)];
+  const after = manager.buildModelInput({
+    conversationId: 'conversation-sticky-snap',
+    history: grown,
+    mode: 'standard',
+    turnSnapshot: snapshotFor,
+  });
+
+  // The t1 snapshot keeps its exact bytes and position prefix while newer
+  // turns append — nothing mid-history moved, so the provider's cache holds.
+  const beforeIdx = before.recentMessages.findIndex(
+    (message) => typeof message.content === 'string' && message.content === '<invoked_plugins>t1</invoked_plugins>'
+  );
+  const afterIdx = after.recentMessages.findIndex(
+    (message) => typeof message.content === 'string' && message.content === '<invoked_plugins>t1</invoked_plugins>'
+  );
+  assert.ok(beforeIdx > 0 && afterIdx === beforeIdx, 'existing snapshot position is frozen');
+  assert.deepEqual(
+    after.recentMessages.slice(0, afterIdx + 1),
+    before.recentMessages.slice(0, beforeIdx + 1),
+    'prefix through the snapshot is unchanged'
+  );
+});
+
+test('mention-free turns contribute no snapshot bytes', () => {
+  const manager = new ContextManager();
+  const history = createHistory(4);
+  const plain = manager.buildModelInput({ conversationId: 'c', history, mode: 'standard' });
+  const withNullSnapshots = manager.buildModelInput({
+    conversationId: 'c',
+    history,
+    mode: 'standard',
+    turnSnapshot: () => null,
+  });
+  assert.deepEqual(withNullSnapshots.recentMessages, plain.recentMessages);
+});
+
+test('ten-turn session grows the request as a pure prefix extension', () => {
+  // The property a provider's prompt cache keys on: each turn's request must
+  // contain the previous turn's request as an exact byte prefix. Anything that
+  // mutates an earlier message — or inserts before it — re-reads the whole
+  // conversation at full price. A generous budget keeps the sticky boundary
+  // frozen, so the only thing allowed to happen is appending.
+  const manager = new ContextManager();
+  const snapshotFor = (text: string) =>
+    text.includes('@github') ? `<invoked_plugins>scope: github</invoked_plugins>` : null;
+
+  const history: ModelMessage[] = [];
+  let previous: ModelMessage[] | null = null;
+
+  for (let index = 0; index < 10; index += 1) {
+    const turn = createTurn(index);
+    if (index === 3 || index === 7) {
+      turn[0] = { role: 'user', content: `${String(turn[0].content)} (@github review the diff please)` };
+    }
+    history.push(...turn);
+
+    const build = manager.buildModelInput({
+      conversationId: 'cache-simulation',
+      history,
+      mode: 'standard',
+      budget: { totalTokens: 200_000, reservedTokens: 2_000 },
+      turnSnapshot: snapshotFor,
+    });
+
+    if (previous) {
+      assert.ok(
+        build.recentMessages.length > previous.length,
+        `turn ${index} must strictly grow the request`
+      );
+      previous.forEach((message, offset) => {
+        assert.deepEqual(
+          build.recentMessages[offset],
+          message,
+          `turn ${index} mutated position ${offset}; the cache re-keys from there`
+        );
+      });
+    }
+
+    previous = [...build.recentMessages];
+  }
+
+  // And the mentioned turns really did carry their snapshots.
+  const snapshotCount = previous?.filter(
+    (message) => typeof message.content === 'string' && message.content.startsWith('<invoked_plugins>')
+  ).length;
+  assert.equal(snapshotCount, 2);
+});

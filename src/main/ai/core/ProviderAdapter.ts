@@ -90,6 +90,14 @@ export type ProviderStreamResult = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Provider-reported prompt-cache hit tokens, when the provider reports them.
+   * Subset of `inputTokens` (the AI SDK reports the full prompt there, cache
+   * hits included — the hit rate is cached over input, not input + cached).
+   * Absent means the provider said nothing — never coerce to 0, that would
+   * fake a 0% rate.
+   */
+  cachedInputTokens?: number;
   latencyMs: number;
 };
 
@@ -104,6 +112,12 @@ export type ProviderCapabilities = {
    * missing from it can safely be archived.
    */
   returnsCompleteCatalog?: boolean;
+  /**
+   * When false `listModels` answers from local configuration and never
+   * touches the endpoint, so its success proves nothing about reachability
+   * or key validity — a refresh must not record a validation.
+   */
+  catalogRequiresNetwork?: boolean;
 };
 
 export interface ProviderAdapter {

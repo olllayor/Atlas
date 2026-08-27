@@ -166,7 +166,10 @@ export function SidebarSettingsMenu({
   const triggerButton = (
     <button
       type="button"
-      aria-label={collapsed ? 'Settings and more' : 'More actions'}
+      // The badge is colour-only visually; the accessible name carries it.
+      aria-label={
+        (collapsed ? 'Settings and more' : 'More actions') + (showBadge ? ' — update available' : '')
+      }
       aria-haspopup="menu"
       className={cn(
         'relative flex shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary',
@@ -298,7 +301,7 @@ export function SidebarSettingsMenu({
             className="px-3 text-sm"
           >
             <ReloadIcon
-              className={`h-4 w-4 text-[var(--text-muted)] ${isRefreshingModels ? 'animate-spin' : ''}`}
+              className={`h-4 w-4 text-[var(--text-muted)] ${isRefreshingModels ? 'motion-spin-steps' : ''}`}
             />
             <span>{isRefreshingModels ? 'Refreshing catalog…' : 'Refresh model catalog'}</span>
           </DropdownMenuItem>
@@ -313,7 +316,7 @@ export function SidebarSettingsMenu({
           >
             <UpdateIcon
               className={`h-4 w-4 text-[var(--text-muted)] ${
-                updateState.status === 'checking' ? 'animate-spin' : ''
+                updateState.status === 'checking' ? 'motion-spin-steps' : ''
               }`}
             />
             <span>{getUpdateLabel(updateState)}</span>

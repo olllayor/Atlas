@@ -170,3 +170,22 @@ test('a declared skill stays loadable by name even outside its mode', (t) => {
   assert.ok(skills.find('coder:go'));
   assert.match(skills.read('coder:go'), /Body\./);
 });
+
+test('the beta switch off makes the skills service forget the directory', (t) => {
+  const dir = workspace(t);
+  bundle(dir, 'coder');
+  bundle(dir, 'anywhere');
+
+  let enabled = false;
+  const skills = new SkillsService(new PluginRegistry({ root: dir }), () => enabled);
+
+  assert.equal(skills.snapshot().plugins.length, 0);
+  assert.equal(skills.snapshot().skills.length, 0);
+  assert.equal(skills.find('coder:go'), null);
+  assert.equal(skills.describeForPrompt(), null, 'no index reaches the prompt');
+
+  // Live, not at construction: flipping the switch on is enough.
+  enabled = true;
+  assert.equal(skills.snapshot().skills.length, 2);
+  assert.match(skills.describeForPrompt() ?? '', /coder:go/);
+});

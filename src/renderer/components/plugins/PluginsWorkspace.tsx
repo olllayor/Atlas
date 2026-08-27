@@ -148,14 +148,14 @@ export function PluginsWorkspace() {
           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
         >
           <IconButton label="Rescan" onClick={() => void load()} disabled={busy}>
-            <ReloadIcon className={cn('size-4', busy && 'animate-spin')} aria-hidden />
+            <ReloadIcon className={cn('size-4', busy && 'motion-spin-steps')} aria-hidden />
           </IconButton>
           <IconButton
             label="Check for updates"
             onClick={() => void checkUpdates()}
             disabled={busy || checking}
           >
-            <UpdateIcon className={cn('size-4', checking && 'animate-spin')} aria-hidden />
+            <UpdateIcon className={cn('size-4', checking && 'motion-spin-steps')} aria-hidden />
           </IconButton>
           <IconButton label="Marketplaces" onClick={() => setManaging(true)}>
             <GearIcon className="size-4" aria-hidden />
@@ -334,18 +334,80 @@ function PluginsTab({
   onManage: () => void;
 }) {
   const needle = query.trim().toLowerCase();
+  const [source, setSource] = useState<'public' | 'personal'>('public');
+  const [showUnavailable, setShowUnavailable] = useState(false);
 
   // Catalogue order is meaningful — the spec says an entry's position is how
   // the publisher wants it ranked — so the first rows become "Featured" rather
   // than inventing a ranking of our own.
-  const grouped = useMemo(() => groupByCategory(markets.marketplaces, needle), [markets, needle]);
+  const scoped = useMemo(() => {
+    const marketplaces = markets.marketplaces.filter((market) =>
+      source === 'public' ? market.builtIn : !market.builtIn
+    );
+    if (showUnavailable) {
+      return { ...markets, marketplaces };
+    }
+
+    return {
+      ...markets,
+      marketplaces: marketplaces.map((market) => ({
+        ...market,
+        entries: market.entries.filter((entry) => entry.blocked == null)
+      }))
+    };
+  }, [markets, source, showUnavailable]);
+  const grouped = useMemo(() => groupByCategory(scoped.marketplaces, needle), [scoped, needle]);
 
   const installed = plugins.plugins.filter(
     (plugin) => !needle || matchesPlugin(plugin, needle)
   );
 
+  const personalCount = markets.marketplaces.filter((market) => !market.builtIn).length;
+  const unavailableCount = useMemo(
+    () =>
+      markets.marketplaces
+        .filter((market) => (source === 'public' ? market.builtIn : !market.builtIn))
+        .reduce((sum, market) => sum + market.entries.filter((entry) => entry.blocked != null).length, 0),
+    [markets, source]
+  );
+
   return (
     <div className="mt-7 space-y-9">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1">
+          {(['public', 'personal'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setSource(option)}
+              className={cn(
+                'rounded-full px-3 py-1 text-xs capitalize transition-colors',
+                source === option
+                  ? 'bg-bg-active text-text-primary'
+                  : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+              )}
+            >
+              {option}
+              {option === 'personal' && personalCount > 0 ? (
+                <span className="ml-1.5 text-text-faint">{personalCount}</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+        {unavailableCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowUnavailable((current) => !current)}
+            className={cn(
+              'text-2xs transition-colors',
+              showUnavailable ? 'text-text-secondary' : 'text-text-faint hover:text-text-tertiary'
+            )}
+          >
+            {showUnavailable ? 'Hide' : 'Show'} {unavailableCount} unavailable
+          </button>
+        ) : null}
+      </div>
+
       {installed.length > 0 ? (
         <section>
           <div className="flex items-center justify-between">
@@ -409,7 +471,13 @@ function PluginsTab({
       ) : null}
 
       {grouped.length === 0 ? (
-        <EmptyCatalog hasMarkets={markets.marketplaces.length > 0} onManage={onManage} query={needle} />
+        <EmptyCatalog
+          hasMarkets={scoped.marketplaces.length > 0}
+          onManage={onManage}
+          query={needle}
+          source={source}
+          hiddenUnavailable={showUnavailable ? 0 : unavailableCount}
+        />
       ) : (
         grouped.map((group) => (
           <CategorySection
@@ -616,18 +684,36 @@ function SkillsTab({ plugins, query }: { plugins: PluginSummary[]; query: string
 function EmptyCatalog({
   hasMarkets,
   onManage,
-  query
+  query,
+  source,
+  hiddenUnavailable
 }: {
   hasMarkets: boolean;
   onManage: () => void;
   query: string;
+  source: 'public' | 'personal';
+  hiddenUnavailable: number;
 }) {
   return (
     <div className="mt-7 rounded-lg border border-border-default p-8 text-center text-sm text-text-tertiary">
       {query ? (
         <p>No plugins match “{query}”.</p>
+      ) : source === 'personal' && !hasMarkets ? (
+        <div>
+          <p>No personal marketplaces yet.</p>
+          <button
+            type="button"
+            onClick={onManage}
+            className="mt-2 text-text-primary underline hover:text-text-secondary"
+          >
+            Add a marketplace
+          </button>
+        </div>
       ) : hasMarkets ? (
-        <p>No plugins listed by your marketplaces.</p>
+        <div>
+          <p>No plugins listed by your marketplaces.</p>
+          {hiddenUnavailable > 0 ? <p className="mt-1 text-2xs">{hiddenUnavailable} unavailable entries are hidden.</p> : null}
+        </div>
       ) : (
         <div>
           <p>No marketplaces configured.</p>

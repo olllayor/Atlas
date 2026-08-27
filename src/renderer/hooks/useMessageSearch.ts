@@ -183,8 +183,22 @@ export const MESSAGE_HIT_SCORE = 1e-6;
 export function createPaletteFilter(
   fallback: (value: string, search: string, keywords?: string[]) => number
 ): (value: string, search: string, keywords?: string[]) => number {
-  return (value, search, keywords) =>
-    value.startsWith(MESSAGE_HIT_VALUE_PREFIX) ? MESSAGE_HIT_SCORE : fallback(value, search, keywords);
+  return (value, search, keywords) => {
+    if (value.startsWith(MESSAGE_HIT_VALUE_PREFIX)) {
+      return MESSAGE_HIT_SCORE;
+    }
+    // Chat rows carry their conversation id in the value for uniqueness;
+    // a raw hex id fuzzy-matches queries it has no business matching
+    // ("beef", "cafe", "dec" all hit random UUIDs). Strip ids before the
+    // fuzzy matcher sees them — the value stays unique, the match is human.
+    return fallback(stripUuids(value), search, keywords);
+  };
+}
+
+const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+function stripUuids(value: string): string {
+  return value.replace(UUID_PATTERN, ' ');
 }
 
 export type SnippetSegment = {

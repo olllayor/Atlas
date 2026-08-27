@@ -81,12 +81,22 @@
   --error-text: #fecdd3;
 
   /* Accent — defined by every theme but previously missing from the
-     contract and from @theme, so no component could reach it. */
-  --accent: #3b82f6;
+     contract and from @theme, so no component could reach it. Same values
+     as themes/default.css: #2563eb clears AA under white text where the
+     old #3b82f6 failed at 3.68:1. */
+  --accent: #2563eb;
   --accent-hover: #60a5fa;
   --accent-text: #ffffff;
-  --accent-surface: rgba(59, 130, 246, 0.14);
-  --ring: rgba(59, 130, 246, 0.7);
+  /*
+   * High-contrast accent for TEXT that sits ON an accent-tinted surface
+   * (file-ref badges, gallery type badges). An accent can never read on a
+   * tint of itself at AA — brightening the accent brightens its tint in
+   * lockstep — so this slot decouples the two: fills stay brand-true,
+   * chip text gets a value tuned per theme and mode.
+   */
+  --accent-strong: #7ab0ff;
+  --accent-surface: rgba(37, 99, 235, 0.14);
+  --ring: rgba(37, 99, 235, 0.7);
 
   /* Diff palette (GitHub's, per docs/codex-parity/design-audit.md §5). */
   --diff-add-bg: #213a2b;
@@ -229,6 +239,13 @@
 
   /* Layout */
   --content-max: clamp(680px, 102vw, 860px);
+  /*
+   * The composer's own measure — narrower than the transcript column, on the
+   * same centre axis (t3code caps its composer form at `max-w-3xl`, 48rem,
+   * inside a wider responsive chat area). The transcript keeps `--content-max`
+   * so long answers keep their readable line; only the input slab tightens.
+   */
+  --composer-max: 48rem; /* 768px */
   --sidebar-width: 17.75rem; /* 284px at default font size */
   /* 56px: the rail is 4-5 36px buttons in `px-2`, nothing else — 72px left
      a 20px empty column on either side of them. */
@@ -390,6 +407,7 @@ html[data-border-radius='none'][data-design-theme] {
   --color-brand: var(--accent);
   --color-brand-hover: var(--accent-hover);
   --color-brand-text: var(--accent-text);
+  --color-brand-strong: var(--accent-strong);
   --color-brand-surface: var(--accent-surface);
 
   /* Diff palette. */
@@ -433,6 +451,7 @@ html[data-border-radius='none'][data-design-theme] {
   --font-weight-strong: var(--font-weight-strong);
 
   --spacing-content-max: var(--content-max);
+  --spacing-composer: var(--composer-max);
   --spacing-sidebar-width: var(--sidebar-width);
   --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
   --spacing-titlebar-height: var(--titlebar-height);
@@ -617,15 +636,6 @@ select {
    indicator, so "working" is still legible without animation.
    ============================================ */
 
-@keyframes atlas-shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: -100% 0;
-  }
-}
-
 /*
  * `color: transparent` here would be self-defeating: `currentColor` inside
  * this element's own `background-image` resolves against this element's
@@ -648,6 +658,25 @@ select {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: atlas-shimmer 2s linear infinite;
+}
+
+/*
+ * Duty-cycled like its siblings below: the sweep occupies the first 55% of
+ * the cycle and the gradient then holds still (background-position is
+ * unchanged from 55% to 100%, so Chromium's damage tracking presents no
+ * frames for the hold). The period stays 2s, so the phase-match with
+ * `.motion-glyph-pulse` holds. The long flat hold is invisible at this
+ * scale — a shimmer that pauses between sweeps reads as a shimmer, not as
+ * a stopped one.
+ */
+@keyframes atlas-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  55%,
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 /*
@@ -687,6 +716,31 @@ select {
 
 .motion-glyph-pulse {
   animation: atlas-glyph-pulse 2s infinite;
+}
+
+/*
+ * Duty-cycled rotation for the app's progress rings, replacing Tailwind's
+ * `animate-spin` (a continuous transform interpolation — a compositor frame
+ * every vsync for as long as a fetch runs). `steps(12)` presents ~13 frames
+ * per second instead of 120 and reads identically at ring sizes of 12–24px.
+ * Pair with `motion-reduce:animate-none` exactly as `animate-spin` was.
+ */
+@keyframes atlas-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.motion-spin-steps {
+  animation: atlas-spin 1s steps(12) infinite;
+}
+
+/* Owned here, not via `motion-reduce:animate-none`: this file is unlayered,
+   so it would beat the utility in the reduce-media branch and keep spinning. */
+@media (prefers-reduced-motion: reduce) {
+  .motion-spin-steps {
+    animation: none;
+  }
 }
 
 /*
@@ -840,7 +894,9 @@ select {
   position: absolute;
   inset-inline: 0;
   bottom: 0;
-  height: 2.5rem;
+  /* Tall enough to read as depth of field rather than as a fog bar: a short
+     ramp makes text look damaged; a tall one makes it look further away. */
+  height: 3.5rem;
   /* Alpha-ramped copies of one colour (srgb, so the hue cannot drift across
      the ramp the way it can through oklab-mixed transparency). */
   background: linear-gradient(

@@ -185,6 +185,8 @@ export function describeAgentInstructionsForPrompt(instructions: AgentInstructio
 import { createAgentTools, type SubagentContext } from './agentTools';
 import { createSubagentControlTools, type SubagentControlContext } from './subagentControlTools';
 import { createJobTools } from './jobTools';
+import { createTerminalTools } from './terminalTools';
+import { createGoalTools } from './goalTools';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
 import type { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
 
@@ -219,6 +221,21 @@ export function createBuiltInTools(
     workspace.jobRegistry && workspace.conversationId
       ? createJobTools(workspace.jobRegistry, workspace.conversationId)
       : {};
+  // Read-only terminal visibility exists only where the PTY substrate is
+  // wired; like the job tools it is fenced to the calling conversation.
+  const terminalTools =
+    workspace.terminalReadback && workspace.conversationId
+      ? createTerminalTools(workspace.terminalReadback, workspace.conversationId)
+      : {};
+  // update_goal exists only while a goal is active: withheld means uncallable,
+  // so the model cannot mint goal state the runtime never created. Paused and
+  // terminal rows stay in the table as history — they must not re-arm the tool.
+  const goalTools =
+    workspace.goalTools &&
+    workspace.conversationId &&
+    workspace.goalTools.getActive(workspace.conversationId)?.status === 'active'
+      ? createGoalTools(workspace.goalTools, workspace.conversationId)
+      : {};
   // Recall over past sessions exists only where the search source does; the
   // project filter rides the workspace so "project only" means this project.
   const sessionSearchTools = sessionSearch
@@ -229,6 +246,8 @@ export function createBuiltInTools(
     ...agentTools,
     ...controlTools,
     ...jobTools,
+    ...terminalTools,
+    ...goalTools,
     ...sessionSearchTools,
     ...buildCodeTools(workspace),
     read_file: tool({

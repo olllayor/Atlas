@@ -41,6 +41,19 @@ export type BuildModelInputArgs = {
   mode: ContextBuildMode;
   /** Omitted when the caller cannot size the window; falls back to turn counts. */
   budget?: ContextBudget;
+  /**
+   * Per-turn dynamic context, derived from one turn's own persisted user text.
+   *
+   * The model-visible snapshot (e.g. invoked-`@plugin` instructions) is placed
+   * immediately AFTER that turn's user message and before its reply — the same
+   * cache-safe position dsh uses for pre-step injections. Derivation must be a
+   * pure function of the text plus slowly-changing registry state: identical
+   * input must yield identical bytes on every rebuild, because anything else
+   * re-keys the provider's prefix cache from that turn onward. Returns null
+   * for turns needing no snapshot, which then contribute nothing and shift
+   * nothing.
+   */
+  turnSnapshot?: (userText: string) => string | null;
 };
 
 /** What the chosen split costs, for display and for the overflow decision. */
@@ -170,6 +183,8 @@ export class ContextManager {
   /** Keyed by conversation *and* mode: a retry-ladder escalation must not
    * clobber the boundary the provider's cache is warm for. */
   private readonly boundaries = new Map<string, StickyBoundary>();
+  /** Conversations whose next build must re-split from zero (`requestForcedCompaction`). */
+  private readonly forcedCompactions = new Set<string>();
 
   constructor(
     private readonly hooks: ContextManagerHooks = {},
@@ -177,7 +192,7 @@ export class ContextManager {
   ) {}
 
   buildModelInput(args: BuildModelInputArgs): BuildModelInputResult {
-    const { conversationId, mode, budget } = args;
+    const { conversationId, mode, budget, turnSnapshot } = args;
     // Oversized tool results from older turns keep paying context rent on
     // every request until their turn is compressed away. Prune them to a
     // bounded head/marker/tail on the request copy — the persisted transcript
@@ -188,9 +203,10 @@ export class ContextManager {
     const olderTurnCount = this.chooseOlderTurnCountSticky(conversationId, split, mode, budget);
 
     if (olderTurnCount <= 0) {
-      const historyTokens = estimateMessagesTokens(history);
+      const recentMessages = assembleWireTurns(split, 0, turnSnapshot);
+      const historyTokens = estimateMessagesTokens(recentMessages);
       return {
-        recentMessages: history,
+        recentMessages,
         rollingSummary: null,
         toolSummaries: [],
         systemContextAddendum: null,
@@ -207,7 +223,6 @@ export class ContextManager {
     const olderTurns = split.turns.slice(0, olderTurnCount);
     const recentTurns = split.turns.slice(olderTurnCount);
     const olderMessages = [...split.prefaceMessages, ...olderTurns.flatMap((turn) => [turn.user, ...turn.followUps])];
-    const keptMessages = recentTurns.flatMap((turn) => [turn.user, ...turn.followUps]);
     const fingerprint = buildOlderTurnsFingerprint(olderMessages);
 
     let cached = this.cache.get(conversationId);
@@ -246,9 +261,10 @@ export class ContextManager {
     // the same revert, and pressure re-checks from this position next time.
     const addendumTokens = systemContextAddendum ? estimateTextTokens(systemContextAddendum) : 0;
     if (systemContextAddendum && addendumTokens >= estimateMessagesTokens(olderMessages)) {
-      const historyTokens = estimateMessagesTokens(history);
+      const recentMessages = assembleWireTurns(split, 0, turnSnapshot);
+      const historyTokens = estimateMessagesTokens(recentMessages);
       return {
-        recentMessages: history,
+        recentMessages,
         rollingSummary: null,
         toolSummaries: [],
         systemContextAddendum: null,
@@ -267,6 +283,7 @@ export class ContextManager {
     // also summarizes), before the first kept turn. Deterministic given
     // (fingerprint, mode), so identical requests carry identical bytes and the
     // provider's prefix cache survives everything above this point.
+    const keptMessages = assembleWireTurns(split, olderTurnCount, turnSnapshot);
     const handoffMessage: ModelMessage | null = systemContextAddendum
       ? { role: 'user', content: systemContextAddendum }
       : null;
@@ -323,6 +340,18 @@ export class ContextManager {
     const key = `${conversationId}\u0000${mode}`;
     const sticky = this.boundaries.get(key);
 
+    // Forced compaction (`requestForcedCompaction`, the /compact path): the
+    // user asked for headroom now, so the boundary re-decides from zero and
+    // walks to the pressure line regardless of what it was stuck at. The
+    // deeper `droppedTurnCount` makes the send path announce the change.
+    if (this.forcedCompactions.delete(conversationId)) {
+      const olderCount = budget
+        ? walkToBudget(split, mode, budget, 0)
+        : maxOlder;
+      this.rememberBoundary(key, { mode, olderCount });
+      return olderCount;
+    }
+
     if (sticky) {
       // Clamp to "everything but the newest turn" once history shrinks below
       // the remembered boundary (a fork cut, a pruned side thread).
@@ -337,6 +366,21 @@ export class ContextManager {
     const olderCount = chooseOlderTurnCount(split, mode, budget);
     this.rememberBoundary(key, { mode, olderCount });
     return olderCount;
+  }
+
+  /**
+   * Manual `/compact`: drop the sticky boundary and force the next build to
+   * re-split from zero, walking as deep as the budget allows. The summarizer
+   * still runs on the next send — there is no out-of-band model call — so
+   * this is cheap to request and cannot fail on its own.
+   */
+  requestForcedCompaction(conversationId: string): void {
+    this.forcedCompactions.add(conversationId);
+    for (const key of [...this.boundaries.keys()]) {
+      if (key.startsWith(`${conversationId}\u0000`)) {
+        this.boundaries.delete(key);
+      }
+    }
   }
 
   private fitsWithOlder(
@@ -520,6 +564,36 @@ function splitHistoryIntoTurns(history: ModelMessage[]) {
   }
 
   return { prefaceMessages, turns };
+}
+
+/**
+ * Rebuilds the wire messages for turns `from` onward, weaving each turn's
+ * derived snapshot between its user message and its reply.
+ *
+ * The snapshot's position is a function of durable history alone, so rebuilds
+ * after a restart — or the next step of the same tool loop — reproduce byte
+ * identical requests. Snapshots ride inside the kept window: when compaction
+ * drops their turn they vanish with it and the summary speaks for them. The
+ * full untruncated user text drives derivation; mention syntax late in a long
+ * message must resolve exactly as it did on the turn that earned it.
+ */
+function assembleWireTurns(
+  split: { prefaceMessages: ModelMessage[]; turns: ConversationTurn[] },
+  from: number,
+  turnSnapshot?: (userText: string) => string | null,
+): ModelMessage[] {
+  const out = [...split.prefaceMessages];
+  for (const turn of split.turns.slice(from)) {
+    out.push(turn.user);
+    const snapshot = turnSnapshot
+      ? turnSnapshot(extractMessageText(turn.user, { maxChars: Number.MAX_SAFE_INTEGER }))
+      : null;
+    if (snapshot) {
+      out.push({ role: 'user', content: snapshot });
+    }
+    out.push(...turn.followUps);
+  }
+  return out;
 }
 
 function buildOlderTurnsFingerprint(messages: ModelMessage[]) {

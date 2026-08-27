@@ -72,6 +72,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setShowFreeOnlyByDefault(patch.showFreeOnlyByDefault);
       }
 
+      if (typeof patch?.pluginsBetaEnabled === 'boolean') {
+        settingsRepo.setPluginsBetaEnabled(patch.pluginsBetaEnabled);
+      }
+
       if (appearancePatch?.themeMode) {
         settingsRepo.setThemeMode(appearancePatch.themeMode);
         // Keeps the vibrancy material on the same appearance as the page.

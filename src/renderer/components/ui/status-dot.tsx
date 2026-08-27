@@ -1,6 +1,6 @@
 import { cn } from '../../lib/utils';
 
-type StatusDotTone = 'running' | 'failed';
+type StatusDotTone = 'running' | 'failed' | 'attention' | 'unread';
 
 /**
  * `sm` fronts a conversation row, `md` stands alone in the collapsed rail's
@@ -67,7 +67,16 @@ export function StatusDot({ tone, label, size = 'sm', className }: StatusDotProp
           // Reduce motion is handled centrally: the root `[data-reduce-motion]`
           // rule and the `prefers-reduced-motion` block both leave the dot
           // painted and static. "Running" stays legible without the motion.
-          tone === 'running' ? 'motion-glyph-pulse bg-text-secondary' : 'bg-error'
+          tone === 'running'
+            ? 'motion-glyph-pulse bg-text-secondary'
+            : tone === 'failed'
+              ? 'bg-error'
+              : tone === 'attention'
+                ? // An approval or error wants a hand, not just an eye —
+                  // accent + pulse separates it from ambient activity.
+                  'motion-glyph-pulse bg-accent'
+                : // Unread output waits patiently; static and quiet.
+                  'bg-text-tertiary'
         )}
       />
     </span>

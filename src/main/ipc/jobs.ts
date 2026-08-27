@@ -20,7 +20,8 @@ function toView(snapshot: JobSnapshot): JobSnapshotView {
     status: snapshot.status,
     ...(snapshot.detail !== undefined ? { detail: snapshot.detail } : {}),
     startedAt: snapshot.startedAt,
-    ...(snapshot.finishedAt !== undefined ? { finishedAt: snapshot.finishedAt } : {})
+    ...(snapshot.finishedAt !== undefined ? { finishedAt: snapshot.finishedAt } : {}),
+    ...(snapshot.tail !== undefined ? { tail: snapshot.tail } : {})
   };
 }
 
@@ -37,6 +38,17 @@ export function registerJobsIpc(registry: BackgroundJobRegistry) {
       async (event, conversationId: string): Promise<JobSnapshotView[]> => {
         assertTrustedSender(event);
         return registry.list(conversationId).map(toView);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.jobsListAll,
+    withUserFacingErrors(
+      IPC_CHANNELS.jobsListAll,
+      async (event): Promise<JobSnapshotView[]> => {
+        assertTrustedSender(event);
+        return registry.listAll().map(toView);
       }
     )
   );

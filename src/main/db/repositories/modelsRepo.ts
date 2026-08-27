@@ -79,6 +79,14 @@ export class ModelsRepo {
           SELECT ${MODEL_COLUMNS}
           FROM model_cache
           WHERE model_id = @modelId
+          -- A bare model id can now match one row per provider. Prefer an
+          -- entry the app can actually serve, then break any remaining tie on
+          -- provider id so repeated lookups agree with each other.
+          ORDER BY CASE WHEN EXISTS (
+            SELECT 1 FROM custom_providers c
+            WHERE c.id = model_cache.provider_id AND c.enabled = 1
+          ) THEN 0 ELSE 1 END ASC, provider_id ASC
+          LIMIT 1
         `
       )
       .get({ modelId });
@@ -161,15 +169,17 @@ export class ModelsRepo {
    */
   upsertModels(models: ModelSummary[], options: { pruneProviderId?: ProviderId } = {}) {
     const existingRows = this.db
-      .prepare<[], { model_id: string; last_seen_free_at: string | null }>(
-        'SELECT model_id, last_seen_free_at FROM model_cache'
+      .prepare<[], { provider_id: string; model_id: string; last_seen_free_at: string | null }>(
+        'SELECT provider_id, model_id, last_seen_free_at FROM model_cache'
       )
       .all();
     const existing = new Map(
-      existingRows.map((row: { model_id: string; last_seen_free_at: string | null }) => [
-        row.model_id,
-        row.last_seen_free_at
-      ])
+      existingRows.map(
+        (row: { provider_id: string; model_id: string; last_seen_free_at: string | null }) => [
+          `${row.provider_id}\u0000${row.model_id}`,
+          row.last_seen_free_at
+        ]
+      )
     );
 
     const now = new Date().toISOString();
@@ -209,8 +219,7 @@ export class ModelsRepo {
           @supportsReasoning,
           @reasoningEfforts
         )
-        ON CONFLICT(model_id) DO UPDATE SET
-          provider_id = excluded.provider_id,
+        ON CONFLICT(provider_id, model_id) DO UPDATE SET
           label = excluded.label,
           context_window = excluded.context_window,
           is_free = excluded.is_free,
@@ -245,7 +254,7 @@ export class ModelsRepo {
       }
 
       for (const model of items) {
-        const previousLastSeenFreeAt = existing.get(model.id) ?? null;
+        const previousLastSeenFreeAt = existing.get(`${model.providerId}\u0000${model.id}`) ?? null;
 
         statement.run({
           modelId: model.id,

@@ -156,17 +156,28 @@ export function registerGitIpc(
   );
 
   /**
-   * The commit pair bounding the assistant's most recent completed turn.
+   * The commit pair bounding one checkpointed assistant turn — the newest by
+   * default, or an explicit turn when the review scope list picks one.
    *
    * Read from the checkpoint table rather than from git: only the table knows
    * which refs belong to which turn, and it also records the turns that were
    * *not* captured, which is the difference between "nothing changed" and
    * "this folder is not a repository".
    */
-  const lastTurnRange = (conversationId: string): { from: string; to: string } | null => {
+  const turnRange = (
+    conversationId: string,
+    turnId?: string | null
+  ): { from: string; to: string } | null => {
     const captured = db.workspaceCheckpoints
       .listForConversation(conversationId)
       .filter((entry) => entry.status === 'captured' && entry.kind !== 'undo');
+
+    if (turnId) {
+      const post = captured.find((entry) => entry.kind === 'post' && entry.turnId === turnId);
+      if (!post?.commitSha) return null;
+      const pre = captured.find((entry) => entry.turnId === turnId && entry.kind === 'pre');
+      return pre?.commitSha ? { from: pre.commitSha, to: post.commitSha } : null;
+    }
 
     for (let index = captured.length - 1; index >= 0; index -= 1) {
       const post = captured[index]!;
@@ -184,6 +195,40 @@ export function registerGitIpc(
 
     return null;
   };
+
+  // Every checkpointed, reviewable turn in order — the review scope list's
+  // "Turn N" rows. Only turns with a usable pre/post pair are listed.
+  ipcMain.handle(
+    IPC_CHANNELS.gitListReviewTurns,
+    withUserFacingErrors(IPC_CHANNELS.gitListReviewTurns, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+
+      const workspace = describeConversationWorkspace(db, conversationId);
+      const project = workspace.project;
+      if (!project || !project.exists || !gitStateService.isGitRepo(project.root)) {
+        return [];
+      }
+
+      const captured = db.workspaceCheckpoints
+        .listForConversation(conversationId)
+        .filter((entry) => entry.status === 'captured' && entry.kind !== 'undo');
+
+      const turns: Array<{ turnId: string; createdAt: string }> = [];
+      for (const post of captured) {
+        if (post.kind !== 'post' || !post.commitSha) continue;
+        const pre = captured.find(
+          (entry) => entry.turnId === post.turnId && entry.kind === 'pre'
+        );
+        if (!pre?.commitSha) continue;
+        if (turns.some((entry) => entry.turnId === post.turnId)) continue;
+        turns.push({ turnId: post.turnId, createdAt: post.createdAt });
+      }
+
+      return turns
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((entry, arrayIndex) => ({ ...entry, index: arrayIndex + 1 }));
+    })
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.gitReview,
@@ -208,7 +253,10 @@ export function registerGitIpc(
 
         return gitReviewService.review(project.root, request.scope, {
           commit: request.commit ?? null,
-          range: request.scope === 'lastTurn' ? lastTurnRange(request.conversationId) : null
+          range:
+          request.scope === 'lastTurn'
+            ? turnRange(request.conversationId, request.turnId)
+            : null
         });
       }
     )

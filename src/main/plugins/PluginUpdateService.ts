@@ -45,6 +45,10 @@ export class PluginUpdateService {
    * rather than an omission.
    */
   check(): PluginUpdateView[] {
+    // Built-in catalogues are cached between checks; the pressed button is what
+    // makes them fresh. User-added marketplaces re-clone on every resolve, so
+    // they need nothing here.
+    this.marketplaces.expireBuiltInCheckouts();
     const resolved = this.marketplaces.resolveAll();
 
     // The check already paid for resolving every marketplace, so the revocation
@@ -83,6 +87,9 @@ export class PluginUpdateService {
 
     // Resolved once and reused: every call re-clones each git marketplace, so a
     // second `resolveAll` here would double the network cost of one update.
+    // Built-in catalogues are cached rather than re-cloned, so they are
+    // expired explicitly — an update must not reinstall from stale content.
+    this.marketplaces.expireBuiltInCheckouts();
     const all = this.marketplaces.resolveAll();
     // Refreshed from this fetch, then consulted below: a plugin revoked since
     // it was installed must not be reinstallable through the update button.

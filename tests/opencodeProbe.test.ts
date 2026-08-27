@@ -55,8 +55,9 @@ function fakeInventory(connected: string[], modelCount = 0): OpenCodeInventoryCl
   return {
     async listProviders() {
       return {
-        providers: Object.fromEntries(connected.map((id) => [id, { id, name: id }])),
+        providers: connected.map((id) => ({ id, name: id, models: [] })),
         connected,
+        defaults: {},
         modelCount
       };
     }

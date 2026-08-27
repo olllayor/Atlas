@@ -1529,6 +1529,11 @@ export class ChatSessionRuntime {
           maxOutputTokens: request.maxOutputTokens,
           modelHints,
           reasoningEffort: request.reasoningEffort,
+          // Only session-based agent providers read this (see ProviderAdapter).
+          agentContext: {
+            conversationId: request.conversationId,
+            workspaceRoot: workspace.worktreeRoot ?? workspace.root,
+          },
           signal,
           onChunk: (event) => {
             streamedAnyResponse = true;

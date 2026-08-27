@@ -22,6 +22,18 @@ export type ProviderStreamRequest = {
    * models without a thinking mode ignore it.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Which conversation and project this turn belongs to.
+   *
+   * Stateless adapters ignore it — a request carries its own history. Agent
+   * providers that keep the transcript on their side (OpenCode) need it to
+   * resume the right session, and to notice when the project changed under it.
+   */
+  agentContext?: {
+    conversationId: string;
+    /** Absolute directory the agent should work in; null when no project. */
+    workspaceRoot?: string | null;
+  };
   signal: AbortSignal;
   onChunk: (event: { id: string; delta: string }) => void;
   onReasoningChunk?: (event: { id: string; delta: string }) => void;

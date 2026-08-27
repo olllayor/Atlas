@@ -551,6 +551,18 @@ CREATE TABLE IF NOT EXISTS terminal_history (
 
 CREATE INDEX IF NOT EXISTS idx_terminal_history_conversation
 ON terminal_history (conversation_id, started_at);
+
+-- Resume cursor for the OpenCode provider: which opencode session backs this
+-- conversation, and the directory it was created against. opencode scopes its
+-- own history per session and per directory, so a conversation that moves to
+-- another project must start a fresh session rather than resume into the wrong
+-- history (deep-integration plan T5).
+CREATE TABLE IF NOT EXISTS opencode_sessions (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export function applySchema(database: SqliteDatabase) {

@@ -21,13 +21,23 @@ import {
   parseOpenCodeServerUrlFromOutput,
   summarizeProcessFailure
 } from './openCodeParsers.js';
-import { findFreeLocalPort, resolveOpenCodeSpawnEnvironment } from './openCodeEnvironment.js';
+import {
+  findFreeLocalPort,
+  isLocalPortFree,
+  resolveOpenCodeSpawnEnvironment
+} from './openCodeEnvironment.js';
 
 export class OpenCodeRuntimeError extends Error {
   constructor(
     public readonly operation: string,
     message: string,
-    public readonly cause?: unknown
+    public readonly cause?: unknown,
+    /**
+     * The child died on its own before it was ready. A port taken between our
+     * probe and opencode's bind looks exactly like this, which is why the flag
+     * exists at all (see `startOwnedServer`).
+     */
+    public readonly exitedDuringStartup = false
   ) {
     super(message);
     this.name = 'OpenCodeRuntimeError';
@@ -67,7 +77,12 @@ export interface OpenCodeRuntimeOptions {
   spawnTimeoutMs?: number;
   termGraceMs?: number;
   idleShutdownMs?: number;
+  /** Seam for the port-race check; tests answer without touching sockets. */
+  isPortFree?: (port: number) => Promise<boolean>;
 }
+
+/** One extra spawn is enough for a lost port race; more would mask real faults. */
+const PORT_RACE_RETRIES = 1;
 
 const DEFAULT_IDLE_SHUTDOWN_MS = 10 * 60_000;
 const DEFAULT_TERM_GRACE_MS = 1_000;
@@ -92,6 +107,7 @@ export class OpenCodeRuntime {
   private readonly spawnTimeoutMs: number;
   private readonly termGraceMs: number;
   private readonly idleShutdownMs: number;
+  private readonly isPortFree: (port: number) => Promise<boolean>;
 
   constructor(options: OpenCodeRuntimeOptions = {}) {
     this.childFactory =
@@ -99,6 +115,7 @@ export class OpenCodeRuntime {
     this.spawnTimeoutMs = options.spawnTimeoutMs ?? OPENCODE_SERVER_STARTUP_TIMEOUT_MS;
     this.termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS;
     this.idleShutdownMs = options.idleShutdownMs ?? DEFAULT_IDLE_SHUTDOWN_MS;
+    this.isPortFree = options.isPortFree ?? isLocalPortFree;
   }
 
   /** Fired at most once per spawned server when an owned server dies unexpectedly. */
@@ -217,12 +234,46 @@ export class OpenCodeRuntime {
     }
   }
 
+  /**
+   * Spawn the server, retrying once when the attempt lost a race for its port.
+   *
+   * `findFreeLocalPort` can only report that a port was free a moment ago —
+   * it closes the probe socket before opencode binds, so anything else on the
+   * machine may claim it in between. The CLI reports that collision as a plain
+   * startup failure, so the port itself is asked afterwards who owns it: still
+   * bindable ⇒ the failure was real and is reported; taken ⇒ we lost the race
+   * and a fresh port is worth one more try.
+   */
   private async startOwnedServer(input: {
     settings: OpenCodeSettings;
     env?: NodeJS.ProcessEnv;
   }): Promise<RunningServer> {
+    for (let attempt = 0; ; attempt += 1) {
+      const port = await findFreeLocalPort();
+      try {
+        return await this.spawnOwnedServer(input, port);
+      } catch (error) {
+        const lostPortRace =
+          error instanceof OpenCodeRuntimeError &&
+          error.exitedDuringStartup &&
+          !this.shuttingDown &&
+          attempt < PORT_RACE_RETRIES &&
+          !(await this.isPortFree(port));
+        if (!lostPortRace) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private async spawnOwnedServer(
+    input: {
+      settings: OpenCodeSettings;
+      env?: NodeJS.ProcessEnv;
+    },
+    port: number
+  ): Promise<RunningServer> {
     const command = input.settings.binaryPath.trim() || 'opencode';
-    const port = await findFreeLocalPort();
     const args = ['serve', `--hostname=${OPENCODE_DEFAULT_HOSTNAME}`, `--port=${port}`];
     const env = resolveOpenCodeSpawnEnvironment(input.env);
 
@@ -317,7 +368,9 @@ export class OpenCodeRuntime {
                 signal,
                 stderrTail: stderr,
                 stdoutTail: stdout
-              })}).`
+              })}).`,
+              undefined,
+              true
             )
           )
         );
@@ -372,17 +425,35 @@ export class OpenCodeRuntime {
     };
 
     const hasExited = () => child.exitCode !== null || child.signalCode !== null;
-    const awaitDeath = async (budgetMs: number): Promise<boolean> => {
-      const deadline = Date.now() + budgetMs;
-      while (!hasExited()) {
-        if (Date.now() >= deadline) return false;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+    // Waiting out a fixed grace after the child has already died is pure quit
+    // latency, so every wait races the exit event instead of sleeping through it.
+    const exited = new Promise<void>((resolve) => {
+      if (hasExited()) {
+        resolve();
+        return;
       }
-      return true;
+      child.once('exit', () => resolve());
+    });
+    const waitForDeath = async (budgetMs: number): Promise<void> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          exited,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, budgetMs);
+          })
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    const awaitDeath = async (budgetMs: number): Promise<boolean> => {
+      await waitForDeath(budgetMs);
+      return hasExited();
     };
 
     groupSignal('SIGTERM');
-    await new Promise<void>((resolve) => setTimeout(resolve, this.termGraceMs));
+    await waitForDeath(this.termGraceMs);
     if (hasExited()) return;
 
     groupSignal('SIGKILL');

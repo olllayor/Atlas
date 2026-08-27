@@ -712,6 +712,10 @@ app.whenReady().then(async () => {
       // continuation loops (child-first through nested trees) and drops any
       // completion notices nobody will ever drain; interruptAll handles the
       // remaining one-shot Task sessions.
+      // The opencode resume cursor points at a session for a chat that no
+      // longer exists. The FK cascade drops the row too, but the delete should
+      // not depend on a pragma to be correct.
+      opencodeController.forgetConversation(conversationId);
       chatEngine.continuations.evictForConversation(conversationId);
       void chatEngine.subagents.interruptAll(conversationId, 'conversation deleted').catch(() => undefined);
       void chatEngine.subagents.clearConversationBackground(conversationId, 'conversation deleted').catch(() => undefined);

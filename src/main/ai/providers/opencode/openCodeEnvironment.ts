@@ -26,6 +26,28 @@ export function findFreeLocalPort(): Promise<number> {
 }
 
 /**
+ * Is this localhost port still bindable?
+ *
+ * Used only after a spawn died on startup: the port we handed opencode was
+ * free when we probed it and nothing held it until opencode bound it, so a
+ * lost race is indistinguishable from a fatal config error by exit output
+ * alone (the CLI just prints "ServeError"). Asking who owns the port now
+ * settles it. Anything other than EADDRINUSE counts as free — an unclear
+ * answer must not be read as "retry".
+ */
+export function isLocalPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      resolve(error.code !== 'EADDRINUSE');
+    });
+    probe.listen(port, OPENCODE_DEFAULT_HOSTNAME, () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+/**
  * Compute the explicit `env` for spawning:
  *
  * - Caller explicitly passed `OPENCODE_CONFIG_CONTENT: ''` ⇒ treat as

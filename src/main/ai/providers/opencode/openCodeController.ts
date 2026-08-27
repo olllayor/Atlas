@@ -42,13 +42,28 @@ export interface OpenCodeControllerDeps {
 export class OpenCodeController {
   private runtime: OpenCodeRuntime | null = null;
   private adapter: OpenCodeAgentAdapter | null = null;
+  /** Last parse failure already logged; keeps a per-call read from spamming. */
+  private lastSettingsParseError: string | null = null;
 
   constructor(private readonly deps: OpenCodeControllerDeps) {}
 
-  /** Persisted settings, falling back to defaults when the blob is unreadable. */
+  /**
+   * Persisted settings, falling back to defaults when the blob is unreadable.
+   * The fallback is silent on screen — every field reverts at once — so it is
+   * at least said out loud in the log, once per reason.
+   */
   getSettings(): OpenCodeSettings {
     const parsed = this.deps.settingsRepo.getOpenCodeSettings();
-    return parsed.ok ? parsed.settings : defaultOpenCodeSettings();
+    if (parsed.ok) {
+      return parsed.settings;
+    }
+    if (this.lastSettingsParseError !== parsed.error) {
+      this.lastSettingsParseError = parsed.error;
+      console.warn(
+        `[opencode] stored settings are unreadable (${parsed.error}); using defaults until they are saved again.`
+      );
+    }
+    return defaultOpenCodeSettings();
   }
 
   /** Settings plus the one derived fact the renderer may know about secrets. */

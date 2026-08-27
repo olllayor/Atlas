@@ -137,12 +137,14 @@ function makeHarness(options: {
   spawnTimeoutMs?: number;
   termGraceMs?: number;
   idleShutdownMs?: number;
+  isPortFree?: (port: number) => Promise<boolean>;
 } = {}): Harness {
   const children: FakeChild[] = [];
   const runtime = new OpenCodeRuntime({
     ...(options.spawnTimeoutMs !== undefined ? { spawnTimeoutMs: options.spawnTimeoutMs } : {}),
     ...(options.termGraceMs !== undefined ? { termGraceMs: options.termGraceMs } : {}),
     ...(options.idleShutdownMs !== undefined ? { idleShutdownMs: options.idleShutdownMs } : {}),
+    ...(options.isPortFree ? { isPortFree: options.isPortFree } : {}),
     childFactory: () => {
       const child = new FakeChild();
       children.push(child);
@@ -153,6 +155,13 @@ function makeHarness(options: {
 }
 
 const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
+/** Spin the loop until the runtime reaches a state, or give up loudly. */
+async function until(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) {
+    await flushMicrotasks();
+  }
+  assert.ok(predicate(), 'condition never became true');
+}
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Start a connect, yield enough turns for listeners to attach, then announce ready. */
@@ -346,4 +355,76 @@ test('a server that becomes ready after shutdown is torn down, not adopted', asy
 
   assert.equal(harness.runtime.activeBaseUrl(), null, 'never adopted as the live server');
   assert.ok(child.kills.includes('SIGKILL'));
+});
+
+/* ------------------------------------------------------------------ *
+ * Port race + teardown latency
+ * ------------------------------------------------------------------ */
+
+test('a port lost between probe and bind is retried on a fresh one', async () => {
+  const checked: number[] = [];
+  const harness = makeHarness({
+    termGraceMs: 2,
+    // First failure: the port is taken, so the collision is real. If a second
+    // spawn ever failed, the answer would say the port was free.
+    isPortFree: async (port) => {
+      checked.push(port);
+      return false;
+    }
+  });
+
+  const connecting = harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  harness.children[0]!.simulateExit(1);
+
+  await until(() => harness.children.length === 2);
+  harness.children[1]!.emitData(
+    'stdout',
+    `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40021\n`
+  );
+
+  const connection = await connecting;
+  assert.equal(connection.baseUrl, 'http://127.0.0.1:40021');
+  assert.equal(checked.length, 1, 'the port was only questioned after the failure');
+
+  try {
+    await harness.runtime.shutdown();
+  } catch {
+    /* best-effort */
+  }
+});
+
+test('a startup failure on a still-free port is reported, not retried', async () => {
+  const harness = makeHarness({ termGraceMs: 2, isPortFree: async () => true });
+
+  const connecting = harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  harness.children[0]!.emitData('stderr', 'fatal: bad config\n');
+  harness.children[0]!.simulateExit(1);
+
+  await assert.rejects(connecting, /exited during startup[\s\S]*bad config/);
+  assert.equal(harness.children.length, 1, 'a real fault must not be retried');
+});
+
+test('teardown stops waiting out the grace once the child is gone', async () => {
+  const harness = makeHarness({ termGraceMs: 10_000 });
+  const { child } = await connectAndAnnounce(harness, 'http://127.0.0.1:40022');
+
+  // A well-behaved child exits on SIGTERM. Sleeping the full grace anyway is
+  // ten seconds of quit latency for nothing.
+  const realKill = child.kill.bind(child);
+  child.kill = (signal?: NodeJS.Signals) => {
+    const accepted = realKill(signal);
+    if (signal === 'SIGTERM') {
+      setImmediate(() => child.simulateExit(0));
+    }
+    return accepted;
+  };
+
+  const startedAt = Date.now();
+  await harness.runtime.shutdown();
+  assert.ok(Date.now() - startedAt < 1_000, 'shutdown returned without waiting out the grace');
+  assert.deepEqual(child.kills, ['SIGTERM'], 'no escalation was needed');
 });

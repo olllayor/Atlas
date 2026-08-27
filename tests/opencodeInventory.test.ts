@@ -146,6 +146,28 @@ test('flatten can include unconnected providers and reads free pricing', () => {
   assert.equal(tiny.supportsTemperature, false);
 });
 
+test('a provider whose models arrive as an array normalizes the same way', () => {
+  // The live server sends a Record keyed by model id; the SDK's own types
+  // describe an array. Both shapes have to land on the same rows.
+  const inventory = normalizeProviderListPayload({
+    all: [
+      {
+        id: 'p',
+        name: 'P',
+        models: [{ id: 'm', name: 'M', limit: { context: 100, output: 10 } }]
+      }
+    ],
+    connected: ['p']
+  });
+
+  assert.equal(inventory.modelCount, 1);
+  const model = inventory.providers[0]!.models[0]!;
+  assert.equal(model.id, 'm');
+  assert.equal(model.name, 'M');
+  assert.equal(model.contextWindow, 100);
+  assert.equal(model.maxOutputTokens, 10);
+});
+
 test('labels disambiguate only when two providers ship the same model name', () => {
   const inventory = normalizeProviderListPayload({
     all: [

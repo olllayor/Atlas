@@ -40,15 +40,6 @@
     "release:major": "node scripts/release.mjs major",
     "package": "pnpm run icons:mac && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 --publish never"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "electron",
-      "esbuild",
-      "keytar",
-      "node-pty"
-    ]
-  },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
     "@ai-sdk/google": "^3.0.54",

@@ -45,6 +45,8 @@ type FakeClientOptions = {
   promptResult?: Partial<OpenCodePromptResult>;
   onPrompt?: (input: OpenCodePromptInput) => void;
   hangUntilAbort?: boolean;
+  /** Block `prompt` until a permission reply lands, as the real server does. */
+  hangUntilPermissionReply?: boolean;
   providerPayload?: unknown;
 };
 
@@ -58,6 +60,7 @@ function fakeClient(options: FakeClientOptions = {}) {
   };
   const sessions = options.sessions ?? new Set<string>();
   let abortResolve: (() => void) | null = null;
+  let permissionResolve: (() => void) | null = null;
 
   const client: OpenCodeAgentClient = {
     async listProviders() {
@@ -87,6 +90,11 @@ function fakeClient(options: FakeClientOptions = {}) {
           abortResolve = resolve;
         });
       }
+      if (options.hangUntilPermissionReply) {
+        await new Promise<void>((resolve) => {
+          permissionResolve = resolve;
+        });
+      }
       return {
         text: '',
         reasoning: '',
@@ -100,6 +108,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     },
     async replyToPermission({ requestId, reply }) {
       calls.replies.push({ requestId, reply });
+      permissionResolve?.();
     },
     subscribeEvents(signal) {
       return {
@@ -314,22 +323,31 @@ test('offering Atlas tools notices once that opencode runs its own', async () =>
   assert.deepEqual(notices, ['opencode.toolsDelegated']);
 });
 
+const PERMISSION_ASK = {
+  id: 'e',
+  type: 'permission.asked',
+  properties: {
+    sessionID: 'ses_known',
+    id: 'perm_1',
+    permission: 'edit',
+    patterns: ['src/**'],
+    tool: { messageID: 'm', callID: 'c1' }
+  }
+};
+
+/** Wait for a condition the event pump reaches on its own turns of the loop. */
+async function until(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(predicate(), 'condition never became true');
+}
+
 test('an approval decision is relayed once and maps onto opencode replies', async () => {
   const { client, calls } = fakeClient({
     sessions: new Set(['ses_known']),
-    events: [
-      {
-        id: 'e',
-        type: 'permission.asked',
-        properties: {
-          sessionID: 'ses_known',
-          id: 'perm_1',
-          permission: 'edit',
-          patterns: ['src/**'],
-          tool: { messageID: 'm', callID: 'c1' }
-        }
-      }
-    ]
+    events: [PERMISSION_ASK],
+    hangUntilPermissionReply: true
   });
   const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
   const { adapter } = buildAdapter({ client, store });
@@ -340,17 +358,41 @@ test('an approval decision is relayed once and maps onto opencode replies', asyn
     onToolApprovalRequested: (event: { approvalId: string }) => approvals.push(event.approvalId),
     onToolApprovalResolved: (event: { approvalId: string }) => resolved.push(event.approvalId)
   });
-  await adapter.streamChat(request);
 
-  assert.deepEqual(approvals, ['perm_1']);
+  // The turn is still in flight while the ask waits, exactly as it is in the app.
+  const turn = adapter.streamChat(request);
+  await until(() => approvals.length === 1);
 
   await adapter.resolveApproval('perm_1', 'approve_always');
   await adapter.resolveApproval('perm_1', 'deny');
+  await turn;
 
+  assert.deepEqual(approvals, ['perm_1']);
   assert.deepEqual(calls.replies, [{ requestId: 'perm_1', reply: 'always' }]);
   assert.deepEqual(resolved, ['perm_1']);
   assert.equal(toOpenCodePermissionReply('approve'), 'once');
   assert.equal(toOpenCodePermissionReply('deny'), 'reject');
+});
+
+test('asks nobody answered leave with their turn instead of piling up', async () => {
+  const { client, calls } = fakeClient({
+    sessions: new Set(['ses_known']),
+    events: [PERMISSION_ASK]
+  });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  const approvals: string[] = [];
+  const { request } = streamRequest({
+    onToolApprovalRequested: (event: { approvalId: string }) => approvals.push(event.approvalId)
+  });
+  await adapter.streamChat(request);
+  assert.deepEqual(approvals, ['perm_1']);
+
+  // The turn is over: the ask is stale, and answering it must not reach a
+  // server that moved on — nor keep its client alive for the rest of the run.
+  await adapter.resolveApproval('perm_1', 'approve');
+  assert.deepEqual(calls.replies, []);
 });
 
 test('listModels flattens the live catalog with the user\'s custom slugs', async () => {

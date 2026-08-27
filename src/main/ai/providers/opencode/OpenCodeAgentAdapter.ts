@@ -100,7 +100,11 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
     authenticatesItself: true
   };
 
-  /** Permission asks awaiting a decision, keyed by opencode's request id. */
+  /**
+   * Permission asks awaiting a decision, keyed by opencode's request id.
+   * Entries are dropped when answered, and otherwise when the turn that raised
+   * them ends — the map must not outlive the turns it describes.
+   */
   private readonly pendingApprovals = new Map<
     string,
     { client: OpenCodeAgentClient; settled: boolean; notifyResolved?: () => void }
@@ -169,6 +173,10 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
     const streamAbort = new AbortController();
     let onAbort: (() => void) | null = null;
     let disposableSessionId: string | null = null;
+    // Every ask this turn raised, so the ones the user never answered (abort,
+    // failure, a server that moved on) leave with it instead of pinning a
+    // client in the map for the rest of the app's life.
+    const raisedApprovals = new Set<string>();
 
     try {
       const { sessionId, seeded, ephemeral } = await this.resolveSession({
@@ -203,6 +211,7 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
         ...(request.onToolOutputAvailable ? { onToolOutputAvailable: request.onToolOutputAvailable } : {}),
         ...(request.onToolOutputError ? { onToolOutputError: request.onToolOutputError } : {}),
         onToolApprovalRequested: (event) => {
+          raisedApprovals.add(event.approvalId);
           this.pendingApprovals.set(event.approvalId, {
             client,
             settled: false,
@@ -254,7 +263,10 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
 
       return {
         // Streamed text is authoritative; the final message is the fallback for
-        // a server that reported no deltas at all.
+        // a server that reported no deltas at all. `ChatSessionRuntime` ranks
+        // the same way one level up (`getTextContentFromParts(result.parts) ||
+        // result.content`), so this only ever decides a turn that streamed
+        // nothing.
         content: translator.assistantText || promptResult.text,
         reasoning: translator.assistantReasoning || promptResult.reasoning,
         // opencode counts cache reads outside `input`, while Atlas' contract
@@ -273,6 +285,9 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
         request.signal.removeEventListener('abort', onAbort);
       }
       streamAbort.abort();
+      for (const approvalId of raisedApprovals) {
+        this.pendingApprovals.delete(approvalId);
+      }
       if (disposableSessionId) {
         await client.deleteSession(disposableSessionId).catch(() => undefined);
       }

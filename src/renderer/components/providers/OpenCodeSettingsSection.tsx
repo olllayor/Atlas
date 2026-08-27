@@ -32,6 +32,18 @@ const MODES: Array<{ id: OpenCodeIntegrationMode; label: string; hint: string }>
   { id: 'acp', label: 'ACP', hint: 'Launches OpenCode over stdio. Not implemented yet.' }
 ];
 
+/** Did this write move any field the probe's answer depended on? */
+function changesConfiguration(
+  patch: Partial<OpenCodeStatusView>,
+  before: OpenCodeStatusView | null,
+  after: OpenCodeStatusView
+): boolean {
+  if (!before) return true;
+  return (Object.keys(patch) as Array<keyof OpenCodeStatusView>).some(
+    (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key])
+  );
+}
+
 function summarize(probe: OpenCodeProbeResult | null, probing: boolean, enabled: boolean) {
   if (!enabled) {
     return { tone: 'idle' as Tone, headline: 'Off', detail: 'Nothing spawns or connects while this is off.' };
@@ -83,9 +95,19 @@ export function OpenCodeSettingsSection() {
   }, [applyStatus]);
 
   const save = async (patch: Parameters<NonNullable<typeof window.atlasChat>['settings']['opencode']['update']>[0]) => {
+    const before = status;
     try {
       const next = await window.atlasChat?.settings?.opencode?.update(patch);
-      if (next) applyStatus(next);
+      if (next) {
+        applyStatus(next);
+        // A probe result describes the configuration it ran against. Once any
+        // of those fields moves, the dot would be reporting a server we are no
+        // longer pointed at, so the card goes back to "not checked". A blur
+        // that saved the same value changes nothing and keeps the result.
+        if (changesConfiguration(patch, before, next)) {
+          setProbe(null);
+        }
+      }
       return true;
     } catch (error) {
       notify({
@@ -104,7 +126,6 @@ export function OpenCodeSettingsSection() {
   const handleToggle = async (enabled: boolean) => {
     const saved = await save({ enabled });
     if (!saved) return;
-    setProbe(null);
     notify({
       tone: 'success',
       title: enabled ? 'OpenCode enabled' : 'OpenCode disabled',

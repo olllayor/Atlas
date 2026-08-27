@@ -268,41 +268,68 @@ export class OpenCodeRuntime {
 
   /**
    * POSIX: signal the process group first (the CLI may leave helpers in it),
-   * then SIGKILL after the grace window. Win32 / pid-less fakes: plain kill
-   * ladder. Best-effort, mirroring t3code's terminateChild semantics.
+   * escalating only when verified necessary. Sequence per stage:
+   *
+   *   TERM(group|child) → grace → KILL(group|child) → VERIFY death
+   *     → if still alive: another KILL round with child-level fallback.
+   *
+   * Best-effort throughout, mirroring t3code's terminateChild semantics while
+   * adding the verify step so a graceful handler outliving the fixed grace
+   * can never strand a `serve` process behind Atlas.
    */
   private async teardown(child: ChildProcess): Promise<void> {
-    const killGroup = (signal: NodeJS.Signals): boolean => {
+    const groupSignal = (signal: NodeJS.Signals): boolean => {
+      if (process.platform === 'win32' || typeof child.pid !== 'number') {
+        return child.kill(signal);
+      }
       try {
         process.kill(-Number(child.pid), signal);
         return true;
       } catch {
         try {
-          child.kill(signal);
-          return true;
+          return child.kill(signal);
         } catch {
           return false;
         }
       }
     };
 
-    if (process.platform === 'win32' || typeof child.pid !== 'number') {
-      child.kill('SIGTERM');
-    } else {
-      killGroup('SIGTERM');
-    }
-
-    await new Promise<void>((resolve) => setTimeout(resolve, this.termGraceMs));
-
-    if (process.platform === 'win32' || typeof child.pid !== 'number') {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    const awaitDeath = async (budgetMs: number): Promise<boolean> => {
+      const deadline = Date.now() + budgetMs;
+      while (!hasExited()) {
+        if (Date.now() >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
-    } else {
-      killGroup('SIGKILL');
+      return true;
+    };
+
+    groupSignal('SIGTERM');
+    await new Promise<void>((resolve) => setTimeout(resolve, this.termGraceMs));
+    if (hasExited()) return;
+
+    groupSignal('SIGKILL');
+    if (await this.waitForExitWithEscalation(child, hasExited, awaitDeath, groupSignal)) {
+      return;
     }
+
+    // Last resort: SIGKILL rounds at child level, verified.
+    for (let attempt = 0; attempt < 3 && !hasExited(); attempt += 1) {
+      child.kill('SIGKILL');
+      await awaitDeath(500);
+    }
+  }
+
+  private async waitForExitWithEscalation(
+    _child: ChildProcess,
+    hasExited: () => boolean,
+    awaitDeath: (budgetMs: number) => Promise<boolean>,
+    groupSignal: (signal: NodeJS.Signals) => boolean
+  ): Promise<boolean> {
+    const survivedFirst = !(await awaitDeath(750));
+    if (!survivedFirst) return true;
+    groupSignal('SIGKILL');
+    return awaitDeath(750);
   }
 }
 

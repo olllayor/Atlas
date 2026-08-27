@@ -110,6 +110,13 @@ class FakeChild extends EventEmitter {
 
   override kill(signal?: NodeJS.Signals): boolean {
     this.kills.push(signal);
+    // Fakes die unconditionally on SIGKILL — lets hasExited()/verify-ladder
+    // logic behave like a real child.
+    if (signal === 'SIGKILL') {
+      this.exitCode = null;
+      this.signalCode = 'SIGKILL';
+      this.emit('exit', null, 'SIGKILL');
+    }
     return true;
   }
 

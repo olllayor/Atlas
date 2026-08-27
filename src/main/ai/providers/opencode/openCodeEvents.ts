@@ -155,6 +155,19 @@ export class OpenCodeEventTranslator {
   /** Text already emitted per part id — legacy snapshots arrive cumulative. */
   private readonly emittedText = new Map<string, string>();
   private readonly emittedReasoning = new Map<string, string>();
+  /**
+   * Messages opencode reported as the user's. Their parts are echoed back over
+   * the same stream, and rendering them would replay the prompt as the
+   * assistant's answer. Announced before their parts, so an unknown message id
+   * is safely treated as the assistant's.
+   */
+  private readonly userMessages = new Set<string>();
+  /**
+   * Part id → kind, learned from `message.part.updated`. `message.part.delta`
+   * names a field, not a kind, and a reasoning part's field is also "text" —
+   * without this every thought is streamed as the answer.
+   */
+  private readonly partKinds = new Map<string, 'text' | 'reasoning'>();
   private readonly tools = new Map<string, ToolRecord>();
   private readonly pendingPermissions = new Map<string, OpenCodePermissionAsk>();
 
@@ -253,6 +266,14 @@ export class OpenCodeEventTranslator {
       case 'session.next.step.failed':
         this.recordFailure(describeToolError(properties.error));
         return;
+      case 'message.updated': {
+        const info = asRecord(properties.info);
+        const messageId = asString(info.id);
+        if (messageId && info.role === 'user') {
+          this.userMessages.add(messageId);
+        }
+        return;
+      }
       case 'message.part.updated':
         if (this.claim('legacy')) {
           this.applyPartSnapshot(asRecord(properties.part));
@@ -394,6 +415,16 @@ export class OpenCodeEventTranslator {
     const type = asString(part.type);
     if (!partId || !type) return;
 
+    // The user's own message and opencode's internal filler are not the answer.
+    const messageId = asString(part.messageID);
+    if ((messageId && this.userMessages.has(messageId)) || part.synthetic === true) {
+      return;
+    }
+
+    if (type === 'text' || type === 'reasoning') {
+      this.partKinds.set(partId, type);
+    }
+
     if (type === 'text') {
       this.completeText(partId, String(part.text ?? ''));
       return;
@@ -437,13 +468,16 @@ export class OpenCodeEventTranslator {
     const delta = String(properties.delta ?? '');
     if (!partId || delta.length === 0) return;
 
+    // Kind wins over field name; the field is only a fallback for a delta that
+    // arrived before its part was announced.
+    const kind = this.partKinds.get(partId);
     const field = asString(properties.field) ?? 'text';
-    if (field === 'text') {
-      this.pushText(partId, delta);
+    if (kind === 'reasoning' || (kind === undefined && field.startsWith('reasoning'))) {
+      this.pushReasoning(partId, delta);
       return;
     }
-    if (field.startsWith('reasoning')) {
-      this.pushReasoning(partId, delta);
+    if (kind === 'text' || field === 'text') {
+      this.pushText(partId, delta);
     }
   }
 

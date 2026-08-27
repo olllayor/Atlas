@@ -199,3 +199,62 @@ test('session errors end the turn and mark aborts as aborts', () => {
   aborted.handle(nextEvent('session.error', { error: { name: 'MessageAbortedError' } }));
   assert.equal(aborted.wasAborted, true);
 });
+
+test('the user\'s own message is never replayed as the assistant answer', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  // Live ordering: opencode announces the user message before its parts.
+  translator.handle(nextEvent('message.updated', { info: { id: 'msg_user', role: 'user' } }));
+  translator.handle(
+    nextEvent('message.part.updated', {
+      part: { id: 'p_user', type: 'text', messageID: 'msg_user', text: 'Reply with exactly: pong' }
+    })
+  );
+  translator.handle(
+    nextEvent('message.part.updated', {
+      part: { id: 'p_assistant', type: 'text', messageID: 'msg_assistant', text: 'pong' }
+    })
+  );
+
+  assert.equal(translator.assistantText, 'pong');
+  assert.deepEqual(
+    events.filter((event) => event.kind === 'chunk').map((event) => event.payload.delta),
+    ['pong']
+  );
+});
+
+test('reasoning deltas follow the part kind, not the field name', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  // Live shape: a reasoning part's deltas also arrive with field "text".
+  translator.handle(
+    nextEvent('message.part.updated', { part: { id: 'p_think', type: 'reasoning', text: '' } })
+  );
+  translator.handle(nextEvent('message.part.delta', { partID: 'p_think', field: 'text', delta: 'hmm' }));
+  translator.handle(
+    nextEvent('message.part.updated', { part: { id: 'p_text', type: 'text', text: '' } })
+  );
+  translator.handle(nextEvent('message.part.delta', { partID: 'p_text', field: 'text', delta: 'pong' }));
+
+  assert.equal(translator.assistantReasoning, 'hmm');
+  assert.equal(translator.assistantText, 'pong');
+  assert.deepEqual(
+    events.map((event) => `${event.kind}:${event.payload.delta}`),
+    ['reasoning:hmm', 'chunk:pong']
+  );
+});
+
+test('synthetic parts opencode injects are not part of the answer', () => {
+  const { callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  translator.handle(
+    nextEvent('message.part.updated', {
+      part: { id: 'p1', type: 'text', text: 'injected context', synthetic: true }
+    })
+  );
+
+  assert.equal(translator.assistantText, '');
+});

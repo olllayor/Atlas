@@ -61,6 +61,7 @@ import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
 import { ModelSettingsPage } from './providers/ModelSettingsPage';
+import { OpenCodeSettingsSection } from './providers/OpenCodeSettingsSection';
 import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
 import { SlotLabel } from './ui/slot-label';
 import { Switch as UiSwitch } from './ui/switch';
@@ -476,6 +477,10 @@ function BetaPage({
             aria-label="Enable plugins"
           />
         </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="OpenCode (Beta)">
+        <OpenCodeSettingsSection />
       </SettingsGroup>
 
       <SettingsGroup title="Cloud Sandbox (Experimental)">

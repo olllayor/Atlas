@@ -39,6 +39,15 @@ export interface OpenCodeServerConnection {
   baseUrl: string;
   /** false = user-managed server (`serverUrl` configured); we do not own its lifetime. */
   owned: boolean;
+  /**
+   * Hands the reference back. One-shot, and a no-op for an external server
+   * that never took one.
+   *
+   * The lease rides on the connection rather than being a separate `release()`
+   * call because a caller that forgets one pins the server forever: the idle
+   * reap only ever arms at zero references. A probe used to do exactly that.
+   */
+  release(): void;
 }
 
 /** Factory seam so tests can supply EventEmitter-based fake children. */
@@ -71,6 +80,9 @@ interface RunningServer {
 export class OpenCodeRuntime {
   private server: RunningServer | null = null;
   private pendingStart: Promise<RunningServer> | null = null;
+  /** The child of an in-flight spawn, before it is ready enough to be `server`. */
+  private pendingChild: ChildProcess | null = null;
+  private shuttingDown = false;
   private idleTimer: NodeJS.Timeout | null = null;
   private references = 0;
   private unexpectedExitHandler: (() => void) | null = null;
@@ -118,13 +130,12 @@ export class OpenCodeRuntime {
     env?: NodeJS.ProcessEnv;
   }): Promise<OpenCodeServerConnection> {
     if (openCodeServerMode(input.settings) === 'external') {
-      return { baseUrl: input.settings.serverUrl.trim(), owned: false };
+      return { baseUrl: input.settings.serverUrl.trim(), owned: false, release: () => undefined };
     }
 
     if (this.isAlive()) {
       this.cancelIdleShutdown();
-      this.retain();
-      return { baseUrl: this.server!.baseUrl, owned: true };
+      return this.lease(this.server!.baseUrl);
     }
 
     // Coalesce concurrent connects onto one spawn.
@@ -132,8 +143,32 @@ export class OpenCodeRuntime {
       this.pendingStart = null;
     });
     const started = await this.pendingStart;
+
+    // A shutdown that landed while this spawn was in flight already killed the
+    // child; handing its URL out would point the caller at a dead server.
+    if (this.server !== started) {
+      throw new OpenCodeRuntimeError(
+        'connect',
+        'The OpenCode server was shut down while it was starting.'
+      );
+    }
+
+    return this.lease(started.baseUrl);
+  }
+
+  /** Take a reference and hand back the one-shot that returns it. */
+  private lease(baseUrl: string): OpenCodeServerConnection {
     this.retain();
-    return { baseUrl: started.baseUrl, owned: true };
+    let released = false;
+    return {
+      baseUrl,
+      owned: true,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.release();
+      }
+    };
   }
 
   /** Best-effort look without spawning anything. */
@@ -145,10 +180,26 @@ export class OpenCodeRuntime {
   async shutdown(): Promise<void> {
     this.cancelIdleShutdown();
     this.references = 0;
+    this.shuttingDown = true;
+
+    // A child spawned but not yet ready is not in `server` yet, and killing
+    // only `server` stranded it: quitting mid-startup left an orphaned
+    // `opencode serve` behind. Kill it by handle instead of waiting out the
+    // 30s readiness timeout.
+    const starting = this.pendingChild;
+    this.pendingChild = null;
     const current = this.server;
     this.server = null;
-    if (current) {
-      await this.teardown(current.child);
+
+    try {
+      if (starting && starting !== current?.child) {
+        await this.teardown(starting);
+      }
+      if (current) {
+        await this.teardown(current.child);
+      }
+    } finally {
+      this.shuttingDown = false;
     }
   }
 
@@ -183,7 +234,33 @@ export class OpenCodeRuntime {
     });
 
     this.unexpectedExitEmitted = false;
-    const baseUrl = await this.waitForReady(child);
+    this.pendingChild = child;
+
+    const shutDownDuringStartup = () =>
+      new OpenCodeRuntimeError(
+        'startOpenCodeServerProcess',
+        'The OpenCode server was shut down while it was starting.'
+      );
+
+    let baseUrl: string;
+    try {
+      baseUrl = await this.waitForReady(child);
+    } catch (error) {
+      // A shutdown kills the child, which trips the early-exit watcher first.
+      // Report why it really died rather than blaming startup.
+      throw this.shuttingDown ? shutDownDuringStartup() : error;
+    } finally {
+      if (this.pendingChild === child) {
+        this.pendingChild = null;
+      }
+    }
+
+    // Readiness landed anyway after shutdown: tear it down, never adopt it.
+    if (this.shuttingDown) {
+      await this.teardown(child);
+      throw shutDownDuringStartup();
+    }
+
     this.server = { child, baseUrl };
 
     child.once('exit', () => {

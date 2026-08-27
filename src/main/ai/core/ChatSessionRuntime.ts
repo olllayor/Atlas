@@ -61,6 +61,7 @@ import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } fr
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
 import type { ProviderRegistry } from './providerRegistry';
 import { getProviderOrThrow } from './providerRegistry';
+import { requiresStoredCredential } from './ProviderAdapter';
 import { DEFAULT_STREAM_CORE_CONFIG, resolveMaxOutputTokens } from '../providers/streamCore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import { VISUAL_PROMPT } from './VISUAL_PROMPT';
@@ -865,10 +866,12 @@ export class ChatSessionRuntime {
     allowedTools,
     onRequestHeader,
   }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
-    const apiKey = await this.keychain.getSecret(request.providerId);
     const provider = getProviderOrThrow(this.providers, request.providerId);
+    const apiKey = await this.keychain.getSecret(request.providerId);
 
-    if (!apiKey) {
+    // OpenCode signs itself in, so there is no Atlas key to find and demanding
+    // one failed every one of its turns.
+    if (!apiKey && requiresStoredCredential(provider)) {
       throw new MissingCredentialError('No API key is saved for the selected provider.');
     }
 
@@ -876,7 +879,7 @@ export class ChatSessionRuntime {
       requestId,
       request,
       provider,
-      apiKey,
+      apiKey: apiKey ?? '',
       signal,
       emitEvent,
       messagesOverride,

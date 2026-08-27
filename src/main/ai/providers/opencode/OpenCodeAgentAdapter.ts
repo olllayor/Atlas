@@ -38,9 +38,16 @@ export interface OpenCodeAgentAdapterDeps {
   readonly readSettings: () => OpenCodeSettings;
   /** Keychain-held server password, or null when none is set (plan D3). */
   readonly readServerPassword: () => Promise<string | null>;
-  /** Server lifecycle. `release()` lets the runtime reap an idle server. */
-  readonly connect: (settings: OpenCodeSettings) => Promise<{ baseUrl: string; owned: boolean }>;
-  readonly release?: () => void;
+  /**
+   * Server lifecycle. The returned lease's `release()` hands the reference
+   * back so the runtime can reap an idle server; it rides on the connection
+   * precisely so no caller can take one and forget to return it.
+   */
+  readonly connect: (settings: OpenCodeSettings) => Promise<{
+    baseUrl: string;
+    owned: boolean;
+    release: () => void;
+  }>;
   readonly createClient: (input: {
     baseUrl: string;
     directory: string;
@@ -79,7 +86,10 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
     returnsCompleteCatalog: true,
     // The catalog comes off a live server, so a successful refresh really does
     // prove the integration works end to end.
-    catalogRequiresNetwork: true
+    catalogRequiresNetwork: true,
+    // `opencode auth login` owns the credentials; Atlas stores none, so no turn
+    // may be gated on finding one.
+    authenticatesItself: true
   };
 
   /** Permission asks awaiting a decision, keyed by opencode's request id. */
@@ -255,22 +265,20 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
   private async openClient(directory: string) {
     const settings = this.deps.readSettings();
     const connection = await this.deps.connect(settings);
-    const serverPassword = await this.deps.readServerPassword();
-    const client = this.deps.createClient({
-      baseUrl: connection.baseUrl,
-      directory,
-      ...(serverPassword ? { serverPassword } : {})
-    });
 
-    let released = false;
-    return {
-      client,
-      release: () => {
-        if (released) return;
-        released = true;
-        this.deps.release?.();
-      }
-    };
+    try {
+      const serverPassword = await this.deps.readServerPassword();
+      const client = this.deps.createClient({
+        baseUrl: connection.baseUrl,
+        directory,
+        ...(serverPassword ? { serverPassword } : {})
+      });
+      return { client, release: () => connection.release() };
+    } catch (error) {
+      // Nothing downstream can release a lease the caller never received.
+      connection.release();
+      throw error;
+    }
   }
 
   /**

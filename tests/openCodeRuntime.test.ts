@@ -176,7 +176,10 @@ test('external serverUrl short-circuits without spawning', async () => {
   const connection = await harness.runtime.connect({
     settings: { ...defaultOpenCodeSettings(), enabled: true, serverUrl: ' http://oc.example.io ' }
   });
-  assert.deepEqual(connection, { baseUrl: 'http://oc.example.io', owned: false });
+  assert.equal(connection.baseUrl, 'http://oc.example.io');
+  assert.equal(connection.owned, false);
+  // Nothing was retained, so returning the lease must not decrement anyone.
+  connection.release();
   assert.equal(harness.children.length, 0);
   assert.equal(harness.runtime.activeBaseUrl(), null);
 });
@@ -184,7 +187,8 @@ test('external serverUrl short-circuits without spawning', async () => {
 test('owned mode spawns, resolves the ready URL, then reuses the same server', async () => {
   const harness = makeHarness({ termGraceMs: 5 });
   const first = await connectAndAnnounce(harness, 'http://127.0.0.1:40001');
-  assert.deepEqual(first.connection, { baseUrl: 'http://127.0.0.1:40001', owned: true });
+  assert.equal(first.connection.baseUrl, 'http://127.0.0.1:40001');
+  assert.equal(first.connection.owned, true);
   assert.equal(harness.children.length, 1);
 
   const second = await harness.runtime.connect({ settings: defaultOpenCodeSettings() });
@@ -290,3 +294,56 @@ test('retained servers survive the idle window; explicit shutdown still kills', 
   assert.deepEqual(harness.children[0].kills, ['SIGTERM', 'SIGKILL']);
 });
 
+
+test('returning every lease arms the idle reap; holding one keeps the server', async () => {
+  const harness = makeHarness({ termGraceMs: 5, idleShutdownMs: 20 });
+  const first = await connectAndAnnounce(harness, 'http://127.0.0.1:40010');
+  const second = await harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+
+  // One consumer still holds a reference: the reap must not arm.
+  first.connection.release();
+  await sleep(40);
+  assert.equal(harness.runtime.activeBaseUrl(), 'http://127.0.0.1:40010', 'still leased');
+
+  second.release();
+  // Releasing twice must not double-count someone else's reference.
+  second.release();
+  await sleep(40);
+  assert.equal(harness.runtime.activeBaseUrl(), null, 'reaped once every lease came back');
+});
+
+test('shutdown during startup kills the child instead of stranding it', async () => {
+  const harness = makeHarness({ termGraceMs: 5 });
+  const connecting = harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+  await flushMicrotasks();
+  await flushMicrotasks();
+
+  const child = harness.children.at(-1)!;
+  assert.equal(child.kills.length, 0);
+
+  // Quit lands while the server is still starting: `server` is null, so the
+  // only handle on this child is the runtime's pending-spawn slot.
+  const shuttingDown = harness.runtime.shutdown();
+  await assert.rejects(connecting, /shut down while it was starting/);
+  await shuttingDown;
+
+  assert.ok(child.kills.includes('SIGKILL'), 'the half-started child was killed');
+  assert.equal(harness.runtime.activeBaseUrl(), null);
+});
+
+test('a server that becomes ready after shutdown is torn down, not adopted', async () => {
+  const harness = makeHarness({ termGraceMs: 5 });
+  const connecting = harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  const child = harness.children.at(-1)!;
+
+  // Shutdown first, then the child announces readiness anyway.
+  const shuttingDown = harness.runtime.shutdown();
+  child.emitData('stdout', `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40011\n`);
+  await assert.rejects(connecting, /shut down while it was starting/);
+  await shuttingDown;
+
+  assert.equal(harness.runtime.activeBaseUrl(), null, 'never adopted as the live server');
+  assert.ok(child.kills.includes('SIGKILL'));
+});

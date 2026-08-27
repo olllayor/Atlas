@@ -1,14 +1,18 @@
 /**
  * Live end-to-end check of the OpenCode streaming adapter.
  *
- * Spawns a real `opencode serve`, runs one short turn through
- * `OpenCodeAgentAdapter`, and prints what the SPI actually saw: streamed
- * chunks, which event family answered, tool traffic, and token usage.
+ * Spawns a real `opencode serve` and runs short turns two ways:
+ *
+ *   1. through `ChatSessionRuntime`, which is what production uses (and which
+ *      an adapter-only check missed: the runtime used to demand a stored API
+ *      key that OpenCode never has);
+ *   2. through `OpenCodeAgentAdapter` directly, printing what the SPI saw.
  *
  * Usage: pnpm tsx scripts/e2e-opencode-turn.ts [model-slug] [prompt]
  * Defaults to a free model so the check costs nothing.
  */
 
+import { ChatSessionRuntime } from '../src/main/ai/core/ChatSessionRuntime.js';
 import { OpenCodeAgentAdapter } from '../src/main/ai/providers/opencode/OpenCodeAgentAdapter.js';
 import { createOpenCodeAgentClient } from '../src/main/ai/providers/opencode/OpenCodeAgentClient.js';
 import { OpenCodeRuntime } from '../src/main/ai/providers/opencode/OpenCodeRuntime.js';
@@ -24,7 +28,6 @@ async function main() {
     readSettings: () => ({ ...defaultOpenCodeSettings(), enabled: true }),
     readServerPassword: async () => null,
     connect: (settings) => runtime.connect({ settings }),
-    release: () => runtime.release(),
     createClient: createOpenCodeAgentClient,
     sessions: {
       get: (conversationId) => sessions.get(conversationId) ?? null,
@@ -93,6 +96,48 @@ async function main() {
       output: second.outputTokens,
       cached: second.cachedInputTokens
     });
+    // The production path: same adapter, reached the way a real turn reaches
+    // it. A keyless provider must not be rejected before it is ever called.
+    const conversationId = 'e2e-runtime';
+    const history: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      { role: 'user', content: 'Reply with exactly: pong' }
+    ];
+    const sessionRuntime = new ChatSessionRuntime(
+      {
+        getModelHistory: () => history,
+        addMessage: () => 'assistant-e2e',
+        updateMessage: () => undefined,
+        getToolPermissionMode: () => 'ask'
+      } as never,
+      { list: () => [], getRuntimeHints: () => ({}) } as never,
+      { getSecret: async () => null } as never,
+      new Map([['opencode', adapter]]) as never
+    );
+
+    const turn = await sessionRuntime.executeTurn({
+      requestId: 'e2e-runtime-1',
+      request: {
+        conversationId,
+        providerId: 'opencode',
+        modelId,
+        messages: history as never,
+        enableTools: false
+      } as never,
+      signal: new AbortController().signal,
+      emitEvent: () => undefined,
+      persistMessage: false
+    });
+
+    console.log('--- through ChatSessionRuntime ---');
+    const partKinds = turn.parts.map((part) => part.type);
+    const answer = turn.parts.find((part) => part.type === 'text') as { text?: string } | undefined;
+    const thought = turn.parts.find((part) => part.type === 'reasoning') as { text?: string } | undefined;
+
+    console.log('status       :', turn.status);
+    console.log('parts        :', partKinds);
+    console.log('answer       :', JSON.stringify(answer?.text?.slice(0, 120) ?? ''));
+    console.log('reasoning    :', JSON.stringify(thought?.text?.slice(0, 80) ?? ''));
+    console.log('tokens       :', { input: turn.inputTokens, output: turn.outputTokens, cached: turn.cachedInputTokens });
   } finally {
     await runtime.shutdown().catch(() => undefined);
   }

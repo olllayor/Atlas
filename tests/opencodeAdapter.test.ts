@@ -121,7 +121,7 @@ function buildAdapter(
   overrides: {
     client?: OpenCodeAgentClient;
     store?: OpenCodeSessionStore;
-    connect?: () => Promise<{ baseUrl: string; owned: boolean }>;
+    connect?: () => Promise<{ baseUrl: string; owned: boolean; release: () => void }>;
   } = {}
 ) {
   const released: number[] = [];
@@ -129,8 +129,13 @@ function buildAdapter(
   const adapter = new OpenCodeAgentAdapter({
     readSettings: () => ({ ...defaultOpenCodeSettings(), enabled: true }),
     readServerPassword: async () => 'hunter2',
-    connect: overrides.connect ?? (async () => ({ baseUrl: 'http://127.0.0.1:4096', owned: true })),
-    release: () => released.push(1),
+    connect:
+      overrides.connect ??
+      (async () => ({
+        baseUrl: 'http://127.0.0.1:4096',
+        owned: true,
+        release: () => released.push(1)
+      })),
     createClient: () => overrides.client ?? fakeClient().client,
     sessions: store,
     defaultDirectory: () => '/tmp/fallback'

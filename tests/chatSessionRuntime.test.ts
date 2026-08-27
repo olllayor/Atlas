@@ -70,7 +70,8 @@ function createRuntime(options: {
   } as const;
 
   const keychain = {
-    getSecret: async () => options.apiKey ?? 'test-key',
+    // `apiKey: null` means "nothing stored", which is distinct from omitting it.
+    getSecret: async () => ('apiKey' in options ? options.apiKey : 'test-key'),
   } as const;
 
   const providers = new Map([[options.provider.providerId, options.provider]]);
@@ -1123,4 +1124,59 @@ test('ChatSessionRuntime forwards the requested reasoning effort to the provider
   });
 
   assert.equal(capturedEffort, 'max');
+});
+
+test('a provider that authenticates itself runs without a stored key', async () => {
+  let capturedApiKey: string | null = null;
+
+  const provider: ProviderAdapter = {
+    providerId: 'opencode',
+    // OpenCode signs in with `opencode auth login`; Atlas stores nothing.
+    capabilities: { authenticatesItself: true },
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat(request) {
+      capturedApiKey = request.apiKey;
+      return { content: 'pong', latencyMs: 3 };
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, apiKey: null });
+
+  const result = await runtime.executeTurn({
+    requestId: 'request-opencode',
+    request: createRequest({ providerId: 'opencode', modelId: 'opencode/big-pickle' }),
+    signal: new AbortController().signal,
+    emitEvent: () => undefined,
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(capturedApiKey, '', 'no key exists, so an empty one is passed through');
+});
+
+test('every other provider still requires its stored key', async () => {
+  const provider: ProviderAdapter = {
+    providerId: 'openrouter',
+    async validateCredential() {},
+    async listModels() {
+      return [];
+    },
+    async streamChat() {
+      throw new Error('must not be reached without a key');
+    },
+  };
+
+  const { runtime } = createRuntime({ provider, apiKey: null });
+
+  await assert.rejects(
+    runtime.executeTurn({
+      requestId: 'request-keyless',
+      request: createRequest(),
+      signal: new AbortController().signal,
+      emitEvent: () => undefined,
+    }),
+    /No API key is saved/,
+  );
 });

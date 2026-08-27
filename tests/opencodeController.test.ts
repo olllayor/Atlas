@@ -48,6 +48,7 @@ function buildController(settings?: OpenCodeSettings) {
   const registry: ProviderRegistry = new Map();
   const shutdowns: number[] = [];
   const changes: number[] = [];
+  const leases = { taken: 0, returned: 0 };
 
   const controller = new OpenCodeController({
     settingsRepo,
@@ -60,8 +61,16 @@ function buildController(settings?: OpenCodeSettings) {
     },
     createRuntime: () =>
       ({
-        connect: async () => ({ baseUrl: 'http://127.0.0.1:4096', owned: true }),
-        release: () => undefined,
+        connect: async () => {
+          leases.taken += 1;
+          return {
+            baseUrl: 'http://127.0.0.1:4096',
+            owned: true,
+            release: () => {
+              leases.returned += 1;
+            }
+          };
+        },
         shutdown: async () => {
           shutdowns.push(1);
         },
@@ -69,7 +78,7 @@ function buildController(settings?: OpenCodeSettings) {
       }) as never
   });
 
-  return { controller, settingsRepo, keychain, registry, shutdowns, changes };
+  return { controller, settingsRepo, keychain, registry, shutdowns, changes, leases };
 }
 
 test('a disabled integration registers nothing and never touches a server', async () => {
@@ -140,4 +149,22 @@ test('probe failures surface as a probe result, not an exception', async () => {
   assert.equal(result.installed, false);
   assert.equal(result.status, 'error');
   assert.match(result.message!, /not installed or not on PATH/);
+});
+
+test('a probe returns its lease, so repeated tests cannot pin the server', async () => {
+  const { controller, leases } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    // Pretend the CLI is fine so the probe reaches the connect step.
+    binaryPath: process.execPath
+  });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await controller.probe();
+  }
+
+  assert.equal(leases.taken, 3, 'each probe connected');
+  // The fake base URL is not listening, so these probes also fail mid-flight:
+  // the lease must come back either way.
+  assert.equal(leases.returned, 3, 'every lease came back');
 });

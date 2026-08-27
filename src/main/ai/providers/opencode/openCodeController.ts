@@ -108,18 +108,26 @@ export class OpenCodeController {
   async probe(): Promise<OpenCodeProbeResult> {
     const settings = this.getSettings();
     const serverPassword = await this.readServerPassword();
+    // A probe is a consumer like any turn: without returning its lease, ten
+    // presses of "Test connection" pinned the server past every idle reap.
+    let lease: { release: () => void } | null = null;
 
-    return probeOpenCode({
-      settings,
-      directory: this.directory(),
-      ...(serverPassword ? { serverPassword } : {}),
-      deps: {
-        connectOwnedServer: async () => {
-          const connection = await this.getRuntime().connect({ settings });
-          return { baseUrl: connection.baseUrl };
+    try {
+      return await probeOpenCode({
+        settings,
+        directory: this.directory(),
+        ...(serverPassword ? { serverPassword } : {}),
+        deps: {
+          connectOwnedServer: async () => {
+            const connection = await this.getRuntime().connect({ settings });
+            lease = connection;
+            return { baseUrl: connection.baseUrl };
+          }
         }
-      }
-    });
+      });
+    } finally {
+      (lease as { release: () => void } | null)?.release();
+    }
   }
 
   /** Kills any server Atlas owns. Safe to call when nothing was ever started. */
@@ -156,7 +164,6 @@ export class OpenCodeController {
       readSettings: () => this.getSettings(),
       readServerPassword: () => this.readServerPassword(),
       connect: (settings) => this.getRuntime().connect({ settings }),
-      release: () => this.getRuntime().release(),
       createClient: createOpenCodeAgentClient,
       sessions: this.deps.sessions,
       defaultDirectory: () => this.directory()

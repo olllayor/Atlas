@@ -5,6 +5,7 @@ import type { ConversationSummariesRepo } from '../../db/repositories/conversati
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
 import type { KeychainStore } from '../../secrets/keychain';
 import type { ProviderAdapter } from '../core/ProviderAdapter';
+import { requiresStoredCredential } from '../core/ProviderAdapter';
 import type { ProviderRegistry } from '../core/providerRegistry';
 import { estimateMessagesTokens } from '../../../shared/tokenEstimate';
 
@@ -63,7 +64,9 @@ export class SummaryRefreshService {
       const { adapter, providerId, modelId } = resolved;
 
       const apiKey = await this.deps.keychain.getSecret(providerId);
-      if (!apiKey) {
+      // Same rule as the turn path: a provider that authenticates itself has
+      // no stored key, and bailing here left it on heuristic summaries forever.
+      if (!apiKey && requiresStoredCredential(adapter)) {
         return;
       }
 
@@ -84,7 +87,7 @@ export class SummaryRefreshService {
       }
 
       const result = await adapter.streamChat({
-        apiKey,
+        apiKey: apiKey ?? '',
         modelId,
         // Same catalog facts the turn itself uses; without them reasoning
         // models reject the default temperature with a hard 400.

@@ -56,6 +56,7 @@ import type { KeychainStore } from '../../secrets/keychain';
 import { logger, startTimer } from '../../observability/logger';
 import type { RejectedCapability } from './ErrorNormalizer';
 import { detectRejectedCapability, normalizeError } from './ErrorNormalizer';
+import { requiresStoredCredential } from './ProviderAdapter';
 import { ToolApprovalController } from './ToolApprovalController';
 import { isMcpToolName } from '../../../shared/mcp';
 import type { AuditInput } from '../mcp/McpAuditLog';
@@ -2364,10 +2365,12 @@ export class ChatEngine {
     const adapter = this.providers.get(active.request.providerId);
     const apiKey = adapter ? await this.keychain.getSecret(active.request.providerId) : null;
 
-    if (adapter && apiKey) {
+    // A self-authenticating provider (OpenCode) has no stored key, and skipping
+    // on that basis left every one of its chats named by the local heuristic.
+    if (adapter && (apiKey || !requiresStoredCredential(adapter))) {
       try {
         const result = await adapter.streamChat({
-          apiKey,
+          apiKey: apiKey ?? '',
           modelId: active.request.modelId,
           // Same catalog facts the turn itself uses. Without them the
           // request carries a default temperature, which reasoning models

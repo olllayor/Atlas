@@ -136,7 +136,26 @@ export type ProviderCapabilities = {
    * or key validity — a refresh must not record a validation.
    */
   catalogRequiresNetwork?: boolean;
+  /**
+   * When true the provider holds its own credentials (OpenCode signs in with
+   * `opencode auth login`) and Atlas stores nothing for it. Turns, titles and
+   * summaries must not demand a key that will never exist.
+   */
+  authenticatesItself?: boolean;
 };
+
+/**
+ * Whether a turn needs a key out of Atlas' keychain before it can run.
+ *
+ * Every provider needed one until OpenCode: it authenticates itself, so
+ * gating on a stored secret failed every turn with `MissingCredentialError`
+ * and silently skipped title and summary generation.
+ */
+export function requiresStoredCredential(
+  adapter: Pick<ProviderAdapter, 'capabilities'> | null | undefined
+): boolean {
+  return adapter?.capabilities?.authenticatesItself !== true;
+}
 
 /**
  * What an agent provider does with an approval. `approve_always` is only

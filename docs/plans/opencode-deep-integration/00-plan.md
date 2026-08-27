@@ -259,6 +259,55 @@ interface OpenCodeRuntime {
 - Manual QA matrix: macOS spawn/kill; external server mode w/ wrong password (friendly error); WSL caveat documented for Windows (per opencode's own guidance); app-quit leaves no processes; offline behavior mid-turn.
 - Release note + changelog entry.
 
+## 2b) Status (all phases built)
+
+| Task | Commit | State |
+|---|---|---|
+| T0 settings schema + persistence | `c699caf` | done |
+| T1 SDK dependency | `83ec036` | done |
+| T2 `OpenCodeRuntime` | `d9a5571` | done |
+| T3 client, probe, error taxonomy | `8ec3700` | done |
+| D7 dual integration modes | `1c89985` | done |
+| T4 inventory to `ModelSummary` | `f91be0a` | done |
+| T5 streaming adapter | `2006246` | done |
+| T6 approvals bridge | `d7067fa` | done |
+| T7 controller, IPC, boot wiring | `4bafd79` | done |
+| T8 picker + Settings card | `d2de590`, `9799f50` | done |
+| T9 docs | `fc2609f` | done |
+| T10 ACP transport | — | planned (§7) |
+
+### What the live server actually does (opencode 1.18.23)
+
+Verified with `scripts/e2e-opencode-turn.ts` against a real `opencode serve`,
+free model, two turns on one conversation:
+
+1. **Only the legacy event vocabulary fires.** No `session.next.*` at all.
+   Both families are supported and the translator latches onto whichever
+   speaks first, so a future switch needs no change.
+2. **The user's own message parts are echoed back over the same stream.**
+   Rendering them replayed the prompt as the answer. Parts are now filtered by
+   message role, learned from `message.updated`.
+3. **A reasoning part's deltas also carry `field: "text"`.** Routing by field
+   name streamed the model's thinking into the answer. Deltas now route by the
+   part kind learned from the preceding `message.part.updated`.
+4. **`tokens.input` excludes cache reads** (turn 2: `input 76`, `cache.read
+   22336`, `total 22429`). Atlas reports `inputTokens = input + cache.read`
+   with `cachedInputTokens = cache.read`, which matches its own contract.
+5. Session resume across turns works, and `GET /provider` answers
+   `{ all, default, connected }` — not the `providers` map the first client
+   draft assumed.
+
+### Deviations from the plan as written
+
+- **Approvals do not re-run the turn.** Atlas' AI-SDK path answers an approval
+  by restarting the request with an approval message; an opencode turn is still
+  open server-side waiting for a reply. `ProviderAdapter.resolveApproval` is the
+  seam: adapters that own their tools answer mid-turn and keep streaming.
+- **`ProviderStreamRequest.agentContext`** was added (conversation id +
+  workspace root). The SPI carried neither, and session resume needs both.
+- **Resume cursor lives in its own table** (`opencode_sessions`), not in the
+  settings blob: it is per conversation and cascades on delete.
+
 ## 3) Test strategy summary
 
 Atlas runner: `pnpm test` = `node --import tsx --test tests/*.test.ts`. All new suites are **pure-fake based** (t3 does the same — its adapter suite never boots a real server):

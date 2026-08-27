@@ -325,17 +325,20 @@ test('an approval decision is relayed once and maps onto opencode replies', asyn
   const { adapter } = buildAdapter({ client, store });
 
   const approvals: string[] = [];
+  const resolved: string[] = [];
   const { request } = streamRequest({
-    onToolApprovalRequested: (event: { approvalId: string }) => approvals.push(event.approvalId)
+    onToolApprovalRequested: (event: { approvalId: string }) => approvals.push(event.approvalId),
+    onToolApprovalResolved: (event: { approvalId: string }) => resolved.push(event.approvalId)
   });
   await adapter.streamChat(request);
 
   assert.deepEqual(approvals, ['perm_1']);
 
-  await adapter.resolveApproval('perm_1', 'approve-always');
+  await adapter.resolveApproval('perm_1', 'approve_always');
   await adapter.resolveApproval('perm_1', 'deny');
 
   assert.deepEqual(calls.replies, [{ requestId: 'perm_1', reply: 'always' }]);
+  assert.deepEqual(resolved, ['perm_1']);
   assert.equal(toOpenCodePermissionReply('approve'), 'once');
   assert.equal(toOpenCodePermissionReply('deny'), 'reject');
 });

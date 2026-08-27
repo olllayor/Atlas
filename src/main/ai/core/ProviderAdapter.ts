@@ -87,6 +87,12 @@ export type ProviderStreamRequest = {
     reason?: string;
   }) => void;
   /**
+   * Fired by adapters that answer approvals themselves (see
+   * `ProviderAdapter.resolveApproval`), so the turn stops counting that
+   * approval as pending while it keeps streaming.
+   */
+  onToolApprovalResolved?: (event: { approvalId: string }) => void;
+  /**
    * Transient, user-facing status from the stream loop itself (not from the
    * model). Currently emitted by the repeat-tool-call guard when it nudges the
    * model. Mirrors the `notice` stream event shape minus requestId, which the
@@ -132,10 +138,22 @@ export type ProviderCapabilities = {
   catalogRequiresNetwork?: boolean;
 };
 
+/**
+ * What an agent provider does with an approval. `approve_always` is only
+ * offered by providers that keep their own standing grants.
+ */
+export type ProviderApprovalDecision = 'approve' | 'approve_always' | 'deny';
+
 export interface ProviderAdapter {
   readonly providerId: ProviderId;
   readonly capabilities?: ProviderCapabilities;
   validateCredential(apiKey: string): Promise<void>;
   listModels(apiKey: string | null): Promise<ModelSummary[]>;
   streamChat(request: ProviderStreamRequest): Promise<ProviderStreamResult>;
+  /**
+   * Present only on providers that execute their own tools (OpenCode). Their
+   * turn stays open across an approval, so the decision is sent back over the
+   * wire instead of the request being re-run with an approval message.
+   */
+  resolveApproval?(approvalId: string, decision: ProviderApprovalDecision): Promise<void>;
 }

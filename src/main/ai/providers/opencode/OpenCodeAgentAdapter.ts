@@ -16,6 +16,7 @@ import type { OpenCodeSettings } from '../../../../shared/opencodeSettings.js';
 import { OPENCODE_PROVIDER_ID } from '../../../../shared/opencodeSettings.js';
 import type {
   ProviderAdapter,
+  ProviderApprovalDecision,
   ProviderCapabilities,
   ProviderStreamRequest,
   ProviderStreamResult
@@ -51,13 +52,11 @@ export interface OpenCodeAgentAdapterDeps {
 }
 
 /** How Atlas' approval vocabulary maps onto opencode's replies (plan T6). */
-export type OpenCodeApprovalDecision = 'approve' | 'approve-always' | 'deny';
-
-export function toOpenCodePermissionReply(decision: OpenCodeApprovalDecision): OpenCodePermissionReply {
+export function toOpenCodePermissionReply(decision: ProviderApprovalDecision): OpenCodePermissionReply {
   switch (decision) {
     case 'approve':
       return 'once';
-    case 'approve-always':
+    case 'approve_always':
       return 'always';
     case 'deny':
     default:
@@ -86,7 +85,7 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
   /** Permission asks awaiting a decision, keyed by opencode's request id. */
   private readonly pendingApprovals = new Map<
     string,
-    { client: OpenCodeAgentClient; settled: boolean }
+    { client: OpenCodeAgentClient; settled: boolean; notifyResolved?: () => void }
   >();
 
   constructor(private readonly deps: OpenCodeAgentAdapterDeps) {}
@@ -120,13 +119,16 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
    * second decision for the same ask (double-click, timeout racing the user)
    * is dropped rather than sent twice.
    */
-  async resolveApproval(approvalId: string, decision: OpenCodeApprovalDecision): Promise<void> {
+  async resolveApproval(approvalId: string, decision: ProviderApprovalDecision): Promise<void> {
     const pending = this.pendingApprovals.get(approvalId);
     if (!pending || pending.settled) {
       return;
     }
     pending.settled = true;
     this.pendingApprovals.delete(approvalId);
+    // The turn keeps streaming, so it must stop treating this ask as pending
+    // before opencode's answer produces more tool events.
+    pending.notifyResolved?.();
     await pending.client.replyToPermission({
       requestId: approvalId,
       reply: toOpenCodePermissionReply(decision)
@@ -176,7 +178,13 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
         ...(request.onToolOutputAvailable ? { onToolOutputAvailable: request.onToolOutputAvailable } : {}),
         ...(request.onToolOutputError ? { onToolOutputError: request.onToolOutputError } : {}),
         onToolApprovalRequested: (event) => {
-          this.pendingApprovals.set(event.approvalId, { client, settled: false });
+          this.pendingApprovals.set(event.approvalId, {
+            client,
+            settled: false,
+            ...(request.onToolApprovalResolved
+              ? { notifyResolved: () => request.onToolApprovalResolved?.({ approvalId: event.approvalId }) }
+              : {})
+          });
           request.onToolApprovalRequested?.(event);
         },
         ...(request.onNotice ? { onNotice: request.onNotice } : {})

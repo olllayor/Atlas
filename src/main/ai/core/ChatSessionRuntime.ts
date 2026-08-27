@@ -1625,6 +1625,12 @@ export class ChatSessionRuntime {
 
             this.applyEvent(turnState, { type: 'tool-approval-requested', requestId, ...event }, emitEvent);
           },
+          onToolApprovalResolved: (event) => {
+            // Agent providers answer approvals mid-turn and keep streaming, so
+            // a decided ask must stop counting as pending — otherwise the turn
+            // ends in `awaiting_approval` with nothing left to decide.
+            turnState.pendingApprovals.delete(event.approvalId);
+          },
           onNotice: (event) => {
             emitEvent({ type: 'notice', requestId, ...event });
           },

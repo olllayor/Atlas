@@ -1411,6 +1411,23 @@ export class ChatEngine {
       },
     });
 
+    // Providers that run their own tools keep the turn open across an approval:
+    // the decision goes back over their wire and the same stream carries on,
+    // instead of the request being re-run with an approval message.
+    const adapter = this.providers.get(active.request.providerId);
+    if (adapter?.resolveApproval) {
+      active.awaitingApproval = false;
+      await adapter.resolveApproval(
+        request.approvalId,
+        request.decision === 'accept_for_session'
+          ? 'approve_always'
+          : request.decision === 'accept'
+            ? 'approve'
+            : 'deny'
+      );
+      return;
+    }
+
     if (request.decision === 'decline' || request.decision === 'cancel') {
       this.recordRuntimeEnvelope(active, {
         eventId: randomUUID(),

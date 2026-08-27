@@ -21,6 +21,27 @@ import { z } from 'zod';
 /** Provider id used everywhere (registry keys, models rows, keychain account prefix). */
 export const OPENCODE_PROVIDER_ID = 'opencode';
 
+/**
+ * How Atlas talks to OpenCode. Both options are surfaced to the user in
+ * Settings behind the same Beta toggle (plan decision D7):
+ *
+ * - `'server'` — deep SDK/server integration (default): Atlas spawns or
+ *   connects to `opencode serve`, drives sessions over the official
+ *   `@opencode-ai/sdk` HTTP surface. Pre-connect inventory, BYO remote server.
+ * - `'acp'`    — Agent Client Protocol: Atlas launches `opencode acp`
+ *   (JSON-RPC over stdio). Same runtime an ACP-registry ecosystem would drive;
+ *   opens the door to other registry agents reusing one client stack.
+ */
+export const OPENCODE_INTEGRATION_MODES = ['server', 'acp'] as const;
+export type OpenCodeIntegrationMode = (typeof OPENCODE_INTEGRATION_MODES)[number];
+
+export function isOpenCodeIntegrationMode(value: unknown): value is OpenCodeIntegrationMode {
+  return (
+    typeof value === 'string' &&
+    (OPENCODE_INTEGRATION_MODES as readonly string[]).includes(value)
+  );
+}
+
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 
 function isParsableHttpUrl(value: string): boolean {
@@ -42,6 +63,8 @@ const MODEL_SLUG_PATTERN = /^[^\s]+\/[^\s]+$/;
 
 export const OpenCodeSettingsSchema = z.object({
   enabled: z.boolean().default(false),
+  /** Which transport drives the agent — see OPENCODE_INTEGRATION_MODES (D7). */
+  integrationMode: z.enum(OPENCODE_INTEGRATION_MODES).default('server'),
   binaryPath: z
     .string()
     .trim()

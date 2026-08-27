@@ -16,6 +16,7 @@
 | D4 | During an opencode turn, **opencode owns tool execution**; Atlas renders its tool events/approvals via the existing ToolCell / ToolApprovalController surfaces | That is exactly what t3code does (adapter normalizes native events; it never runs the tools itself). |
 | D5 | New code implements the existing **`ProviderAdapter` SPI** (`src/main/ai/core/ProviderAdapter.ts`) so `ChatSessionRuntime`, transcript UI, token lens, and streaming reducers work unchanged | Keeps the blast radius small; the runtime-event vocabulary steal (STEAL_PLAN 0.2) already normalized our side. |
 | D6 | Single instance (`providerId: "opencode"`), settings off by default, opt-in from Settings UI | Mirrors t3code `enabled: default false` gating ("the binding is not yet stable enough to probe on every install"). Multi-instance is deliberately deferred — t3code's instance registry exists because they have 5 drivers × N instances; we have 1 driver. |
+| D7 | **Dual integration modes, user-selectable** — `integrationMode: 'server' \| 'acp'` in `OpenCodeSettings` (default `'server'`); Settings renders both options under the same Beta banner | User request post-T3: expose ACP as a peer option rather than a buried extension point. `'server'` = the deep SDK path this plan implements first (pre-connect inventory, BYO remote server). `'acp'` = stdio JSON-RPC via `opencode acp`, architected so the *same* client stack can later drive other registry agents (t3's own split: Codex/Claude/OpenCode use SDK; Cursor/Grok ship ACP-only). |
 
 ## 1) Architecture mapping (t3code → Atlas)
 
@@ -241,6 +242,7 @@ interface OpenCodeRuntime {
 
 **Details**
 - Form fields in t3's order (`binaryPath`, `serverUrl`, `serverPassword`) with their exact placeholder/description copy adapted ("Leave blank to let Atlas spawn the server when needed.").
+- **Integration mode selector (D7)**: segmented control `SDK server (recommended)` / `ACP (beta)`. Switching modes swaps the *visible* sub-form: `server` ⇒ binaryPath/serverUrl/password + probe card; `acp` ⇒ binaryPath + note that auth uses OpenCode's own `auth login` and that the session launches via `opencode acp`. Both share the single `enabled` Beta toggle.
 - Status card states rendered from probe result: not-installed / too-old (with floor version) / connected-N-providers / auth-warning / unreachable-URL. Version advisory = same "too old" UX as t3's snapshot enrichment.
 - Password field uses type=password, `clearWhenEmpty` semantics; stored via IPC only.
 - Model picker: group label "OpenCode"; composite ids hidden from display (show modelID), tooltip shows full slug.
@@ -297,9 +299,21 @@ apps/server/src/server.ts                     composition root                 L
 apps/web/src/components/settings/providerDriverMeta.ts client definitions      L37-90
 ```
 
-## 7) Extension points (later, deliberately out of scope)
+## 7) Dual-mode roadmap (updated after D7)
 
-1. **ACP driver**: would reuse `OpenCodeAgentAdapter`'s event translation, swap transport to stdio JSON-RPC (`opencode acp`) — Atlas-side mirror of t3's Grok/Cursor ACP path. Registry metadata (launch cmd/sha256s) at `cdn.agentclientprotocol.com/registry/v1`.
+### Shipped foundation (T0–T3, commits dffbcf2…8ec3700)
+`integrationMode` is already part of `OpenCodeSettings` (default `'server'`, validated enum, persisted) — the Settings selector and both transports plug into an existing typed contract, not an afterthought.
+
+### T10 — ACP transport behind `integrationMode: 'acp'` (planned, L)
+Mirror of t3's `provider/acp/*` + `packages/effect-acp`, ported to plain TS (D2):
+1. **`acp/protocol.ts`** — minimal JSON-RPC-over-stdio framing + method types (initialize, session/new, session/load, session/prompt, session/update, session/request_permission, fs read/write/text_file). Only the methods opencode's ACP server exercises; keep the module generic so future registry agents reuse it.
+2. **`acp/AcpConnection.ts`** — spawn `{ command: binaryPath || 'opencode', args: ['acp'] }`, length-prefixed/LSP-style framing per ACP spec, request/response correlation, notification pump, scope-owned teardown (reuse OpenCodeRuntime's ladder patterns).
+3. **`acp/OpenCodeAcpAdapter.ts`** — same SPI implementation as T5's server adapter; the T5 event-translation layer is written transport-agnostic precisely so this file stays thin (session setup ↔ `onTool*`/`onChunk`, permission bridging shared with T6).
+4. **Probe for acp mode** — binary/version floor only (no server to list); auth surfaces from the `initialize` response's `authMethods` on first connect; Settings card copy: "Launches OpenCode as an ACP agent; sign in with `opencode auth login`."
+5. **Tests** — scripted stdio fake-child harness (same FakeChild pattern as T2/T5); fixture transcript of a full ACP session exchange.
+6. **Follow-on win** — `acp/registry.ts` client for `cdn.agentclientprotocol.com/registry/v1` to later install/launch *any* registry agent (Claude Agent, Codex, Gemini CLI…) with the same stack; out of scope until T10 ships.
+
+### Previously-deferred items (unchanged)
 2. **Auto-update resolver** (npm/homebrew/native `opencode upgrade` triple like t3's maintenance resolvers) — needs T3 probe groundwork already done here.
 3. **Multi-instance** (two opencode configs side-by-side): requires adopting t3's instance-id routing; single D6 keeps us out of that complexity until demanded.
 

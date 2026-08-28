@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { RuntimeEventEnvelope, StreamEvent } from '../src/shared/contracts';
-import { SubagentRuntime } from '../src/main/ai/agents/SubagentRuntime';
+import { CHILD_INTERRUPT_TIMEOUT_MS, SubagentRuntime } from '../src/main/ai/agents/SubagentRuntime';
 import { createAgentTools } from '../src/main/ai/tools/agentTools';
 
 test('Spawning 3 children emits 3 task.started rows with distinct deterministic agentIds', async () => {
@@ -606,4 +606,42 @@ test('Rejected spawn does not leak the pending count: later spawns succeed', asy
     tasks: [{ title: 'C', prompt: 'C' }],
   });
   assert.equal(secondBatch[0].status, 'completed');
+});
+
+test('a wedged child cannot hold the cascade stop open', async () => {
+  // The child ignores its abort signal entirely. The stop must still return
+  // within the bounded wait, because the parent turn's own interrupt is
+  // queued behind it.
+  let releaseChild: (() => void) | null = null;
+  const runtime = new SubagentRuntime({
+    childExecutor: async () => {
+      await new Promise<void>((resolve) => {
+        releaseChild = resolve;
+      });
+      return { content: 'Eventually' };
+    },
+  });
+
+  const spawnPromise = runtime.spawn({
+    conversationId: 'conv-wedged',
+    parentTurnId: 'turn-1',
+    parentToolCallId: 'call-wedged',
+    title: 'Wedged child',
+    prompt: 'Ignore the signal',
+  });
+
+  await new Promise((res) => setTimeout(res, 20));
+
+  const startedAt = Date.now();
+  const count = await runtime.interruptAll('conv-wedged', 'User cancelled');
+  const waited = Date.now() - startedAt;
+
+  assert.equal(count, 1);
+  assert.ok(
+    waited < CHILD_INTERRUPT_TIMEOUT_MS + 400,
+    `cascade stop waited ${waited}ms on a child that never settles`
+  );
+
+  releaseChild?.();
+  await spawnPromise;
 });

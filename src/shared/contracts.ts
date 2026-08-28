@@ -2527,6 +2527,8 @@ export type RendererApi = {
     list: (parentConversationId: string) => Promise<Array<{ id: string; title: string; mode: string | null; label: string | null }>>;
     followup: (parentConversationId: string, childId: string, content: string) => Promise<string>;
     interrupt: (childId: string) => Promise<{ accepted: true }>;
+    /** Stops every live agent in a conversation, leaving the parent turn alone. */
+    interruptAll: (conversationId: string) => Promise<{ interrupted: number }>;
     getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) => Promise<any>;
     getLiveness: () => Promise<Record<string, 'working' | 'monitoring' | null>>;
     /** Composer takeover input: is this conversation a subagent, and can it still be driven? */

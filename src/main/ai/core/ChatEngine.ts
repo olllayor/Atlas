@@ -389,6 +389,10 @@ export class ChatEngine {
         return result;
       },
       onRuntimeEvent: (envelope) => {
+        // Classification lives in the service; this is only the boundary.
+        try {
+          this.backgroundLiveness.recordTaskEnvelope(envelope);
+        } catch {}
         const activeReq = Array.from(this.activeRequests.values()).find(
           (req) => req.request.conversationId === envelope.conversationId
         );
@@ -715,6 +719,21 @@ export class ChatEngine {
 
   interruptSubagent(childId: string): { accepted: true } {
     return this.continuationManager.interrupt(childId);
+  }
+
+  /**
+   * Stop every live agent in a conversation without touching the parent turn.
+   *
+   * The composer's stop already fans out on its way to aborting the turn; this
+   * is the other case — a fleet still running after its launching turn ended,
+   * which the composer no longer offers a control for.
+   */
+  async interruptConversationAgents(conversationId: string): Promise<{ interrupted: number }> {
+    const interrupted = await this.subagentRuntime.interruptAll(
+      conversationId,
+      'Stopped from the Agents panel'
+    );
+    return { interrupted };
   }
 
   /**

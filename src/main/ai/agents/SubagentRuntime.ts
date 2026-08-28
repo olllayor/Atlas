@@ -28,6 +28,25 @@ import { snapshotSubagentDescriptor } from './subagentDescriptor';
 
 export type { SubagentCapabilities };
 
+/** How long a cascade stop waits on a child before moving on. */
+export const CHILD_INTERRUPT_TIMEOUT_MS = 800;
+
+function withTimeout(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      }
+    );
+  });
+}
+
 export type SubagentSpawnRequest = {
   conversationId: string;
   parentTurnId: string;
@@ -875,7 +894,11 @@ export class SubagentRuntime {
       }
     }
 
-    await Promise.allSettled(promisesToAwait);
+    // Bounded: the abort has already been signalled and the interrupted state
+    // already emitted, so this wait is only a courtesy to children that stop
+    // cleanly. A child wedged in a provider call must not hold the parent's
+    // own interrupt open behind it.
+    await withTimeout(Promise.allSettled(promisesToAwait), CHILD_INTERRUPT_TIMEOUT_MS);
 
     for (const { state } of tasksToInterrupt) {
       this.activeTasks.delete(state.agentId);

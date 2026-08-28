@@ -130,6 +130,14 @@ export function registerChatIpc(chatEngine: ChatEngine) {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.subagentsInterruptAll,
+    withUserFacingErrors(IPC_CHANNELS.subagentsInterruptAll, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+      return chatEngine.interruptConversationAgents(conversationId);
+    }),
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.subagentsLiveness,
     withUserFacingErrors(IPC_CHANNELS.subagentsLiveness, async (event) => {
       assertTrustedSender(event);

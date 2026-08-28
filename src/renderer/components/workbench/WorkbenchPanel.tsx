@@ -101,7 +101,15 @@ export function WorkbenchPanel({
   onOpenOutputFile,
 }: WorkbenchPanelProps) {
   const toolParts = useMemo(() => collectToolParts(messages), [messages]);
-  const tabs = useMemo(() => workbenchTabsForMode(mode), [mode]);
+  // The roster is folded once per activity change, not once per render: it
+  // walks every persisted row in the conversation.
+  const agentCount = useMemo(() => foldAgents(activities).agents.length, [activities]);
+  // Agents is a conditional tab: a conversation that never spawned one has no
+  // roster to open, and an empty tab in the strip reads as a missing feature.
+  const tabs = useMemo(
+    () => workbenchTabsForMode(mode).filter((tab) => tab.id !== 'agents' || agentCount > 0),
+    [mode, agentCount]
+  );
   // Switching a conversation to Work with Review open would otherwise leave a
   // selected tab that is no longer in the bar.
   const visibleTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : (tabs[0]?.id ?? 'tasks');
@@ -126,7 +134,7 @@ export function WorkbenchPanel({
     review: 0,
     git: 0,
     tasks: toolParts.length,
-    agents: foldAgents(activities).agents.length,
+    agents: agentCount,
   };
 
   return (

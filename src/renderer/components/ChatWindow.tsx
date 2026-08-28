@@ -58,10 +58,9 @@ import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
 import { AtlasMark } from './ui/atlas-mark';
 
 import { SpawnAgentCta } from './agents/SpawnAgentCta';
-import { SubagentCatalog } from './subagents/SubagentCatalog';
 import { SubagentBreadcrumbs } from './subagents/SubagentBreadcrumbs';
 import { useAppStore } from '../stores/useAppStore';
-import { foldAgents, type RuntimeAgent } from '../lib/agentFold';
+import { foldAgents, selectBatchAgents } from '../lib/agentFold';
 
 type ChatWindowProps = {
   detail: ConversationPage | null;
@@ -402,6 +401,16 @@ function AssistantParts({
           key={`tools-${segment.parts[0].toolCallId}`}
           parts={segment.parts}
           onRespondToolApproval={onRespondToolApproval}
+        />
+      );
+    }
+
+    if (segment.kind === 'spawn') {
+      return (
+        <SpawnBatchRow
+          key={`spawn-${segment.parts[0].toolCallId}`}
+          parts={segment.parts}
+          onRespondToolApproval={onRespondToolApproval}
           onOpenAgentsPanel={onOpenAgentsPanel}
         />
       );
@@ -508,6 +517,10 @@ function AssistantParts({
         )
       ) : null}
 
+      {/* Outside the fold on purpose: agents outlive the turn that launched
+          them, so a collapsed turn must not take a live fleet with it. */}
+      {split.spawn.map((segment) => renderSegment(segment, { isLast: false, dim: false }))}
+
       {split.plan.map((segment) => renderSegment(segment, { isLast: false, dim: false }))}
 
       {split.answer.map((segment, index) =>
@@ -524,11 +537,9 @@ function AssistantParts({
 function ToolCellGroup({
   parts,
   onRespondToolApproval,
-  onOpenAgentsPanel,
 }: {
   parts: ChatToolPart[];
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
-  onOpenAgentsPanel?: () => void;
 }) {
   const [submittingApprovalId, setSubmittingApprovalId] = useState<string | null>(null);
 
@@ -559,24 +570,65 @@ function ToolCellGroup({
     [respond, submittingApprovalId]
   );
 
+  return (
+    <div className="my-1.5 space-y-2">
+      <ToolCellList parts={parts} approvals={approvals} />
+    </div>
+  );
+}
+
+/**
+ * One row per spawn batch, rendered outside the turn's `Worked for …` fold.
+ *
+ * Membership is pinned to the batch's own tool calls rather than to the
+ * conversation's whole roster, so a second fan-out later in the thread gets
+ * its own counters instead of re-reporting the first one's.
+ *
+ * A spawn still waiting on approval is not a fleet yet: it renders as an
+ * ordinary tool cell so the prompt stays in the transcript, where consent
+ * belongs.
+ */
+function SpawnBatchRow({
+  parts,
+  onRespondToolApproval,
+  onOpenAgentsPanel,
+}: {
+  parts: ChatToolPart[];
+  onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+  onOpenAgentsPanel?: () => void;
+}) {
   const activitiesByConversation = useAppStore((state) => state.activitiesByConversation);
   const selectedConversationId = useAppStore((state) => state.selectedConversationId);
   const activities = selectedConversationId ? (activitiesByConversation[selectedConversationId] ?? []) : [];
-  const folded = useMemo(() => foldAgents(activities), [activities]);
 
-  const hasSpawnAgent = parts.some((p) => p.toolName === 'spawn_agent');
-  const regularParts = parts.filter((p) => p.toolName !== 'spawn_agent');
+  const { pendingParts, spawnedToolCallIds } = useMemo(
+    () => ({
+      pendingParts: parts.filter((part) => part.state === 'approval-requested'),
+      spawnedToolCallIds: parts
+        .filter((part) => part.state !== 'approval-requested')
+        .map((part) => part.toolCallId),
+    }),
+    [parts]
+  );
+
+  const agents = useMemo(
+    () => selectBatchAgents(foldAgents(activities).agents, spawnedToolCallIds),
+    [activities, spawnedToolCallIds]
+  );
 
   return (
-    <div className="my-1.5 space-y-2">
-      {hasSpawnAgent && (
+    <>
+      {pendingParts.length > 0 && (
+        <ToolCellGroup parts={pendingParts} onRespondToolApproval={onRespondToolApproval} />
+      )}
+      {spawnedToolCallIds.length > 0 && (
         <SpawnAgentCta
-          agents={folded.agents}
+          agents={agents}
+          spawnCallCount={spawnedToolCallIds.length}
           onOpenAgentsPanel={onOpenAgentsPanel ?? (() => {})}
         />
       )}
-      {regularParts.length > 0 && <ToolCellList parts={regularParts} approvals={approvals} />}
-    </div>
+    </>
   );
 }
 
@@ -1633,8 +1685,9 @@ export function ChatWindow({
         <>
           {/* Self-styling components: each renders nothing when empty, so an
               ordinary conversation gets no phantom header strip here. */}
+          {/* Breadcrumbs only. The fleet roster lives in the Agents panel —
+              a second one here is the duplication this replaced. */}
           <SubagentBreadcrumbs conversationId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
-          <SubagentCatalog parentId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
         </>
       )}
       <div

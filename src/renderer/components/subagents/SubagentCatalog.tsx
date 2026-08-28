@@ -27,6 +27,12 @@ function ModeBadge({ mode }: { mode: string | null }) {
   return <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[10px] font-mono text-text-muted">{mode}</span>;
 }
 
+/**
+ * @deprecated Superseded by the Agents panel. Nothing mounts this any more:
+ * the floating `SUBAGENTS · N` banner was a second roster to keep in sync with
+ * the panel, and two surfaces showing one fleet drift apart. Kept for one
+ * release in case the panel has to be rolled back.
+ */
 export function SubagentCatalog({ parentId, onSelect }: { parentId: string; onSelect?: (childId: string) => void }) {
   const [entries, setEntries] = useState<CatalogEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());

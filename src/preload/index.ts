@@ -317,6 +317,8 @@ const api: RendererApi = {
     followup: (parentConversationId: string, childId: string, content: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.subagentsFollowup, { parentConversationId, childId, content }),
     interrupt: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsInterrupt, childId),
+    interruptAll: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsInterruptAll, conversationId) as Promise<{ interrupted: number }>,
     getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) =>
       ipcRenderer.invoke(IPC_CHANNELS.subagentsHistory, request),
     getLiveness: () => ipcRenderer.invoke(IPC_CHANNELS.subagentsLiveness) as Promise<Record<string, 'working' | 'monitoring' | null>>,

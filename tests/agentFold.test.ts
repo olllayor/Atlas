@@ -7,6 +7,8 @@ import {
   isActiveAgentStatus,
   isBackgroundTaskActivity,
   isTerminalAgentStatus,
+  selectBatchAgents,
+  summarizeBatch,
 } from '../src/renderer/lib/agentFold';
 
 function makeEntry(overrides: Partial<WorkLogEntry> = {}): WorkLogEntry {
@@ -174,4 +176,97 @@ test('Recent activity ring buffer caps at 6 items', () => {
   assert.equal(ring.length, 6);
   assert.equal(ring[0].summary, 'Step 5');
   assert.equal(ring[5].summary, 'Step 10');
+});
+
+// ── batch membership (Variant B: one CTA per spawn batch) ──────────────────
+
+test('selectBatchAgents picks only the agents a spawn call owns', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      id: 'task:call-a:0',
+      activityType: 'task.started',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', status: 'running', title: 'First fleet' },
+    }),
+    makeEntry({
+      id: 'task:call-b:0',
+      activityType: 'task.started',
+      parentToolCallId: 'call-b',
+      payload: { agentKind: 'agent', agentId: 'call-b:0', status: 'running', title: 'Second fleet' },
+    }),
+  ];
+
+  const { agents } = foldAgents(rows);
+  assert.equal(agents.length, 2);
+
+  const first = selectBatchAgents(agents, ['call-a']);
+  assert.deepEqual(
+    first.map((agent) => agent.title),
+    ['First fleet']
+  );
+
+  const both = selectBatchAgents(agents, ['call-a', 'call-b']);
+  assert.equal(both.length, 2);
+  assert.deepEqual(selectBatchAgents(agents, []), []);
+});
+
+test('selectBatchAgents falls back to the id prefix for rows with no linkage', () => {
+  // Ids are minted as `${parentToolCallId}:${index}`, so a row persisted
+  // before the linkage field existed is still attributable.
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.started',
+      payload: { agentKind: 'agent', agentId: 'call-legacy:2', status: 'running', title: 'Legacy' },
+    }),
+  ];
+
+  const { agents } = foldAgents(rows);
+  assert.equal(agents[0].parentToolCallId, null);
+  assert.deepEqual(
+    selectBatchAgents(agents, ['call-legacy']).map((agent) => agent.title),
+    ['Legacy']
+  );
+  assert.deepEqual(selectBatchAgents(agents, ['call-other']), []);
+});
+
+test('summarizeBatch counts live work, tokens, and the longest run', () => {
+  const now = Date.parse('2026-08-08T01:00:30.000Z');
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.started',
+      occurredAt: '2026-08-08T01:00:00.000Z',
+      updatedAt: '2026-08-08T01:00:00.000Z',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', status: 'running', usage: { totalTokens: 400 } },
+    }),
+    makeEntry({
+      activityType: 'task.completed',
+      occurredAt: '2026-08-08T01:00:10.000Z',
+      updatedAt: '2026-08-08T01:00:10.000Z',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:1', status: 'completed', usage: { totalTokens: 600 } },
+    }),
+  ];
+
+  const batch = summarizeBatch(foldAgents(rows).agents, now);
+  assert.equal(batch.total, 2);
+  assert.equal(batch.active, 1);
+  assert.equal(batch.settled, 1);
+  assert.equal(batch.totalTokens, 1000);
+  // The still-running agent has been up for 30s; the settled one for 0s.
+  assert.equal(batch.elapsedMs, 30_000);
+});
+
+test('an all-idle batch reports no live work', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.updated',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', status: 'idle' },
+    }),
+  ];
+
+  const batch = summarizeBatch(foldAgents(rows).agents, Date.now());
+  assert.equal(batch.active, 0);
+  assert.equal(batch.settled, 1);
 });

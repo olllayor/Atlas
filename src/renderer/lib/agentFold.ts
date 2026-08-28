@@ -23,6 +23,8 @@ export type RuntimeAgent = {
   error: string | null;
   outputFile: string | null;
   parentAgentId: string | null;
+  /** Spawn tool call that created this agent — how a CTA pins its batch membership. */
+  parentToolCallId: string | null;
   recentActivity: ReadonlyArray<{ at: string; summary: string }>; // ring buffer, cap 6
   startedAt: string | null;
   completedAt: string | null;
@@ -127,6 +129,11 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     const incomingModel = (payload.model as string | undefined) ?? null;
     const incomingTitle = entry.title || (payload.title as string | undefined) || `Agent ${agentId}`;
     const parentAgentId = (payload.parentAgentId as string | undefined) ?? null;
+    const parentToolCallId =
+      entry.parentToolCallId ??
+      (payload.parentToolCallId as string | undefined) ??
+      (payload.toolCallId as string | undefined) ??
+      null;
     const timestamp = entry.updatedAt || entry.createdAt || (entry as any).occurredAt || new Date().toISOString();
 
     const existing = agentMap.get(agentId);
@@ -148,6 +155,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
           error: null,
           outputFile: incomingOutputFile,
           parentAgentId,
+          parentToolCallId,
           recentActivity: pushActivityRing([], timestamp, incomingProgress ?? 'Task started'),
           startedAt: timestamp,
           completedAt: null,
@@ -172,6 +180,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             result: null, // clear previous run's result on reactivation
             error: null,  // clear previous run's error on reactivation
             outputFile: incomingOutputFile ?? existing.outputFile,
+            parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
             recentActivity: pushActivityRing(existing.recentActivity, timestamp, incomingProgress ?? 'Task restarted'),
             startedAt: timestamp,
             completedAt: null,
@@ -186,6 +195,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             title: existing.title || incomingTitle,
             role: existing.role ?? incomingRole,
             model: existing.model ?? incomingModel,
+            parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
             startedAt: existing.startedAt ? (timestamp < existing.startedAt ? timestamp : existing.startedAt) : timestamp,
             updatedAt: timestamp,
           };
@@ -213,6 +223,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
         error: incomingError,
         outputFile: incomingOutputFile,
         parentAgentId,
+        parentToolCallId,
         recentActivity: pushActivityRing([], timestamp, incomingProgress ?? incomingResult ?? 'Activity logged'),
         startedAt: timestamp,
         completedAt: isTerminal ? timestamp : null,
@@ -248,6 +259,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
       result: alreadyTerminal ? (existing.result ?? incomingResult) : (incomingResult ?? existing.result),
       error: alreadyTerminal ? (existing.error ?? incomingError) : (incomingError ?? existing.error),
       outputFile: existing.outputFile ?? incomingOutputFile,
+      parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
       recentActivity: incomingProgress
         ? pushActivityRing(existing.recentActivity, timestamp, incomingProgress)
         : existing.recentActivity,
@@ -272,4 +284,46 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     settledAgents,
     totalTokens,
   };
+}
+
+/**
+ * The agents a single spawn batch owns, in roster order.
+ *
+ * Membership is pinned by the spawn tool call: agent ids are minted as
+ * `${parentToolCallId}:${index}` (`subagentTasks.agentIdFor`), and every task
+ * payload repeats the linkage, so a batch can be named without the transcript
+ * having to keep its own list. Rows persisted before the linkage existed match
+ * on the id prefix instead.
+ */
+export function selectBatchAgents(
+  agents: readonly RuntimeAgent[],
+  toolCallIds: readonly string[]
+): RuntimeAgent[] {
+  if (toolCallIds.length === 0) return [];
+  const owned = new Set(toolCallIds);
+  return agents.filter(
+    (agent) =>
+      (agent.parentToolCallId != null && owned.has(agent.parentToolCallId)) ||
+      toolCallIds.some((id) => agent.id.startsWith(`${id}:`))
+  );
+}
+
+/** Batch counters the Spawn CTA reads. `elapsedMs` is the longest live run. */
+export function summarizeBatch(agents: readonly RuntimeAgent[], nowMs: number) {
+  let active = 0;
+  let totalTokens = 0;
+  let elapsedMs = 0;
+
+  for (const agent of agents) {
+    if (isActiveAgentStatus(agent.status)) active += 1;
+    totalTokens += agent.usage?.totalTokens ?? 0;
+    const started = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
+    if (!Number.isNaN(started)) {
+      const end = agent.completedAt ? Date.parse(agent.completedAt) : nowMs;
+      const span = (Number.isNaN(end) ? nowMs : end) - started;
+      if (span > elapsedMs) elapsedMs = span;
+    }
+  }
+
+  return { total: agents.length, active, settled: agents.length - active, totalTokens, elapsedMs };
 }

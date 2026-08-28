@@ -11,7 +11,16 @@
  * sticky, and idle counts as not live.
  */
 
+import type { RuntimeEventEnvelope } from '../../../shared/contracts';
+
 export type BackgroundLiveness = 'working' | 'monitoring' | null;
+
+const TASK_EVENT_KINDS = {
+  'task.started': 'started',
+  'task.progress': 'progress',
+  'task.updated': 'updated',
+  'task.completed': 'completed',
+} as const;
 
 const MONITOR_TASK_TYPES = new Set(['shell', 'local_bash', 'terminal', 'site_dev_server', 'monitor']);
 const INERT_TASK_TYPES = new Set(['plan']);
@@ -64,6 +73,35 @@ export class BackgroundLivenessService {
     this.byConversation.set(conversationId, bucket);
   }
 
+  /**
+   * Fold a runtime envelope into the registry, ignoring anything that is not
+   * a task event.
+   *
+   * Every `task.*` row goes through here — it is the only path by which
+   * one-shot fan-outs reach the sidebar pill, since `recordSubagentLiveness`
+   * only ever sees continuable children.
+   */
+  recordTaskEnvelope(envelope: RuntimeEventEnvelope): void {
+    const kind = TASK_EVENT_KINDS[envelope.activityType as keyof typeof TASK_EVENT_KINDS];
+    if (!kind) return;
+
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const taskId =
+      pick(payload.taskId) ?? envelope.agentId ?? pick(payload.agentId);
+    if (!taskId) return;
+
+    this.recordTaskLiveness({
+      conversationId: envelope.conversationId,
+      taskId,
+      taskType: pick(payload.taskType) ?? null,
+      status: pick(payload.status) ?? null,
+      kind,
+      // A task's own row owns its liveness; a shell an agent started does not,
+      // which is what `parentAgentId` marks.
+      agentId: pick(payload.parentAgentId) ?? null,
+    });
+  }
+
   recordSubagentLiveness(input: { conversationId: string; subagentId: string; status: 'running' | 'inactive' }): void {
     const { conversationId, subagentId, status } = input;
     if (status === 'running') {
@@ -107,4 +145,8 @@ export class BackgroundLivenessService {
       this.byConversation.delete(conversationId);
     }
   }
+}
+
+function pick(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

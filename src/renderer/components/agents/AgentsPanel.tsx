@@ -3,10 +3,11 @@
  *
  * Dedicated right-hand panel displaying active & settled sub-agent task fleet.
  */
-import { useMemo, useState } from 'react';
-import { Bot, ChevronDown, ChevronRight, Cpu, ExternalLink, FileText, XCircle } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Bot, ChevronDown, ChevronRight, Cpu, ExternalLink, FileText, Square, XCircle } from 'lucide-react';
 
 import type { WorkLogEntry } from '../../../shared/contracts';
+import { formatElapsed } from '../../../shared/toolCellGrammar';
 import { foldAgents, isTerminalAgentStatus, type RuntimeAgent } from '../../lib/agentFold';
 import { cn } from '../../lib/utils';
 
@@ -17,12 +18,24 @@ export type AgentsPanelProps = {
 };
 
 export function AgentsPanel({
+  conversationId,
   activities = [],
   onOpenOutputFile,
 }: AgentsPanelProps) {
+  const [isStopping, setIsStopping] = useState(false);
   const [expandedAgentId, setExpandedAgentId] = useState<string | null>(null);
 
   const model = useMemo(() => foldAgents(activities), [activities]);
+  const hasLiveAgent = model.activeAgents.length > 0;
+
+  // Elapsed is a live reading only while something is running; a settled
+  // roster stops ticking entirely rather than repainting once a second.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasLiveAgent) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasLiveAgent]);
 
   if (model.agents.length === 0) {
     return (
@@ -47,6 +60,27 @@ export function AgentsPanel({
         <span className="ml-auto shrink-0 pl-3 tabular-nums text-sm text-text-faint">
           {model.totalTokens.toLocaleString()} tokens
         </span>
+        {/* A fleet outlives its turn, and once the turn ends the composer's
+            stop is gone — so the only fan-out control left has to be here,
+            in the open, not behind a menu. */}
+        {hasLiveAgent && conversationId && (
+          <button
+            type="button"
+            disabled={isStopping}
+            onClick={() => {
+              setIsStopping(true);
+              void window.atlasChat?.subagents
+                ?.interruptAll(conversationId)
+                .catch(() => {})
+                .finally(() => setIsStopping(false));
+            }}
+            aria-label={`Stop ${model.activeAgents.length} running agent${model.activeAgents.length === 1 ? '' : 's'}`}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+          >
+            <Square className="h-3 w-3" />
+            <span>{isStopping ? 'Stopping' : 'Stop'}</span>
+          </button>
+        )}
       </div>
 
       {/* Active Agents Section */}
@@ -61,6 +95,7 @@ export function AgentsPanel({
               <AgentCard
                 key={agent.id}
                 agent={agent}
+                nowMs={nowMs}
                 isExpanded={expandedAgentId === agent.id}
                 onToggle={() => setExpandedAgentId((prev) => (prev === agent.id ? null : agent.id))}
                 onOpenOutputFile={onOpenOutputFile}
@@ -81,6 +116,7 @@ export function AgentsPanel({
               <AgentCard
                 key={agent.id}
                 agent={agent}
+                nowMs={nowMs}
                 isExpanded={expandedAgentId === agent.id}
                 onToggle={() => setExpandedAgentId((prev) => (prev === agent.id ? null : agent.id))}
                 onOpenOutputFile={onOpenOutputFile}
@@ -95,16 +131,21 @@ export function AgentsPanel({
 
 function AgentCard({
   agent,
+  nowMs,
   isExpanded,
   onToggle,
   onOpenOutputFile,
 }: {
   agent: RuntimeAgent;
+  /** Ticks once a second while the roster has live work, frozen otherwise. */
+  nowMs: number;
   isExpanded: boolean;
   onToggle: () => void;
   onOpenOutputFile?: (path: string) => void;
 }) {
   const isTerminal = isTerminalAgentStatus(agent.status);
+  const elapsedMs = agentElapsedMs(agent, nowMs);
+  const tokens = agent.usage?.totalTokens ?? 0;
 
   return (
     <div
@@ -121,7 +162,9 @@ function AgentCard({
           <StatusDot status={agent.status} />
           <span className="font-medium text-text-primary truncate">{agent.title}</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 text-[11px] text-text-muted">
+          {elapsedMs >= 1000 && <span className="tabular-nums">{formatElapsed(elapsedMs)}</span>}
+          {tokens > 0 && <span className="tabular-nums">{tokens.toLocaleString()}</span>}
           {agent.model && (
             <span className="inline-flex items-center gap-1 rounded bg-bg-muted px-1.5 py-0.5 text-[10px] font-mono text-text-muted">
               <Cpu className="h-3 w-3" />
@@ -201,6 +244,15 @@ function AgentCard({
       )}
     </div>
   );
+}
+
+/** Wall time this run has been going, or took. */
+function agentElapsedMs(agent: RuntimeAgent, nowMs: number): number {
+  if (!agent.startedAt) return 0;
+  const started = Date.parse(agent.startedAt);
+  if (Number.isNaN(started)) return 0;
+  const end = agent.completedAt ? Date.parse(agent.completedAt) : nowMs;
+  return Math.max(0, (Number.isNaN(end) ? nowMs : end) - started);
 }
 
 function StatusDot({ status }: { status: string }) {

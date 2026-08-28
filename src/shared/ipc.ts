@@ -155,6 +155,7 @@ export const IPC_CHANNELS = {
   subagentsList: 'subagents:list',
   subagentsFollowup: 'subagents:followup',
   subagentsInterrupt: 'subagents:interrupt',
+  subagentsInterruptAll: 'subagents:interruptAll',
   subagentsHistory: 'subagents:history',
   subagentsLiveness: 'subagents:liveness',
   subagentsComposerState: 'subagents:composerState',

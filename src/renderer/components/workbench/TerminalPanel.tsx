@@ -506,6 +506,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
         // while the user reads the transcript. It is killed when the
         // conversation is deleted or the app quits.
         try {
+          terminal.reset();
           terminal.dispose();
         } catch {
           // Same reasoning: never let teardown take the view with it.

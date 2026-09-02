@@ -66,6 +66,9 @@ type PtySession = {
   /** Last answer from the process-tree probe, and the label derived from it. */
   hasRunningSubprocess: boolean;
   label: string;
+  bufferedStdout: string;
+  flushTimer: NodeJS.Timeout | null;
+  lastFlushTime: number;
 };
 
 const MAX_SCROLLBACK_CHARS = 200_000;
@@ -77,6 +80,15 @@ const DEFAULT_ROWS = 24;
  * runs while a panel is watching *and* a shell is alive.
  */
 const LABEL_POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Small chunks (< 128 bytes) or idle keystrokes are emitted immediately to ensure
+ * 0ms typing echo latency. High-volume streams are batched across an 8ms window
+ * up to 64 KB per batch, stopping 25,000 discrete IPC roundtrips from flooding Electron.
+ */
+const PTY_BATCH_WINDOW_MS = 8;
+const PTY_INTERACTIVE_CHUNK_MAX = 128;
+const PTY_BATCH_MAX_CHARS = 64 * 1024;
 
 const requireFromHere = createRequire(import.meta.url);
 
@@ -148,15 +160,35 @@ export class PtyService {
       exitCode: null,
       hasRunningSubprocess: false,
       label: terminalLabelFromId(terminalId),
+      bufferedStdout: '',
+      flushTimer: null,
+      lastFlushTime: 0,
     };
     this.sessions.set(key, session);
 
     pty.onData((data) => {
       this.append(session, data);
-      this.emit({ conversationId, terminalId, data, kind: 'stdout' });
+      session.bufferedStdout += data;
+
+      const now = Date.now();
+      const isInteractive =
+        session.bufferedStdout.length <= PTY_INTERACTIVE_CHUNK_MAX &&
+        now - session.lastFlushTime > 16;
+
+      // Flush immediately for interactive typing (< 128 bytes after idle)
+      // or when hitting the 64 KB per-batch buffer ceiling.
+      if (isInteractive || session.bufferedStdout.length >= PTY_BATCH_MAX_CHARS) {
+        this.flushStdout(session);
+      } else if (session.flushTimer === null) {
+        // Coalesce high-volume bursts over an 8ms window.
+        session.flushTimer = setTimeout(() => {
+          this.flushStdout(session);
+        }, PTY_BATCH_WINDOW_MS);
+      }
     });
 
     pty.onExit(({ exitCode }) => {
+      this.flushStdout(session);
       session.exited = true;
       session.exitCode = exitCode;
       session.hasRunningSubprocess = false;
@@ -285,6 +317,12 @@ export class PtyService {
       return;
     }
 
+    if (session.flushTimer !== null) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = null;
+    }
+    this.flushStdout(session);
+
     try {
       session.pty.kill();
     } catch (err) {
@@ -378,6 +416,23 @@ export class PtyService {
       session.label = label;
       this.emitMetadata({ type: 'upsert', terminal: summarize(session) });
     }
+  }
+
+  private flushStdout(session: PtySession) {
+    if (session.flushTimer !== null) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = null;
+    }
+    const data = session.bufferedStdout;
+    if (!data) return;
+    session.bufferedStdout = '';
+    session.lastFlushTime = Date.now();
+    this.emit({
+      conversationId: session.conversationId,
+      terminalId: session.terminalId,
+      data,
+      kind: 'stdout',
+    });
   }
 
   private append(session: PtySession, data: string) {

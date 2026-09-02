@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas vs T3 Code — Performance Architecture Review</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #000; color: #fff; font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 { font-size: 19px; margin: 48px 0 12px; padding-top: 20px; border-top: 1px solid #333; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p, li { color: #ddd; }
+  .meta { color: #888; font-size: 13px; margin-bottom: 28px; }
+  code, pre { font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: #161616; border: 1px solid #2a2a2a; border-radius: 4px; padding: 1px 5px; color: #e8e8e8; word-break: break-word; }
+  pre { background: #101010; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px 14px; overflow-x: auto; color: #e8e8e8; }
+  pre code { background: none; border: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border: 1px solid #2a2a2a; }
+  th { background: #141414; color: #fff; }
+  td { color: #ccc; }
+  .verdict { border: 1px solid #333; border-radius: 10px; padding: 16px 18px; background: #0d0d0d; margin: 20px 0; }
+  .verdict strong { color: #fff; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; border-radius: 4px; padding: 2px 8px; margin-right: 8px; vertical-align: middle; }
+  .p0 { background: #4d1414; color: #ff9d9d; }
+  .p1 { background: #4d3a14; color: #ffd88a; }
+  .p2 { background: #14384d; color: #9dd2ff; }
+  .p3 { background: #143d24; color: #9defb6; }
+  .good { color: #7ee2a8; }
+  .bad { color: #ff9d9d; }
+  .path { color: #8fb8e8; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  hr { border: none; border-top: 1px solid #2a2a2a; margin: 32px 0; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Atlas vs T3 Code — Performance Architecture Review</h1>
+<p class="meta">Sources: <code>/Users/ollayor/Code/Projects/Atlas</code> @ <code>bdf4db1</code> (dev) and <code>pingdotgg/t3code</code> @ HEAD, shallow-cloned for analysis. All file paths and numbers below were read from the actual source trees on 1 Sep 2026. Atlas renderer: 395 files, ~103k LOC of TS/TSX. t3code: pnpm monorepo (apps/desktop, apps/web, apps/server, apps/mobile + packages/contracts, packages/client-runtime, effect-acp, effect-codex-app-server, native/).</p>
+
+<h2>1. Verdict first</h2>
+<div class="verdict">
+<p>Atlas is not "unoptimized". It already ships four techniques that are the same ideas t3code uses: a <strong>33ms stream coalescer in the main process</strong>, a <strong>virtualized transcript</strong> with a self-calibrating height estimator, a <strong>paged conversation cache with eviction</strong>, and a <strong>lazy-loaded markdown pipeline</strong>.</p>
+<p>The "heavy" feeling comes from five specific, fixable gaps:</p>
+<ul>
+  <li><strong>A single eager 5.0&nbsp;MB main bundle</strong> — everything (Settings, Plugins, Sites, xterm, visual gallery, XAI landing page) is parsed and executed on every launch.</li>
+  <li><strong>App.tsx subscribes to ~40 store fields at once</strong>, so every stream token re-renders the entire app tree (Sidebar included) because nothing below it is memoized.</li>
+  <li><strong>Transcript rows are not memoized</strong> — only the inner <code>MessageResponse</code> is, so per-token work scales with the visible window, not with the one row that changed.</li>
+  <li><strong>Streaming state lives in the global store</strong> instead of being scoped to the one conversation/row that is live.</li>
+  <li><strong>Heavy work (diff render, markdown for long threads) stays on the renderer main thread</strong>, where t3code uses a web-worker pool and process isolation.</li>
+</ul>
+<p>t3code's deeper advantage is <em>cultural</em>, not structural: they measure budgets ("first paint on the heaviest threads stays ~100K gzipped"), they bound worst cases, and they audit regressions (their AGENTS.md literally lists "too much data over websockets, CSS animations causing GPU spikes, lists being hard to render" as standing audit targets).</p>
+</div>
+<h2>2. Side-by-side</h2>
+<table>
+  <tr><th>Concern</th><th>T3 Code</th><th>Atlas today</th><th>Gap</th></tr>
+  <tr><td>State model</td><td>Per-thread Effect <code>Atom.family</code> + <code>SubscriptionRef</code>, idle-TTL eviction (5 min). <span class="path">packages/client-runtime/src/state/threads.ts:703</span></td><td>One Zustand store (<code>useAppStore.ts</code>, 2596 lines) holding everything.</td><td class="bad">High</td></tr>
+  <tr><td>Unchanged-event suppression</td><td>Reducers return <code>{ kind: "unchanged" }</code>; no notification, no render. <span class="path">threadReducer.ts:19-74</span></td><td>Reducers return <code>null</code> when unchanged (good), but updates still flow through one global store.</td><td class="bad">Medium</td></tr>
+  <tr><td>Big payload transport</td><td>Snapshot over HTTP (6s timeout bound), deltas over WebSocket with <code>afterSequence</code> cursor resume. <span class="path">threadSnapshotHttp.ts:23-28</span></td><td>Everything over IPC <code>chat:event</code>; snapshot/compact via <code>conversationCache.ts</code>.</td><td class="good">OK (single-machine Electron; HTTP/WS split not needed)</td></tr>
+  <tr><td>Stream coalescing</td><td>Sliding queues, latest-wins lanes, debounced write-behind persistence.</td><td><code>STREAM_BATCH_INTERVAL_MS = 33</code> coalescer in <span class="path">src/main/ai/core/ChatEngine.ts:105</span>, merge contract pinned by tests in <span class="path">streamBuffer.ts</span>.</td><td class="good">At parity</td></tr>
+  <tr><td>History pagination</td><td>Last 10 user-anchored turns initial, +20 per "load older", sized to a measured ~100K-gzip first-paint budget. <span class="path">threads.ts:43-50</span></td><td>100-message page, compact-to-100 on deactivate, evict to 3 inactive conversations. <span class="path">conversationCache.ts:4-5</span></td><td class="good">Close; budget not measured</td></tr>
+  <tr><td>List rendering</td><td>Virtualized lists; performance-audited.</td><td><code>useVirtualizer</code> with measured/estimated height calibration and periodic halving. <span class="path">ChatWindow.tsx:1148-1197</span></td><td class="good">At parity</td></tr>
+  <tr><td>Row memoization</td><td>Strict memo boundaries below virtualization.</td><td>Only <code>MessageResponse</code> is <code>memo()</code>'d; <code>MessageRow</code> and <code>Sidebar</code> are not.</td><td class="bad">High</td></tr>
+  <tr><td>Code splitting</td><td>Lazy panels (<code>ChatView.tsx:505-509</code>), separate preload bundles, <code>alwaysBundle</code> allow-lists.</td><td>One 5,068&nbsp;KB <code>index-*.js</code>; only the markdown module is lazy. mermaid/shiki chunks exist but sit behind the eager bundle.</td><td class="bad">High</td></tr>
+  <tr><td>Heavy work isolation</td><td>Diff parsing in a web-worker pool (<code>DiffWorkerPoolProvider.tsx:62</code>), terminal VT in native/WASM (<code>native/libghostty-vt</code>), telemetry in Rust (<code>native/resource-monitor</code>), previews in separate webContents.</td><td>Diff and markdown rendering on the renderer main thread; terminal uses node-pty + xterm WebGL (good).</td><td class="bad">Medium</td></tr>
+  <tr><td>Build tooling</td><td>vite-plus (rolldown), native tsgo typecheck, oxlint; typecheck capped at concurrency 2.</td><td>electron-vite + tsc --noEmit (TypeScript 7).</td><td class="good">Fine for now</td></tr>
+</table>
+<h2>3. What T3 Code actually does (evidence)</h2>
+
+<h3>3.1 Per-thread atoms with idle-TTL eviction</h3>
+<p>Thread state is not React state. Each thread gets its own atom from an <code>Atom.family</code>, backed by a <code>SubscriptionRef</code>, and unmounted threads release memory after a 5-minute idle TTL — back-navigation stays instant, but memory is bounded to recently-used threads.</p>
+<pre><code>// packages/client-runtime/src/state/threads.ts:703-719
+const family = Atom.family((key: string) =&gt; {
+  return runtime.atom(threadStateChanges(environmentId, threadId), {
+    initialValue: EMPTY_ENVIRONMENT_THREAD_STATE,
+  }).pipe(
+    Atom.setIdleTTL(THREAD_STATE_IDLE_TTL_MS),
+// threadRetention.ts: THREAD_STATE_IDLE_TTL_MS = 5 * 60_000</code></pre>
+<p><strong>Why it matters for Atlas:</strong> a token arriving in conversation A currently re-renders conversation B's shared parent components, because both read one global store. Scoped atoms/selectors make that cross-talk structurally impossible.</p>
+
+<h3>3.2 Measured pagination budgets</h3>
+<pre><code>// threads.ts:43-50
+export const INITIAL_THREAD_USER_TURN_LIMIT = 10;    // first paint
+export const OLDER_THREAD_PAGE_USER_TURN_LIMIT = 20; // per "load older"
+// "Sized so first paint on the heaviest observed threads stays
+//  around 100K gzipped while median threads load fully."</code></pre>
+<p>They picked <em>user turns</em> as the unit because subagent fan-out turns ride along, and the number came from measurement, not taste.</p>
+
+<h3>3.3 Snapshot over HTTP, deltas over WebSocket, cursor resume</h3>
+<p>Multi-KB snapshots travel over compressible HTTP with a hard 6s timeout (so a slow endpoint can't block the cheaper socket fallback); deltas resume via <code>afterSequence</code>, so a warm cache never re-downloads a thread body.</p>
+
+<h3>3.4 Pure reducers with an "unchanged" terminal state</h3>
+<pre><code>// threadReducer.ts:44-60
+export type ThreadDetailReducerResult =
+  | { readonly kind: "updated"; readonly thread: OrchestrationThread }
+  | { readonly kind: "deleted" }
+  | { readonly kind: "unchanged" };</code></pre>
+<p>The server broadcasts every event to every subscriber; <code>unchanged</code> makes cross-thread event storms free — <code>SubscriptionRef</code> only notifies on real change. <strong>Atlas's reducers already return <code>null</code> in this case (streamEventReducers.ts:373-375) — same idea, worth keeping.</strong></p>
+
+<h3>3.5 Heavy work off the renderer main thread</h3>
+<ul>
+  <li>Diff parsing: dedicated web-worker pool — <code>apps/web/src/components/DiffWorkerPoolProvider.tsx:62</code>.</li>
+  <li>Terminal VT parsing: native/WASM (<code>native/libghostty-vt</code>), not JS.</li>
+  <li>Host telemetry: Rust child process (<code>native/resource-monitor</code>).</li>
+  <li>Preview tabs: separate <code>webContents</code> with their own preloads and caches — a heavy preview can never jank the chat UI.</li>
+</ul>
+
+<h3>3.6 Lazy everything at the panel level</h3>
+<pre><code>// apps/web/src/components/ChatView.tsx:505-509
+const PreviewPanel = lazy(() =&gt; import(...));
+const DiffPanel = lazy(() =&gt; import("./DiffPanel"));
+const FilePreviewPanel = lazy(() =&gt; import("./files/FilePreviewPanel"));</code></pre>
+<p>Desktop preloads are separate tiny cjs artifacts with explicit <code>alwaysBundle</code> allow-lists; web dev can run Vite's bundled-dev mode so remote browsers don't pay a round trip per import level.</p>
+
+<h3>3.7 Performance as a written, audited invariant</h3>
+<p><code>AGENTS.md:15-18</code>: "We regularly audit for performance regressions, often caused by sending too much data over websockets, css animations causing gpu spikes, lists being hard to render, and more." The machinery is consistently <em>bounded</em>: ring buffers with byte budgets, LRU caches, debounced write-behind persistence, latest-wins command lanes, idle TTLs. They bound worst cases, not just averages.</p>
+<h2>4. What Atlas already does right (keep these)</h2>
+<ul>
+  <li class="good"><strong>Stream coalescer in main</strong> — <code>ChatEngine.ts:105</code> (<code>STREAM_BATCH_INTERVAL_MS = 33</code>, i.e. one IPC flush per frame) with a pure, unit-tested merge contract (<code>streamBuffer.ts</code>). This is exactly t3code's "don't flood the socket" discipline.</li>
+  <li class="good"><strong>Virtualized transcript with adaptive height calibration</strong> — <code>ChatWindow.tsx:1148-1197</code>: estimates are continuously corrected against real measurements with a decaying accumulator, so the scrollbar stays honest on long threads.</li>
+  <li class="good"><strong>Paged + evicting conversation cache</strong> — <code>conversationCache.ts</code>: 100-message pages, compact on deactivate, evict beyond 3 inactive conversations, cursor-based "load older".</li>
+  <li class="good"><strong>Lazy markdown module</strong> — <code>lib/messageRendering.ts</code> + <code>LazyMessageResponseContent</code>; shiki grammars and mermaid/cytoscape are already separate chunks in <code>out/renderer/assets/</code>.</li>
+  <li class="good"><strong>Null-returning pure reducers</strong> — unchanged events cost zero state writes.</li>
+  <li class="good"><strong>xterm WebGL renderer</strong> for the terminal — the right call.</li>
+</ul>
+
+<h2>5. Recommendations, prioritized</h2>
+
+<h3><span class="tag p0">P0</span>Break the per-token re-render of the whole app</h3>
+<p><code>App.tsx:342</code> subscribes via one <code>useShallow</code> selector with ~40 fields (settings, models, conversations, …), and ChatWindow receives <code>detail</code> as a prop. Every stream token replaces <code>conversationDetails[id]</code>, so the entire App subtree — Sidebar, workbench, dock — reconciles per token. Neither <code>Sidebar</code> nor <code>MessageRow</code> is memoized.</p>
+<ul>
+  <li>Wrap <code>MessageRow</code> in <code>React.memo</code> (props are <code>message</code> + stable callbacks — cheap change, big effect).</li>
+  <li>Split the App-level selector: view-routing fields stay in App; conversation-detail fields move to a hook used only by ChatWindow.</li>
+  <li>Longer term (t3code-style): move the <em>streaming draft</em> into its own store slice subscribed only by the streaming row, so a token can't touch <code>conversationDetails</code> at all.</li>
+</ul>
+
+<h3><span class="tag p0">P0</span>Split the 5 MB eager bundle</h3>
+<p><code>out/renderer/assets/index-*.js</code> is <strong>5,068 KB</strong> executed on every launch (assets dir totals 21 MB, but mermaid 2.6 MB / shiki grammars / cytoscape are already lazy chunks — the monolith is the problem). Candidates that are visibly not on the critical path:</p>
+<pre><code>// Route/panel-level lazy boundaries (same as t3code ChatView):
+const SettingsWorkspace = lazy(() =&gt; import('./SettingsWorkspace'));    // 2019 lines
+const PluginsWorkspace  = lazy(() =&gt; import('./plugins/PluginsWorkspace'));
+const SitesWorkspace    = lazy(() =&gt; import('./sites/SitesWorkspace'));
+const XAILandingPage    = lazy(() =&gt; import('./XAILandingPage'));
+const TerminalDock      = lazy(() =&gt; import('./workbench/TerminalDock')); // xterm
+const VisualGallery     = lazy(() =&gt; import('./ai-elements/visual-gallery'));
+// + manualChunks in electron.vite.config.ts renderer.rollupOptions:
+//   vendor-react, vendor-ai (ai + @ai-sdk/*), vendor-xterm, vendor-motion</code></pre>
+
+<h3><span class="tag p1">P1</span>Move diff rendering off the main thread</h3>
+<p>t3code parses diffs in a worker pool (<code>DiffWorkerPoolProvider.tsx</code>). Atlas's <code>DiffBlock.tsx</code> and the changed-files pipeline run on the main thread — noticeable when an agent turn touches many files. A single pool of 2–4 workers with a request queue is a contained change.</p>
+
+<h3><span class="tag p1">P1</span>Adopt measured budgets</h3>
+<p>t3code's pagination constants cite a measured payload budget. Atlas has the knobs (<code>DEFAULT_CONVERSATION_PAGE_SIZE</code>, <code>INACTIVE_CONVERSATION_CACHE_LIMIT</code>) but no documented measurement. Add one script that opens the heaviest real conversation, records first-paint ms and JS heap, and pins those numbers in a comment next to the constants. Regressions then get caught in review, not by feel.</p>
+
+<h3><span class="tag p2">P2</span>Bounded animations and rAF loops</h3>
+<p>t3code explicitly audits CSS animations for GPU spikes; Atlas has hand-rolled rAF loops (<code>status-dot.tsx</code>'s own comment says it once animated a transform per frame) plus Rive WebGL canvases. Ensure every Rive instance is paused when off-screen and every infinite CSS animation is gated behind <code>prefers-reduced-motion</code> and visibility.</p>
+
+<h3><span class="tag p2">P2</span>Persistence write-behind</h3>
+<p>If any high-frequency renderer state (composer drafts, transcript UI) is persisted synchronously, debounce it into a write-behind queue like t3code does; drafts are the usual offender.</p>
+
+<h3><span class="tag p3">P3</span>Process isolation for artifacts/previews</h3>
+<p>t3code runs previews in separate <code>webContents</code>. Atlas's HTML artifact sandbox should get the same treatment when it grows: a hostile generated page must never be able to jank the transcript.</p>
+
+<h3><span class="tag p3">P3</span>Tooling upgrades</h3>
+<p>Atlas is already on TypeScript 7. Swapping <code>tsc --noEmit</code> in CI for native (tsgo-style) checking and adopting oxlint are dev-velocity wins, mirroring t3code's vite-plus/tsgo/oxlint choice.</p>
+<h2>6. Summary of my thoughts</h2>
+<p>Atlas's problems are concentrated and fixable; t3code's edge is that performance is a <em>tested invariant</em> there, not a vibe. In priority order the wins are:</p>
+<ol>
+  <li>Memoize <code>MessageRow</code> + split App's giant selector — hours of work, removes the per-token whole-app render (the single biggest "heavy" feeling).</li>
+  <li>Lazy-load the settings/plugins/sites/terminal/landing surfaces + vendor chunks — removes ~2–3 MB of parse/exec per launch.</li>
+  <li>Scope streaming state so tokens can't touch shared store slices.</li>
+  <li>Worker-pool the diff pipeline.</li>
+  <li>Then adopt t3code's culture: measure budgets, write them next to the constants, audit regressions.</li>
+</ol>
+<p>Atlas's coalescer, virtualizer, and paged cache are genuinely at t3code's level. The gap is bundle discipline, subscription granularity, and main-thread isolation. Close those three and the app will feel dramatically lighter without an architecture rewrite.</p>
+
+<h2>7. Cross-check: the second review (Opus-5) — verified against source</h2>
+<p>A second agent review ("Why Atlas feels heavier than T3 Code", <a href="https://f8gc22r1h7nv.postplan.dev" style="color:#8fb8e8">f8gc22r1h7nv.postplan.dev</a>) reaches overlapping conclusions. I fact-checked every checkable claim against the Atlas tree. Result: <strong>substantially correct</strong>. All of its checkable claims reproduced exactly:</p>
+<ul>
+  <li><strong>Confirmed — R1 (root re-render per flush):</strong> <code>App.tsx:365/379</code> puts <code>conversationDetails</code> and <code>draftsByConversation</code> inside the one <code>useShallow</code> selector; <code>Sidebar</code> is 1,586 lines; zero <code>memo()</code> across Sidebar / ChatWindow / WorkbenchPanel / WorkspaceContextBar / TerminalDock. This review found the same thing independently. Its best evidence is in Atlas's own code: <code>ChatComposerSlot.tsx:21-40</code> documents the identical bug being fixed for <em>keystrokes</em> — the stream path has the same shape and was never fixed.</li>
+  <li><strong>Confirmed — R4 (app never idle):</strong> 2s liveness poll does <code>setLivenessMap(new Map(...))</code> unconditionally (<code>App.tsx:857-863</code>) → full-window render every 2s at rest under R1. 1 Hz clocks in <code>AgentsPanel.tsx:36</code>, <code>SpawnAgentCta.tsx:41</code>; poll in <code>useSubagentComposerState.ts:68</code>.</li>
+  <li><strong>Confirmed — M1 (one thread carries everything):</strong> 142 <code>ipcMain.handle/on</code> registrations, 0 <code>utilityProcess</code> uses in <code>src/main</code>.</li>
+  <li><strong>Confirmed — M2 (no window until boot finishes):</strong> <code>index.ts</code> awaits provider sync, model refresh, and OpenCode init before <code>createWindow</code> (~line 828 after <code>whenReady</code> at 206).</li>
+  <li><strong>Confirmed — M3 (SQLite):</strong> <code>schema.ts:5-6</code> sets only <code>foreign_keys</code> + <code>WAL</code> — no <code>synchronous = NORMAL</code>, no <code>busy_timeout</code>; <code>client.ts:59</code> is a bare <code>new Database(path)</code>; <code>runtimeStateRepo.ts:241</code> runs <code>MAX(sequence)</code> and re-prepares statements per call.</li>
+  <li><strong>Confirmed — M4 (sync IO in main):</strong> every log line does <code>statSync</code> (roll check) + <code>appendFileSync</code> (<code>logger.ts:192-216</code>).</li>
+  <li><strong>Confirmed — R5 (memory ceiling):</strong> <code>createWindow.ts:88-105</code> documents that a long session with a large transcript can hit V8's heap ceiling; recovery is a reload.</li>
+</ul>
+<p><strong>One correction.</strong> Its claim that "T3 put shiki inside a Web Worker (<code>worker-CIcqvLjo.js</code> is a shiki build)" does not hold up in source: chat-markdown highlighting in t3code runs <em>in-thread</em> via <code>use(getSyntaxHighlighterPromise(language))</code> with <code>preferredHighlighter: "shiki-js"</code> (<code>apps/web/src/components/ChatMarkdown.tsx:969</code>, <code>lib/syntaxHighlighting.ts:10</code>), guarded by an LRU cache of highlighted HTML. The worker chunk they saw in the minified bundle is the <strong>diff</strong> worker (<code>DiffWorkerPoolProvider.tsx</code>). The recommendation itself (get tokenizing off the UI thread) is still sound — t3code just does it with caching + the diff worker, not a shiki worker.</p>
+<p><strong>Minor framing quibble:</strong> "bundle size is not the difference" is directionally right for the <em>streaming</em> feel (t3code's entry is comparably large), but ~5 MB of parse/eval still costs real cold-start time on weaker machines — which its own item 5 (entry down a third) acknowledges. Both halves are worth doing; they are not in conflict.</p>
+
+<h2>8. Merged implementation plan (v2)</h2>
+<p>Order merges this review with the Opus-5 findings; items 1–5 are about a week and attack the felt heaviness. The memo caveat from <code>ChatComposerSlot</code>'s own comment is built into item 1: memo without stable props is a no-op.</p>
+<table>
+  <tr><th>#</th><th>Change</th><th>Effort</th><th>Effect</th><th>Source</th></tr>
+  <tr><td>1</td><td><strong>Scope the root selector.</strong> Pull <code>conversationDetails</code> + <code>draftsByConversation</code> out of <code>App.tsx</code>'s <code>useShallow</code> into ChatWindow-scoped hooks (the <code>ChatComposerSlot</code> pattern, applied to the stream path). Then memo the five children — only after stabilizing their callback props (<code>useCallback</code>/<code>useEffectEvent</code>), otherwise fresh closures defeat memo.</td><td>Half a day</td><td>Stream renders drop from whole-window @30 Hz to the streaming region only. The single biggest felt win.</td><td>Both reviews</td></tr>
+  <tr><td>2</td><td><strong>Stop idle renders.</strong> Compare liveness payload before <code>setState</code>; drive the poll off the existing <code>runtime-sync</code> push; gate the 1 Hz clocks on "something live on screen".</td><td>Two hours</td><td>Zero renders at rest.</td><td>Opus-5 (verified)</td></tr>
+  <tr><td>3</td><td><strong>SQLite pass.</strong> <code>synchronous = NORMAL</code>, <code>busy_timeout</code>, <code>cache_size</code>/<code>mmap_size</code> at open; hoist hot prepared statements; keep running sequence in memory instead of <code>MAX(sequence)</code> per event; batch a flush's events into one transaction.</td><td>Half a day</td><td>Removes an fsync + re-prepare per event from the thread that answers IPC.</td><td>Opus-5 (verified)</td></tr>
+  <tr><td>4</td><td><strong>Buffered async logger.</strong> One size check per flush, not per line; no <code>statSync</code>/<code>appendFileSync</code> on the hot path.</td><td>Half a day</td><td>Removes routine sync IO from main.</td><td>Opus-5 (verified)</td></tr>
+  <tr><td>5</td><td><strong>Window before boot.</strong> <code>createWindow</code> immediately after <code>whenReady</code>; services register IPC as they come up; inline theme+splash script in <code>index.html</code> (t3code's pattern).</td><td>Half a day</td><td>First pixel decoupled from provider sync and the OpenCode probe.</td><td>Opus-5 (verified)</td></tr>
+  <tr><td>6</td><td><strong>Lazy-load panels + vendor chunks.</strong> <code>React.lazy</code> for settings, plugins, sites, terminal (xterm), diagram (xyflow), Rive, posthog-after-idle; <code>manualChunks</code> for react/ai-sdk/xterm/motion.</td><td>One day</td><td>Entry chunk down roughly a third; faster cold start.</td><td>Both reviews</td></tr>
+  <tr><td>7</td><td><strong>Streaming-path polish.</strong> Wrap transcript updates in <code>startTransition</code>; <code>content-visibility: auto</code> + containment on rows; one shared clock replacing per-component 1 Hz ticks; freeze shimmer while tokens arrive.</td><td>One day</td><td>Typing/scrolling preempt the stream; less compositor contention.</td><td>Opus-5</td></tr>
+  <tr><td>8</td><td><strong>Highlighting strategy.</strong> Preferred: defer tokenizing until a code block finishes streaming + LRU-cache highlighted HTML (t3code's actual pattern). Worker-based shiki as the bigger option.</td><td>Two days</td><td>Long code answers stop competing with React for the main thread.</td><td>Both (corrected evidence)</td></tr>
+  <tr><td>9</td><td><strong>utilityProcess for chat runtime + SQLite.</strong> Electron main becomes a supervisor; MessagePort bridge to the renderer; IPC surface unchanged, endpoint moves.</td><td>One to two weeks</td><td>Tool/git/SQLite work can no longer stall window events. T3's core structural advantage.</td><td>Both reviews</td></tr>
+  <tr><td>10</td><td><strong>Optional accelerants.</strong> React Compiler (40 <code>useAppStore</code> call sites, almost no manual memoization); measure macOS vibrancy cost with a number before deciding it stays default.</td><td>One day</td><td>Compounding memoization safety; data-driven visual settings.</td><td>Opus-5</td></tr>
+</table>
+<p>Measurement plan (adopted from Opus-5 section 8, which is right): capture renders-per-stream (React DevTools profiler), main-thread occupancy per process (<code>app.getAppMetrics()</code>), time-to-first-pixel, per-turn <code>recordEvent</code> cost, and entry compile/evaluate time — before and after items 1–6, so item 9 is a measured decision, not a vibes decision.</p>
+<hr>
+<p class="meta">Method: static inspection of both trees. t3code findings verified against source (threads.ts:703-719, threadRetention.ts, threadSnapshotHttp.ts:23-28, threadReducer.ts:19/74, DiffWorkerPoolProvider.tsx:62, ChatView.tsx:505-509, ChatMarkdown.tsx:969, syntaxHighlighting.ts:10, AGENTS.md:15-18, native/). Atlas findings verified against source (ChatEngine.ts:105, streamBuffer.ts, ChatWindow.tsx:1148-1197, conversationCache.ts, streamEventReducers.ts, App.tsx:342/365/379/857-863, ChatComposerSlot.tsx:21-40, createWindow.ts:88-105, index.ts:206-828, schema.ts:5-6, client.ts:59, runtimeStateRepo.ts:241, logger.ts:192-216, out/renderer/assets sizes, main.tsx imports). No runtime profiling was done; P0 claims are structural and worth confirming with a React DevTools flamegraph.</p>
+
+
+ t3code findings verified against source (threads.ts:703-719, threadRetention.ts, threadSnapshotHttp.ts:23-28, threadReducer.ts:19/74, DiffWorkerPoolProvider.tsx:62, ChatView.tsx:505-509, AGENTS.md:15-18, native/). Atlas findings verified against source (ChatEngine.ts:105, streamBuffer.ts, ChatWindow.tsx:1148-1197, conversationCache.ts, streamEventReducers.ts, App.tsx:342, out/renderer/assets sizes, main.tsx imports). No runtime profiling was done; P0 claims are structural and worth confirming with a React DevTools flamegraph.</p>
+
+</main>
+</body>
+</html>

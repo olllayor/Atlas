@@ -22,6 +22,7 @@ import type { ProviderRegistry } from '../../core/providerRegistry.js';
 import { OpenCodeAgentAdapter } from './OpenCodeAgentAdapter.js';
 import { createOpenCodeAgentClient } from './OpenCodeAgentClient.js';
 import { OpenCodeRuntime } from './OpenCodeRuntime.js';
+import { reapOrphanedOpenCodeServers } from './orphanReaper.js';
 import { probeOpenCode, type OpenCodeProbeResult } from './probeOpenCode.js';
 
 export interface OpenCodeControllerDeps {
@@ -211,6 +212,7 @@ export function initializeOpenCode(deps: OpenCodeControllerDeps): {
   controller: OpenCodeController;
   synced: Promise<void>;
 } {
+  void reapOrphanedOpenCodeServers();
   const controller = new OpenCodeController(deps);
   const synced = controller.syncRegistry().catch((error) => {
     console.warn('[opencode] initial registry sync failed:', error);

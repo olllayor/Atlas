@@ -199,6 +199,20 @@ export function TerminalBlock({
   const canExpand = omitted > 0 && full.length > lines.length;
   const showingAll = expanded && canExpand;
 
+  const MAX_EXPANDED_RENDER_LINES = 200;
+  const renderedExpanded = useMemo(() => {
+    if (!showingAll || full.length <= MAX_EXPANDED_RENDER_LINES) {
+      return { isCapped: false, head: full, tail: [] as string[], cappedCount: 0 };
+    }
+    const half = Math.floor(MAX_EXPANDED_RENDER_LINES / 2);
+    return {
+      isCapped: true,
+      head: full.slice(0, half),
+      tail: full.slice(full.length - half),
+      cappedCount: full.length - MAX_EXPANDED_RENDER_LINES,
+    };
+  }, [showingAll, full]);
+
   // Plain dim mono, no gutter glyph, no border — the app's expanded
   // command output is borderless (reference-visual-spec.md §5).
   return (
@@ -225,7 +239,17 @@ export function TerminalBlock({
         )}
       >
         {showingAll ? (
-          <AnsiLines lines={full} />
+          renderedExpanded.isCapped ? (
+            <>
+              <AnsiLines lines={renderedExpanded.head} />
+              <div className="my-1.5 rounded bg-bg-hover px-2 py-0.5 text-2xs text-text-faint select-none">
+                … {renderedExpanded.cappedCount} lines omitted from view (copy button includes full output)
+              </div>
+              <AnsiLines lines={renderedExpanded.tail} />
+            </>
+          ) : (
+            <AnsiLines lines={full} />
+          )
         ) : (
           <>
             <AnsiLines lines={headLines} />

@@ -408,14 +408,80 @@ function buildTextDetail(part: ChatToolPart): ToolDetail {
     // look the same.
     return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
   }
-  const allLines = splitLines(text);
-  const { lines, omitted } = truncateHeadTail(allLines);
+
+  // Fast count of lines without splitting the entire string into an array.
+  let end = text.length;
+  while (end > 0 && (text.charCodeAt(end - 1) === 10 || text.charCodeAt(end - 1) === 13)) {
+    end--;
+  }
+  if (end === 0) {
+    return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
+  }
+
+  let lineCount = 1;
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      lineCount++;
+    }
+  }
+
+  // Small outputs: split eagerly, no head/tail omission.
+  if (lineCount <= TOOL_OUTPUT_MAX_LINES * 2) {
+    const allLines = splitLines(text);
+    return {
+      type: 'text',
+      lines: allLines,
+      allLines,
+      head: allLines.length,
+      tail: 0,
+      omitted: 0,
+      empty: false,
+    };
+  }
+
+  // Large outputs: extract only the first and last `TOOL_OUTPUT_MAX_LINES` lines.
+  // This avoids allocating thousands of short-lived string slices on every stream flush.
+  let headEnd = 0;
+  let headSeen = 0;
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      headSeen++;
+      if (headSeen === TOOL_OUTPUT_MAX_LINES) {
+        headEnd = i;
+        break;
+      }
+    }
+  }
+  const headSlice = text.slice(0, headEnd - (headEnd > 0 && text.charCodeAt(headEnd - 1) === 13 ? 1 : 0));
+  const head = splitLines(headSlice);
+
+  let tailStart = 0;
+  let tailSeen = 0;
+  for (let i = end - 1; i >= 0; i--) {
+    if (text.charCodeAt(i) === 10) {
+      tailSeen++;
+      if (tailSeen === TOOL_OUTPUT_MAX_LINES) {
+        tailStart = i + 1;
+        break;
+      }
+    }
+  }
+  const tail = splitLines(text.slice(tailStart, end));
+  const lines = [...head, ...tail];
+  const omitted = lineCount - TOOL_OUTPUT_MAX_LINES * 2;
+
+  let cachedAllLines: string[] | null = null;
   return {
     type: 'text',
     lines,
-    allLines,
-    head: omitted > 0 ? TOOL_OUTPUT_MAX_LINES : lines.length,
-    tail: omitted > 0 ? TOOL_OUTPUT_MAX_LINES : 0,
+    get allLines(): string[] {
+      if (!cachedAllLines) {
+        cachedAllLines = splitLines(text);
+      }
+      return cachedAllLines;
+    },
+    head: TOOL_OUTPUT_MAX_LINES,
+    tail: TOOL_OUTPUT_MAX_LINES,
     omitted,
     empty: false,
   };

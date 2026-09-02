@@ -31,3 +31,6 @@ skills/
 
 # Mimosa security-hook session state and scan baselines
 .mimosa/
+
+# Local perf dumps and test profiles
+.tmp/

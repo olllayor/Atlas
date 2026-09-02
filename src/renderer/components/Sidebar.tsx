@@ -31,6 +31,7 @@ import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
 import { RailSectionLabel } from './railPrimitives';
+import { RowIconButton } from './RowIconButton';
 import { SidebarConversationRow } from './SidebarConversationRow';
 import { SidebarActivityBell } from './SidebarActivityBell';
 import { SidebarConversationHoverCard, SidebarProjectHoverCard } from './SidebarHoverCard';
@@ -58,6 +59,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useAppStore } from '../stores/useAppStore';
 import {
   groupSidebarConversationItems,
+  resolveModelDisplayLabel,
   sortProjectsByPin,
   splitPinnedSidebarItems,
   splitSidebarItemsByProject,
@@ -265,36 +267,7 @@ function suppressHoverCardOnFocus(event: React.FocusEvent) {
   event.preventDefault();
 }
 
-/**
- * Hover-revealed row action. Ghost until the row is hovered, and never in the
- * tab order — every one of these has a twin in the row's context menu, and two
- * extra tab stops per row would bury the list under them.
- */
-function RowIconButton({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      tabIndex={-1}
-      aria-label={label}
-      title={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-active hover:text-text-primary"
-    >
-      {icon}
-    </button>
-  );
-}
+export { RowIconButton };
 
 export function Sidebar({
   items,
@@ -386,6 +359,22 @@ export function Sidebar({
   // the current chat is never hidden behind a collapsed header.
   const selectedProjectId =
     items.find((item) => item.id === selectedConversationId)?.projectId ?? null;
+  const [activeHoverCardId, setActiveHoverCardId] = useState<string | null>(null);
+  /**
+   * Model ids resolved to their catalog names once per catalog change, rather
+   * than per row: the hover card is the only place a chat says what it runs
+   * on, and it must agree with the model picker's chip.
+   */
+  const models = useAppStore((state) => state.models);
+  const modelLabelById = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const item of items) {
+      if (item.modelId === null || byId.has(item.modelId)) continue;
+      const label = resolveModelDisplayLabel(item.modelId, models);
+      if (label !== null) byId.set(item.modelId, label);
+    }
+    return byId;
+  }, [items, models]);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(new Set());
   const [expandedProjectIds, setExpandedProjectIds] = useState<ReadonlySet<string>>(new Set());
 
@@ -762,31 +751,37 @@ export function Sidebar({
         ? (projects.find((candidate) => candidate.id === item.projectId) ?? null)
         : null;
       const isPinned = Boolean(item.pinnedAt);
+      const cardId = `conv:${item.id}`;
 
       return (
         <HoverCard
           key={item.id}
+          open={activeHoverCardId === cardId}
           openDelay={hoverCardOpenDelay}
           closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
-          onOpenChange={notifySidebarHoverCardOpenChange}
+          onOpenChange={(open) => {
+            if (open) {
+              setActiveHoverCardId(cardId);
+              notifySidebarHoverCardOpenChange(true);
+            } else {
+              setActiveHoverCardId((current) => (current === cardId ? null : current));
+              notifySidebarHoverCardOpenChange(false);
+            }
+          }}
         >
           <ContextMenu>
             <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
               <ContextMenuTrigger asChild>
-                {/*
-                  The row is a wrapper, not a single button: hover actions are
-                  buttons of their own and cannot nest inside the row button.
-                  The wrapper owns the hover fill so pointing at an icon does
-                  not un-highlight the row it belongs to.
-                */}
                 <div
                   className={cn(
-                    'group/row relative flex items-center rounded-md transition-colors',
-                    isActive ? 'bg-bg-active' : 'hover:bg-bg-hover'
+                    'group/row relative flex items-center rounded-lg border transition-colors duration-150 mb-1',
+                    isActive
+                      ? 'bg-bg-active border-border-strong text-text-primary'
+                      : 'border-border-subtle/30 bg-bg-panel hover:bg-bg-hover hover:border-border-subtle text-text-secondary hover:text-text-primary'
                   )}
                 >
-                  <button
-                    type="button"
+                  <div
+                    role="button"
                     data-conversation-row
                     aria-current={isActive ? 'page' : undefined}
                     tabIndex={item.id === rovingTargetId ? 0 : -1}
@@ -799,12 +794,23 @@ export function Sidebar({
                       }
                       onSelect(item.id);
                     }}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.preventDefault();
+                      setPendingDeleteId(null);
+                      if (isArchived) {
+                        onRestoreConversation(item.id);
+                        return;
+                      }
+                      onSelect(item.id);
+                    }}
                     // Renaming an archived row would write through to a list
                     // this row is not in, so the title would not change until
                     // the next fetch. Restore first, then rename.
                     onDoubleClick={isArchived ? undefined : () => startRename(item)}
                     className={cn(
-                      'relative flex min-h-8 min-w-0 flex-1 items-center rounded-md py-1 pr-2 text-left',
+                      'relative flex min-h-8 min-w-0 flex-1 items-center rounded-lg py-1.5 px-2.5 text-left cursor-pointer select-none',
                       indentClass,
                       isActive
                         ? 'font-medium text-text-primary'
@@ -821,51 +827,13 @@ export function Sidebar({
                       timestampLabel={showTimestamp ? item.timestampLabel : null}
                       jumpLabel={conversationJumpLabelById.get(item.id)}
                       showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
+                      projectTitle={project?.title ?? null}
+                      branch={project?.branch ?? null}
+                      isSettled={isArchived}
+                      onSettle={isArchived ? () => onRestoreConversation(item.id) : () => onArchiveConversation(item.id)}
+                      isPinned={isPinned}
+                      onPin={() => onSetConversationPinned(item.id, !isPinned)}
                     />
-                  </button>
-
-                  {/*
-                    Actions sit over the trailing slot, which fades out under
-                    them — the two never share the space, so nothing reflows
-                    when the pointer arrives.
-                  */}
-                  {/*
-                    Pin and archive, exactly the reference's pair — and the
-                    reason delete is not here: a hover slot is one twitch from a
-                    click, and only these two can be taken back. Rename and
-                    delete live in the context menu, where they cost a deliberate
-                    right-click.
-                  */}
-                  <div className="pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100">
-                    {isArchived ? (
-                      // Restore is spelled out rather than left to the row
-                      // click: clicking a row everywhere else in this list only
-                      // opens a chat, and this one also moves it.
-                      <RowIconButton
-                        icon={<ArchiveRestore className="size-3.5" strokeWidth={1.75} aria-hidden />}
-                        label="Restore chat"
-                        onClick={() => onRestoreConversation(item.id)}
-                      />
-                    ) : (
-                      <>
-                        <RowIconButton
-                          icon={
-                            isPinned ? (
-                              <PinOff className="size-3.5" strokeWidth={1.75} aria-hidden />
-                            ) : (
-                              <Pin className="size-3.5" strokeWidth={1.75} aria-hidden />
-                            )
-                          }
-                          label={isPinned ? 'Unpin chat' : 'Pin chat'}
-                          onClick={() => onSetConversationPinned(item.id, !isPinned)}
-                        />
-                        <RowIconButton
-                          icon={<Archive className="size-3.5" strokeWidth={1.75} aria-hidden />}
-                          label="Archive chat"
-                          onClick={() => onArchiveConversation(item.id)}
-                        />
-                      </>
-                    )}
                   </div>
                 </div>
               </ContextMenuTrigger>
@@ -931,14 +899,18 @@ export function Sidebar({
             workspaceMode={item.workspaceMode}
             modelId={item.modelId}
             changeStats={item.changeStats}
+            attentionLevel={item.attention}
+            modelLabel={item.modelId === null ? null : (modelLabelById.get(item.modelId) ?? null)}
           />
         </HoverCard>
       );
     },
     [
+      activeHoverCardId,
       commitRename,
       conversationJumpLabelById,
       hoverCardOpenDelay,
+      modelLabelById,
       onArchiveConversation,
       onDelete,
       onForkConversation,
@@ -1257,9 +1229,19 @@ export function Sidebar({
                         />
                       ) : (
                         <HoverCard
+                          open={activeHoverCardId === `project:${project.id}`}
                           openDelay={hoverCardOpenDelay}
                           closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
-                          onOpenChange={notifySidebarHoverCardOpenChange}
+                          onOpenChange={(open) => {
+                            const cardId = `project:${project.id}`;
+                            if (open) {
+                              setActiveHoverCardId(cardId);
+                              notifySidebarHoverCardOpenChange(true);
+                            } else {
+                              setActiveHoverCardId((current) => (current === cardId ? null : current));
+                              notifySidebarHoverCardOpenChange(false);
+                            }
+                          }}
                         >
                           <ContextMenu>
                             <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
@@ -1516,14 +1498,16 @@ export function Sidebar({
               a user who has never archived never sees it.
             */}
             {hasArchivedChats ? (
-              <section aria-label="Archived">
+              <section aria-label="Settled">
                 <button
                   type="button"
                   onClick={() => setArchivedExpanded((current) => !current)}
                   aria-expanded={archivedExpanded}
                   className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
                 >
-                  <SidebarSectionLabel>Archived</SidebarSectionLabel>
+                  <SidebarSectionLabel>
+                    Settled {archivedItems.length > 0 ? `(${archivedItems.length})` : ''}
+                  </SidebarSectionLabel>
                   <ChevronRight
                     className={cn(
                       'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
@@ -1544,9 +1528,9 @@ export function Sidebar({
                   ) : (
                     // The fetch is a table scan, so the wait is real and the
                     // empty state has to wait for it — showing "Nothing
-                    // archived" first and then filling the list reads as a bug.
+                    // settled" first and then filling the list reads as a bug.
                     <div className="flex h-8 w-full items-center px-2 text-sm text-text-faint">
-                      {isLoadingArchivedChats || !archivedRequested ? 'Loading…' : 'Nothing archived'}
+                      {isLoadingArchivedChats || !archivedRequested ? 'Loading…' : 'Nothing settled'}
                     </div>
                   )
                 ) : null}

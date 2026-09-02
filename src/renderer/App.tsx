@@ -112,6 +112,7 @@ import {
   EMPTY_COMPOSER_ATTACHMENTS,
   EMPTY_CONVERSATION_PAGES,
   hasArchivedConversations,
+  resolveArchivedConversationsCount,
   selectDiagnosticsSummary,
   selectLoadedConversationMetrics,
   useAppStore,
@@ -1123,6 +1124,12 @@ export default function App() {
     archivedConversationCount: archivedConversations.length,
     hasLoadedArchived: hasLoadedArchivedConversations,
   });
+  const archivedCount = resolveArchivedConversationsCount({
+    storedConversationCount: conversationStats?.storedConversationCount ?? null,
+    liveConversationCount: conversations.length,
+    archivedConversationCount: archivedConversations.length,
+    hasLoadedArchived: hasLoadedArchivedConversations,
+  });
   const resolvedKeybindings = useMemo(
     () => {
       // An empty array is almost always a stub/test value; fall back to the
@@ -1833,6 +1840,7 @@ export default function App() {
           items={sidebarItems}
           archivedItems={archivedSidebarItems}
           hasArchivedChats={hasArchivedChats}
+          archivedCount={archivedCount}
           isLoadingArchivedChats={isLoadingArchivedConversations}
           projects={projects}
           selectedConversationId={selectedConversationId}

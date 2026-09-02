@@ -3,8 +3,10 @@ import { Check, Clock, Folder, Pin } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { AttentionLevel } from '../lib/attention';
 import { RowIconButton } from './RowIconButton';
+import type { SidebarRowVariant } from './sidebarViewModel';
 
 type SidebarConversationRowProps = {
+  variant?: SidebarRowVariant;
   isRunning: boolean;
   isFailed?: boolean;
   attentionLevel?: AttentionLevel;
@@ -24,16 +26,11 @@ type SidebarConversationRowProps = {
 
 /**
  * Conversation row content, modeled after T3 Code's thread card:
- * 1. Project title, then the status badge (Failed, Approve) or the timestamp,
- *    with Pin and Settle inline.
- * 2. The chat's title, truncated to one line and shimmering while a turn runs.
- * 3. The branch.
- *
- * Lines 1 and 3 name facts, so both disappear when the fact does: a chat in
- * Recents has no project, and a project that is not a repository has no
- * branch. Only line 2 always renders.
+ * - Card variant: three lines (project, title/preview, branch).
+ * - Slim variant: one line at 36px (h-9) with title, timestamp and hover restore.
  */
 export function SidebarConversationRow({
+  variant = 'card',
   isRunning,
   isFailed = false,
   attentionLevel = 'idle',
@@ -68,6 +65,58 @@ export function SidebarConversationRow({
         className="size-5 rounded text-text-tertiary hover:text-text-primary"
       />
     ) : null;
+
+  if (variant === 'slim') {
+    return (
+      <div className="flex h-9 min-w-0 flex-1 items-center gap-2 text-left">
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-xs text-text-secondary transition-colors group-hover/row:text-text-primary',
+            isRunning && 'motion-shimmer text-text-primary'
+          )}
+          title={primaryLabel}
+        >
+          {primaryLabel}
+        </span>
+
+        {pinIndicator}
+
+        <span className="group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-center justify-end text-xs">
+          <span
+            className={cn(
+              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity motion-reduce:transition-none',
+              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0',
+              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0'
+            )}
+          >
+            {timestampLabel ? (
+              <span className="text-3xs tabular-nums text-text-tertiary">
+                {timestampLabel}
+              </span>
+            ) : null}
+          </span>
+
+          {onSettle ? (
+            <span
+              className={cn(
+                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity motion-reduce:transition-none',
+                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100',
+                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100'
+              )}
+            >
+              <RowIconButton
+                icon={<Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
+                label={isSettled ? 'Restore chat' : 'Settle chat'}
+                text={isSettled ? 'Restore' : 'Settle'}
+                onClick={onSettle}
+                className="h-auto gap-0.5 rounded px-1.5 py-0.5 text-3xs text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors"
+              />
+            </span>
+          ) : null}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-left py-0.5">

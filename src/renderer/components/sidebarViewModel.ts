@@ -359,6 +359,36 @@ export function resolveModelDisplayLabel(
     : match.id.split('/').slice(-1)[0]?.replace(/[:@](free|beta|preview|latest)$/i, '') || null;
 }
 
+export type SidebarRowVariant = 'card' | 'slim';
+
+/**
+ * Resolves whether a sidebar row should render as a three-line card or a
+ * one-line slim row. Only archived/settled chats collapse into slim rows;
+ * live and pinned threads remain full cards.
+ */
+export function resolveSidebarRowVariant(
+  sectionOrOptions?: 'pinned' | 'project' | 'recents' | 'archived' | { archived?: boolean } | null
+): SidebarRowVariant {
+  if (typeof sectionOrOptions === 'string') {
+    return sectionOrOptions === 'archived' ? 'slim' : 'card';
+  }
+  return sectionOrOptions?.archived ? 'slim' : 'card';
+}
+
+/**
+ * Formats the Settled section header label. Shows the count only while
+ * collapsed, and never renders a trailing space.
+ */
+export function formatSettledSectionLabel(params: {
+  expanded: boolean;
+  count: number;
+}): string {
+  if (params.expanded || params.count <= 0) {
+    return 'Settled';
+  }
+  return `Settled (${params.count})`;
+}
+
 function startOfDay(value: number) {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);

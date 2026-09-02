@@ -527,6 +527,21 @@ export function hasArchivedConversations(params: {
   return (params.storedConversationCount ?? 0) > params.liveConversationCount;
 }
 
+export function resolveArchivedConversationsCount(params: {
+  storedConversationCount: number | null;
+  liveConversationCount: number;
+  archivedConversationCount: number;
+  hasLoadedArchived: boolean;
+}): number {
+  if (params.hasLoadedArchived) {
+    return params.archivedConversationCount;
+  }
+  if (params.storedConversationCount != null) {
+    return Math.max(0, params.storedConversationCount - params.liveConversationCount);
+  }
+  return 0;
+}
+
 function collectRendererHeapBytes() {
   if (typeof performance === 'undefined') {
     return null;

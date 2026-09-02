@@ -58,8 +58,10 @@ import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useAppStore } from '../stores/useAppStore';
 import {
+  formatSettledSectionLabel,
   groupSidebarConversationItems,
   resolveModelDisplayLabel,
+  resolveSidebarRowVariant,
   sortProjectsByPin,
   splitPinnedSidebarItems,
   splitSidebarItemsByProject,
@@ -88,6 +90,7 @@ type SidebarProps = {
    * has no reason to carry a permanent empty disclosure.
    */
   hasArchivedChats: boolean;
+  archivedCount?: number;
   isLoadingArchivedChats: boolean;
   projects: WorkspaceProject[];
   selectedConversationId: string | null;
@@ -273,6 +276,7 @@ export function Sidebar({
   items,
   archivedItems,
   hasArchivedChats,
+  archivedCount,
   isLoadingArchivedChats,
   projects,
   selectedConversationId,
@@ -685,6 +689,7 @@ export function Sidebar({
       options: { indented?: boolean; showTimestamp?: boolean; archived?: boolean } = {}
     ) => {
       const isArchived = options.archived ?? false;
+      const variant = resolveSidebarRowVariant(options);
       // An archived row is never the open chat: clicking one restores it, which
       // moves it out of this list before it could be selected here.
       const isActive = !isArchived && item.id === selectedConversationId;
@@ -774,10 +779,10 @@ export function Sidebar({
               <ContextMenuTrigger asChild>
                 <div
                   className={cn(
-                    'group/row relative flex items-center rounded-lg border transition-colors duration-150 mb-1',
+                    'group/row relative flex items-center rounded-md transition-colors duration-150',
                     isActive
-                      ? 'bg-bg-active border-border-strong text-text-primary'
-                      : 'border-border-subtle/30 bg-bg-panel hover:bg-bg-hover hover:border-border-subtle text-text-secondary hover:text-text-primary'
+                      ? 'bg-bg-active text-text-primary'
+                      : 'bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                   )}
                 >
                   <div
@@ -810,7 +815,8 @@ export function Sidebar({
                     // the next fetch. Restore first, then rename.
                     onDoubleClick={isArchived ? undefined : () => startRename(item)}
                     className={cn(
-                      'relative flex min-h-8 min-w-0 flex-1 items-center rounded-lg py-1.5 px-2.5 text-left cursor-pointer select-none',
+                      'relative flex min-w-0 flex-1 items-center rounded-md px-2.5 text-left cursor-pointer select-none',
+                      variant === 'slim' ? 'h-9 py-0' : 'min-h-8 py-1.5',
                       indentClass,
                       isActive
                         ? 'font-medium text-text-primary'
@@ -818,6 +824,7 @@ export function Sidebar({
                     )}
                   >
                     <SidebarConversationRow
+                      variant={variant}
                       isRunning={item.isRunning}
                       isFailed={item.isFailed}
                       attentionLevel={item.attention}
@@ -1174,7 +1181,7 @@ export function Sidebar({
                 <div className="sidebar-section-heading sticky top-0 z-10 flex items-center gap-1 px-2 pb-1.5 pt-5">
                   <SidebarSectionLabel>Pinned</SidebarSectionLabel>
                 </div>
-                <div className="flex flex-col">
+                <div className="flex flex-col gap-0.5">
                   {pinnedItems.map((item) => renderConversationRow(item))}
                 </div>
               </section>
@@ -1399,7 +1406,7 @@ export function Sidebar({
                       )}
 
                       {!isCollapsed ? (
-                        <div className="flex flex-col">
+                        <div className="flex flex-col gap-0.5">
                           {visibleItems.map((item) =>
                             // Nested rows keep the relative time: the reference
                             // frame shows `4h` / `8h` on the chats under both
@@ -1479,13 +1486,13 @@ export function Sidebar({
                   groups.map((group) => (
                     <div key={group.key} role="group" aria-label={group.label}>
                       <div className="px-2 pb-1 pt-3 text-sm text-text-faint">{group.label}</div>
-                      <div className="flex flex-col">
+                      <div className="flex flex-col gap-0.5">
                         {group.items.map((item) => renderConversationRow(item))}
                       </div>
                     </div>
                   ))
                 ) : selectedUngroupedItem ? (
-                  <div className="flex flex-col">{renderConversationRow(selectedUngroupedItem)}</div>
+                  <div className="flex flex-col gap-0.5">{renderConversationRow(selectedUngroupedItem)}</div>
                 ) : null}
               </section>
             ) : null}
@@ -1506,7 +1513,13 @@ export function Sidebar({
                   className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
                 >
                   <SidebarSectionLabel>
-                    Settled {archivedItems.length > 0 ? `(${archivedItems.length})` : ''}
+                    {formatSettledSectionLabel({
+                      expanded: archivedExpanded,
+                      count:
+                        archivedItems.length > 0
+                          ? archivedItems.length
+                          : (archivedCount ?? 0),
+                    })}
                   </SidebarSectionLabel>
                   <ChevronRight
                     className={cn(
@@ -1520,7 +1533,7 @@ export function Sidebar({
 
                 {archivedExpanded ? (
                   visibleArchivedItems.length > 0 ? (
-                    <div className="flex flex-col">
+                    <div className="flex flex-col gap-0.5">
                       {visibleArchivedItems.map((item) =>
                         renderConversationRow(item, { archived: true })
                       )}

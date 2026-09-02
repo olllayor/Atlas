@@ -12,7 +12,9 @@ import {
   formatChangeCount,
   formatConversationChangeStats,
   formatHomeRelativePath,
+  formatSettledSectionLabel,
   resolveModelDisplayLabel,
+  resolveSidebarRowVariant,
   sortProjectsByPin,
   splitPinnedSidebarItems,
   type SidebarConversationItem,
@@ -252,4 +254,34 @@ test('sorting projects by pin does not mutate the input', () => {
   const input = [project('a', null), project('b', '2026-01-01T00:00:00.000Z')];
   sortProjectsByPin(input);
   assert.deepEqual(input.map((entry) => entry.id), ['a', 'b']);
+});
+
+test('row variant selection: archived resolves to slim, every other section to card', () => {
+  assert.equal(resolveSidebarRowVariant('archived'), 'slim');
+  assert.equal(resolveSidebarRowVariant({ archived: true }), 'slim');
+  assert.equal(resolveSidebarRowVariant('pinned'), 'card');
+  assert.equal(resolveSidebarRowVariant('project'), 'card');
+  assert.equal(resolveSidebarRowVariant('recents'), 'card');
+  assert.equal(resolveSidebarRowVariant({ archived: false }), 'card');
+  assert.equal(resolveSidebarRowVariant({}), 'card');
+  assert.equal(resolveSidebarRowVariant(undefined), 'card');
+});
+
+test('Settled header label: collapsed renders count, expanded does not, neither renders trailing space', () => {
+  // Collapsed with count renders count
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 5 }), 'Settled (5)');
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 1 }), 'Settled (1)');
+
+  // Expanded with count renders bare label without count
+  assert.equal(formatSettledSectionLabel({ expanded: true, count: 5 }), 'Settled');
+
+  // With count 0 or negative, collapsed and expanded render clean Settled without count
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 0 }), 'Settled');
+  assert.equal(formatSettledSectionLabel({ expanded: true, count: 0 }), 'Settled');
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: -1 }), 'Settled');
+
+  // Verify no trailing space in any branch
+  assert.ok(!formatSettledSectionLabel({ expanded: false, count: 0 }).endsWith(' '));
+  assert.ok(!formatSettledSectionLabel({ expanded: true, count: 5 }).endsWith(' '));
+  assert.ok(!formatSettledSectionLabel({ expanded: false, count: 5 }).endsWith(' '));
 });

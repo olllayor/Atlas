@@ -40,9 +40,9 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
   {
     id: 'code-full-access',
     label: 'Code · Full access',
-    // Mirrors the documented meaning of full-access: "stop asking", not
-    // "remove the walls" — the sandbox still confines writes and network.
-    hint: 'Edit and run without asking. Sandboxed walls still stand.',
+    // Full-access enables network access and bypasses the approval ladder.
+    // The filesystem sandbox (write confinement to project root) still applies.
+    hint: 'Edit and run without asking. Network access enabled.',
     workspaceMode: 'code',
     toolPermissionMode: 'full-access'
   }

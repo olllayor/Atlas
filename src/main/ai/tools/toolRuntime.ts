@@ -12,11 +12,13 @@ import { buildSpillPreview } from './spill/spillPolicy';
 import { startBackgroundBashJob } from '../jobs/bashJobProducer';
 import type { ContainedFsFailure } from '../../security/containedFs';
 import { containedRead, containedReadBuffer } from '../../security/containedFs';
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import type { SandboxPolicy } from './sandbox';
 import {
   buildSandboxedLaunch,
   deriveSandboxPolicy,
   detectSandboxMechanism,
+  getSandboxDenialHint,
   isLikelySandboxDenied,
   isSandboxWrapperFailure,
   markSandboxMechanismUnavailable,
@@ -941,7 +943,7 @@ export async function bashToolExecute(input: {
   description?: string;
   run_in_background?: boolean;
   dangerouslyDisableSandbox?: boolean;
-}, workspace?: ToolWorkspace) {
+}, workspace?: ToolWorkspace, permissionMode?: ToolPermissionMode) {
   if (workspace?.executionTarget === 'cloud') {
     if (!workspace.cloudWorkerUrl) {
       throw new Error(
@@ -979,7 +981,7 @@ export async function bashToolExecute(input: {
   const escalated = Boolean(input.dangerouslyDisableSandbox) && mechanism !== 'none';
   const policy: SandboxPolicy = escalated
     ? { fs: { kind: 'danger-full-access' }, network: 'allow' }
-    : deriveSandboxPolicy(workspace);
+    : deriveSandboxPolicy(workspace, permissionMode);
   const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
 
   const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
@@ -1097,7 +1099,8 @@ export async function bashToolExecute(input: {
     ? compactSpilledOutput(rawStderr, result.stderrSpillPath)
     : rawStderr;
   const sandboxDenied =
-    !result.interrupted && isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr);
+    !result.interrupted &&
+    isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr, policy.network);
 
   return {
     stdout,
@@ -1116,7 +1119,9 @@ export async function bashToolExecute(input: {
           ...(result.stderrSpillPath ? { stderrSpillPath: result.stderrSpillPath } : {})
         }
       : {}),
-    ...(sandboxDenied ? { sandboxDenied: true as const, sandboxDenialHint: SANDBOX_DENIAL_HINT } : {}),
+    ...(sandboxDenied
+      ? { sandboxDenied: true as const, sandboxDenialHint: getSandboxDenialHint(policy.network) }
+      : {}),
     returnCodeInterpretation:
       result.interrupted ? 'timed_out' : result.code === 0 ? 'success' : `exit_code_${result.code ?? 'unknown'}`
   };

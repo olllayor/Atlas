@@ -84,7 +84,7 @@ export function describeToolPermissionsForPrompt(mode: ToolPermissionMode) {
   }
 
   if (mode === 'full-access') {
-    return 'Full-access mode is active: every tool runs immediately without asking the user first.';
+    return 'Full-access mode is active: every tool runs immediately without asking the user first. Network access is enabled for shell commands.';
   }
 
   return 'Shell commands and web fetches pause for the user to approve before they run.';
@@ -336,7 +336,7 @@ export function createBuiltInTools(
       timeoutMs: 60_000
     },
     bash: tool({
-      description: describeBashTool(workspace),
+      description: describeBashTool(workspace, mode),
       needsApproval: true,
       inputSchema: z.object({
         command: z.string().trim().min(1).describe('Shell command to execute'),
@@ -351,7 +351,7 @@ export function createBuiltInTools(
           )
       }),
       strict: true,
-      execute: (input: Parameters<typeof bashToolExecute>[0]) => bashToolExecute(input, workspace)
+      execute: (input: Parameters<typeof bashToolExecute>[0]) => bashToolExecute(input, workspace, mode)
     }),
     get_current_time: tool({
       description: 'Get the current local date, time, and timezone.',
@@ -455,7 +455,7 @@ export function createBuiltInTools(
  * and every result carries the mechanism actually applied so a Linux host
  * without bubblewrap is still reported honestly at the point it matters.
  */
-function describeBashTool(workspace: ToolWorkspace) {
+function describeBashTool(workspace: ToolWorkspace, mode?: ToolPermissionMode) {
   const backgroundLine = workspace.jobRegistry
     ? 'Set run_in_background: true to start a long-running command as a tracked background job: it returns a job id, and you can read its output with job_output, list jobs with job_list, and stop one with job_kill.'
     : 'Set run_in_background: true to detach a long-running command; its output is not captured.';
@@ -466,11 +466,20 @@ function describeBashTool(workspace: ToolWorkspace) {
       : 'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.';
   }
 
+  const networkBlocked = mode !== 'full-access';
+
   if (workspace.mode === 'code') {
+    const networkSentence = networkBlocked
+      ? 'writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.'
+      : 'writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only. Network access is enabled.';
+    const gitSentence = networkBlocked
+      ? 'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.'
+      : 'Shell git commands can read the repository and access the network, but cannot write to .git — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.';
+
     return [
       'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, and linters.',
-      'Commands run inside an OS sandbox: writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.',
-      'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.',
+      `Commands run inside an OS sandbox: ${networkSentence}`,
+      gitSentence,
       'Each result reports the sandbox that was applied.',
       backgroundLine
     ].join(' ');
@@ -478,7 +487,9 @@ function describeBashTool(workspace: ToolWorkspace) {
 
   return [
     'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.',
-    'Commands run inside an OS sandbox with no writable paths and no network access.'
+    networkBlocked
+      ? 'Commands run inside an OS sandbox with no writable paths and no network access.'
+      : 'Commands run inside an OS sandbox with no writable paths. Network access is enabled.'
   ].join(' ');
 }
 

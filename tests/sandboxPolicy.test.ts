@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { buildBubblewrapLaunch } from '../src/main/ai/tools/sandbox/bubblewrap.js';
-import { isLikelySandboxDenied, isSandboxWrapperFailure } from '../src/main/ai/tools/sandbox/denial.js';
+import { getSandboxDenialHint, isLikelySandboxDenied, isSandboxWrapperFailure } from '../src/main/ai/tools/sandbox/denial.js';
 import { buildSandboxedLaunch, deriveSandboxPolicy } from '../src/main/ai/tools/sandbox/index.js';
 import { computeWritableRoots } from '../src/main/ai/tools/sandbox/policy.js';
 import {
@@ -39,6 +39,34 @@ test('deriveSandboxPolicy grants workspace-write only to Code mode with a projec
     assert.equal(deriveSandboxPolicy({ mode: 'code', root: null }).fs.kind, 'read-only');
     assert.equal(deriveSandboxPolicy({ mode: 'work', root }).fs.kind, 'read-only');
     assert.equal(deriveSandboxPolicy(undefined).fs.kind, 'read-only');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('deriveSandboxPolicy allows network access in full-access mode', () => {
+  const root = makeProject();
+
+  try {
+    // Full-access mode enables network access
+    const fullAccessPolicy = deriveSandboxPolicy({ mode: 'code', root }, 'full-access');
+    assert.equal(fullAccessPolicy.fs.kind, 'workspace-write');
+    assert.equal(fullAccessPolicy.network, 'allow');
+
+    // Work mode with full-access also gets network
+    const workFullAccessPolicy = deriveSandboxPolicy({ mode: 'work', root }, 'full-access');
+    assert.equal(workFullAccessPolicy.fs.kind, 'read-only');
+    assert.equal(workFullAccessPolicy.network, 'allow');
+
+    // Ask mode still blocks network
+    const askPolicy = deriveSandboxPolicy({ mode: 'code', root }, 'ask');
+    assert.equal(askPolicy.fs.kind, 'workspace-write');
+    assert.equal(askPolicy.network, 'deny');
+
+    // Default (no permission mode) still blocks network
+    const defaultPolicy = deriveSandboxPolicy({ mode: 'code', root });
+    assert.equal(defaultPolicy.fs.kind, 'workspace-write');
+    assert.equal(defaultPolicy.network, 'deny');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -231,6 +259,27 @@ test('isLikelySandboxDenied fires only on a failed sandboxed command with a deni
   assert.equal(isLikelySandboxDenied('seatbelt', null, '', 'Operation not permitted'), false);
   assert.equal(isLikelySandboxDenied('seatbelt', 127, '', 'zsh: command not found: nope'), false);
   assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'error: test failed'), false);
+});
+
+test('isLikelySandboxDenied ignores network errors when network is allowed', () => {
+  assert.equal(
+    isLikelySandboxDenied('seatbelt', 6, '', 'curl: (6) Could not resolve host: example.com', 'allow'),
+    false
+  );
+  assert.equal(
+    isLikelySandboxDenied('bubblewrap', 7, '', 'curl: (7) Failed to connect to example.com: Network is unreachable', 'allow'),
+    false
+  );
+  assert.equal(
+    isLikelySandboxDenied('seatbelt', 1, '', 'touch: /x: Operation not permitted', 'allow'),
+    true
+  );
+});
+
+test('getSandboxDenialHint customizes message according to network policy', () => {
+  assert.match(getSandboxDenialHint('deny'), /network access is blocked/);
+  assert.doesNotMatch(getSandboxDenialHint('allow'), /network access is blocked/);
+  assert.match(getSandboxDenialHint('allow'), /writes are confined/);
 });
 
 test('isSandboxWrapperFailure separates a broken wrapper from a failed command', () => {

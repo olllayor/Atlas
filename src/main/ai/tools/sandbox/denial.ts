@@ -1,31 +1,38 @@
-import type { SandboxMechanism } from './types';
+import type { SandboxMechanism, SandboxNetworkPolicy } from './types';
 
 /**
- * Phrases a command emits when the kernel refused it.
- *
- * The last three are Atlas additions for bubblewrap's `--unshare-net`, which
- * leaves the process with no route rather than no permission, so a blocked
- * fetch reports a network error and never says "denied".
+ * Phrases a command emits when the kernel refused a filesystem write or privilege.
  */
-const SANDBOX_DENIED_KEYWORDS = [
+const SANDBOX_FS_DENIED_KEYWORDS = [
   'operation not permitted',
   'permission denied',
   'read-only file system',
   'seccomp',
   'sandbox',
   'landlock',
-  'failed to write file',
+  'failed to write file'
+] as const;
+
+/**
+ * Phrases a command emits when network access is refused or unrouted.
+ *
+ * Atlas additions for bubblewrap's `--unshare-net` (or seatbelt without network-outbound),
+ * which leaves the process with no route rather than no permission, so a blocked
+ * fetch reports a network error and never says "denied".
+ */
+const SANDBOX_NETWORK_DENIED_KEYWORDS = [
   'network is unreachable',
   'could not resolve host',
   'temporary failure in name resolution'
 ] as const;
 
+const SANDBOX_DENIED_KEYWORDS = [
+  ...SANDBOX_FS_DENIED_KEYWORDS,
+  ...SANDBOX_NETWORK_DENIED_KEYWORDS
+] as const;
+
 /**
- * What the model is told when a command looks sandbox-denied.
- *
- * It names the escalation path explicitly instead of leaving the model to guess
- * at it, and says up front that a human will be asked — the model should only
- * spend the request when the access is genuinely needed.
+ * What the model is told when a command looks sandbox-denied with network blocked.
  */
 export const SANDBOX_DENIAL_HINT = [
   'This command likely failed because the OS sandbox blocked it (writes are confined',
@@ -36,26 +43,46 @@ export const SANDBOX_DENIAL_HINT = [
 ].join('\n');
 
 /**
+ * What the model is told when a command looks sandbox-denied but network is already allowed.
+ */
+export const SANDBOX_DENIAL_HINT_NETWORK_ALLOWED = [
+  'This command likely failed because the OS sandbox blocked it (writes are confined',
+  'to the project folder, /tmp, and $TMPDIR). If it truly needs that access, re-run',
+  'the exact same command with dangerouslyDisableSandbox: true and explain why in',
+  '`description` — the user will be asked to approve running it without the sandbox.'
+].join('\n');
+
+export function getSandboxDenialHint(networkPolicy: SandboxNetworkPolicy = 'deny'): string {
+  return networkPolicy === 'allow' ? SANDBOX_DENIAL_HINT_NETWORK_ALLOWED : SANDBOX_DENIAL_HINT;
+}
+
+/**
  * Whether a failed command *looks* like it was blocked by the sandbox.
  *
- * Intentionally heuristic and intentionally conservative, as in Codex: a broken
- * `.zshrc` prints "permission denied" too, and a command can be denied without
- * saying anything at all. Nothing acts on this automatically — it only decides
- * whether the model is told that escalation exists, and escalation itself still
- * goes through the user.
+ * When network is allowed, network errors (such as unresolved hosts) are not
+ * considered sandbox denials.
  */
 export function isLikelySandboxDenied(
   mechanism: SandboxMechanism,
   exitCode: number | null,
   stdout: string,
-  stderr: string
+  stderr: string,
+  networkPolicy: SandboxNetworkPolicy = 'deny'
 ): boolean {
   if (mechanism === 'none' || exitCode === 0 || exitCode === null) {
     return false;
   }
 
   const haystack = `${stdout}\n${stderr}`.toLowerCase();
-  return SANDBOX_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  if (SANDBOX_FS_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
+    return true;
+  }
+
+  if (networkPolicy === 'deny') {
+    return SANDBOX_NETWORK_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  }
+
+  return false;
 }
 
 /**

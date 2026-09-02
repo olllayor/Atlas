@@ -1,6 +1,7 @@
 import type {
   ConversationChangeStats,
   ConversationSummary,
+  ModelSummary,
   WorkspaceProject,
   WorkspaceMode,
 } from '../../shared/contracts';
@@ -329,6 +330,33 @@ export function formatHomeRelativePath(root: string) {
 
   const rest = root.slice(home[0].length);
   return rest ? `~${rest}` : '~';
+}
+
+/**
+ * The human name for a chat's model, resolved from the catalog rather than
+ * guessed from the id.
+ *
+ * The gateway spellings the sidebar stores (`vendor/deepseek-v4-flash-0325`)
+ * are not names, and a hardcoded id-to-name table only stays right until the
+ * next model ships. The catalog already carries the label the model picker
+ * shows, so a card and a chip never disagree about what a chat is running.
+ *
+ * `null` when nothing truthful can be said — an unset model, or an id the
+ * catalog does not know (an archived model, or a provider the user removed).
+ * Callers drop the row rather than render a title-cased id as a name.
+ */
+export function resolveModelDisplayLabel(
+  modelId: string | null | undefined,
+  models: readonly ModelSummary[]
+): string | null {
+  if (!modelId) return null;
+
+  const match = models.find((model) => model.id === modelId);
+  if (!match) return null;
+
+  return match.label && match.label !== match.id
+    ? match.label
+    : match.id.split('/').slice(-1)[0]?.replace(/[:@](free|beta|preview|latest)$/i, '') || null;
 }
 
 function startOfDay(value: number) {

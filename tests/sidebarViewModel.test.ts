@@ -4,6 +4,7 @@ import test from 'node:test';
 import type {
   ConversationChangeStats,
   ConversationSummary,
+  ModelSummary,
   WorkspaceProject,
 } from '../src/shared/contracts';
 import {
@@ -11,10 +12,40 @@ import {
   formatChangeCount,
   formatConversationChangeStats,
   formatHomeRelativePath,
+  resolveModelDisplayLabel,
   sortProjectsByPin,
   splitPinnedSidebarItems,
   type SidebarConversationItem,
 } from '../src/renderer/components/sidebarViewModel';
+
+function modelSummary(overrides: Partial<ModelSummary> & Pick<ModelSummary, 'id'>): ModelSummary {
+  return {
+    providerId: 'openrouter',
+    label: overrides.id,
+    contextWindow: null,
+    isFree: false,
+    supportsVision: null,
+    supportsDocumentInput: null,
+    supportsTools: null,
+    archived: false,
+    ...overrides,
+  } as ModelSummary;
+}
+
+test('names a model from the catalog rather than from its id', () => {
+  const catalog = [modelSummary({ id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' })];
+  assert.equal(resolveModelDisplayLabel('deepseek/deepseek-v4-flash', catalog), 'DeepSeek V4 Flash');
+});
+
+test('falls back to the id segment when the catalog carries no separate label', () => {
+  const catalog = [modelSummary({ id: 'vendor/some-model:free', label: 'vendor/some-model:free' })];
+  assert.equal(resolveModelDisplayLabel('vendor/some-model:free', catalog), 'some-model');
+});
+
+test('says nothing about a model the catalog does not know', () => {
+  assert.equal(resolveModelDisplayLabel('vendor/retired-model', []), null);
+  assert.equal(resolveModelDisplayLabel(null, []), null);
+});
 
 test('collapses a macOS home prefix to ~', () => {
   assert.equal(formatHomeRelativePath('/Users/ada/Code/Projects/Atlas'), '~/Code/Projects/Atlas');

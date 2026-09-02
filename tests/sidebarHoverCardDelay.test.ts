@@ -139,3 +139,17 @@ test('a subscriber that unsubscribes while being notified does not skip the next
   store.notifyOpened();
   assert.deepEqual(seen, ['first', 'second']);
 });
+
+test('supports an intentional floor on skip-window open delay to debounce fast cursor transit', () => {
+  const clock = createManualClock();
+  const store = createSidebarHoverCardDelayStore({
+    openDelayMs: 320,
+    skipOpenDelayMs: 80,
+    timers: clock.timers,
+  });
+
+  assert.equal(store.getOpenDelay(), 320);
+  store.notifyOpened();
+  assert.equal(store.getOpenDelay(), 80);
+});
+

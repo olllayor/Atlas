@@ -340,6 +340,23 @@ Tests: `tests/browserSurface.test.ts` (forced guest privileges, attribute-string
 
 **Still wants a review** — this is the first code in Atlas that renders hostile-capable content, and a second reader on `webviewSecurity.ts` is worth more than another test.
 
+## E5 — Terminal splits — **Built**
+
+A terminal tab is now a group of shells rather than one, so `pnpm dev` and `pnpm test` can be watched at once without spending two tab-strip entries on what reads as one job. The tab names itself after the pane being typed in.
+
+Pane state lives beside the surface model, not inside it (`terminalSplitModel.ts` + `useTerminalSplitStore`), for the same reason the browser's URL does: a surface is a pointer at a resource, and teaching that generic shape about panes would make every other kind carry a field it never uses. A tab that was never split stores nothing — `singlePaneGroup` is the answer for a missing entry, which keeps the common case out of storage entirely.
+
+Decisions worth keeping:
+- **A split lands beside the active pane**, not at the end of the group, and takes focus — splitting is wanting to type in the new one.
+- **The first split fixes the direction** and later ones follow it. Mixing directions inside one tab means a nested layout: a tree, a set of ratios, and a lot of pointer maths for a pane that is 200px wide either way.
+- **Capped at four**, and splitting past the cap is simply unavailable. Four shells in a 400px column is already past readable; a fifth is a worse answer than a second tab.
+- **Closing the last pane closes the tab**, and closing the tab kills every pane. The tab *is* its shells; leaving one running with nothing able to reach it is the failure worth designing against.
+- Id allocation now walks live shells, the dock's primary, and every pane of every open tab — including panes restored from a previous session whose shell has not been spawned yet.
+
+Not done: dragging the divider. Panes split evenly and stay that way. It is real polish, but a split you cannot rebalance is still a split you can read, and the pointer maths is the whole cost.
+
+Tests: `tests/terminalSplits.test.ts` (insertion position, focus, direction locking, the cap, close-activation, emptying the group).
+
 ## Next
 
 | # | Item | Size |
@@ -347,4 +364,4 @@ Tests: `tests/browserSurface.test.ts` (forced guest privileges, attribute-string
 | 1 | Pull request surface per PR ref on the existing `github:prStatus` | S-M |
 | 2 | Workspace content search (ripgrep, budgeted) feeding the Files box | M |
 | 3 | Keep browser guests alive across tab switches (hide rather than unmount) | M |
-| 4 | Terminal splits inside one surface; `@pierre/diffs` for split view and word-level highlighting | M |
+| 4 | Draggable pane dividers; `@pierre/diffs` for split view and word-level highlighting | M |

@@ -10,7 +10,7 @@
  *   Git      — branch, working tree, history, and commit
  *   Tasks    — every tool call in the thread with its status
  *   Agents   — the subagent roster
- *   Terminal — one shell, named after whatever it is running
+ *   Terminal — one shell, or several split beside each other
  *   Files    — the workspace tree, and a box that searches it
  *   File     — one file, read-only, opened from the tree
  *   Browser  — a Chromium guest, for the dev server the agent just started
@@ -39,6 +39,10 @@ import { PRIMARY_TERMINAL_ID, nextTerminalId, terminalLabelFromId } from '../../
 import { cn } from '../../lib/utils';
 import { useConversationTerminals } from '../../hooks/useConversationTerminals';
 import { useBrowserStore } from '../../stores/useBrowserStore';
+import {
+  terminalGroupKey,
+  useTerminalSplitStore,
+} from '../../stores/useTerminalSplitStore';
 import { useConversationPanel, useRightPanelStore } from '../../stores/useRightPanelStore';
 import { GitPanel } from './GitPanel';
 import { ReviewPanel } from './ReviewPanel';
@@ -128,6 +132,10 @@ export function WorkbenchPanel({
   // Read for the tab labels: a browser tab is named by the page it is showing.
   const browserViews = useBrowserStore((state) => state.byViewId);
   const forgetBrowserView = useBrowserStore((state) => state.forget);
+  // A terminal tab can hold several shells, so both the tab's name and the
+  // next free id depend on how its panes are arranged.
+  const paneGroups = useTerminalSplitStore((state) => state.byGroupKey);
+  const forgetPaneGroup = useTerminalSplitStore((state) => state.forget);
 
   const context: SurfaceContext = { conversationId, mode, hasProject, agentCount };
 
@@ -173,6 +181,27 @@ export function WorkbenchPanel({
    * the shells already running — including the dock's `term-1`, which has no
    * tab of its own to collide with.
    */
+  /**
+   * Every shell id this conversation is already using: the ones main knows
+   * about, the dock's primary, and every pane of every open terminal tab —
+   * including panes whose shell has not been spawned yet, which is the case
+   * for a split restored from a previous session.
+   */
+  const takenTerminalIds = () => {
+    const taken = new Set<string>([PRIMARY_TERMINAL_ID]);
+    for (const terminal of terminals) taken.add(terminal.terminalId);
+    for (const surface of panel.surfaces) {
+      if (surface.kind !== 'terminal') continue;
+      const rootId = surfaceResourceId(surface);
+      if (!rootId) continue;
+      taken.add(rootId);
+      for (const paneId of paneGroups[terminalGroupKey(conversationId, rootId)]?.terminalIds ?? []) {
+        taken.add(paneId);
+      }
+    }
+    return [...taken];
+  };
+
   const openKind = (kind: RightPanelKind) => {
     if (kind === 'browser') {
       // Each browser tab owns its own guest, so a new tab is a new id rather
@@ -189,14 +218,7 @@ export function WorkbenchPanel({
       return;
     }
 
-    const taken = new Set<string>([PRIMARY_TERMINAL_ID]);
-    for (const terminal of terminals) taken.add(terminal.terminalId);
-    for (const surface of panel.surfaces) {
-      const resourceId = surface.kind === 'terminal' ? surfaceResourceId(surface) : null;
-      if (resourceId) taken.add(resourceId);
-    }
-
-    openSurface(conversationId, 'terminal', nextTerminalId([...taken]));
+    openSurface(conversationId, 'terminal', nextTerminalId(takenTerminalIds()));
   };
 
   /**
@@ -205,9 +227,16 @@ export function WorkbenchPanel({
    */
   const closeSurfaceAt = (id: SurfaceId) => {
     const surface = panel.surfaces.find((entry) => entry.id === id);
-    const terminalId = surface?.kind === 'terminal' ? surfaceResourceId(surface) : null;
-    if (terminalId) {
-      void window.atlasChat.terminal.kill({ conversationId, terminalId }).catch(() => {});
+    // A terminal tab is its shells: closing it kills every pane rather than
+    // leaving processes running with nothing on screen able to reach them.
+    const rootTerminalId = surface?.kind === 'terminal' ? surfaceResourceId(surface) : null;
+    if (rootTerminalId) {
+      const groupKey = terminalGroupKey(conversationId, rootTerminalId);
+      const paneIds = paneGroups[groupKey]?.terminalIds ?? [rootTerminalId];
+      for (const terminalId of paneIds) {
+        void window.atlasChat.terminal.kill({ conversationId, terminalId }).catch(() => {});
+      }
+      forgetPaneGroup(groupKey);
     }
 
     // A closed browser tab should not leave its address behind for the next
@@ -234,8 +263,11 @@ export function WorkbenchPanel({
       return view?.title || (view?.url ? displayBrowserUrl(view.url) : undefined);
     }
     if (surface.kind !== 'terminal') return undefined;
-    const terminalId = surfaceResourceId(surface) ?? PRIMARY_TERMINAL_ID;
-    return terminalLabel(terminals, terminalId, terminalLabelFromId(terminalId));
+    const rootId = surfaceResourceId(surface) ?? PRIMARY_TERMINAL_ID;
+    // A split tab is named after the pane being typed in, not its first one.
+    const activeId =
+      paneGroups[terminalGroupKey(conversationId, rootId)]?.activeTerminalId ?? rootId;
+    return terminalLabel(terminals, activeId, terminalLabelFromId(activeId));
   };
 
   return (
@@ -304,7 +336,10 @@ export function WorkbenchPanel({
             // than re-pointing one view at a different PTY.
             key={active.id}
             conversationId={conversationId}
-            terminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
+            rootTerminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
+            terminals={terminals}
+            allocateTerminalId={() => nextTerminalId(takenTerminalIds())}
+            onCloseSurface={() => closeSurfaceAt(active.id)}
             onAddSelectionToPrompt={onAddSelectionToPrompt}
           />
         )}

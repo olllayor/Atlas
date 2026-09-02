@@ -115,6 +115,47 @@ export type AgentInstructionsSummary = {
   truncated: boolean;
 };
 
+/**
+ * One row of a workspace listing. Directories are derived from the file paths
+ * rather than walked separately: the index is a flat list, and the tree the
+ * panel draws is built from it in the renderer.
+ */
+export type WorkspaceEntry = {
+  /** Workspace-relative, forward-slashed, no leading `./`. */
+  path: string;
+  kind: 'file' | 'directory';
+};
+
+export type WorkspaceEntriesResult = {
+  entries: WorkspaceEntry[];
+  /** The repository is larger than the index cap; the listing is a prefix. */
+  truncated: boolean;
+};
+
+/** Why a file could not be shown. Each maps to a sentence the panel can print. */
+export type WorkspaceFileFailure =
+  | 'no-workspace'
+  | 'outside-root'
+  | 'not-found'
+  | 'not-a-file'
+  | 'binary'
+  | 'read-failed';
+
+export type WorkspaceFileResult =
+  | {
+      ok: true;
+      relativePath: string;
+      contents: string;
+      byteLength: number;
+      /** Read stopped at the byte cap; the tail is not shown. */
+      truncated: boolean;
+    }
+  | { ok: false; relativePath: string; failure: WorkspaceFileFailure };
+
+import type { DiscoveredServer } from './browser';
+
+export type { DiscoveredServer };
+
 export type ProjectContextInfo = {
   project: WorkspaceProject | null;
   projectType: ProjectTypeInfo;
@@ -557,6 +598,8 @@ export type TerminalOutputKind = 'stdout' | 'stderr' | 'exit' | 'agent';
 
 export type TerminalOutputEvent = {
   conversationId: string;
+  /** Which of the conversation's shells produced this. */
+  terminalId: string;
   data: string;
   kind: TerminalOutputKind;
 };
@@ -566,6 +609,39 @@ export type TerminalStartResult = {
   /** Output produced before this panel attached, so a re-mount isn't blank. */
   scrollback: string;
   reused: boolean;
+};
+
+export type TerminalSessionStatus = 'running' | 'exited';
+
+/**
+ * One shell, as the tab strip sees it. `label` is computed in main from the
+ * shell's child process, so a tab renames itself to whatever it is running
+ * without the renderer polling for it.
+ */
+export type TerminalSummary = {
+  conversationId: string;
+  terminalId: string;
+  cwd: string;
+  status: TerminalSessionStatus;
+  pid: number | null;
+  exitCode: number | null;
+  hasRunningSubprocess: boolean;
+  label: string;
+};
+
+/**
+ * How the strip learns about shells it did not open: another window's, one
+ * that exited on its own, one whose label changed.
+ */
+export type TerminalMetadataEvent =
+  | { type: 'snapshot'; conversationId: string; terminals: TerminalSummary[] }
+  | { type: 'upsert'; terminal: TerminalSummary }
+  | { type: 'remove'; conversationId: string; terminalId: string };
+
+/** Every terminal call names both the conversation and which of its shells. */
+export type TerminalRef = {
+  conversationId: string;
+  terminalId: string;
 };
 
 /**
@@ -2418,12 +2494,33 @@ export type RendererApi = {
     initInstructions: (conversationId: string) => Promise<void>;
     openFile: (filePath: string) => Promise<void>;
     /**
+     * Every file the conversation's workspace holds, as one flat list. The
+     * renderer builds the tree and filters it locally: at the index cap that
+     * is one call rather than one per expanded folder.
+     */
+    listEntries: (
+      conversationId: string,
+      options?: { refresh?: boolean }
+    ) => Promise<WorkspaceEntriesResult>;
+    /** One file's text, jailed to the conversation's workspace root. */
+    readFile: (conversationId: string, relativePath: string) => Promise<WorkspaceFileResult>;
+    /**
      * Reveals a conversation's working location in the OS file manager. The
      * renderer names a *target* ('project' | 'worktree'), never a raw path —
      * the main process resolves and validates the path against the
      * conversation's own workspace before opening it.
      */
     revealPath: (request: { conversationId: string; target: 'project' | 'worktree' }) => Promise<void>;
+  };
+  browser: {
+    /**
+     * Local servers currently serving a page, for the Browser surface's empty
+     * state. Bounded and cached in main; an empty list means nothing is
+     * listening, not that discovery failed.
+     */
+    discoverServers: () => Promise<DiscoveredServer[]>;
+    /** Hands the page the surface is showing to the user's real browser. */
+    openExternal: (url: string) => Promise<void>;
   };
   git: {
     getState: (conversationId: string) => Promise<GitStateSummary>;
@@ -2514,12 +2611,20 @@ export type RendererApi = {
   terminal: {
     getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
     record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
-    /** Spawns the conversation's shell, or attaches to the running one. */
-    start: (conversationId: string, cols?: number, rows?: number) => Promise<TerminalStartResult>;
-    input: (conversationId: string, data: string) => Promise<void>;
-    resize: (conversationId: string, cols: number, rows: number) => Promise<void>;
-    kill: (conversationId: string) => Promise<void>;
+    /** Spawns the named shell, or attaches to it when it is already running. */
+    start: (input: TerminalRef & { cols?: number; rows?: number }) => Promise<TerminalStartResult>;
+    write: (input: TerminalRef & { data: string }) => Promise<void>;
+    resize: (input: TerminalRef & { cols: number; rows: number }) => Promise<void>;
+    kill: (input: TerminalRef) => Promise<void>;
+    /** Every shell this conversation currently owns, oldest first. */
+    list: (conversationId: string) => Promise<TerminalSummary[]>;
     subscribe: (listener: (event: TerminalOutputEvent) => void) => () => void;
+    /**
+     * Status and label changes. Subscribing also tells main that something is
+     * watching, which is what starts the process-tree poll behind the labels;
+     * unsubscribing stops it.
+     */
+    subscribeMetadata: (listener: (event: TerminalMetadataEvent) => void) => () => void;
   };
   jobs: {
     /** Snapshots of every job the conversation owns, registration order. */

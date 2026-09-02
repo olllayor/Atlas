@@ -3,10 +3,17 @@ import { join } from 'node:path';
 import { shell } from 'electron/common';
 import { ipcMain } from 'electron/main';
 
-import type { AgentInstructionsSummary, EnvVarItem, ProjectContextInfo } from '../../shared/contracts';
+import type {
+  AgentInstructionsSummary,
+  EnvVarItem,
+  ProjectContextInfo,
+  WorkspaceEntriesResult,
+  WorkspaceFileResult
+} from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
 import type { AgentInstructionsResult, AgentInstructionsService } from '../workspace/AgentInstructions';
+import type { WorkspaceIndex } from '../workspace/WorkspaceIndex';
 import { generateStarterAgentsMd } from '../workspace/AgentInstructions';
 import type { EnvStore } from '../workspace/EnvStore';
 import type { ProjectDetector } from '../workspace/ProjectDetector';
@@ -41,8 +48,23 @@ export function registerWorkspaceIpc(
   db: AppDatabase,
   projectDetector: ProjectDetector,
   envStore: EnvStore,
-  agentInstructions: AgentInstructionsService
+  agentInstructions: AgentInstructionsService,
+  workspaceIndex: WorkspaceIndex
 ) {
+  /**
+   * The folder the Files surface reads, resolved from the conversation row
+   * rather than sent by the renderer — the same rule the terminal's cwd
+   * follows, so the panel and the shell can never disagree about where the
+   * conversation is working.
+   */
+  const workspaceRoot = (conversationId: string): string | null => {
+    const workspace = describeConversationWorkspace(db, conversationId);
+    if (workspace.executionTarget === 'worktree' && workspace.worktreeRoot) {
+      return workspace.worktreeRoot;
+    }
+    return workspace.project?.exists ? workspace.project.root : null;
+  };
+
   ipcMain.handle(
     IPC_CHANNELS.workspaceContext,
     withUserFacingErrors(
@@ -216,6 +238,37 @@ export function registerWorkspaceIpc(
         }
 
         await shell.openPath(path);
+      }
+    )
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceListEntries,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceListEntries,
+      async (
+        event,
+        conversationId: string,
+        options?: { refresh?: boolean }
+      ): Promise<WorkspaceEntriesResult> => {
+        assertTrustedSender(event);
+        const root = workspaceRoot(conversationId);
+        // No project is not an error: the panel says so, and an empty listing
+        // is exactly what "nothing attached" looks like.
+        if (!root) return { entries: [], truncated: false };
+        return workspaceIndex.list(root, options);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.workspaceReadFile,
+    withUserFacingErrors(
+      IPC_CHANNELS.workspaceReadFile,
+      async (event, conversationId: string, relativePath: string): Promise<WorkspaceFileResult> => {
+        assertTrustedSender(event);
+        const root = workspaceRoot(conversationId);
+        if (!root) return { ok: false, relativePath, failure: 'no-workspace' };
+        return workspaceIndex.read(root, relativePath);
       }
     )
   );

@@ -64,8 +64,9 @@ const PluginsWorkspace = lazy(() =>
 );
 import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
-import { type WorkbenchTab } from './components/workbench/WorkbenchPanel';
+import type { RightPanelKind } from './components/workbench/rightPanelModel';
 import { WorkbenchPanelSlot } from './components/workbench/WorkbenchPanelSlot';
+import { useConversationPanel, useRightPanelStore } from './stores/useRightPanelStore';
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
 const TerminalDock = lazy(() =>
   import('./components/workbench/TerminalDock').then((module) => ({ default: module.TerminalDock }))
@@ -208,8 +209,27 @@ export default function App() {
   // The composer floats over the transcript; this is how the transcript
   // learns how much room to leave for it.
   const composerDock = useMeasuredHeight<HTMLDivElement>();
-  const [workbenchOpen, setWorkbenchOpen] = usePersistentFlag('atlas.workbench.open', false);
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('review');
+  /*
+    The right panel's surfaces belong to a conversation, not to the window, so
+    the layout reads the panel for whichever one is selected. Subscribed here
+    rather than taken from the store slice read further down, because the width
+    solver below runs before that slice exists.
+  */
+  const panelConversationId = useAppStore((state) => state.selectedConversationId);
+  const rightPanel = useConversationPanel(panelConversationId ?? undefined);
+  const workbenchOpen = rightPanel.isOpen;
+  /** Opens the panel on one surface, for whichever conversation is selected. */
+  const openRightPanelSurface = useCallback((kind: RightPanelKind) => {
+    const conversationId = useAppStore.getState().selectedConversationId;
+    if (!conversationId) return;
+    useRightPanelStore.getState().openSurface(conversationId, kind);
+  }, []);
+  /** Shows the panel without choosing a surface; the picker takes it from there. */
+  const showRightPanel = useCallback(() => {
+    const conversationId = useAppStore.getState().selectedConversationId;
+    if (!conversationId) return;
+    useRightPanelStore.getState().showPanel(conversationId);
+  }, []);
   const workbenchResize = useResizablePanel({
     storageKey: 'atlas.workbench.width',
     defaultWidth: 420,
@@ -685,7 +705,7 @@ export default function App() {
       // saves the second click without locking the two together — the toggle
       // still wins afterwards.
       if (mode === 'code') {
-        setWorkbenchOpen(true);
+        showRightPanel();
         // The gate becomes a flow: Code with no folder at all asks for one on
         // the spot, the way Codex's directory picker does. The mode commit
         // above is not conditional on the answer — cancelling leaves Code
@@ -697,7 +717,7 @@ export default function App() {
         }
       }
     },
-    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
+    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, showRightPanel]
   );
   const handleExecutionTargetChange = useCallback(
     (target: ExecutionTarget) => {
@@ -731,8 +751,7 @@ export default function App() {
         live.setModelPickerOpen(true);
         break;
       case 'review':
-        setWorkbenchOpen(true);
-        setWorkbenchTab('review');
+        openRightPanelSurface('diff');
         break;
       case 'fork':
         if (conversationId) void live.forkConversation(conversationId);
@@ -824,13 +843,11 @@ export default function App() {
     settings toggle, a sidebar rename) would invalidate every visible row.
   */
   const openWorkbenchReview = useCallback(() => {
-    setWorkbenchOpen(true);
-    setWorkbenchTab('review');
-  }, []);
+    openRightPanelSurface('diff');
+  }, [openRightPanelSurface]);
   const openWorkbenchAgents = useCallback(() => {
-    setWorkbenchOpen(true);
-    setWorkbenchTab('agents');
-  }, []);
+    openRightPanelSurface('agents');
+  }, [openRightPanelSurface]);
   const handleRespondToolApproval = useCallback(
     (request: Parameters<typeof respondToolApproval>[0]) => respondToolApproval(request),
     [respondToolApproval]
@@ -1270,7 +1287,7 @@ export default function App() {
       captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: next });
       void live.setConversationWorkspace(liveSelectedConversationId, { mode: next });
       if (next === 'code') {
-        setWorkbenchOpen(true);
+        showRightPanel();
         // The shortcut is the same switch, so it owes the same prompt.
         const summary = live.conversations.find((conversation) => conversation.id === liveSelectedConversationId) ?? null;
         const project = summary?.projectId
@@ -1299,8 +1316,7 @@ export default function App() {
         return;
       }
 
-      setWorkbenchOpen(true);
-      setWorkbenchTab('review');
+      openRightPanelSurface('diff');
       return;
     }
 
@@ -1616,11 +1632,10 @@ export default function App() {
   const prevRunningAgentsCountRef = useRef(0);
   useEffect(() => {
     if (runningAgentsCount > 0 && prevRunningAgentsCountRef.current === 0) {
-      setWorkbenchTab('agents');
-      setWorkbenchOpen(true);
+      openRightPanelSurface('agents');
     }
     prevRunningAgentsCountRef.current = runningAgentsCount;
-  }, [runningAgentsCount]);
+  }, [openRightPanelSurface, runningAgentsCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2030,7 +2045,13 @@ export default function App() {
                   platform: shortcutPlatform,
                 })}
               />
-              <WorkbenchToggle open={workbenchOpen} onToggle={setWorkbenchOpen} />
+              <WorkbenchToggle
+                open={workbenchOpen}
+                onToggle={() => {
+                  if (!panelConversationId) return;
+                  useRightPanelStore.getState().togglePanel(panelConversationId);
+                }}
+              />
             </div>
           </div>
 
@@ -2291,10 +2312,9 @@ export default function App() {
                 <WorkbenchPanelSlot
                   conversationId={selectedConversationId ?? undefined}
                   mode={workspaceMode}
-                  activeTab={workbenchTab}
-                  onTabChange={setWorkbenchTab}
-                  onClose={() => setWorkbenchOpen(false)}
+                  hasProject={Boolean(activeProject?.exists)}
                   onSendComments={appendToComposer}
+                  onAddSelectionToPrompt={appendToComposer}
                   onOpenOutputFile={(filePath) => void window.atlasChat.workspace.openFile(filePath)}
                 />
               </RendererErrorBoundary>

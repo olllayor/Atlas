@@ -48,6 +48,8 @@ export type TerminalPanelHandle = {
 
 type TerminalPanelProps = {
   conversationId: string;
+  /** Which of the conversation's shells this view is attached to. */
+  terminalId: string;
   /** Told the shell's real cwd once the PTY answers, for the dock header. */
   onCwd?: (cwd: string) => void;
   /** ⌘E with a selection: pipe it to the composer as context. */
@@ -154,7 +156,7 @@ function readTheme(element: HTMLElement): ITheme {
 }
 
 export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
-  function TerminalPanel({ conversationId, onCwd, onRequestSelectionPrompt }, ref) {
+  function TerminalPanel({ conversationId, terminalId, onCwd, onRequestSelectionPrompt }, ref) {
     const hostRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const searchRef = useRef<SearchAddon | null>(null);
@@ -353,14 +355,16 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       safeFit();
 
       const unsubscribe = window.atlasChat.terminal.subscribe((event) => {
-        if (disposed || event.conversationId !== conversationId) {
+        if (disposed || event.conversationId !== conversationId || event.terminalId !== terminalId) {
           return;
         }
         terminal.write(event.data);
       });
 
       const inputDisposable = terminal.onData((data) => {
-        void window.atlasChat.terminal.input(conversationId, data).catch(() => {});
+        void window.atlasChat.terminal
+          .write({ conversationId, terminalId, data })
+          .catch(() => {});
       });
 
       // Shortcuts the app owns rather than the shell. Everything else — Ctrl-C,
@@ -439,7 +443,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       // Start after the first fit so the shell is spawned with the size it will
       // actually be drawn at — otherwise the first prompt wraps at 80 columns.
       void window.atlasChat.terminal
-        .start(conversationId, terminal.cols, terminal.rows)
+        .start({ conversationId, terminalId, cols: terminal.cols, rows: terminal.rows })
         .then((result) => {
           if (disposed) return;
           if (result.scrollback) {
@@ -459,7 +463,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       const observer = new ResizeObserver(() => {
         safeFit();
         void window.atlasChat.terminal
-          .resize(conversationId, terminal.cols, terminal.rows)
+          .resize({ conversationId, terminalId, cols: terminal.cols, rows: terminal.rows })
           .catch(() => {});
       });
       observer.observe(host);
@@ -507,7 +511,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
           // Same reasoning: never let teardown take the view with it.
         }
       };
-    }, [applyType, conversationId, zoom]);
+    }, [applyType, conversationId, terminalId, zoom]);
 
     return (
       <div className="atlas-terminal relative flex h-full min-h-0 flex-col">

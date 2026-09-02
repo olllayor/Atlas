@@ -193,7 +193,15 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsInit, conversationId),
     openFile: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.workspaceOpenFile, filePath),
+    listEntries: (conversationId: string, options?: { refresh?: boolean }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceListEntries, conversationId, options),
+    readFile: (conversationId: string, relativePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceReadFile, conversationId, relativePath),
     revealPath: (request) => ipcRenderer.invoke(IPC_CHANNELS.workspaceRevealPath, request)
+  },
+  browser: {
+    discoverServers: () => ipcRenderer.invoke(IPC_CHANNELS.browserDiscoverServers),
+    openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.browserOpenExternal, url)
   },
   git: {
     getState: (conversationId: string) =>
@@ -276,13 +284,11 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.terminalHistory, conversationId, limit),
     record: (conversationId: string, command: string, exitCode?: number | null) =>
       ipcRenderer.invoke(IPC_CHANNELS.terminalRecord, conversationId, command, exitCode),
-    start: (conversationId: string, cols?: number, rows?: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalStart, conversationId, cols, rows),
-    input: (conversationId: string, data: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalInput, conversationId, data),
-    resize: (conversationId: string, cols: number, rows: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalResize, conversationId, cols, rows),
-    kill: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.terminalKill, conversationId),
+    start: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalStart, input),
+    write: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalInput, input),
+    resize: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalResize, input),
+    kill: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalKill, input),
+    list: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.terminalList, conversationId),
     subscribe: (listener) => {
       const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
         listener(payload);
@@ -292,6 +298,21 @@ const api: RendererApi = {
 
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.terminalOutput, handler);
+      };
+    },
+    subscribeMetadata: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.terminalMetadata, handler);
+      // Subscribing *is* the signal that a panel is mounted: main only pays
+      // for the process-tree poll behind the labels while someone is looking.
+      void ipcRenderer.invoke(IPC_CHANNELS.terminalWatch, true).catch(() => {});
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.terminalMetadata, handler);
+        void ipcRenderer.invoke(IPC_CHANNELS.terminalWatch, false).catch(() => {});
       };
     }
   },

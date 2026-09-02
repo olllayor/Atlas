@@ -17,6 +17,7 @@ import { ClipboardPaste, ChevronDown, Eraser, Maximize2, Minimize2, Search, Squa
 
 import { cn } from '../../lib/utils';
 import { buildTerminalContextBlock } from '../../lib/terminalContext';
+import { PRIMARY_TERMINAL_ID } from '../../../shared/terminalIds';
 import { TerminalPanel, type TerminalPanelHandle } from './TerminalPanel';
 
 /**
@@ -179,6 +180,9 @@ export function TerminalDock({
             key={conversationId}
             ref={panelRef}
             conversationId={conversationId}
+            // The dock is the conversation's primary shell: the one the agent
+            // echoes into and `terminal_read` reads.
+            terminalId={PRIMARY_TERMINAL_ID}
             onCwd={onCwd}
             onRequestSelectionPrompt={onAddSelectionToPrompt ? addSelectionToPrompt : undefined}
           />

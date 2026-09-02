@@ -36,6 +36,10 @@ import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
 import { initializeOpenCode } from './ai/providers/opencode/openCodeController';
 import { registerWorkspaceIpc } from './ipc/workspace';
+import { registerBrowserIpc } from './ipc/browser';
+import { PortDiscovery } from './browser/PortDiscovery';
+import { hardenBrowserSession } from './browser/webviewSecurity';
+import { WorkspaceIndex } from './workspace/WorkspaceIndex';
 import { registerGitIpc } from './ipc/git';
 import { registerGitHubIpc } from './ipc/github';
 import { registerFileChangesIpc } from './ipc/fileChanges';
@@ -396,15 +400,32 @@ app.whenReady().then(async () => {
   const gitReviewService = new GitReviewService();
   const githubService = getSharedGitHubService();
   const fileChangeTracker = new FileChangeTracker(database.fileChanges);
+  // The Files surface's listing, cached per workspace root across windows.
+  const workspaceIndex = new WorkspaceIndex();
+  // Local servers worth offering when a Browser surface opens empty.
+  const portDiscovery = new PortDiscovery();
+  // Every permission the browser partition could ever be asked for, denied
+  // once, before any guest page exists to ask.
+  hardenBrowserSession();
 
   // The Terminal panel's shells. Output is pushed to every open window: the
   // panel filters by conversation, and a second window showing the same
   // conversation should see the same session rather than a dead pane.
-  const ptyService = new PtyService((payload) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(IPC_CHANNELS.terminalOutput, payload);
+  const ptyService = new PtyService(
+    (payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_CHANNELS.terminalOutput, payload);
+      }
+    },
+    database.terminalHistory,
+    // Status and label changes go to every window for the same reason output
+    // does: two windows on one conversation are looking at the same shells.
+    (event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_CHANNELS.terminalMetadata, event);
+      }
     }
-  }, database.terminalHistory);
+  );
 
   // Where each installed bundle came from. Nothing else records it, and both
   // the update check and a scoped revocation are unanswerable without it.
@@ -742,7 +763,7 @@ app.whenReady().then(async () => {
     projectsRepo: database.projects,
     settingsRepo: database.settings,
     onConversationDeleted: (conversationId) => {
-      ptyService.kill(conversationId);
+      ptyService.killConversation(conversationId);
       // Spill files are an implementation detail of the conversation's turns;
       // they go with it. Fire-and-forget for the same reason the sweep is.
       void spillStore.deleteConversation(conversationId).catch(reportBackgroundFailure('spill.delete_failed'));
@@ -775,7 +796,8 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     worktreeService,
   });
-  registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
+  registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions, workspaceIndex);
+  registerBrowserIpc(portDiscovery);
   registerGitIpc(database, gitStateService, gitReviewService);
   registerGitHubIpc(database, githubService);
   // Plugins Atlas ships with are present without being asked for. Runs after

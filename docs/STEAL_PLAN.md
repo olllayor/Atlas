@@ -277,3 +277,74 @@ Phase notes:
 - Phase 2 findings: the renderer had already absorbed most planned steals independently — Streamdown covers incremental markdown, `@tanstack/react-virtual` powers the transcript, ToolCell is Codex-parity (group folding + hover-chevron + disclosure), and styles.css already has duty-cycled `steps()` motion. Glass utilities were **rejected**: they fight the flat Codex-parity direction in `docs/codex-parity/`. Shipped instead: draft/event requestId-scoping (queued followups no longer swallow the running turn's tokens or get killed by its terminal events), `queuedByConversation` store slice with central event-driven pruning, QueueDock above the composer, and a bottom scroll-edge fade tied to the jump-button's hysteresis.
 - Known pre-existing breakage: subagent suites S1–S4 fail on clean HEAD (31 tests). Unrelated to this work; fix separately.
 - Deferred by design: KV-cache prefix stability needs the addendum moved out of the system prompt into appended snapshot messages — behavioral change, own PR.
+
+---
+
+# Right panel as surfaces (2026-09-02, t3code `pingdotgg/t3code` MIT, read from source)
+
+The panel stops being a fixed tab bar and becomes an ordered list of *surfaces* per conversation, the shape t3code settled on in `apps/web/src/rightPanelStore.ts`. Identity lives in the surface id (`terminal:term-2`, later `file:src/app.ts`), so the same resource can never open twice and several of a kind can sit side by side.
+
+## E1 — Surface model, tab strip, picker — **Built**
+
+`components/workbench/rightPanelModel.ts` (pure: reducers, close-activation rules, versioned persistence + defensive migration), `stores/useRightPanelStore.ts` (zustand + localStorage), `surfaceRegistry.ts`, `surfaceShortcuts.ts`, `SurfaceTabStrip.tsx`, `SurfacePicker.tsx`. Tests: `tests/rightPanelModel.test.ts`, `tests/surfaceShortcuts.test.ts`.
+
+Two decisions worth keeping:
+- **Availability is a value with a reason**, not a hidden tab. The old `WORKBENCH_TABS` mode filter plus "hide Agents when the roster is empty" became `availability(context) -> {available:false, hint, reason}`; the card stays on screen and says why.
+- **The empty state is the menu.** Letters open surfaces while the picker is *visible*, not only focused, guarded by a typing-context check and an open-overlay check — a bare letter is the cheapest key to steal by accident.
+
+Behaviour changes: panel open/closed is per conversation (the global `atlas.workbench.open` key is dead; state lives under `atlas.rightPanel`); Review is labelled Diff; Tasks answers K, since T belongs to Terminal. B, F and P stay reserved for Browser, Files and Pull request.
+
+## E2 — Terminal sessions — **Built**
+
+`PtyService` was keyed by conversation, so a conversation had exactly one shell and "Terminal 2" was not expressible. Now keyed by conversation *and* terminal id, with the id chosen by the renderer on every call (`shared/terminalIds.ts`) — that is what makes `start` idempotent: two panels attaching to `term-2` share one shell instead of racing to spawn two.
+
+Added: `list`, a `snapshot`/`upsert`/`remove` metadata stream, per-session status/pid/exit, and `ps`-derived labels (`main/terminal/processTree.ts`) so a tab renames itself to whatever it is running. `ps` is resolved to an absolute path once, because spawning it by bare name walks every PATH entry and this runs on a one-second cadence. The poll is refcounted on renderers with a terminal panel mounted, so a closed panel costs nothing.
+
+The bottom dock keeps the conversation's primary shell (`term-1`): the agent's command echo and `terminal_read` both address it, and neither should have to pick between several. Terminal surfaces take `term-2` onward; closing the tab kills that shell, since the tab *is* the shell.
+
+Tests: `tests/terminalSessions.test.ts` (id allocation and validation, `ps` parsing including commands with spaces, subprocess naming, the renderer's metadata fold).
+
+## E3 — Files and file surfaces — **Built**
+
+`main/workspace/WorkspaceIndex.ts` lists the workspace through `rg --files --hidden --glob '!.git'`, cached per root with a short TTL and in-flight dedupe, capped at 25,000 entries with a 15s scan timeout. Ripgrep rather than a Node walker or a native indexer: Atlas already requires it for `grep_search` and `glob_search`, and it brings real `.gitignore` semantics, which is the whole difference between a file tree and a `node_modules` scroll. `runCommand`'s default 1MB ingest budget is raised for the scan — a path list at the cap is several megabytes of ordinary data, and losing its tail would show a tree quietly missing files.
+
+The listing is **one flat list**, the way t3code's is, and the renderer folds it into a tree (`fileTreeModel.ts`). Expanding a folder and typing in the search box are both local: no round trip, no per-folder walk. Search is a subsequence match over the whole path ranked toward the file's own name, and it swaps the tree for a flat result list — a filtered tree hides the match behind the folders holding it.
+
+Reads go through the existing `security/containedFs` open-then-verify primitive, so containment, the regular-file check and the TOCTOU window were already solved; the index only adds a NUL sniff for binaries and the workspace-relative shape. The absolute path is resolved lexically and proved against the *real* path after opening, rather than pre-checked with `containedPath`, so "outside the workspace" and "no longer on disk" stay different answers — the viewer prints different sentences for them.
+
+Both surfaces are read-only. Editing files is the agent's job, and a second writer in the same workspace is a merge conflict looking for a name. The root comes from the conversation row, worktree-aware, exactly like the terminal's cwd — the renderer never names a path on disk.
+
+Tests: `tests/workspaceFiles.test.ts` (escape rejection, directory derivation and ordering, tree folding at depth, search ranking and limits, language mapping). Verified against this repository: 794 files, 924 entries with directories, `node_modules` correctly absent.
+
+## E4 — Browser surface — **Built, wants a second pair of eyes**
+
+The one surface that renders content Atlas did not author, so it is the one place where "deny, then allow what the feature needs" is the whole design.
+
+**Where it differs from t3code.** They run guests with `contextIsolation=false`, deliberately, so an element-picker preload can share `globalThis` with the page and read the React DevTools hook (`apps/desktop/src/preview/WebviewPreferences.ts` is mostly the argument for it). Atlas ships no picker, so it pays none of that: context isolation stays on and **no preload is attached to a guest at all**.
+
+**Three layers**, because the first two are reachable from the renderer:
+
+1. `BROWSER_WEBVIEW_PREFERENCES` on the element, so a guest never exists with defaults even for a frame. The attribute format is silently forgiving — Electron splits on `,` without trimming and parses values as JS booleans, so a stray space drops a key and `"no"` is a truthy *string* — which is why a test asserts the string's shape rather than trusting it.
+2. `will-attach-webview` in main overwrites the real preferences object and refuses any guest not on `persist:atlas-browser`. A renderer bug cannot widen a guest's privileges, because main has the last word. The forced set is asserted field by field in `tests/browserSurface.test.ts`.
+3. The guest itself: every permission denied (`setPermissionRequestHandler`, `setPermissionCheckHandler`, `setDevicePermissionHandler`), popups denied and handed to the real browser instead, navigation and redirects limited to http(s) so `file:` and custom schemes are dead ends.
+
+`webviewTag: true` is now set on the main window. It only lets the renderer *create* a guest; what a guest may do is decided in main. The comment in `createWindow.ts` says so, since the file previously claimed the renderer was fully sandboxed and that sentence needed to change with the code.
+
+**The address bar is not a search box.** What gets typed into a coding tool is as likely to be a path or a secret as a query, so `normalizeBrowserUrl` returns null and the bar says so rather than shipping the text to a search engine on a typo. Bare ports and loopback hosts resolve to `http`, everything else to `https`.
+
+**Port discovery** parses `lsof -iTCP -sTCP:LISTEN -P -n -F pcn` (stateful records: an `n` belongs to the `p` above it, which is the part that is easy to get wrong and invisible when it is), then probes each loopback listener for something that actually serves a page — a Postgres socket and a Vite dev server are identical from the port table. Bounded at 24 candidates, 6 at a time, 1.2s each, cached 5s. Results are ranked in three tiers — named dev ports, then ports a tool chose, then the ephemeral range the OS handed out — and capped at 8: run against this machine the raw list was fourteen entries, eleven of them the same background tool on random high ports, which is a haystack rather than a shortcut.
+
+Known limits, deliberate for now: a guest is destroyed when its tab is not the active surface, so switching tabs reloads the page rather than resuming it (the URL is persisted, so it comes back where it was). No element picker, no screenshots, no automation.
+
+Tests: `tests/browserSurface.test.ts` (forced guest privileges, attribute-string shape, scheme allow-list, address-bar parsing including the refusals, lsof record folding, probe pipeline, ranking and cap).
+
+**Still wants a review** — this is the first code in Atlas that renders hostile-capable content, and a second reader on `webviewSecurity.ts` is worth more than another test.
+
+## Next
+
+| # | Item | Size |
+|---|---|---|
+| 1 | Pull request surface per PR ref on the existing `github:prStatus` | S-M |
+| 2 | Workspace content search (ripgrep, budgeted) feeding the Files box | M |
+| 3 | Keep browser guests alive across tab switches (hide rather than unmount) | M |
+| 4 | Terminal splits inside one surface; `@pierre/diffs` for split view and word-level highlighting | M |

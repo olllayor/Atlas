@@ -3,15 +3,32 @@ import { homedir } from 'node:os';
 
 import type { IPty } from 'node-pty';
 
-import type { TerminalOutputKind } from '../../shared/contracts';
+import type {
+  TerminalMetadataEvent,
+  TerminalOutputKind,
+  TerminalSummary,
+} from '../../shared/contracts';
+import { PRIMARY_TERMINAL_ID, terminalLabelFromId } from '../../shared/terminalIds';
 import type { TerminalHistoryRepo } from '../db/repositories/terminalHistoryRepo';
+import {
+  EMPTY_PROCESS_TABLE,
+  inspectSubprocess,
+  probeProcessTree,
+  type ProcessTable,
+} from './processTree';
 
 /**
- * One shell per conversation, for the workbench's Terminal panel.
+ * The user's shells, keyed by conversation *and* terminal id.
+ *
+ * A conversation can hold several: the bottom dock owns `term-1` and each
+ * terminal surface in the right panel owns one of its own. Ids come from the
+ * renderer on every call and are never allocated here, which is what makes
+ * `start` idempotent — two panels attaching to the same id share one shell
+ * instead of racing to spawn two.
  *
  * The agent's `bash` tool keeps running through `runCommand()` with its own
- * approval gate — this PTY is the *user's* shell, and the agent only ever
- * writes echo lines into it (never input). Mixing the two would mean an
+ * approval gate — these PTYs are the *user's* shells, and the agent only ever
+ * writes echo lines into one (never input). Mixing the two would mean an
  * approval-gated command could be smuggled in as terminal input.
  *
  * Deliberately not sandboxed, for the same reason: the user is not the
@@ -24,11 +41,16 @@ import type { TerminalHistoryRepo } from '../db/repositories/terminalHistoryRepo
 
 export type PtySessionEmit = (payload: {
   conversationId: string;
+  terminalId: string;
   data: string;
   kind: TerminalOutputKind;
 }) => void;
 
+export type PtyMetadataEmit = (event: TerminalMetadataEvent) => void;
+
 type PtySession = {
+  conversationId: string;
+  terminalId: string;
   pty: IPty;
   cwd: string;
   /**
@@ -40,13 +62,30 @@ type PtySession = {
   /** Bytes typed since the last Enter, for history. */
   pendingInput: string;
   exited: boolean;
+  exitCode: number | null;
+  /** Last answer from the process-tree probe, and the label derived from it. */
+  hasRunningSubprocess: boolean;
+  label: string;
 };
 
 const MAX_SCROLLBACK_CHARS = 200_000;
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
+/**
+ * Fast enough that a tab renames itself while the user is still looking at it,
+ * slow enough that one `ps` per tick is not worth thinking about. The poll only
+ * runs while a panel is watching *and* a shell is alive.
+ */
+const LABEL_POLL_INTERVAL_MS = 1_000;
 
 const requireFromHere = createRequire(import.meta.url);
+
+function sessionKey(conversationId: string, terminalId: string) {
+  // Joined on an escape that neither half can contain, written explicitly:
+  // a literal separator here once landed in the source as a raw NUL byte,
+  // which every reader saw as nothing and git saw as a binary file.
+  return `${conversationId}\u0000${terminalId}`;
+}
 
 function defaultShell() {
   if (process.platform === 'win32') {
@@ -57,28 +96,33 @@ function defaultShell() {
 
 export class PtyService {
   private readonly sessions = new Map<string, PtySession>();
+  /** Renderers with a terminal panel mounted. The label poll runs only for them. */
+  private watchers = 0;
+  private labelTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly emit: PtySessionEmit,
     private readonly history: TerminalHistoryRepo,
+    private readonly emitMetadata: PtyMetadataEmit = () => {}
   ) {}
 
   /**
-   * Spawns the conversation's shell, or returns the running one.
+   * Spawns the named shell, or returns the running one.
    *
    * Re-calling with a different `cwd` (the user re-attached the project) kills
    * the old shell rather than leaving a terminal rooted in a folder the rest
    * of the app has stopped talking about.
    */
-  start(conversationId: string, cwd: string | null, cols?: number, rows?: number) {
+  start(conversationId: string, terminalId: string, cwd: string | null, cols?: number, rows?: number) {
     const targetCwd = cwd ?? homedir();
-    const existing = this.sessions.get(conversationId);
+    const key = sessionKey(conversationId, terminalId);
+    const existing = this.sessions.get(key);
 
     if (existing && !existing.exited) {
       if (existing.cwd === targetCwd) {
         return { cwd: existing.cwd, scrollback: existing.scrollback, reused: true };
       }
-      this.kill(conversationId);
+      this.kill(conversationId, terminalId);
     }
 
     // Required lazily: node-pty is a native module, and a broken rebuild must
@@ -94,31 +138,46 @@ export class PtyService {
     });
 
     const session: PtySession = {
+      conversationId,
+      terminalId,
       pty,
       cwd: targetCwd,
       scrollback: '',
       pendingInput: '',
       exited: false,
+      exitCode: null,
+      hasRunningSubprocess: false,
+      label: terminalLabelFromId(terminalId),
     };
-    this.sessions.set(conversationId, session);
+    this.sessions.set(key, session);
 
     pty.onData((data) => {
       this.append(session, data);
-      this.emit({ conversationId, data, kind: 'stdout' });
+      this.emit({ conversationId, terminalId, data, kind: 'stdout' });
     });
 
     pty.onExit(({ exitCode }) => {
       session.exited = true;
+      session.exitCode = exitCode;
+      session.hasRunningSubprocess = false;
+      session.label = terminalLabelFromId(terminalId);
       const notice = `\r\n[process exited with code ${exitCode}]\r\n`;
       this.append(session, notice);
-      this.emit({ conversationId, data: notice, kind: 'exit' });
+      this.emit({ conversationId, terminalId, data: notice, kind: 'exit' });
+      // The tab has to stop claiming the shell is alive even if nothing is
+      // polling labels at that moment.
+      this.emitMetadata({ type: 'upsert', terminal: summarize(session) });
+      this.syncLabelPolling();
     });
+
+    this.emitMetadata({ type: 'upsert', terminal: summarize(session) });
+    this.syncLabelPolling();
 
     return { cwd: targetCwd, scrollback: '', reused: false };
   }
 
-  write(conversationId: string, data: string) {
-    const session = this.sessions.get(conversationId);
+  write(conversationId: string, terminalId: string, data: string) {
+    const session = this.sessions.get(sessionKey(conversationId, terminalId));
     if (!session || session.exited) {
       return;
     }
@@ -150,8 +209,8 @@ export class PtyService {
     session.pty.write(data);
   }
 
-  resize(conversationId: string, cols: number, rows: number) {
-    const session = this.sessions.get(conversationId);
+  resize(conversationId: string, terminalId: string, cols: number, rows: number) {
+    const session = this.sessions.get(sessionKey(conversationId, terminalId));
     if (!session || session.exited) {
       return;
     }
@@ -168,12 +227,23 @@ export class PtyService {
     }
   }
 
+  /** Every shell a conversation owns, oldest first. */
+  list(conversationId: string): TerminalSummary[] {
+    const summaries: TerminalSummary[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.conversationId === conversationId) summaries.push(summarize(session));
+    }
+    return summaries;
+  }
+
   /**
    * The agent's command bridge: display-only. Nothing here reaches the shell's
-   * stdin, so an echoed line can never execute.
+   * stdin, so an echoed line can never execute. It lands in the conversation's
+   * primary shell — the one the dock shows — because that is the terminal the
+   * user is being kept in step with.
    */
   echoAgentCommand(conversationId: string, command: string, exitCode: number | null) {
-    const session = this.sessions.get(conversationId);
+    const session = this.sessions.get(sessionKey(conversationId, PRIMARY_TERMINAL_ID));
     if (!session) {
       return;
     }
@@ -182,28 +252,35 @@ export class PtyService {
     // Dim (SGR 2), per the reference's recessive agent rows.
     const line = `\x1b[2m› ${command}${status}\x1b[0m\r\n`;
     this.append(session, line);
-    this.emit({ conversationId, data: line, kind: 'agent' });
+    this.emit({
+      conversationId,
+      terminalId: PRIMARY_TERMINAL_ID,
+      data: line,
+      kind: 'agent',
+    });
   }
 
   /**
    * Read-only view for the agent's `terminal_read` tool: liveness, spawn cwd,
-   * and the capped scrollback buffer. No handle to the shell's stdin leaves
-   * this class, so a reader can observe but never drive the terminal.
+   * and the capped scrollback buffer of the conversation's primary shell. No
+   * handle to stdin leaves this class, so a reader can observe but never drive
+   * the terminal.
    */
   snapshot(conversationId: string): { alive: boolean; cwd: string | null; scrollback: string } {
-    const session = this.sessions.get(conversationId);
+    const session = this.sessions.get(sessionKey(conversationId, PRIMARY_TERMINAL_ID));
     if (!session) {
       return { alive: false, cwd: null, scrollback: '' };
     }
     return {
       alive: !session.exited,
       cwd: session.cwd,
-      scrollback: session.scrollback
+      scrollback: session.scrollback,
     };
   }
 
-  kill(conversationId: string) {
-    const session = this.sessions.get(conversationId);
+  kill(conversationId: string, terminalId: string) {
+    const key = sessionKey(conversationId, terminalId);
+    const session = this.sessions.get(key);
     if (!session) {
       return;
     }
@@ -214,12 +291,92 @@ export class PtyService {
       console.warn('[PtyService] kill failed:', err);
     }
 
-    this.sessions.delete(conversationId);
+    this.sessions.delete(key);
+    this.emitMetadata({ type: 'remove', conversationId, terminalId });
+    this.syncLabelPolling();
+  }
+
+  /** Every shell the conversation owns; used when the conversation is deleted. */
+  killConversation(conversationId: string) {
+    for (const session of [...this.sessions.values()]) {
+      if (session.conversationId === conversationId) {
+        this.kill(conversationId, session.terminalId);
+      }
+    }
   }
 
   disposeAll() {
-    for (const conversationId of [...this.sessions.keys()]) {
-      this.kill(conversationId);
+    for (const session of [...this.sessions.values()]) {
+      this.kill(session.conversationId, session.terminalId);
+    }
+    this.stopLabelPolling();
+  }
+
+  /**
+   * A renderer with a terminal panel mounted. Labels cost a `ps` per second,
+   * so nothing is spent while every panel is closed.
+   */
+  addWatcher() {
+    this.watchers += 1;
+    this.syncLabelPolling();
+  }
+
+  removeWatcher() {
+    this.watchers = Math.max(0, this.watchers - 1);
+    this.syncLabelPolling();
+  }
+
+  private liveSessions() {
+    return [...this.sessions.values()].filter((session) => !session.exited);
+  }
+
+  private syncLabelPolling() {
+    const wanted = this.watchers > 0 && this.liveSessions().length > 0;
+    if (wanted && !this.labelTimer) {
+      this.labelTimer = setInterval(() => {
+        void this.refreshLabels();
+      }, LABEL_POLL_INTERVAL_MS);
+      // The poll must never be the reason the process stays up.
+      this.labelTimer.unref?.();
+      void this.refreshLabels();
+      return;
+    }
+    if (!wanted) this.stopLabelPolling();
+  }
+
+  private stopLabelPolling() {
+    if (!this.labelTimer) return;
+    clearInterval(this.labelTimer);
+    this.labelTimer = null;
+  }
+
+  /**
+   * One process table for every live shell, and an event only for the tabs
+   * whose name actually moved — a terminal sitting at its prompt should not
+   * push an event per second.
+   */
+  private async refreshLabels() {
+    const live = this.liveSessions();
+    if (live.length === 0) return;
+
+    let table: ProcessTable = EMPTY_PROCESS_TABLE;
+    try {
+      table = await probeProcessTree();
+    } catch {
+      return;
+    }
+
+    for (const session of live) {
+      if (session.exited) continue;
+      const { hasRunningSubprocess, childCommand } = inspectSubprocess(table, session.pty.pid);
+      const label = childCommand ?? terminalLabelFromId(session.terminalId);
+      if (session.hasRunningSubprocess === hasRunningSubprocess && session.label === label) {
+        continue;
+      }
+
+      session.hasRunningSubprocess = hasRunningSubprocess;
+      session.label = label;
+      this.emitMetadata({ type: 'upsert', terminal: summarize(session) });
     }
   }
 
@@ -228,4 +385,17 @@ export class PtyService {
     session.scrollback =
       next.length > MAX_SCROLLBACK_CHARS ? next.slice(next.length - MAX_SCROLLBACK_CHARS) : next;
   }
+}
+
+function summarize(session: PtySession): TerminalSummary {
+  return {
+    conversationId: session.conversationId,
+    terminalId: session.terminalId,
+    cwd: session.cwd,
+    status: session.exited ? 'exited' : 'running',
+    pid: session.exited ? null : session.pty.pid,
+    exitCode: session.exitCode,
+    hasRunningSubprocess: session.hasRunningSubprocess,
+    label: session.label,
+  };
 }

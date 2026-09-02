@@ -9,6 +9,7 @@ import {
 import { shell } from 'electron/common';
 
 import type { ThemeMode } from '../../shared/contracts';
+import { installWebviewHardening } from '../browser/webviewSecurity';
 import { getAppIconPath } from './iconPath';
 import { perfMark } from './perfTrace';
 
@@ -175,9 +176,18 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
       // inside a sandboxed renderer) and electron-vite bundles it into one
       // self-contained file, so the renderer runs fully sandboxed. This keeps
       // the UI process from ever reaching Node/Electron host APIs directly.
-      sandbox: true
+      sandbox: true,
+      // The right panel's Browser surface hosts third-party pages in a
+      // `<webview>`. This flag only lets the renderer *create* a guest; what
+      // the guest is allowed to do is decided in main by
+      // `installWebviewHardening`, which overwrites the guest's preferences
+      // and refuses any partition but the browser one. The renderer's own
+      // privileges are unchanged.
+      webviewTag: true
     }
   });
+
+  installWebviewHardening(window);
 
   window.webContents.setWindowOpenHandler(({ url }: HandlerDetails) => {
     void shell.openExternal(url);

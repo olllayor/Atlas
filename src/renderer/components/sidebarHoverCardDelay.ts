@@ -19,7 +19,7 @@ import { useSyncExternalStore } from 'react';
  */
 
 /** First card of a run: long enough that a pointer crossing rows opens nothing. */
-export const SIDEBAR_HOVER_CARD_OPEN_DELAY_MS = 320;
+export const SIDEBAR_HOVER_CARD_OPEN_DELAY_MS = 500;
 
 /** How long after the last card closes the next one still opens instantly. */
 export const SIDEBAR_HOVER_CARD_SKIP_WINDOW_MS = 400;
@@ -27,12 +27,12 @@ export const SIDEBAR_HOVER_CARD_SKIP_WINDOW_MS = 400;
 /**
  * An intentional floor during the skip window.
  * 0ms causes cards to rapidly flash and mix together during fast mouse sweeps.
- * 80ms is short enough to feel instantaneous when resting on an item, but
+ * 200ms is short enough to feel responsive when resting on an item, but
  * filters out quick pointer transit over rows.
  */
-export const SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS = 80;
+export const SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS = 200;
 
-export const SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS = 120;
+export const SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS = 0;
 
 type TimerHandle = unknown;
 

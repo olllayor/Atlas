@@ -84,9 +84,9 @@ export function SidebarConversationRow({
         <span className="group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-center justify-end text-xs">
           <span
             className={cn(
-              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity motion-reduce:transition-none',
-              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0',
-              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0'
+              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity duration-150 motion-reduce:transition-none',
+              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0 group-hover/row:delay-75',
+              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-has-[:focus-visible]/sidebar-status-slot:delay-0'
             )}
           >
             {timestampLabel ? (
@@ -99,9 +99,9 @@ export function SidebarConversationRow({
           {onSettle ? (
             <span
               className={cn(
-                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity motion-reduce:transition-none',
-                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100',
-                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100'
+                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity duration-150 motion-reduce:transition-none',
+                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 has-[:focus-visible]:delay-0',
+                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100 group-hover/row:delay-75'
               )}
             >
               <RowIconButton
@@ -143,9 +143,9 @@ export function SidebarConversationRow({
           {/* Status child: in flow at rest, out of flow on hover or focus-visible */}
           <span
             className={cn(
-              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity motion-reduce:transition-none',
-              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0',
-              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0'
+              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity duration-150 motion-reduce:transition-none',
+              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0 group-hover/row:delay-75',
+              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-has-[:focus-visible]/sidebar-status-slot:delay-0'
             )}
           >
             {stateWord ? (
@@ -182,9 +182,9 @@ export function SidebarConversationRow({
           {onSettle ? (
             <span
               className={cn(
-                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity motion-reduce:transition-none',
-                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100',
-                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100'
+                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity duration-150 motion-reduce:transition-none',
+                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 has-[:focus-visible]:delay-0',
+                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100 group-hover/row:delay-75'
               )}
             >
               <RowIconButton

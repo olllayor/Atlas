@@ -1139,7 +1139,7 @@ export function Sidebar({
                                     onClick={() => toggleProject(project.id)}
                                     aria-expanded={!isCollapsed}
                                     title={project.exists ? project.root : `Missing — ${project.root}`}
-                                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left"
+                                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-14 text-left"
                                   >
                                     <span className="flex size-4 shrink-0 items-center justify-center">
                                       {/* The folder itself is the disclosure: shut when
@@ -1165,8 +1165,8 @@ export function Sidebar({
 
                                   <div
                                     className={cn(
-                                      'pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100',
-                                      openProjectMenuId === project.id && 'pointer-events-auto opacity-100'
+                                      'pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-hover/row:delay-75',
+                                      openProjectMenuId === project.id && 'pointer-events-auto opacity-100 group-hover/row:delay-0'
                                     )}
                                   >
                                     <DropdownMenu

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS,
+  SIDEBAR_HOVER_CARD_OPEN_DELAY_MS,
+  SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS,
   createSidebarHoverCardDelayStore,
   type HoverCardDelayTimers,
 } from '../src/renderer/components/sidebarHoverCardDelay';
@@ -151,5 +154,11 @@ test('supports an intentional floor on skip-window open delay to debounce fast c
   assert.equal(store.getOpenDelay(), 320);
   store.notifyOpened();
   assert.equal(store.getOpenDelay(), 80);
+});
+
+test('uses debounced hover defaults: 500ms initial open, 200ms skip floor, 0ms close', () => {
+  assert.equal(SIDEBAR_HOVER_CARD_OPEN_DELAY_MS, 500);
+  assert.equal(SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS, 200);
+  assert.equal(SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS, 0);
 });
 

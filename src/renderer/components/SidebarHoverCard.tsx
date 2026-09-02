@@ -32,7 +32,8 @@ import { HoverCardContent } from './ui/hover-card';
  */
 
 /** Shared geometry: 15px title row, 13px metadata rows, hairline dividers. */
-const CARD_CLASS = 'w-64 overflow-hidden p-0';
+const CARD_CLASS =
+  'w-64 overflow-hidden p-0 data-[state=closed]:duration-0 data-[state=closed]:animate-none';
 const ROW_CLASS = 'flex items-center gap-2 px-3 py-2 text-sm text-text-secondary';
 const ICON_CLASS = 'size-3.5 shrink-0 text-text-tertiary';
 

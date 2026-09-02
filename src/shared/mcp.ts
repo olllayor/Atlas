@@ -305,28 +305,6 @@ export function isMcpToolName(name: string): boolean {
   return name.startsWith(`${MCP_TOOL_NAME_PREFIX}${MCP_TOOL_NAME_DELIMITER}`);
 }
 
-/**
- * The identity a person's spawn consent is recorded against.
- *
- * Intent (decision D1 of the first-spawn-consent plan): consent covers exactly
- * one concrete command line, so the key must change when *anything the user
- * consented to* changes — the server identity (`id`), the resolved executable
- * (`command`), or the arguments/launch context (`args`, `cwd`). Anything left
- * out of the key is implicitly re-consented when it changes, and anything added
- * to the key names an additional thing the user is being asked to sign off on.
- *
- * Called only on the stdio path: `command` is null for HTTP/SSE servers, so a
- * null here is a programming error, not a consent case.
- *
- * TODO(user): implement this. Aim for 3–6 lines. Requirements:
- *   - throw when `input.command` is null (do not let an HTTP server slip through)
- *   - distinct commands → distinct keys
- *   - an args or cwd change must change the key
- *   - pure: the same helper is used by the writer (on consent) and the checker
- *     (before every spawn), so the two cannot drift
- *   - you may use `hashFor` (FNV-1a, defined above) and `sanitizeToolNamePart`,
- *     and you may join with '\0' separators — do NOT need node:crypto.
- */
 export function isAllowedMcpEndpointUrl(urlString: string): { ok: true; url: URL } | { ok: false; error: string } {
   try {
     const url = new URL(urlString);
@@ -369,6 +347,21 @@ export function isAllowedMcpEndpointUrl(urlString: string): { ok: true; url: URL
   }
 }
 
+/**
+ * The identity a person's spawn consent is recorded against.
+ *
+ * Consent covers exactly one concrete command line, so the key changes when
+ * anything the user signed off on changes: the server identity (`id`), the
+ * resolved executable (`command`), or the arguments and launch context
+ * (`args`, `cwd`). Anything left out of the key would be re-consented silently
+ * when it changed.
+ *
+ * Pure, because the writer (on consent) and the checker (before every spawn)
+ * both call it and must not drift.
+ *
+ * Only reachable on the stdio path: `command` is null for HTTP/SSE servers, so
+ * a null here is a programming error rather than a consent case, and throws.
+ */
 export function spawnConsentKey(input: {
   id: string;
   command: string | null;

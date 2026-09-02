@@ -10,6 +10,7 @@ import { shell } from 'electron/common';
 
 import type { ThemeMode } from '../../shared/contracts';
 import { getAppIconPath } from './iconPath';
+import { perfMark } from './perfTrace';
 
 /**
  * The renderer paints its own titlebar (52px, `--titlebar-height`), so the
@@ -201,7 +202,12 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
   }
 
   window.once('ready-to-show', () => {
+    perfMark('window:ready-to-show (first paint possible)');
     window.show();
+  });
+
+  window.webContents.once('did-finish-load', () => {
+    perfMark('window:did-finish-load');
   });
 
   return window;

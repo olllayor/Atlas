@@ -67,6 +67,11 @@ import { shouldPersistResponseMessages } from './persistResponseMessages';
 import { VISUAL_PROMPT } from './VISUAL_PROMPT';
 import type { ContextBuildMode } from './ContextManager';
 import { ContextManager } from './ContextManager';
+import {
+  COMPACTION_THRESHOLD_DEFAULT,
+  clampCompactionThresholdPercent,
+  compactionPercentToRatio,
+} from '../../../shared/contextCompaction';
 
 /** What a turn's Sites gate is evaluated against. */
 export type SiteToolContext = {
@@ -511,6 +516,13 @@ export class ChatSessionRuntime {
      * takes toward a save failure.
      */
     private readonly spillStore: Pick<SpillStore, 'saveText'> | null = null,
+    /**
+     * Live resolver for the global compaction threshold. Injected so an updated
+     * preference takes effect on the next request without restart. Falls back
+     * to the default when absent or throwing, which keeps the send path
+     * failure-free even if the settings store is unavailable in a test.
+     */
+    private readonly compactionThresholdResolver: () => number = () => COMPACTION_THRESHOLD_DEFAULT,
   ) {}
 
   /**
@@ -972,8 +984,22 @@ export class ChatSessionRuntime {
     this.contextManager.requestForcedCompaction(conversationId);
   }
 
+  private getCompactionThresholdPercent(): number {
+    try {
+      const raw = this.compactionThresholdResolver();
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return COMPACTION_THRESHOLD_DEFAULT;
+      return clampCompactionThresholdPercent(raw);
+    } catch {
+      return COMPACTION_THRESHOLD_DEFAULT;
+    }
+  }
+
+  private getCompactionRatio(): number {
+    return compactionPercentToRatio(this.getCompactionThresholdPercent());
+  }
+
   measureContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
-    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId, request.providerId ?? null);
     const maxTokens = positiveOrNull(modelHints.contextWindow);
 
     const toolPermissionMode =
@@ -1043,6 +1069,12 @@ export class ChatSessionRuntime {
     const summaryTokens = modelInput.usage.addendumTokens;
     const historyTokens = modelInput.usage.historyTokens;
     const promptTokens = systemTokens + toolTokens + summaryTokens + historyTokens + pendingTokens;
+    const compactionThresholdPercent = this.getCompactionThresholdPercent();
+    const compactionRatio = compactionPercentToRatio(compactionThresholdPercent);
+    const compactionThresholdTokens =
+      budget != null && maxTokens != null
+        ? Math.max(0, Math.floor((budget.totalTokens - budget.reservedTokens) * compactionRatio))
+        : null;
 
     return {
       maxTokens,
@@ -1058,6 +1090,8 @@ export class ChatSessionRuntime {
       droppedTurnCount: modelInput.usage.droppedTurnCount,
       keptTurnCount: modelInput.usage.keptTurnCount,
       overflow: maxTokens != null && promptTokens > maxTokens - reservedOutputTokens,
+      compactionThresholdTokens,
+      compactionThresholdPercent,
       lastTurn,
       cache,
     };
@@ -1087,6 +1121,7 @@ export class ChatSessionRuntime {
       DEFAULT_STREAM_CORE_CONFIG
     );
     const contextWindow = positiveOrNull(modelHints.contextWindow);
+    const compactionRatio = this.getCompactionRatio();
 
     return {
       reservedOutputTokens,
@@ -1096,6 +1131,7 @@ export class ChatSessionRuntime {
           : {
               totalTokens: Math.max(1, contextWindow - reservedOutputTokens),
               reservedTokens: fixedFloorTokens,
+              compactionRatio,
             },
     };
   }
@@ -1408,8 +1444,9 @@ export class ChatSessionRuntime {
       ) as any;
     }
     // Catalog-derived limits so the adapter can size the request to this model
-    // rather than to a provider-wide constant.
-    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+    // rather than to a provider-wide constant. Provider-qualified so a model
+    // served by two endpoints gets the right window for the chosen one.
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId, request.providerId);
 
     while (true) {
       const attemptElapsed = startTimer();

@@ -31,6 +31,7 @@ export function SideChatPane() {
   );
   const models = useAppStore((state) => state.models);
   const selectedModelIdByConversation = useAppStore((state) => state.selectedModelIdByConversation);
+  const selectedProviderIdByConversation = useAppStore((state) => state.selectedProviderIdByConversation);
   const setSelectedModel = useAppStore((state) => state.setSelectedModel);
   const settings = useAppStore((state) => state.settings);
   const sendMessage = useAppStore((state) => state.sendMessage);
@@ -63,6 +64,7 @@ export function SideChatPane() {
       ),
     [sideId, selectedModelIdByConversation, detail, models]
   );
+  const selectedProviderId = sideId ? selectedProviderIdByConversation[sideId] ?? null : null;
 
   if (!sideChat || !detail || !sideId) {
     return null;
@@ -131,13 +133,11 @@ export function SideChatPane() {
         <ChatComposerSlot
           conversationId={sideId}
           disabled={false}
-          isStreaming={draft?.status === 'streaming'}
           models={models}
           selectedModelId={selectedModelId}
+          selectedProviderId={selectedProviderId}
           modelPickerOpen={modelPickerOpen}
           composerFocusNonce={0}
-          detail={detail}
-          draft={draft}
           onSend={(message) => {
             const sentAttachmentIds = message.files.map((file) => file.id);
             return sendMessage({
@@ -149,7 +149,7 @@ export function SideChatPane() {
             });
           }}
           onAbort={() => void abortConversation(sideId)}
-          onSelectModel={(modelId) => setSelectedModel(sideId, modelId)}
+          onSelectModel={(modelId, providerId) => setSelectedModel(sideId, modelId, providerId)}
           onModelPickerOpenChange={setModelPickerOpen}
           onComposerFocusChange={() => {}}
           reasoningEffort={settings?.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT}

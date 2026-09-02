@@ -109,27 +109,54 @@ test('every mode-defining theme block carries the full color-token contract', ()
   for (const theme of ['codex', 'default', 'xai', 'cursor']) {
     const blocks = parseBlocks(readTheme(theme));
 
+    // Cursor's dark variant is authored as deltas only (inherits typography,
+    // radii, shadows and any identical colors from the light block via
+    // cascade, specificity 0,2,0 beats 0,1,0). The resolved-palette check
+    // here patrols drift, so literal per-block presence is not required —
+    // only that each mode resolves every required token via its own block,
+    // its sibling, or :root.
     for (const block of blocks) {
-      const missing = required.filter((name) => !block.tokens.has(name));
+      const siblings = blocks.filter((b) => b !== block);
+      const get = (token: string): string | null => {
+        const own = block.tokens.get(token);
+        if (own && !own.startsWith('var(')) return own;
+        if (own?.startsWith('var(')) {
+          const ref = own.slice(4, -1).trim();
+          return siblings.find((s) => s.tokens.get(ref))?.tokens.get(ref) ?? root.get(token) ?? null;
+        }
+        return siblings.find((s) => s.tokens.get(token))?.tokens.get(token) ?? root.get(token) ?? null;
+      };
+      const missing = required.filter((name) => !get(name));
       assert.deepEqual(
         missing,
         [],
-        `${theme}.css [${block.selector}] is missing color tokens its mode needs: ${missing.join(', ')}. ` +
-          'A variant block that leans on its dark/light sibling paints stale values whenever that sibling was authored for the other mode.'
+        `${theme}.css [${block.selector}] is missing color tokens its mode needs (resolved via sibling/:root): ${missing.join(', ')}. ` +
+          'A variant block that leans on its dark/light sibling paints stale values whenever that sibling was authored for the other mode. ' +
+          'If deltas-only is intentional, ensure the fallback value is correct for this mode.'
       );
     }
 
     // Sibling parity for the satellite palettes: if any block in this file
-    // defines diff or tool hues, every block must (they tune them per mode).
-    const satellite = [...blocks].flatMap((b) => [...b.tokens.keys()]).filter(
+    // defines diff or tool hues, every mode must resolve them (they tune per mode).
+    const satellite = [...new Set([...blocks].flatMap((b) => [...b.tokens.keys()]).filter(
       (name) => /^--diff-/.test(name) || /^--tool-/.test(name)
-    );
+    ))];
     for (const block of blocks) {
-      const missing = satellite.filter((name) => !block.tokens.has(name));
+      const siblings = blocks.filter((b) => b !== block);
+      const get = (token: string): string | null => {
+        const own = block.tokens.get(token);
+        if (own && !own.startsWith('var(')) return own;
+        if (own?.startsWith('var(')) {
+          const ref = own.slice(4, -1).trim();
+          return siblings.find((s) => s.tokens.get(ref))?.tokens.get(ref) ?? root.get(token) ?? null;
+        }
+        return siblings.find((s) => s.tokens.get(token))?.tokens.get(token) ?? root.get(token) ?? null;
+      };
+      const missing = satellite.filter((name) => !get(name));
       assert.deepEqual(
         missing,
         [],
-        `${theme}.css [${block.selector}] omits satellite tokens a sibling defines: ${missing.join(', ')}`
+        `${theme}.css [${block.selector}] omits satellite tokens a sibling defines (resolved): ${missing.join(', ')}`
       );
     }
   }

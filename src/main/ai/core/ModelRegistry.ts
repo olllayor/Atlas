@@ -221,6 +221,7 @@ export class ModelRegistry {
         // has since been removed or disabled must not be offered as a default.
         lastModelId: this.resolveLastModelId(),
         visualMode: this.settingsRepo.getVisualMode(),
+        compactionThresholdPercent: this.settingsRepo.getCompactionThresholdPercent(),
         cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
         cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
         // Raw token never crosses IPC — keychain holds it, the renderer only

@@ -107,25 +107,31 @@ export class ModelsRepo {
     };
   }
 
-  getById(modelId: string) {
+  getById(modelId: string, preferredProviderId?: ProviderId | null) {
     const selfManaged = this.selfManagedMatch();
     const row = this.db
-      .prepare<Record<string, string>, ModelRow>(
+      .prepare<Record<string, string | null>, ModelRow>(
         `
           SELECT ${MODEL_COLUMNS}
           FROM model_cache
           WHERE model_id = @modelId
-          -- A bare model id can now match one row per provider. Prefer an
-          -- entry the app can actually serve, then break any remaining tie on
-          -- provider id so repeated lookups agree with each other.
-          ORDER BY CASE WHEN EXISTS (
-            SELECT 1 FROM custom_providers c
-            WHERE c.id = model_cache.provider_id AND c.enabled = 1
-          ) OR ${selfManaged.sql} THEN 0 ELSE 1 END ASC, provider_id ASC
+          -- (modelId, providerId) is the real key now; a bare modelId can match
+          -- many rows (BAI and EMPERO both serve glm-5.3-flash). Prefer the
+          -- caller's pinned provider first, then a servable provider, then
+          -- non-archived, then lexicographic for determinism. The preferred
+          -- branch falls through automatically when that provider does not serve
+          -- this id.
+          ORDER BY CASE WHEN @preferredProviderId IS NOT NULL AND provider_id = @preferredProviderId THEN 0 ELSE 1 END ASC,
+            CASE WHEN EXISTS (
+              SELECT 1 FROM custom_providers c
+              WHERE c.id = model_cache.provider_id AND c.enabled = 1
+            ) OR ${selfManaged.sql} THEN 0 ELSE 1 END ASC,
+            archived ASC,
+            provider_id ASC
           LIMIT 1
         `
       )
-      .get({ modelId, ...selfManaged.params });
+      .get({ modelId, preferredProviderId: preferredProviderId ?? null, ...selfManaged.params });
 
     if (!row) {
       return null;
@@ -138,8 +144,8 @@ export class ModelsRepo {
    * Request-shaping facts for a model. Returns an empty object for unknown
    * models so callers fall back to provider defaults rather than guessing.
    */
-  getRuntimeHints(modelId: string): ModelRuntimeHints {
-    const model = this.getById(modelId);
+  getRuntimeHints(modelId: string, preferredProviderId?: ProviderId | null): ModelRuntimeHints {
+    const model = this.getById(modelId, preferredProviderId);
     if (!model) {
       return {};
     }
@@ -333,6 +339,7 @@ export class ModelsRepo {
         `
           SELECT MAX(last_synced_at) AS lastSyncedAt, COUNT(*) AS count
           FROM model_cache
+          WHERE archived = 0
         `
       )
       .get();

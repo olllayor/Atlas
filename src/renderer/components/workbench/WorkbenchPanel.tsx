@@ -65,7 +65,7 @@ export function workbenchTabsForMode(mode: WorkspaceMode) {
   return WORKBENCH_TABS.filter((tab) => tab.modes.includes(mode));
 }
 
-type WorkbenchPanelProps = {
+export type WorkbenchPanelProps = {
   conversationId?: string;
   mode: WorkspaceMode;
   messages: ChatMessage[];

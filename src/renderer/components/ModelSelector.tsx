@@ -26,10 +26,11 @@ import { buildModelSelectorViewModel, isSelfManagedProvider } from './modelSelec
 type ModelSelectorProps = {
   models: ModelSummary[];
   selectedModelId: string | null;
+  selectedProviderId?: string | null;
   disabled: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, providerId: string) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   /** Needed to label models that belong to a user-configured endpoint. */
@@ -68,9 +69,14 @@ const compactChipLabel = (model: ModelSummary): string => {
   return extractModelName(model.id).replace(/[:@](free|beta|preview|latest)$/i, '');
 };
 
+function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSummary, 'id' | 'providerId'>) {
+  return a.id === b.id && a.providerId === b.providerId;
+}
+
 export function ModelSelector({
   models,
   selectedModelId,
+  selectedProviderId,
   disabled,
   open,
   onOpenChange,
@@ -87,7 +93,20 @@ export function ModelSelector({
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const providerRefs = customProviders ?? [];
-  const selectedModel = useMemo(() => models.find((m) => m.id === selectedModelId) ?? null, [models, selectedModelId]);
+  const selectedModel = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
 
   const { groups } = useMemo(
     () => buildModelSelectorViewModel({ models, customProviders: providerRefs, credentials, showFreeOnly: false }),
@@ -95,8 +114,8 @@ export function ModelSelector({
   );
 
   const handleSelect = useCallback(
-    (modelId: string) => {
-      onSelect(modelId);
+    (modelId: string, providerId: string) => {
+      onSelect(modelId, providerId);
       onOpenChange(false);
     },
     [onSelect, onOpenChange]
@@ -127,6 +146,14 @@ export function ModelSelector({
   const effortLabel = effectiveEffort
     ? REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label
     : null;
+  const selectedProviderCount = useMemo(() => {
+    if (!selectedModel) return 0;
+    return new Set(
+      models.filter((m) => !m.archived && m.id === selectedModel.id).map((m) => m.providerId)
+    ).size;
+  }, [models, selectedModel]);
+  const showProviderInChip = selectedProviderCount > 1;
+  const chipDisplayLabel = showProviderInChip && selectedModel ? `${chipLabel} · ${selectedProviderLabel}` : chipLabel;
 
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -157,7 +184,7 @@ export function ModelSelector({
                     : 'text-text-tertiary'
                 }`}
               >
-                {chipLabel}
+                {chipDisplayLabel}
               </span>
               {/*
                 Dim and shrink-proof: the effort is a qualifier on the name, not
@@ -204,7 +231,7 @@ export function ModelSelector({
           </>
         ) : (
           groups.map((group) => {
-            const isActiveProvider = selectedModel != null && group.models.some((m) => m.id === selectedModel.id);
+            const isActiveProvider = selectedModel != null && group.models.some((m) => isSameModel(m, selectedModel));
 
             return (
               <DropdownMenuSub key={group.providerId}>
@@ -233,13 +260,13 @@ export function ModelSelector({
                   sideOffset={6}
                 >
                   {group.models.map((model) => {
-                    const isSelected = model.id === selectedModelId;
+                    const isSelected = selectedModel != null && isSameModel(model, selectedModel);
                     const shortName = extractModelName(model.id);
 
                     return (
                       <DropdownMenuItem
-                        key={model.id}
-                        onSelect={() => handleSelect(model.id)}
+                        key={`${model.providerId}:${model.id}`}
+                        onSelect={() => handleSelect(model.id, model.providerId)}
                         className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary"
                       >
                         <span className="min-w-0 flex-1 truncate" title={model.id}>

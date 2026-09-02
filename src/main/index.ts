@@ -24,6 +24,7 @@ import {
 } from './attachments/attachmentProtocol';
 import { createWindow, syncNativeTheme } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
+import { perfMark, perfNow } from './bootstrap/perfTrace';
 import { createAppDatabase } from './db/client';
 import { registerDiagnosticsIpc } from './ipc/diagnostics';
 import { withUserFacingErrors } from './ipc/errors';
@@ -126,6 +127,22 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 registerSitePreviewScheme();
 registerAttachmentScheme();
 registerPluginIconScheme();
+/**
+ * Reports a background failure instead of dropping it.
+ *
+ * Every call site here is work the app deliberately does not wait on, so the
+ * catch is what keeps a slow disk or an unreachable endpoint from taking the
+ * boot down with it. Swallowing the error entirely is a different thing: it
+ * left failed migrations, stale catalogs and orphaned spill directories with
+ * no trace anywhere. `event` names the step so a log line points at one.
+ */
+const reportBackgroundFailure =
+  (event: string) =>
+  (error: unknown): undefined => {
+    logger.warn(event, { error: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  };
+
 // `atlas://` deep links — same privileged-registration constraint, and the
 // OS launch hooks must attach before `whenReady` resolves to catch cold starts.
 registerAtlasScheme();
@@ -205,6 +222,8 @@ async function resolveSpillsDirectory() {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return; // A second launch: hand over and die.
+  const bootStart = perfNow();
+  perfMark('app:whenReady');
   // First thing after ready: everything below is worth having a record of, and
   // a failure here is exactly the kind that leaves no other trace.
   logger.configure({
@@ -239,6 +258,7 @@ app.whenReady().then(async () => {
       .filter(([, adapter]) => adapter.capabilities?.authenticatesItself === true)
       .map(([providerId]) => providerId)
   );
+  perfMark('db:open+schema');
   const spillStore = new SpillStore(await resolveSpillsDirectory());
   // One registry for every long-running producer (background bash today;
   // subagents and terminals can register as kinds later). Conversation-fenced:
@@ -282,7 +302,8 @@ app.whenReady().then(async () => {
     settingsRepo: database.settings,
     keychain,
     remapConversationProvider: (from, to) => database.conversations.remapProviderId(from, to)
-  }).catch(() => undefined);
+  }).catch(reportBackgroundFailure('providers.legacy_migration_failed'));
+  perfMark('migrateLegacyBuiltInProviders');
 
   const modelRegistry = new ModelRegistry(
     database.models,
@@ -314,7 +335,7 @@ app.whenReady().then(async () => {
     // A configuration change can add, remove or re-point models, so the catalog
     // is rebuilt rather than left showing endpoints that no longer exist.
     onProvidersChanged: async () => {
-      await modelRegistry.refresh().catch(() => undefined);
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
       // The rebuild happens here, in the main process; the window that made the
       // change gets back a provider record, not a catalog. Without this a
       // freshly added provider's models sat in the cache unseen — the picker
@@ -325,6 +346,7 @@ app.whenReady().then(async () => {
 
   // Adapters for providers saved in a previous session.
   await customProviderService.syncRegistry();
+  perfMark('providers:syncRegistry');
   // Saved custom models are re-checked against models.dev: effort levels for
   // models predating them, and context/output limits, which go stale silently
   // and skew every context reading until they are corrected. Network-backed, so
@@ -337,20 +359,24 @@ app.whenReady().then(async () => {
         broadcastModelsChanged();
       }
     })
-    .catch(() => undefined);
+    .catch(reportBackgroundFailure('models.backfill_facts_failed'));
   // Deep OpenCode integration (Beta, off by default): while it is disabled the
-  // adapter stays out of the registry and nothing spawns or probes.
-  const opencodeController = await initializeOpenCode({
+  // adapter stays out of the registry and nothing spawns or probes. The initial
+  // registry sync runs in the background — see `initializeOpenCode` — because
+  // awaiting it here held the first window back by about a second of cold
+  // start, for a feature that is off unless someone turned it on.
+  const { controller: opencodeController } = initializeOpenCode({
     settingsRepo: database.settings,
     keychain,
     sessions: database.opencodeSessions,
     registry: providers,
     defaultDirectory: () => app.getPath('home'),
     onRegistryChanged: async () => {
-      await modelRegistry.refresh().catch(() => undefined);
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
       broadcastModelsChanged();
     }
   });
+  perfMark('opencode:controller-constructed');
 
   // Drop cached models left behind by providers that no longer exist, so the
   // catalog does not carry entries nothing can serve.
@@ -432,6 +458,7 @@ app.whenReady().then(async () => {
   // installer's own sweep never covered — it only looks inside the plugins
   // directory, and these live beside it.
   marketplaceRegistry.sweepCheckouts();
+  perfMark('plugins:registry+sweeps');
   const pluginMarketplaces = new PluginMarketplaceService(
     marketplaceRegistry,
     pluginRegistry,
@@ -523,6 +550,9 @@ app.whenReady().then(async () => {
   const skillsService = new SkillsService(pluginRegistry, pluginsBetaEnabled);
 
   app.on('will-quit', () => {
+    // Buffered log lines must land before the process goes away; after this,
+    // the exit hook is a backstop for anything logged during teardown.
+    logger.flushSync();
     ptyService.disposeAll();
     // An `opencode serve` child Atlas spawned outlives the window otherwise.
     void opencodeController.shutdown();
@@ -632,12 +662,15 @@ app.whenReady().then(async () => {
       },
       mcpAuditLog,
       spillStore,
+      () => database.settings.getCompactionThresholdPercent(),
     ),
     database.runtimeState,
     toolStateStore,
     undefined,
     async ({ modelId, capability }) => {
-      await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
+      await customProviderService
+        .recordCapabilityRejection(modelId, capability)
+        .catch(reportBackgroundFailure('providers.capability_rejection_failed'));
     },
     checkpointCoordinator,
     mcpAuditLog,
@@ -694,6 +727,7 @@ app.whenReady().then(async () => {
     pushEvent: pushGoalEvent,
   });
   chatEngine.attachGoalRuntime(goalRuntime);
+  perfMark('chatengine+goal:constructed');
 
   registerSettingsIpc({
     settingsRepo: database.settings,
@@ -711,10 +745,12 @@ app.whenReady().then(async () => {
       ptyService.kill(conversationId);
       // Spill files are an implementation detail of the conversation's turns;
       // they go with it. Fire-and-forget for the same reason the sweep is.
-      void spillStore.deleteConversation(conversationId).catch(() => undefined);
+      void spillStore.deleteConversation(conversationId).catch(reportBackgroundFailure('spill.delete_failed'));
       // Same for its background jobs: the owner is gone, so nothing can
       // claim their output anymore.
-      void jobRegistry.killConversation(conversationId, 'conversation deleted').catch(() => undefined);
+      void jobRegistry
+        .killConversation(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('jobs.kill_conversation_failed'));
       // And its live subagent sessions, for the same reason. Eviction stops the
       // continuation loops (child-first through nested trees) and drops any
       // completion notices nobody will ever drain; interruptAll handles the
@@ -724,8 +760,12 @@ app.whenReady().then(async () => {
       // not depend on a pragma to be correct.
       opencodeController.forgetConversation(conversationId);
       chatEngine.continuations.evictForConversation(conversationId);
-      void chatEngine.subagents.interruptAll(conversationId, 'conversation deleted').catch(() => undefined);
-      void chatEngine.subagents.clearConversationBackground(conversationId, 'conversation deleted').catch(() => undefined);
+      void chatEngine.subagents
+        .interruptAll(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('subagents.interrupt_all_failed'));
+      void chatEngine.subagents
+        .clearConversationBackground(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('subagents.clear_background_failed'));
     },
   });
   registerProjectsIpc({
@@ -764,6 +804,7 @@ app.whenReady().then(async () => {
   registerJobsIpc(jobRegistry);
   registerGoalsIpc({ goalRuntime, chatEngine });
   registerChatIpc(chatEngine);
+  perfMark('ipc:handlers-registered');
   // Fold the durable follow-up queue back in and start draining it. The
   // window resolver lets a resumed entry borrow the frontmost window for
   // event delivery; entries wait in the queue until one exists.
@@ -824,7 +865,15 @@ app.whenReady().then(async () => {
   // Before the first window: the vibrancy material is created with the native
   // appearance, so setting it afterwards leaves the first paint mismatched.
   syncNativeTheme(database.settings.getThemeMode());
+  perfMark('boot:pre-window-complete');
   const window = createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
+  perfMark('window:created');
+  window.webContents.once('did-finish-load', () => {
+    perfMark('boot:total (module eval → renderer loaded)');
+    if (process.env.ATLAS_PERF_TRACE === '1') {
+      console.info(`[perf] bootStart→whenReady measured from module eval; whenReady delta: ${Math.round(performance.now() - bootStart)}ms`);
+    }
+  });
   captureFirstLaunchIfNeeded();
   window.once('show', () => {
     updateService.start();
@@ -836,7 +885,7 @@ app.whenReady().then(async () => {
     // connected and their tools already listed.
     // Gated servers are deliberately not warmed: warming one would spawn the
     // process the gate exists to avoid.
-    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(() => undefined);
+    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(reportBackgroundFailure('mcp.prewarm_failed'));
   });
 
   app.on('activate', () => {

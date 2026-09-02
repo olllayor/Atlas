@@ -247,6 +247,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
         settingsRepo.setVisualMode(patch.chat.visualMode);
       }
 
+      if (typeof patch?.chat?.compactionThresholdPercent === 'number' && Number.isFinite(patch.chat.compactionThresholdPercent)) {
+        settingsRepo.setCompactionThresholdPercent(patch.chat.compactionThresholdPercent);
+      }
+
       return modelRegistry.getSettingsSummary();
     })
   );

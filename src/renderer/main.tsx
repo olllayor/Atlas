@@ -20,8 +20,18 @@ void syncTelemetryStatus();
 // this attribute lands, and a late stamp reads as a flash on every launch.
 stampCachedTranslucentSidebar(isMacPlatform);
 
+console.info(`[perf] renderer:main.tsx evaluated at +${Math.round(performance.now())}ms (since renderer nav start)`);
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+
+// First paint (module eval → first rAF after React commits). Off the React
+// lifecycle on purpose: an effect runs before paint and would flatter the number.
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    console.info(`[perf] renderer:first-paint at +${Math.round(performance.now())}ms`);
+  });
+});

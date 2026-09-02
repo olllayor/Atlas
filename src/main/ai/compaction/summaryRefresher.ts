@@ -91,7 +91,7 @@ export class SummaryRefreshService {
         modelId,
         // Same catalog facts the turn itself uses; without them reasoning
         // models reject the default temperature with a hard 400.
-        modelHints: this.deps.modelsRepo.getRuntimeHints(modelId),
+        modelHints: this.deps.modelsRepo.getRuntimeHints(modelId, providerId),
         // A summary needs no deliberation, and thinking tokens come out of the
         // same budget as the answer.
         reasoningEffort: 'minimal',

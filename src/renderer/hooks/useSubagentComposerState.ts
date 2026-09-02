@@ -48,7 +48,18 @@ export function useSubagentComposerState(conversationId: string | null): Subagen
   const refresh = useCallback(async () => {
     if (!conversationId) return;
     try {
-      setRemote(await window.atlasChat.subagents.getComposerState(conversationId));
+      const next = await window.atlasChat.subagents.getComposerState(conversationId);
+      // Two booleans, re-read every two seconds, almost always unchanged.
+      // Committing the fresh object anyway re-rendered App on every poll for
+      // as long as a child conversation was open.
+      setRemote((previous) =>
+        previous &&
+        next &&
+        previous.parentAvailable === next.parentAvailable &&
+        previous.running === next.running
+          ? previous
+          : next
+      );
     } catch {
       // Keep the last known state; the next poll retries.
     }

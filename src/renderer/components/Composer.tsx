@@ -1,4 +1,4 @@
-import { ArrowUp, ImagePlus, Loader2, Paperclip, Plus, Square } from 'lucide-react';
+import { ArrowUp, ImagePlus, Paperclip, Plus, Square } from 'lucide-react';
 import { nanoid } from 'nanoid';
 import {
   memo,
@@ -30,8 +30,9 @@ import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParam
 import { planImageDownscale } from '../../shared/imageDownscale';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
+import { AtlasLoader } from './ui/atlas-loader';
+import { useAppStore } from '../stores/useAppStore';
 import type {
-  ConversationDetail,
   CustomProvider,
   ModelSummary,
   ProviderCredentialSummary,
@@ -96,17 +97,29 @@ export type ComposerProps = {
   isStreaming: boolean;
   models: ModelSummary[];
   selectedModelId: string | null;
+  selectedProviderId?: string | null;
   modelPickerOpen: boolean;
   composerFocusNonce: number;
-  detail: ConversationDetail | null;
-  draft: DraftStateLike | null;
+  /**
+   * The open conversation, by id. The composer only ever needed the id off the
+   * page object, and the page is replaced on every stream flush — taking the id
+   * keeps the composer off the token path.
+   */
+  conversationId: string | null;
+  /**
+   * Turn identity of the in-flight request, or null when nothing is streaming.
+   * Together these are the whole of what the composer read from the live draft:
+   * the meter keys off the turn, never off its tokens.
+   */
+  draftRequestId: string | null;
+  draftStatus: DraftStateLike['status'] | null;
   /** Staged files for the *current* conversation; owned by the store. */
   attachments: ComposerAttachment[];
   onAttachmentsChange: (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => void;
   onChange: (value: string) => void;
   onSend: (message: ComposerMessage) => Promise<void> | void;
   onAbort: () => void;
-  onSelectModel: (modelId: string) => void;
+  onSelectModel: (modelId: string, providerId?: string) => void;
   onModelPickerOpenChange: (open: boolean) => void;
   onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
@@ -498,8 +511,9 @@ export function Composer({
   selectedModelId,
   modelPickerOpen,
   composerFocusNonce,
-  detail,
-  draft,
+  conversationId,
+  draftRequestId,
+  draftStatus,
   attachments: stagedAttachments,
   onAttachmentsChange,
   onChange,
@@ -525,6 +539,7 @@ export function Composer({
   onPermissionPresetSelect,
   onSlashAction,
   onOpenGallery,
+  selectedProviderId,
   queuedCount = 0,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -536,10 +551,20 @@ export function Composer({
   const [scrollEdges, setScrollEdges] = useState({ bottom: false, top: false });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === selectedModelId) ?? null,
-    [models, selectedModelId],
-  );
+  const selectedModel = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
 
   // The same capability check the send path runs, applied to a single incoming
   // file so it can be refused before it is ever staged.
@@ -743,13 +768,13 @@ export function Composer({
 
     const candidates = models.filter(
       (model) =>
-        model.id !== selectedModelId &&
+        !(model.id === selectedModelId && model.providerId === selectedProviderId) &&
         !model.archived &&
         !getAttachmentCapabilityError(model, attachments.files),
     );
 
     return candidates.find((model) => model.supportsVision === true) ?? candidates[0] ?? null;
-  }, [attachments.files, models, selectedModelId, unsupportedReason]);
+  }, [attachments.files, models, selectedModelId, selectedProviderId, unsupportedReason]);
   const hasSubmittableContent = Boolean(value.trim()) || attachments.files.length > 0;
   const canSend = hasSubmittableContent && !disabled && !unsupportedReason && !isSubmitting;
 
@@ -955,18 +980,23 @@ export function Composer({
    * in-flight request's prompt is already fixed); it changes when a request
    * starts or finishes, which is exactly when history has grown.
    */
-  const turnKey = `${draft?.requestId ?? 'idle'}:${draft?.status ?? 'none'}`;
+  const turnKey = `${draftRequestId ?? 'idle'}:${draftStatus ?? 'none'}`;
+  const settingsThreshold = useAppStore((state) => state.settings?.chat.compactionThresholdPercent ?? 85);
+  const updatePreferences = useAppStore((state) => state.updatePreferences);
+  const [compactNonce, setCompactNonce] = useState(0);
+  const contextTurnKey = `${turnKey}:${compactNonce}:${settingsThreshold}`;
 
   const contextUsage = useContextUsage({
-    conversationId: detail?.conversation?.id ?? null,
+    conversationId,
     modelId: selectedModel?.id ?? null,
+    providerId: selectedModel?.providerId ?? selectedProviderId ?? null,
     enableTools: selectedModel != null && selectedModel.supportsTools !== false,
     toolPermissionMode,
     // What is typed but unsent counts toward the next prompt; what is streaming
     // back does not, since the request that produced it is already sent.
-    pendingText: draft ? '' : value,
+    pendingText: draftStatus ? '' : value,
     pendingAttachments,
-    turnKey,
+    turnKey: contextTurnKey,
   });
 
   const contextStats = useMemo(() => {
@@ -988,8 +1018,28 @@ export function Composer({
         cachedInputTokens: contextUsage.lastTurn?.cachedInputTokens ?? undefined,
       },
       breakdown: contextUsage,
+      compactionThresholdPercent: settingsThreshold ?? contextUsage.compactionThresholdPercent ?? 85,
+      compactionThresholdTokens: contextUsage.compactionThresholdTokens ?? null,
     };
-  }, [contextUsage, tokenLensModelId]);
+  }, [contextUsage, settingsThreshold, tokenLensModelId]);
+
+  const handleCompactionThresholdChange = useCallback(
+    (next: number) => {
+      void updatePreferences({ chat: { compactionThresholdPercent: next } });
+    },
+    [updatePreferences]
+  );
+
+  const handleCompactNow = useCallback(() => {
+    if (!conversationId) return;
+    void window.atlasChat.chat
+      .compact(conversationId)
+      .then(() => {
+        // Refresh meter immediately so the forced compaction's sticky boundary is visible.
+        setCompactNonce((nonce) => nonce + 1);
+      })
+      .catch(() => undefined);
+  }, [conversationId]);
 
   const sendTooltip = isStreaming
     ? 'Stop generating · Esc'
@@ -1025,8 +1075,13 @@ export function Composer({
         the gap this layout exists to remove. With none, the slab's own top
         edge is where the transcript stops, and a message scrolling past it
         goes behind the slab rather than halting short of it.
+
+        Below it is the opposite case: the slab sits off the window edge so it
+        reads as an object resting on the page rather than a strip welded to
+        the frame. The transcript reserves that space along with the rest of
+        the dock, so the gap costs nothing at the top.
       */}
-      <div className="px-5 pb-3 lg:px-6">
+      <div className="px-5 pb-7 lg:px-6">
         <div className="mx-auto max-w-composer">
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
@@ -1045,7 +1100,7 @@ export function Composer({
           />
 
           {/* The Codex slab: opaque, superellipse-rounded, borderless, shadowless. */}
-          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-2.5 pt-3">
+          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-3 pt-4">
             {isDropTarget ? (
               <div
                 aria-hidden="true"
@@ -1092,7 +1147,7 @@ export function Composer({
                 {capableModelSwitch ? (
                   <button
                     type="button"
-                    onClick={() => onSelectModel(capableModelSwitch.id)}
+                    onClick={() => onSelectModel(capableModelSwitch.id, capableModelSwitch.providerId)}
                     className="cursor-pointer rounded-sm underline decoration-dotted underline-offset-2 transition hover:text-text-primary"
                   >
                     Switch to {capableModelSwitch.label}
@@ -1188,7 +1243,7 @@ export function Composer({
                 }
                 // Bare textarea per spec §4: no inner bg, border, or focus ring —
                 // the slab itself is the only chrome.
-                className="max-h-composer-max-height min-h-6 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                className="max-h-composer-max-height min-h-12 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                 style={textareaMask ? { maskImage: textareaMask, WebkitMaskImage: textareaMask } : undefined}
                 name="message"
               />
@@ -1274,6 +1329,10 @@ export function Composer({
                     breakdown={contextStats.breakdown}
                     usage={contextStats.usage}
                     modelId={contextStats.modelId}
+                    compactionThresholdPercent={contextStats.compactionThresholdPercent}
+                    compactionThresholdTokens={contextStats.compactionThresholdTokens}
+                    onCompactionThresholdChange={handleCompactionThresholdChange}
+                    onCompactNow={handleCompactNow}
                   >
                     <ContextTrigger />
                     <ContextContent>
@@ -1289,12 +1348,13 @@ export function Composer({
                 <ModelSelector
                   models={models}
                   selectedModelId={selectedModelId}
+                  selectedProviderId={selectedProviderId}
                   disabled={isStreaming}
                   open={modelPickerOpen}
                   onOpenChange={onModelPickerOpenChange}
-                  onSelect={(modelId) => {
+                  onSelect={(modelId, providerId) => {
                     onModelPickerOpenChange(false);
-                    onSelectModel(modelId);
+                    onSelectModel(modelId, providerId);
                   }}
                   onRefresh={onRefreshModels}
                   isRefreshing={isRefreshingModels}
@@ -1338,7 +1398,7 @@ export function Composer({
                       {isStreaming ? (
                         <Square className="size-3 fill-current" />
                       ) : isSubmitting ? (
-                        <Loader2 className="size-4 motion-spin-steps" strokeWidth={2} />
+                        <AtlasLoader size="sm" className="size-4 text-text-inverse" />
                       ) : (
                         <ArrowUp className="size-4" strokeWidth={2.25} />
                       )}

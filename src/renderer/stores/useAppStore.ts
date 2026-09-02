@@ -92,6 +92,13 @@ export type QueuedFollowupEntry = {
 /** Immutable empty list so selectors return a stable reference when idle. */
 export const EMPTY_QUEUED_FOLLOWUPS: QueuedFollowupEntry[] = [];
 
+/**
+ * Stand-in for the loaded-page map, for subscribers that only want it under a
+ * condition. Returning this instead of the live map keeps their selector
+ * result identical across the flushes where the condition is false.
+ */
+export const EMPTY_CONVERSATION_PAGES: Record<string, ConversationPage> = {};
+
 type AppState = {
   bootstrapping: boolean;
   initialized: boolean;
@@ -137,6 +144,7 @@ type AppState = {
   isLoadingConversationId: string | null;
   selectedConversationId: string | null;
   selectedModelIdByConversation: Record<string, string>;
+  selectedProviderIdByConversation: Record<string, ProviderId>;
   /** Unsent composer text, per conversation. A single global string leaked
    *  half-typed messages into whichever thread you switched to. */
   composerDraftsByConversation: Record<string, string>;
@@ -267,7 +275,7 @@ type AppState = {
   setUpdateState: (snapshot: AppUpdateSnapshot) => void;
   checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
   performUpdatePrimaryAction: () => Promise<void>;
-  setSelectedModel: (conversationId: string, modelId: string) => void;
+  setSelectedModel: (conversationId: string, modelId: string, providerId?: ProviderId) => void;
   setComposerDraft: (conversationId: string, value: string) => void;
   setComposerAttachments: (
     conversationId: string,
@@ -311,11 +319,53 @@ function getErrorMessage(error: unknown) {
   return 'Unexpected error';
 }
 
-function getModelById(models: ModelSummary[], modelId: string | null) {
+function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSummary, 'id' | 'providerId'>) {
+  return a.id === b.id && a.providerId === b.providerId;
+}
+
+function getModelById(models: ModelSummary[], modelId: string | null, providerId?: ProviderId | null) {
   if (!modelId) {
     return null;
   }
-  return models.find((model) => model.id === modelId) ?? null;
+  if (providerId) {
+    const exact = models.find((model) => !model.archived && model.id === modelId && model.providerId === providerId);
+    if (exact) return exact;
+  }
+  const candidates = models.filter((model) => model.id === modelId);
+  if (candidates.length === 0) return null;
+  const nonArchived = candidates.filter((m) => !m.archived);
+  const pool = nonArchived.length > 0 ? nonArchived : candidates;
+  // Deterministic tie-break: providerId ASC, mirrors DB fallback.
+  let best = pool[0];
+  for (let i = 1; i < pool.length; i++) {
+    if (pool[i].providerId < best.providerId) best = pool[i];
+  }
+  return best;
+}
+
+export function prunePinnedProviders(
+  pins: Record<string, ProviderId>,
+  selections: Record<string, string>,
+  models: ModelSummary[]
+): Record<string, ProviderId> {
+  const alive = new Set(models.filter((m) => !m.archived).map((m) => `${m.providerId}\u0000${m.id}`));
+  let changed = false;
+  const next: Record<string, ProviderId> = {};
+  for (const [conversationId, providerId] of Object.entries(pins)) {
+    const modelId = selections[conversationId];
+    if (!modelId) {
+      changed = true;
+      continue;
+    }
+    if (alive.has(`${providerId}\u0000${modelId}`)) {
+      next[conversationId] = providerId;
+    } else {
+      changed = true;
+    }
+  }
+  // Also drop pins where no selection exists? Already handled.
+  // Identity-stable: return original when nothing moved.
+  return changed ? next : pins;
 }
 
 export function resolveSelectedModelId(
@@ -560,6 +610,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingConversationId: null,
   selectedConversationId: null,
   selectedModelIdByConversation: {},
+  selectedProviderIdByConversation: {},
   composerDraftsByConversation: {},
   composerAttachmentsByConversation: {},
   draftsByConversation: {},
@@ -635,6 +686,22 @@ export const useAppStore = create<AppState>((set, get) => ({
             )
           : null;
 
+      // Resolve provider for the bootstrapped selection so (id, provider) travels together.
+      const bootstrappedModelId =
+        detail?.conversation?.defaultModelId ??
+        chooseDefaultModel(
+          models,
+          detail?.conversation?.defaultProviderId ?? settings.defaultProviderId,
+          settings.chat.lastModelId
+        ) ??
+        defaultModelId;
+      const bootstrappedProviderId = (() => {
+        if (!bootstrappedModelId || !selectedConversationId) return null;
+        const pinned = detail?.conversation?.defaultProviderId ?? null;
+        const model = getModelById(models, bootstrappedModelId, pinned);
+        return model?.providerId ?? pinned ?? settings.defaultProviderId ?? null;
+      })();
+
       set({
         bootstrapping: false,
         initialized: true,
@@ -653,17 +720,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         activitiesByConversation: snapshotPatch?.activitiesByConversation ?? {},
         updateState,
         selectedModelIdByConversation:
-          defaultModelId && selectedConversationId
-            ? {
-                [selectedConversationId]:
-                  detail?.conversation?.defaultModelId ??
-                  chooseDefaultModel(
-                    models,
-                    detail?.conversation?.defaultProviderId ?? settings.defaultProviderId,
-                    settings.chat.lastModelId
-                  ) ??
-                  defaultModelId
-              }
+          bootstrappedModelId && selectedConversationId
+            ? { [selectedConversationId]: bootstrappedModelId }
+            : {},
+        selectedProviderIdByConversation:
+          bootstrappedModelId && bootstrappedProviderId && selectedConversationId
+            ? { [selectedConversationId]: bootstrappedProviderId }
             : {}
       });
 
@@ -690,16 +752,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           current.settings?.chat.lastModelId
         );
 
+        const repointed = repointUnavailableModels(
+          current.selectedModelIdByConversation,
+          models,
+          fallbackModelId
+        );
+        const prunedPins = prunePinnedProviders(
+          current.selectedProviderIdByConversation,
+          repointed,
+          models
+        );
+
         return {
           models,
-          // This reload is how a window learns a provider was disabled or
-          // removed, so it is also where selections pointing into the vanished
-          // provider have to be re-pointed.
-          selectedModelIdByConversation: repointUnavailableModels(
-            current.selectedModelIdByConversation,
-            models,
-            fallbackModelId
-          )
+          selectedModelIdByConversation: repointed,
+          selectedProviderIdByConversation: prunedPins
         };
       });
     } catch {
@@ -713,32 +780,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const models = await window.atlasChat.models.refresh();
       const settings = await window.atlasChat.settings.getSummary();
-      const state = get();
-      const selectedModelId = resolveSelectedModelId(
-        state.selectedConversationId,
-        state.selectedModelIdByConversation,
-        state.conversationDetails,
-        models
-      ) ?? chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
 
       set((current) => {
-        // Every conversation is checked, not just the visible one: a refresh
-        // that drops a provider leaves stale picks behind on the others too,
-        // and they surface as a broken send the moment one is opened.
-        const repointed = repointUnavailableModels(
+        const selectedModelId =
+          resolveSelectedModelId(
+            current.selectedConversationId,
+            current.selectedModelIdByConversation,
+            current.conversationDetails,
+            models
+          ) ?? chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
+
+        const repointedBase = repointUnavailableModels(
           current.selectedModelIdByConversation,
           models,
           selectedModelId
         );
+        const finalSelections =
+          selectedModelId && current.selectedConversationId
+            ? { ...repointedBase, [current.selectedConversationId]: selectedModelId }
+            : repointedBase;
+
+        let nextPins = prunePinnedProviders(current.selectedProviderIdByConversation, finalSelections, models);
+        if (selectedModelId && current.selectedConversationId) {
+          const existingPin = current.selectedProviderIdByConversation[current.selectedConversationId] ?? null;
+          const resolvedModel = getModelById(models, selectedModelId, existingPin);
+          const providerToStore =
+            resolvedModel?.providerId ??
+            current.conversationDetails[current.selectedConversationId!]?.conversation.defaultProviderId ??
+            settings.defaultProviderId ??
+            null;
+          if (providerToStore && nextPins[current.selectedConversationId] !== providerToStore) {
+            nextPins = { ...nextPins, [current.selectedConversationId]: providerToStore };
+          }
+        }
 
         return {
           isRefreshingModels: false,
           models,
           settings,
-          selectedModelIdByConversation:
-            selectedModelId && current.selectedConversationId
-              ? { ...repointed, [current.selectedConversationId]: selectedModelId }
-              : repointed,
+          selectedModelIdByConversation: finalSelections,
+          selectedProviderIdByConversation: nextPins
         };
       });
 
@@ -803,33 +884,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     const cachedDetail = cacheState.conversationDetails[conversationId] ?? state.conversationDetails[conversationId];
 
-    set((current) => ({
-      selectedConversationId: conversationId,
-      // Opening a thread is reading it.
-      unreadByConversation: current.unreadByConversation[conversationId]
-        ? (() => {
-            const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
-            return rest;
-          })()
-        : current.unreadByConversation,
-      conversationDetails: cacheState.conversationDetails,
-      inactiveConversationIds: cacheState.inactiveConversationIds,
-      isLoadingConversationId: cachedDetail ? null : conversationId,
-      selectedModelIdByConversation:
-        !current.selectedModelIdByConversation[conversationId]
-          ? {
-              ...current.selectedModelIdByConversation,
-              [conversationId]:
-                cachedDetail?.conversation.defaultModelId ??
-                chooseDefaultModel(
-                  current.models,
-                  cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
-                  current.settings?.chat.lastModelId
-                ) ??
-                ''
-            }
-          : current.selectedModelIdByConversation
-    }));
+    set((current) => {
+      const needsModel = !current.selectedModelIdByConversation[conversationId];
+      const modelId = needsModel
+        ? (cachedDetail?.conversation.defaultModelId ??
+          chooseDefaultModel(
+            current.models,
+            cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+            current.settings?.chat.lastModelId
+          ) ??
+          '')
+        : null;
+      const providerId = (() => {
+        if (!needsModel || !modelId) return null;
+        const pinned = cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId ?? null;
+        const m = getModelById(current.models, modelId, pinned);
+        return m?.providerId ?? pinned;
+      })();
+
+      return {
+        selectedConversationId: conversationId,
+        unreadByConversation: current.unreadByConversation[conversationId]
+          ? (() => {
+              const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
+              return rest;
+            })()
+          : current.unreadByConversation,
+        conversationDetails: cacheState.conversationDetails,
+        inactiveConversationIds: cacheState.inactiveConversationIds,
+        isLoadingConversationId: cachedDetail ? null : conversationId,
+        selectedModelIdByConversation: needsModel && modelId
+          ? { ...current.selectedModelIdByConversation, [conversationId]: modelId }
+          : current.selectedModelIdByConversation,
+        selectedProviderIdByConversation:
+          needsModel && modelId && providerId && !current.selectedProviderIdByConversation[conversationId]
+            ? { ...current.selectedProviderIdByConversation, [conversationId]: providerId }
+            : current.selectedProviderIdByConversation
+      };
+    });
 
     if (cachedDetail) {
       return;
@@ -841,33 +933,48 @@ export const useAppStore = create<AppState>((set, get) => ({
         window.atlasChat.chat.getRuntimeState({ conversationId }).catch(() => null),
       ]);
       const activeRuntimeState = runtimeState ?? null;
-      set((current) => ({
-        ...(activeRuntimeState
+      set((current) => {
+        const needsModel = !current.selectedModelIdByConversation[conversationId];
+        const modelId = needsModel
+          ? (activeRuntimeState?.conversation?.defaultModelId ??
+            detail.conversation.defaultModelId ??
+            chooseDefaultModel(
+              current.models,
+              activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+              current.settings?.chat.lastModelId
+            ) ??
+            '')
+          : null;
+        const providerId = (() => {
+          if (!needsModel || !modelId) return null;
+          const pinned =
+            activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId ?? null;
+          const m = getModelById(current.models, modelId, pinned);
+          return m?.providerId ?? pinned;
+        })();
+
+        const basePatch = activeRuntimeState
           ? applyRuntimeSnapshotToStore(current, conversationId, activeRuntimeState, detail)
           : {
               conversationDetails: {
                 ...current.conversationDetails,
-                [conversationId]: detail,
-              },
-            }),
-        isLoadingConversationId:
-          current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
-        selectedModelIdByConversation:
-          !current.selectedModelIdByConversation[conversationId]
-            ? {
-                ...current.selectedModelIdByConversation,
-                [conversationId]:
-                  activeRuntimeState?.conversation?.defaultModelId ??
-                  detail.conversation.defaultModelId ??
-                  chooseDefaultModel(
-                    current.models,
-                    activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
-                    current.settings?.chat.lastModelId
-                  ) ??
-                  ''
+                [conversationId]: detail
               }
-            : current.selectedModelIdByConversation
-      }));
+            };
+
+        return {
+          ...basePatch,
+          isLoadingConversationId:
+            current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
+          selectedModelIdByConversation: needsModel && modelId
+            ? { ...current.selectedModelIdByConversation, [conversationId]: modelId }
+            : current.selectedModelIdByConversation,
+          selectedProviderIdByConversation:
+            needsModel && modelId && providerId && !current.selectedProviderIdByConversation[conversationId]
+              ? { ...current.selectedProviderIdByConversation, [conversationId]: providerId }
+              : current.selectedProviderIdByConversation
+        };
+      });
     } catch (error) {
       set((current) => ({
         isLoadingConversationId:
@@ -1132,15 +1239,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   attachProject: async ({ root, conversationId } = {}) => {
-    if (attachProjectInFlight) {
-      return attachProjectInFlight;
+    const needsPicker = !root;
+    // Picker is OS singleton — second opener while picker is up joins first.
+    // Explicit `root` is not a picker, so it must not join.
+    if (needsPicker && attachProjectInFlight) {
+      const picked = await attachProjectInFlight;
+      if (picked && conversationId) {
+        await get().setConversationWorkspace(conversationId, { projectId: picked.id });
+      }
+      return picked;
     }
 
     const run = async (): Promise<WorkspaceProject | null> => {
       const project = await window.atlasChat.projects.create(root ? { root } : undefined);
 
       if (!project) {
-        // The user cancelled the picker. Not an error, and nothing changes.
         return null;
       }
 
@@ -1153,18 +1266,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       return project;
     };
 
-    // Every surface fires this as `void attachProject(...)`, so a rejection
-    // here had nowhere to land but the unhandled-rejection handler.
-    attachProjectInFlight = run()
-      .catch((error) => {
-        notifyError('Could not attach the folder', error);
-        return null;
-      })
-      .finally(() => {
-        attachProjectInFlight = null;
-      });
+    if (needsPicker) {
+      attachProjectInFlight = run()
+        .catch((error) => {
+          notifyError('Could not attach the folder', error);
+          return null;
+        })
+        .finally(() => {
+          attachProjectInFlight = null;
+        });
+      return attachProjectInFlight;
+    }
 
-    return attachProjectInFlight;
+    // Non-picker path: no dedupe, each explicit root runs independently.
+    try {
+      return await run();
+    } catch (error) {
+      notifyError('Could not attach the folder', error);
+      return null;
+    }
   },
 
   renameProject: async (projectId, title) => {
@@ -1340,21 +1460,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setConversationWorkspace: async (conversationId, patch) => {
-    const previous = get().conversations;
+    const prevSnapshot = get().conversations.find((c) => c.id === conversationId) ?? null;
 
-    // Optimistic: the mode switch drives visible chrome, and waiting a round
-    // trip to repaint it reads as lag.
-    const applyLocally = (conversation: ConversationSummary) =>
-      conversation.id === conversationId
-        ? {
-            ...conversation,
-            workspaceMode: patch.mode ?? conversation.workspaceMode,
-            executionTarget: patch.executionTarget ?? conversation.executionTarget,
-            projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
-          }
-        : conversation;
-
-    set({ conversations: previous.map(applyLocally) });
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              workspaceMode: patch.mode ?? conversation.workspaceMode,
+              executionTarget: patch.executionTarget ?? conversation.executionTarget,
+              projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
+            }
+          : conversation
+      )
+    }));
 
     try {
       const workspace = await window.atlasChat.conversations.setWorkspace({ conversationId, ...patch });
@@ -1388,7 +1507,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         await get().refreshProjects();
       }
     } catch (error) {
-      set({ conversations: previous });
+      // Functional revert for the single row, then refresh for truth.
+      if (prevSnapshot) {
+        set((state) => ({
+          conversations: state.conversations.map((c) => (c.id === conversationId ? prevSnapshot : c))
+        }));
+      }
+      void get().refreshConversationList();
       notifyError('Could not update the workspace', error);
     }
   },
@@ -1574,39 +1699,47 @@ export const useAppStore = create<AppState>((set, get) => ({
     await window.atlasChat.updates.performPrimaryAction();
   },
 
-  setSelectedModel: (conversationId, modelId) => {
-    // The catalog row is the only place the model and its provider are already
-    // paired. `setDefaults` writes both columns, and deriving the provider from
-    // anywhere else is how a model ends up recorded against a provider that
-    // cannot serve it. A model the catalog does not offer is not a selection —
-    // the same rule `resolveSelectedModelId` applies — so it is not written.
-    const model = get().models.find((entry) => entry.id === modelId) ?? null;
+  setSelectedModel: (conversationId, modelId, providerId) => {
+    // Provider-qualified selection: (modelId, providerId) is the real key.
+    // The caller ideally supplies both; fallback resolves the pair via the
+    // catalog so a bare id still lands on a deterministic provider.
+    const state = get();
+    const model = providerId
+      ? getModelById(state.models, modelId, providerId)
+      : getModelById(state.models, modelId);
+    const resolvedProviderId = model?.providerId ?? providerId ?? null;
 
-    set((state) => ({
-      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId },
-      settings: state.settings
-        ? { ...state.settings, chat: { ...state.settings.chat, lastModelId: modelId } }
-        : state.settings
+    set((current) => ({
+      selectedModelIdByConversation: { ...current.selectedModelIdByConversation, [conversationId]: modelId },
+      selectedProviderIdByConversation: resolvedProviderId
+        ? { ...current.selectedProviderIdByConversation, [conversationId]: resolvedProviderId }
+        : current.selectedProviderIdByConversation,
+      settings: current.settings
+        ? { ...current.settings, chat: { ...current.settings.chat, lastModelId: modelId } }
+        : current.settings
     }));
 
-    // Persisted so the choice survives a restart, not just this session. A
-    // failure here only costs the remembered default, so it stays silent.
-    void window.atlasChat.settings.updatePreferences({ chat: { lastModelId: modelId } }).catch(() => undefined);
+    // No toast: the per-conversation pin below is the one the user is actually
+    // choosing, and it reports for itself. This write is the global fallback
+    // default, so a failure costs the next cold start its remembered model —
+    // worth a log line, not an interruption on every model switch.
+    void window.atlasChat.settings
+      .updatePreferences({ chat: { lastModelId: modelId } })
+      .catch((error) => console.warn('[settings] could not persist last model', error));
 
-    if (!model) {
+    if (!model || !resolvedProviderId) {
+      // No paired catalog row: still remember the bare id globally, but the
+      // per-conversation pair has no provider to persist.
+      if (resolvedProviderId) {
+        void window.atlasChat.conversations
+          .setDefaultModel({ conversationId, providerId: resolvedProviderId, modelId })
+          .catch((error) => notifyError('Could not remember that model for this chat', error));
+      }
       return;
     }
 
-    // The conversation's own model. Until this existed the column was written
-    // only when a message was actually sent, so picking a model and not sending
-    // lost the pick on restart, and the chat fell back to whatever was chosen
-    // last in some other chat.
-    //
-    // Unlike the remembered default above, this failure is visible to the user:
-    // the pick works all session and then silently reverts on restart, which is
-    // exactly the bug this call fixes. It is worth a word.
     void window.atlasChat.conversations
-      .setDefaultModel({ conversationId, providerId: model.providerId, modelId: model.id })
+      .setDefaultModel({ conversationId, providerId: resolvedProviderId, modelId: model.id })
       .catch((error) => notifyError('Could not remember that model for this chat', error));
   },
 
@@ -1727,8 +1860,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const selectedModel = getModelById(state.models, modelId);
-    const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
+    const pinnedProviderId =
+      state.selectedProviderIdByConversation[conversationId] ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId ?? null;
+    const selectedModel = getModelById(state.models, modelId, pinnedProviderId);
+    const providerId = selectedModel?.providerId ?? pinnedProviderId;
     if (!selectedModel || !providerId) {
       notify({ tone: 'error', title: 'Select a valid model before sending' });
       return;
@@ -2017,6 +2152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const previousDetail = state.conversationDetails[conversationId];
     const previousDraft = state.draftsByConversation[conversationId];
     const previousSelectedModel = state.selectedModelIdByConversation[conversationId];
+    const previousSelectedProvider = state.selectedProviderIdByConversation[conversationId];
     const previousSequence = state.runtimeSequenceByConversation[conversationId];
     const previousLoadingOlder = state.isLoadingOlderByConversation[conversationId];
     const previousConversations = state.conversations;
@@ -2028,6 +2164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
       const { [conversationId]: _deletedDraft, ...restDrafts } = current.draftsByConversation;
       const { [conversationId]: _deletedModel, ...restSelectedModels } = current.selectedModelIdByConversation;
+      const { [conversationId]: _deletedProvider, ...restSelectedProviders } = current.selectedProviderIdByConversation;
       const { [conversationId]: _deletedComposerText, ...restComposerText } = current.composerDraftsByConversation;
       const { [conversationId]: deletedComposerFiles, ...restComposerFiles } = current.composerAttachmentsByConversation;
       // Staged files hold object URLs; dropping the map alone would leak them.
@@ -2064,6 +2201,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
+        selectedProviderIdByConversation: restSelectedProviders,
         composerDraftsByConversation: restComposerText,
         composerAttachmentsByConversation: restComposerFiles,
         runtimeSequenceByConversation: restSequences,
@@ -2088,6 +2226,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedModelIdByConversation: previousSelectedModel
           ? { ...current.selectedModelIdByConversation, [conversationId]: previousSelectedModel }
           : current.selectedModelIdByConversation,
+        selectedProviderIdByConversation: previousSelectedProvider
+          ? { ...current.selectedProviderIdByConversation, [conversationId]: previousSelectedProvider }
+          : current.selectedProviderIdByConversation,
         runtimeSequenceByConversation: previousSequence
           ? { ...current.runtimeSequenceByConversation, [conversationId]: previousSequence }
           : current.runtimeSequenceByConversation,
@@ -2096,7 +2237,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : current.isLoadingOlderByConversation,
         conversations: previousConversations,
         archivedConversations: previousArchivedConversations,
-        requestToConversation: previousRequestMap,
+        // Keep current requestToConversation to avoid clobbering concurrent sendMessage inserts.
         selectedConversationId: previousSelectedId
       }));
       notifyError('Could not delete the conversation', error);

@@ -4,9 +4,9 @@ import type {
   WorkspaceProject,
   WorkspaceMode,
 } from '../../shared/contracts';
-import { deriveAttentionState, hasPendingApprovalInParts, type AttentionLevel } from '../lib/attention';
+import { deriveAttentionState, type AttentionLevel } from '../lib/attention';
 import { liveJobCountFor, type ConversationJobSummary } from '../lib/jobActivity';
-import type { DraftStateLike } from './types';
+import type { DraftSummary } from '../stores/draftSummaries';
 
 export type SidebarConversationItem = {
   id: string;
@@ -15,7 +15,7 @@ export type SidebarConversationItem = {
   isRunning: boolean;
   /** The turn ended in an error the user has not seen yet. */
   isFailed: boolean;
-  status: DraftStateLike['status'] | 'idle';
+  status: DraftSummary['status'] | 'idle';
   /**
    * What this thread needs from a human right now (Codex "Activity" model):
    * an approval/error to answer, work in flight, a queued turn, or unread
@@ -64,7 +64,12 @@ export type SidebarConversationGroup = {
 
 type BuildSidebarConversationItemsParams = {
   conversations: ConversationSummary[];
-  draftsByConversation: Record<string, DraftStateLike | undefined>;
+  /**
+   * Turn-level draft state only. The rows never render tokens, so taking the
+   * summary rather than the live draft keeps the sidebar out of the 33ms
+   * stream flush entirely.
+   */
+  draftsByConversation: Record<string, DraftSummary | undefined>;
   now: number;
   livenessByConversation?: Map<string, 'working' | 'monitoring' | null>;
   /** Whole-window background-job rollups (`useConversationJobSummaries`). */
@@ -371,7 +376,7 @@ function resolveGroup(timestampMs: number | null, now: number) {
 
 function buildSecondaryLabel(
   conversation: ConversationSummary,
-  draft: DraftStateLike | undefined,
+  draft: DraftSummary | undefined,
   primaryLabel: string
 ) {
   if (draft?.status === 'streaming') {
@@ -447,7 +452,7 @@ export function buildSidebarConversationItems({
     const unreadCount = unreadByConversation?.[conversation.id] ?? 0;
     const attention = deriveAttentionState({
       draftStatus: draft?.status,
-      hasPendingApproval: hasPendingApprovalInParts(draft?.parts),
+      hasPendingApproval: draft?.hasPendingApproval ?? false,
       backgroundLiveness,
       backgroundJobsLive,
       conversationStatus: conversation.status,

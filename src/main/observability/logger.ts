@@ -16,7 +16,7 @@
  * work on them without a parser.
  */
 
-import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -28,6 +28,14 @@ const MAX_LOG_BYTES = 2 * 1024 * 1024;
 
 /** The live file plus this many rolled ones. */
 const MAX_ROLLED_FILES = 3;
+
+/**
+ * Buffer bounds for the batched file writer. Past either, the buffer drains
+ * synchronously instead of growing: a log storm costs one syscall per batch,
+ * never unbounded memory.
+ */
+const MAX_PENDING_LINES = 2048;
+const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
 const LOG_FILENAME = 'main.log';
 
@@ -110,7 +118,7 @@ export function sanitizeLogValue(value: unknown, depth = 0, seen = new WeakSet<o
 
 export type LoggerSink = (line: string) => void;
 
-class Logger {
+export class Logger {
   private directory: string | null = null;
   private filePath: string | null = null;
   /** Mirrors to the terminal in development, where nobody opens the file. */
@@ -118,19 +126,60 @@ class Logger {
   private sink: LoggerSink | null = null;
 
   /**
+   * Buffered file writes.
+   *
+   * The old writer did a `statSync` (roll check) plus an `appendFileSync` per
+   * line, so logging frequency was directly main-thread cost — and the main
+   * process is the thread that answers every IPC call. Now lines accumulate in
+   * a small buffer and one `writeSync` drains the whole batch at the end of the
+   * current tick: ordering is exact (everything is synchronous, just amortised),
+   * a crash can lose at most one tick's worth of debug/info lines, and `error`
+   * lines bypass the buffer entirely.
+   */
+  private pending: string[] = [];
+  private pendingBytes = 0;
+  private flushQueued = false;
+  /** Approximate on-disk size, so the roll check needs no `statSync` per line. */
+  private approxSize = 0;
+  private fileDescriptor: number | null = null;
+  /** Set when a file write fails; file logging stops rather than spamming. */
+  private fileDisabled = false;
+  private maxLogBytes = MAX_LOG_BYTES;
+  private exitHookInstalled = false;
+
+  /**
    * Point the log at a directory. Until this is called nothing is written to
    * disk, which is what keeps `logger` a no-op in unit tests.
    */
-  configure(options: { directory: string; echoToConsole?: boolean }) {
+  configure(options: { directory: string; echoToConsole?: boolean; maxLogBytes?: number }) {
     try {
       mkdirSync(options.directory, { recursive: true });
       this.directory = options.directory;
       this.filePath = join(options.directory, LOG_FILENAME);
       this.echoToConsole = options.echoToConsole ?? false;
+      this.maxLogBytes = options.maxLogBytes ?? MAX_LOG_BYTES;
     } catch {
       // A log that cannot be opened must not take the app down with it.
       this.directory = null;
       this.filePath = null;
+    }
+
+    this.closeFile();
+    this.fileDisabled = false;
+    this.approxSize = 0;
+    if (this.filePath) {
+      try {
+        this.approxSize = statSync(this.filePath).size;
+      } catch {
+        // No file yet.
+      }
+    }
+
+    // Buffered lines must survive a normal quit. `exit` allows synchronous
+    // work only, which is exactly what `flushSync` is.
+    if (!this.exitHookInstalled) {
+      this.exitHookInstalled = true;
+      process.once('exit', () => this.flushSync());
     }
   }
 
@@ -157,6 +206,76 @@ class Logger {
 
   error(event: string, fields?: LogFields) {
     this.write('error', event, fields);
+  }
+
+  /**
+   * Drain the buffer now, synchronously. Called from `will-quit`/`exit` so a
+   * normal quit never leaves buffered lines unwritten, and internally whenever
+   * something must not sit in memory (error lines, backpressure).
+   */
+  flushSync() {
+    if (this.pending.length === 0) {
+      return;
+    }
+
+    const lines = this.pending;
+    this.pending = [];
+    const bytes = this.pendingBytes;
+    this.pendingBytes = 0;
+
+    // One write per batch. The roll check runs here too — per batch rather
+    // than per line, using the tracked size instead of a `statSync`.
+    try {
+      this.rollIfNeeded();
+      const fd = this.ensureFile();
+      if (fd === null) {
+        return;
+      }
+      writeSync(fd, lines.join('\n') + '\n', null, 'utf8');
+      this.approxSize += bytes;
+    } catch (error) {
+      // Disk full, permissions, a removed directory: never fail a chat turn
+      // over logging, but also never swallow it silently — surface it on
+      // stderr and stop trying the file.
+      this.fileDisabled = true;
+      // eslint-disable-next-line no-console
+      console.error('[atlas] log file write failed; file logging disabled:', error);
+    }
+  }
+
+  private ensureFile(): number | null {
+    if (this.fileDisabled || !this.filePath) {
+      return null;
+    }
+
+    if (this.fileDescriptor === null) {
+      this.fileDescriptor = openSync(this.filePath, 'a');
+    }
+
+    return this.fileDescriptor;
+  }
+
+  private closeFile() {
+    if (this.fileDescriptor !== null) {
+      try {
+        closeSync(this.fileDescriptor);
+      } catch {
+        // Already closed or the file is gone; nothing to recover.
+      }
+      this.fileDescriptor = null;
+    }
+  }
+
+  private scheduleFlush() {
+    if (this.flushQueued) {
+      return;
+    }
+
+    this.flushQueued = true;
+    setImmediate(() => {
+      this.flushQueued = false;
+      this.flushSync();
+    });
   }
 
   private write(level: LogLevel, event: string, fields?: LogFields) {
@@ -191,13 +310,29 @@ class Logger {
       return;
     }
 
-    try {
-      this.rollIfNeeded();
-      appendFileSync(this.filePath, `${line}\n`, 'utf8');
-    } catch {
-      // Disk full, permissions, a removed directory: none of it is worth
-      // failing a chat turn over.
+    // Error lines go out immediately — they are the reason the log exists,
+    // and the one kind of line a crash must not be able to eat. The pending
+    // buffer drains first so ordering is preserved.
+    if (level === 'error') {
+      this.flushSync();
+      this.pending.push(line);
+      this.pendingBytes += Buffer.byteLength(line) + 1;
+      this.flushSync();
+      return;
     }
+
+    this.pending.push(line);
+    this.pendingBytes += Buffer.byteLength(line) + 1;
+
+    // Backpressure: a burst of logging must not grow the buffer without
+    // bound. Past the cap, drain synchronously — the cost is one syscall,
+    // which is what every line used to cost anyway.
+    if (this.pendingBytes >= MAX_PENDING_BYTES || this.pending.length >= MAX_PENDING_LINES) {
+      this.flushSync();
+      return;
+    }
+
+    this.scheduleFlush();
   }
 
   private rollIfNeeded() {
@@ -205,23 +340,18 @@ class Logger {
       return;
     }
 
-    let size = 0;
-    try {
-      size = statSync(this.filePath).size;
-    } catch {
-      // No file yet.
+    if (this.approxSize < this.maxLogBytes) {
       return;
     }
 
-    if (size < MAX_LOG_BYTES) {
-      return;
-    }
+    this.closeFile();
 
-    // `main.log` → `main.log.1`, and the previous `.1` is dropped rather than
-    // shuffled: keeping N generations honest costs N renames per roll, and the
-    // oldest is the least interesting thing on disk.
+    // `main.log` → `main.log.<stamp>`, and the previous stamp is dropped rather
+    // than shuffled: keeping N generations honest costs N renames per roll, and
+    // the oldest is the least interesting thing on disk.
     const stamped = `${LOG_FILENAME}.${Date.now()}`;
     renameSync(this.filePath, join(this.directory, stamped));
+    this.approxSize = 0;
 
     try {
       const rolled = readdirSync(this.directory)

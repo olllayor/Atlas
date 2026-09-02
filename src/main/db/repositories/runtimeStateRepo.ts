@@ -233,16 +233,190 @@ export type RecordRuntimeEventInput = Omit<RuntimeEventEnvelope, 'sequence' | 'o
 };
 
 export class RuntimeStateRepo {
-  constructor(private readonly db: SqliteDatabase) {}
+  /**
+   * In-memory per-conversation sequence watermark.
+   *
+   * The event log's sequence numbers are unique per conversation and strictly
+   * increasing (enforced by `idx_conversation_events_sequence`), and this repo
+   * is the only writer of new sequences at runtime — the fork copier inserts
+   * preserved sequences synchronously before the fork's first new event can be
+   * recorded, and `pruneRequestHeaders` never removes a conversation's newest
+   * row. So the watermark can live in memory: it is seeded once per
+   * conversation from `MAX(sequence)` (which also covers process restart
+   * recovery), then incremented on insert. This removes a `MAX(sequence)`
+   * aggregate query from every recorded event — the query used to run on each
+   * coalesced stream flush.
+   */
+  private readonly lastSequenceByConversation = new Map<string, number>();
+
+  // Hot-path statements, prepared once. `recordEvent` runs on every coalesced
+  // stream flush (~30/s during a response); preparing these per call re-parsed
+  // the same SQL each time.
+  private readonly insertEventStmt;
+  private readonly activityUpsertStmt;
+  private readonly getActivityByIdStmt;
+  private readonly updateProviderSessionStmt;
+  private readonly lastSequenceStmt;
+
+  constructor(private readonly db: SqliteDatabase) {
+    this.insertEventStmt = db.prepare(
+      `
+        INSERT INTO conversation_events (
+          event_id,
+          conversation_id,
+          turn_id,
+          request_id,
+          sequence,
+          occurred_at,
+          activity_type,
+          tone,
+          tool_type,
+          message_id,
+          tool_call_id,
+          approval_id,
+          provider_id,
+          provider_event_type,
+          payload_json
+        )
+        VALUES (
+          @eventId,
+          @conversationId,
+          @turnId,
+          @requestId,
+          @sequence,
+          @occurredAt,
+          @activityType,
+          @tone,
+          @toolType,
+          @messageId,
+          @toolCallId,
+          @approvalId,
+          @provider,
+          @providerEventType,
+          @payloadJson
+        )
+      `,
+    );
+    this.lastSequenceStmt = db.prepare<{ conversationId: string }, { sequence: number | null }>(
+      'SELECT MAX(sequence) AS sequence FROM conversation_events WHERE conversation_id = @conversationId',
+    );
+    this.getActivityByIdStmt = db.prepare<{ id: string }, WorkLogRow>(
+      `
+        SELECT
+          id,
+          conversation_id,
+          turn_id,
+          request_id,
+          message_id,
+          activity_type,
+          tone,
+          tool_type,
+          tool_call_id,
+          approval_id,
+          title,
+          summary,
+          status,
+          sequence,
+          is_final,
+          payload_json,
+          created_at,
+          updated_at
+        FROM conversation_activities
+        WHERE id = @id
+        LIMIT 1
+      `,
+    );
+    this.activityUpsertStmt = db.prepare(
+      `
+        INSERT INTO conversation_activities (
+          id,
+          conversation_id,
+          turn_id,
+          request_id,
+          message_id,
+          activity_type,
+          tone,
+          tool_type,
+          tool_call_id,
+          approval_id,
+          title,
+          summary,
+          status,
+          sequence,
+          is_final,
+          payload_json,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          @id,
+          @conversationId,
+          @turnId,
+          @requestId,
+          @messageId,
+          @activityType,
+          @tone,
+          @toolType,
+          @toolCallId,
+          @approvalId,
+          @title,
+          @summary,
+          @status,
+          @sequence,
+          @isFinal,
+          @payloadJson,
+          @createdAt,
+          @updatedAt
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          message_id = excluded.message_id,
+          activity_type = excluded.activity_type,
+          tone = excluded.tone,
+          tool_type = excluded.tool_type,
+          tool_call_id = excluded.tool_call_id,
+          approval_id = excluded.approval_id,
+          title = excluded.title,
+          summary = excluded.summary,
+          status = excluded.status,
+          sequence = excluded.sequence,
+          is_final = excluded.is_final,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at
+      `,
+    );
+    this.updateProviderSessionStmt = db.prepare(
+      `
+        UPDATE provider_sessions
+        SET status = COALESCE(@status, status),
+            last_sequence = COALESCE(@lastSequence, last_sequence),
+            updated_at = @updatedAt
+        WHERE request_id = @requestId
+      `,
+    );
+  }
 
   getLastSequence(conversationId: string) {
-    const row = this.db
-      .prepare<{ conversationId: string }, { sequence: number | null }>(
-        'SELECT MAX(sequence) AS sequence FROM conversation_events WHERE conversation_id = @conversationId',
-      )
-      .get({ conversationId });
+    const cached = this.lastSequenceByConversation.get(conversationId);
+    if (cached !== undefined) {
+      return cached;
+    }
 
-    return row?.sequence ?? 0;
+    // Lazy recovery: the first touch of a conversation (fresh start, process
+    // restart, or first event after a fork copied preserved sequences) reads
+    // the watermark from SQLite once and caches it.
+    const row = this.lastSequenceStmt.get({ conversationId });
+    const last = row?.sequence ?? 0;
+    this.lastSequenceByConversation.set(conversationId, last);
+    return last;
+  }
+
+  /**
+   * Drop a conversation's cached watermark. Called when the conversation's
+   * event rows are removed underneath this repo (conversation deletion), so a
+   * stale high watermark can never survive its table.
+   */
+  forgetConversationEvents(conversationId: string) {
+    this.lastSequenceByConversation.delete(conversationId);
   }
 
   createTurn(input: CreateTurnInput) {
@@ -351,22 +525,12 @@ export class RuntimeStateRepo {
   }
 
   updateProviderSession(requestId: string, patch: { status?: RuntimeProviderSession['status']; lastSequence?: number }) {
-    this.db
-      .prepare(
-        `
-          UPDATE provider_sessions
-          SET status = COALESCE(@status, status),
-              last_sequence = COALESCE(@lastSequence, last_sequence),
-              updated_at = @updatedAt
-          WHERE request_id = @requestId
-        `,
-      )
-      .run({
-        requestId,
-        status: patch.status ?? null,
-        lastSequence: patch.lastSequence ?? null,
-        updatedAt: new Date().toISOString(),
-      });
+    this.updateProviderSessionStmt.run({
+      requestId,
+      status: patch.status ?? null,
+      lastSequence: patch.lastSequence ?? null,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   getProviderSessionByRequest(requestId: string) {
@@ -423,7 +587,11 @@ export class RuntimeStateRepo {
   recordEvent(input: RecordRuntimeEventInput) {
     const transaction = this.db.transaction((nextInput: RecordRuntimeEventInput) => {
       const now = nextInput.occurredAt ?? new Date().toISOString();
-      const nextSequence = this.getLastSequence(nextInput.conversationId) + 1;
+      const cached = this.lastSequenceByConversation.get(nextInput.conversationId);
+      const nextSequence =
+        cached !== undefined
+          ? cached + 1
+          : ((this.lastSequenceStmt.get({ conversationId: nextInput.conversationId })?.sequence ?? 0) + 1);
       const envelope: RuntimeEventEnvelope = {
         ...nextInput,
         payload: this.normalizeEventPayload(nextInput),
@@ -431,69 +599,35 @@ export class RuntimeStateRepo {
         sequence: nextSequence,
       };
 
-      this.db
-        .prepare(
-          `
-            INSERT INTO conversation_events (
-              event_id,
-              conversation_id,
-              turn_id,
-              request_id,
-              sequence,
-              occurred_at,
-              activity_type,
-              tone,
-              tool_type,
-              message_id,
-              tool_call_id,
-              approval_id,
-              provider_id,
-              provider_event_type,
-              payload_json
-            )
-            VALUES (
-              @eventId,
-              @conversationId,
-              @turnId,
-              @requestId,
-              @sequence,
-              @occurredAt,
-              @activityType,
-              @tone,
-              @toolType,
-              @messageId,
-              @toolCallId,
-              @approvalId,
-              @provider,
-              @providerEventType,
-              @payloadJson
-            )
-          `,
-        )
-        .run({
-          eventId: envelope.eventId,
-          conversationId: envelope.conversationId,
-          turnId: envelope.turnId,
-          requestId: envelope.requestId,
-          sequence: envelope.sequence,
-          occurredAt: envelope.occurredAt,
-          activityType: envelope.activityType,
-          tone: envelope.tone,
-          toolType: envelope.toolType ?? null,
-          messageId: envelope.messageId ?? null,
-          toolCallId: envelope.toolCallId ?? null,
-          approvalId: envelope.approvalId ?? null,
-          provider: envelope.provider,
-          providerEventType: envelope.providerEventType ?? null,
-          payloadJson: JSON.stringify(envelope.payload ?? {}),
-        });
+      this.insertEventStmt.run({
+        eventId: envelope.eventId,
+        conversationId: envelope.conversationId,
+        turnId: envelope.turnId,
+        requestId: envelope.requestId,
+        sequence: envelope.sequence,
+        occurredAt: envelope.occurredAt,
+        activityType: envelope.activityType,
+        tone: envelope.tone,
+        toolType: envelope.toolType ?? null,
+        messageId: envelope.messageId ?? null,
+        toolCallId: envelope.toolCallId ?? null,
+        approvalId: envelope.approvalId ?? null,
+        provider: envelope.provider,
+        providerEventType: envelope.providerEventType ?? null,
+        payloadJson: JSON.stringify(envelope.payload ?? {}),
+      });
 
       this.projectEvent(envelope);
       this.updateProviderSession(envelope.requestId, { lastSequence: envelope.sequence });
       return envelope;
     });
 
-    return transaction(input);
+    const envelope = transaction(input);
+    // Only advance the watermark after the transaction commits. If the insert
+    // fails (unique constraint on (conversation_id, sequence)), the map stays
+    // at its previous value so the next attempt re-reads correctly.
+    this.lastSequenceByConversation.set(envelope.conversationId, envelope.sequence);
+    return envelope;
   }
 
   /**
@@ -537,66 +671,7 @@ export class RuntimeStateRepo {
     const nextActivity = deriveWorkLogEntry(existingActivity, event);
 
     if (nextActivity) {
-      this.db
-        .prepare(
-          `
-            INSERT INTO conversation_activities (
-              id,
-              conversation_id,
-              turn_id,
-              request_id,
-              message_id,
-              activity_type,
-              tone,
-              tool_type,
-              tool_call_id,
-              approval_id,
-              title,
-              summary,
-              status,
-              sequence,
-              is_final,
-              payload_json,
-              created_at,
-              updated_at
-            )
-            VALUES (
-              @id,
-              @conversationId,
-              @turnId,
-              @requestId,
-              @messageId,
-              @activityType,
-              @tone,
-              @toolType,
-              @toolCallId,
-              @approvalId,
-              @title,
-              @summary,
-              @status,
-              @sequence,
-              @isFinal,
-              @payloadJson,
-              @createdAt,
-              @updatedAt
-            )
-            ON CONFLICT(id) DO UPDATE SET
-              message_id = excluded.message_id,
-              activity_type = excluded.activity_type,
-              tone = excluded.tone,
-              tool_type = excluded.tool_type,
-              tool_call_id = excluded.tool_call_id,
-              approval_id = excluded.approval_id,
-              title = excluded.title,
-              summary = excluded.summary,
-              status = excluded.status,
-              sequence = excluded.sequence,
-              is_final = excluded.is_final,
-              payload_json = excluded.payload_json,
-              updated_at = excluded.updated_at
-          `,
-        )
-        .run({
+      this.activityUpsertStmt.run({
           id: nextActivity.id,
           conversationId: nextActivity.conversationId,
           turnId: nextActivity.turnId,
@@ -793,34 +868,7 @@ export class RuntimeStateRepo {
   }
 
   getActivityById(id: string) {
-    const row = this.db
-      .prepare<{ id: string }, WorkLogRow>(
-        `
-          SELECT
-            id,
-            conversation_id,
-            turn_id,
-            request_id,
-            message_id,
-            activity_type,
-            tone,
-            tool_type,
-            tool_call_id,
-            approval_id,
-            title,
-            summary,
-            status,
-            sequence,
-            is_final,
-            payload_json,
-            created_at,
-            updated_at
-          FROM conversation_activities
-          WHERE id = @id
-          LIMIT 1
-        `,
-      )
-      .get({ id });
+    const row = this.getActivityByIdStmt.get({ id });
 
     return row ? mapWorkLog(row) : null;
   }
@@ -862,10 +910,15 @@ export class RuntimeStateRepo {
       return [];
     }
 
-    const placeholders = messageIds.map(() => '?').join(', ');
-    return this.db
-      .prepare<unknown[], WorkLogRow>(
-        `
+    const CHUNK = 900;
+    const rows: ReturnType<typeof mapWorkLog>[] = [];
+    for (let i = 0; i < messageIds.length; i += CHUNK) {
+      const chunk = messageIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(', ');
+      rows.push(
+        ...this.db
+          .prepare<unknown[], WorkLogRow>(
+            `
           SELECT
             id,
             conversation_id,
@@ -889,9 +942,12 @@ export class RuntimeStateRepo {
           WHERE message_id IN (${placeholders})
           ORDER BY sequence ASC
         `,
-      )
-      .all(...messageIds)
-      .map(mapWorkLog);
+          )
+          .all(...chunk)
+          .map(mapWorkLog),
+      );
+    }
+    return rows;
   }
 
   listEventsAfter(conversationId: string, afterSequence: number): RecoverEventsResponse {
@@ -1058,6 +1114,11 @@ export class RuntimeStateRepo {
           WHERE recency > ${Math.max(0, Math.floor(keep))}
         )
     `);
+
+    // The prune deletes rows below the newest `keep` per conversation, which
+    // never includes a conversation's highest sequence — but re-deriving the
+    // watermark after any delete is cheaper than being sure of that forever.
+    this.lastSequenceByConversation.clear();
   }
 
   getLatestCheckpoint(conversationId: string) {    const row = this.db

@@ -192,8 +192,28 @@ export class OpenCodeController {
  * caller owns the quit hook (`controller.shutdown()`), which keeps this module
  * free of Electron so its tests run under plain `node --test`.
  */
-export async function initializeOpenCode(deps: OpenCodeControllerDeps): Promise<OpenCodeController> {
+/**
+ * Build the controller and bring the registry in line with the stored settings.
+ *
+ * The registry sync deliberately does *not* block the caller. It was awaited
+ * during boot, where it sat between the database opening and the first window
+ * existing and cost about a second of a cold start — paid whether or not the
+ * integration was ever switched on. Nothing in that first second can use the
+ * adapter: the renderer has not loaded, so there is no turn to run and no model
+ * picker to populate. When the sync does land, `onRegistryChanged` announces the
+ * new catalog exactly as it does for a settings change, which is the same path a
+ * user enabling OpenCode mid-session already takes.
+ *
+ * The returned promise is exposed for tests and for shutdown ordering; callers
+ * that just want the controller can ignore it.
+ */
+export function initializeOpenCode(deps: OpenCodeControllerDeps): {
+  controller: OpenCodeController;
+  synced: Promise<void>;
+} {
   const controller = new OpenCodeController(deps);
-  await controller.syncRegistry();
-  return controller;
+  const synced = controller.syncRegistry().catch((error) => {
+    console.warn('[opencode] initial registry sync failed:', error);
+  });
+  return { controller, synced };
 }

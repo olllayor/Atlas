@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-virtual';
 import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -56,13 +57,14 @@ import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
 import { AtlasMark } from './ui/atlas-mark';
+import { AtlasLoader, AtlasLoaderRow } from './ui/atlas-loader';
 
 import { SpawnAgentCta } from './agents/SpawnAgentCta';
 import { SubagentBreadcrumbs } from './subagents/SubagentBreadcrumbs';
 import { useAppStore } from '../stores/useAppStore';
 import { foldAgents, selectBatchAgents } from '../lib/agentFold';
 
-type ChatWindowProps = {
+export type ChatWindowProps = {
   detail: ConversationPage | null;
   draft: DraftStateLike | null;
   hasCredential: boolean;
@@ -181,24 +183,6 @@ const genericSuggestions = [
   { text: 'Help me write', prompt: 'Help me write an email that ' },
   { text: 'Research something', prompt: 'Tell me about ' },
 ];
-
-/**
- * Neutral progress ring.
- *
- * `RefreshCw` — a *retry* glyph — used to spin here, which reads as "this
- * failed and is being retried" rather than "this is loading".
- */
-function Spinner({ className }: { className?: string }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'inline-block shrink-0 motion-spin-steps rounded-full border border-border-strong border-t-transparent',
-        className
-      )}
-    />
-  );
-}
 
 /** Hover/focus action rows share one recipe so keyboard users see them too. */
 const ACTION_ROW =
@@ -646,7 +630,21 @@ function hasRenderableAssistantParts(parts: ChatMessagePart[]) {
   });
 }
 
-function MessageRow({
+/**
+ * One settled turn in the transcript.
+ *
+ * Memoised, and the memo is load-bearing rather than defensive: while a
+ * response streams, `ChatWindow` re-renders on every 33ms flush because the
+ * streaming row below genuinely changed. Every history row above it is
+ * identical across those flushes — same `message` object, same callbacks — so
+ * without this boundary a ten-row viewport paid ten row renders thirty times a
+ * second to draw the same pixels.
+ *
+ * The default shallow prop compare is exactly right here: `message` is replaced
+ * by the store's reducers only when that message changed, and the callbacks are
+ * `useCallback`-stable up in `App`.
+ */
+const MessageRow = memo(function MessageRow({
   message,
   deferRichContent = false,
   onRegenerate,
@@ -750,7 +748,7 @@ function MessageRow({
       </div>
     </div>
   );
-}
+});
 
 function StreamingRow({
   parts,
@@ -906,6 +904,39 @@ const ROW_HEIGHT = {
 } as const;
 
 /**
+ * Estimates already computed, keyed by the message they describe.
+ *
+ * The virtualizer asks for a row's size synchronously, for every row it has not
+ * measured, every time the measurement cache is invalidated — and it is
+ * invalidated on every stream flush, because the message array behind it is
+ * replaced. The estimate is not cheap: it runs the tool-cell grammar, which
+ * parses every unified diff in the turn. So a thread with a few edit-heavy
+ * turns re-parsed those diffs thirty times a second, on the thread that also
+ * has to paint.
+ *
+ * A `WeakMap` on the message object is the whole fix. Message identity changes
+ * exactly when the message's content changes, which is exactly when the
+ * estimate could differ, and entries die with the messages they describe.
+ */
+const rowHeightEstimates = new WeakMap<ChatMessage, { raw?: number; cooked?: number }>();
+
+function estimateHistoryRowHeight(message: ChatMessage, raw: boolean): number {
+  const cached = rowHeightEstimates.get(message);
+  const hit = raw ? cached?.raw : cached?.cooked;
+  if (hit !== undefined) return hit;
+
+  const height = computeHistoryRowHeight(message, raw);
+  if (cached) {
+    if (raw) cached.raw = height;
+    else cached.cooked = height;
+  } else {
+    rowHeightEstimates.set(message, raw ? { raw: height } : { cooked: height });
+  }
+
+  return height;
+}
+
+/**
  * @param raw Raw mode expands every cell and removes the activity fold, so the
  * collapsed-row assumptions above are all wrong under it. The runtime
  * calibration in `estimateScaleRef` would eventually absorb the error, but it
@@ -913,7 +944,7 @@ const ROW_HEIGHT = {
  * and prose turns are unchanged", so the estimate has to know about the mode
  * rather than be corrected after the fact.
  */
-function estimateHistoryRowHeight(message: ChatMessage, raw: boolean) {
+function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
   const fileCount = getMessageFileParts(message.parts).length;
 
   if (message.role === 'user') {
@@ -1121,18 +1152,42 @@ export function ChatWindow({
   const isStreaming = draft?.status === 'streaming';
 
   /**
+   * During streaming the same content exists in two places: the draft (rendered
+   * as `StreamingRow` below the virtualizer) and the persisted assistant
+   * placeholder inside `detail.messages` (updated via `applyStreamingEvent` on
+   * every 33 ms flush). Rendering both meant the transcript paid two markdown
+   * layouts per token — the virtualizer's last row and the streaming row
+   * underneath it showed identical text. The virtualizer also double-counted
+   * the row's height in its `totalSize` (history estimate + streaming row),
+   * which made the scrollbar thumb short by one row.
+   *
+   * While a draft is live the virtualizer owns only completed history. The
+   * streaming row owns the live content. Once the turn settles the draft is
+   * gone and the placeholder (now `status: complete`) naturally re-enters the
+   * virtualizer as the last history row.
+   */
+  const historyMessages = useMemo(() => {
+    if (!isStreaming || messages.length === 0) return messages;
+    const last = messages[messages.length - 1];
+    if (last?.role === 'assistant' && last.status === 'streaming') {
+      return messages.slice(0, -1);
+    }
+    return messages;
+  }, [messages, isStreaming]);
+
+  /**
    * The folded view is a *suffix* of the real history. Every index the
    * virtualizer sees — rows, minimap, jump targets — is an index into this
    * array; the fold row itself lives outside the list as ordinary flow, so
    * the virtualizer never counts it.
    */
   const [foldExpanded, setFoldExpanded] = useState(false);
-  const folded = messages.length > HISTORY_FOLD_THRESHOLD && !foldExpanded;
+  const folded = historyMessages.length > HISTORY_FOLD_THRESHOLD && !foldExpanded;
   const visibleMessages = useMemo(
-    () => (folded ? messages.slice(-HISTORY_FOLD_KEEP) : messages),
-    [folded, messages]
+    () => (folded ? historyMessages.slice(-HISTORY_FOLD_KEEP) : historyMessages),
+    [folded, historyMessages]
   );
-  const hiddenMessageCount = messages.length - visibleMessages.length;
+  const hiddenMessageCount = historyMessages.length - visibleMessages.length;
 
   const showSetupPrompt = Boolean(detail && !hasCredential && messages.length === 0);
   const showSuggestions = Boolean(detail && hasCredential && messages.length === 0 && !draft);
@@ -1203,12 +1258,26 @@ export function ChatWindow({
     [visibleMessages, rawTranscript]
   );
 
+  /*
+    `getItemKey` is one of the inputs the virtualizer memoises its whole
+    measurement pass on, so an inline arrow — a new function on every render —
+    threw that pass away thirty times a second while a response streamed, and
+    every row it had never measured was re-estimated each time. Reading the
+    array through a ref keeps the answer identical and the identity fixed.
+  */
+  const visibleMessagesRef = useRef(visibleMessages);
+  visibleMessagesRef.current = visibleMessages;
+  const getItemKey = useCallback(
+    (index: number) => visibleMessagesRef.current[index]?.id ?? index,
+    []
+  );
+
   const rowVirtualizer = useVirtualizer<HTMLElement, HTMLDivElement>({
     count: visibleMessages.length,
     estimateSize,
     measureElement: measureRow,
     getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => visibleMessages[index]?.id ?? index,
+    getItemKey,
     gap: HISTORY_GAP_PX,
     overscan: 0,
     scrollMargin,
@@ -1294,7 +1363,7 @@ export function ChatWindow({
     }
     const offset = Math.round(list.offsetTop);
     setScrollMargin((current) => (current === offset ? current : offset));
-  }, [conversationId, hasOlder, showSuggestions, showSetupPrompt, isLoadingConversation, messages.length, folded]);
+  }, [conversationId, hasOlder, showSuggestions, showSetupPrompt, isLoadingConversation, historyMessages.length, folded]);
 
   /**
    * Restore the reading position after older messages are prepended.
@@ -1316,14 +1385,14 @@ export function ChatWindow({
       return;
     }
 
-    const prependedCount = messages.length - pending.previousMessageCount;
+    const prependedCount = historyMessages.length - pending.previousMessageCount;
     if (prependedCount <= 0) {
       return;
     }
 
     pendingPrependRef.current = null;
     rowVirtualizer.scrollToIndex(prependedCount, { align: 'start' });
-  }, [conversationId, messages.length, rowVirtualizer]);
+  }, [conversationId, historyMessages.length, rowVirtualizer]);
 
   const loadOlderMessages = useCallback(async () => {
     if (!detail?.conversation || !hasOlder || isLoadingOlder) {
@@ -1332,11 +1401,11 @@ export function ChatWindow({
 
     pendingPrependRef.current = {
       conversationId: detail.conversation.id,
-      previousMessageCount: messages.length,
+      previousMessageCount: historyMessages.length,
     };
 
     await onLoadOlderMessages(detail.conversation.id);
-  }, [detail, hasOlder, isLoadingOlder, messages.length, onLoadOlderMessages]);
+  }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages]);
 
   /**
    * Auto-load older history when the top of the list comes into view —
@@ -1398,7 +1467,7 @@ export function ChatWindow({
   // Jump-to-latest / unread
   // ---------------------------------------------------------------------
 
-  const completedAssistantCount = useMemo(() => countCompletedAssistantTurns(messages), [messages]);
+  const completedAssistantCount = useMemo(() => countCompletedAssistantTurns(historyMessages), [historyMessages]);
 
   /**
    * What counts as seen. Tracks the arrival count while the view is following
@@ -1530,7 +1599,7 @@ export function ChatWindow({
     body = (
       <ConversationEmptyState
         className="p-0"
-        icon={<Spinner className="h-6 w-6 border-2" />}
+        icon={<AtlasLoader size="lg" real />}
         title="Loading conversation"
         description="Fetching the latest messages for this session."
         role="status"
@@ -1570,12 +1639,7 @@ export function ChatWindow({
              transcript. There is no manual button any more — one mechanism
              (scroll to the top) instead of two competing ones. */
           <div className="mb-4 flex h-6 shrink-0 items-center justify-center">
-            {isLoadingOlder ? (
-              <span className="inline-flex items-center gap-2 text-2xs text-text-faint">
-                <Spinner className="h-3 w-3" />
-                Loading earlier messages
-              </span>
-            ) : null}
+            {isLoadingOlder ? <AtlasLoaderRow label="Loading earlier messages" size="sm" /> : null}
           </div>
         ) : null}
 
@@ -1662,7 +1726,7 @@ export function ChatWindow({
         </div>
 
         {draft ? (
-          <div style={{ marginTop: messages.length > 0 ? HISTORY_GAP_PX : 0 }}>
+          <div style={{ marginTop: historyMessages.length > 0 ? HISTORY_GAP_PX : 0 }}>
             <StreamingRow
               parts={draft.parts}
               turnId={draft.requestId}

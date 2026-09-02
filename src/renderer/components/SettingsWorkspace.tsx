@@ -76,7 +76,7 @@ import {
 
 type AppearancePatch = NonNullable<import('../../shared/contracts').SettingsUpdateRequest['appearance']>;
 
-type SettingsWorkspaceProps = {
+export type SettingsWorkspaceProps = {
   settings: SettingsSummary | null;
   updateState: AppUpdateSnapshot;
   usageSummary: UsageSummary;

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import {
@@ -19,24 +28,48 @@ import {
   hasPendingApprovalInParts,
   pickNextAttentionConversation,
 } from './lib/attention';
+import { countRunningAgents } from './lib/agentActivity';
+import { sameLivenessMap, type LivenessState } from './lib/livenessMap';
 import { liveJobCountFor } from './lib/jobActivity';
 import { useConversationJobSummaries } from './hooks/useConversationJobSummaries';
+import { useDraftSummaries } from './hooks/useDraftSummaries';
 import { POSTHOG_EVENTS } from '../shared/posthog';
-import { ChatWindow } from './components/ChatWindow';
+import { ChatWindowSlot } from './components/ChatWindowSlot';
 import { CommandPalette } from './components/CommandPalette';
 import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
 import { SideChatPane } from './components/side/SideChatPane';
-import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
-import { SitesWorkspace } from './components/sites/SitesWorkspace';
-import { PluginsWorkspace } from './components/plugins/PluginsWorkspace';
+/*
+  Route-level code splitting. None of these is on the path to a first paint of
+  a chat: three are full-screen views the user has to navigate to, the terminal
+  only mounts once the dock is opened, and the gallery is a modal. Static
+  imports put all of them — settings' two thousand lines, xterm and its four
+  addons, the sites and plugins workspaces — in the entry chunk that every cold
+  start parses before anything is on screen.
+*/
+const SettingsWorkspaceRoute = lazy(() =>
+  import('./components/settings/SettingsWorkspaceRoute').then((module) => ({
+    default: module.SettingsWorkspaceRoute,
+  }))
+);
+const SitesWorkspace = lazy(() =>
+  import('./components/sites/SitesWorkspace').then((module) => ({ default: module.SitesWorkspace }))
+);
+const PluginsWorkspace = lazy(() =>
+  import('./components/plugins/PluginsWorkspace').then((module) => ({
+    default: module.PluginsWorkspace,
+  }))
+);
 import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
-import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
+import { type WorkbenchTab } from './components/workbench/WorkbenchPanel';
+import { WorkbenchPanelSlot } from './components/workbench/WorkbenchPanelSlot';
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
-import { TerminalDock } from './components/workbench/TerminalDock';
+const TerminalDock = lazy(() =>
+  import('./components/workbench/TerminalDock').then((module) => ({ default: module.TerminalDock }))
+);
 import { OpenInIdeButton } from './components/workspace/OpenInIdeButton';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
@@ -45,10 +78,17 @@ import { usePersistentFlag, useResizablePanel, useViewportWidth } from './hooks/
 import { computeColumns } from './lib/columns';
 import { useSubagentComposerState } from './hooks/useSubagentComposerState';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
-import { VisualGallery } from './components/ai-elements/visual-gallery';
+const VisualGallery = lazy(() =>
+  import('./components/ai-elements/visual-gallery').then((module) => ({
+    default: module.VisualGallery,
+  }))
+);
 import { AtlasToaster } from './components/ui/sonner';
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip';
-import { XAILandingPage } from './components/XAILandingPage';
+const XAILandingPage = lazy(() =>
+  import('./components/XAILandingPage').then((module) => ({ default: module.XAILandingPage }))
+);
+import { AtlasLoader } from './components/ui/atlas-loader';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
 import {
   isEditableTarget,
@@ -69,6 +109,7 @@ import { runViewTransition } from './lib/viewTransitions';
 import { cn } from './lib/utils';
 import {
   EMPTY_COMPOSER_ATTACHMENTS,
+  EMPTY_CONVERSATION_PAGES,
   hasArchivedConversations,
   selectDiagnosticsSummary,
   selectLoadedConversationMetrics,
@@ -84,11 +125,8 @@ const isMacLike = isMacPlatform;
 function LoadingScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="flex items-center gap-2 text-text-muted">
-        <svg className="h-4 w-4 motion-spin-steps" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+      <div className="flex flex-col items-center gap-3 text-text-muted">
+        <AtlasLoader size="lg" real className="h-14 w-14" />
         <span className="text-sm">Loading…</span>
       </div>
     </div>
@@ -278,14 +316,13 @@ export default function App() {
     isLoadingArchivedConversations,
     hasLoadedArchivedConversations,
     loadArchivedConversations,
-    conversationDetails,
     isLoadingOlderByConversation,
     isLoadingConversationId,
     selectedConversationId,
     unreadByConversation,
     queuedByConversation,
     selectedModelIdByConversation,
-    draftsByConversation,
+    selectedProviderIdByConversation,
     goalsByConversation,
     conversationStats,
     diagnostics,
@@ -363,7 +400,6 @@ export default function App() {
       isLoadingArchivedConversations: state.isLoadingArchivedConversations,
       hasLoadedArchivedConversations: state.hasLoadedArchivedConversations,
       loadArchivedConversations: state.loadArchivedConversations,
-      conversationDetails: state.conversationDetails,
       conversationStats: state.conversationStats,
       diagnostics: state.diagnostics,
       isLoadingOlderByConversation: state.isLoadingOlderByConversation,
@@ -372,11 +408,18 @@ export default function App() {
       unreadByConversation: state.unreadByConversation,
       queuedByConversation: state.queuedByConversation,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
+      selectedProviderIdByConversation: state.selectedProviderIdByConversation,
       // `composerDraftsByConversation` / `composerAttachmentsByConversation` are
       // deliberately absent: they change on every keystroke, and this selector
       // is shallow-compared, so subscribing to them here re-rendered the whole
       // window per character. `ChatComposerSlot` reads them instead.
-      draftsByConversation: state.draftsByConversation,
+      //
+      // `draftsByConversation` and `conversationDetails` are absent for the
+      // same reason one flush later: the stream reducer replaces both on every
+      // 33ms batch, so subscribing here re-rendered the whole window ~30 times
+      // a second for the length of every response. `ChatWindowSlot`,
+      // `ChatComposerSlot` and `WorkbenchPanelSlot` read them where they are
+      // actually rendered; App keeps only the turn-level scalars below.
       goalsByConversation: state.goalsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
@@ -431,10 +474,40 @@ export default function App() {
       removeConversationWorktree: state.removeConversationWorktree,
     }))
   );
+  /*
+    Turn-level draft state for the sidebar rows. Never the tokens: see
+    `projectDraftSummaries`.
+  */
+  const draftSummaries = useDraftSummaries();
+  /*
+    Settings reports how much transcript is resident, which means reading the
+    page map — the same map the stream reducer replaces on every flush. Reading
+    it only while Settings is open keeps that subscription off the chat path,
+    where the map is invisible anyway.
+  */
+  const settingsConversationPages = useAppStore((state) =>
+    state.activeView === 'settings' ? state.conversationDetails : EMPTY_CONVERSATION_PAGES
+  );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
   const diagnosticsSummary = useAppStore(useShallow(selectDiagnosticsSummary));
 
-  const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
+  /*
+    Two scalars instead of the whole page. `conversationDetails` is replaced on
+    every stream flush, so reading the object here re-rendered App per token;
+    the title and "has any messages" are what App itself renders, and both hold
+    still for the length of a turn. The page object goes to the components that
+    actually draw it (`ChatWindowSlot`, `ChatComposerSlot`, `WorkbenchPanelSlot`).
+  */
+  const activeConversationTitle = useAppStore((state) =>
+    selectedConversationId
+      ? state.conversationDetails[selectedConversationId]?.conversation.title ?? null
+      : null
+  );
+  const conversationStarted = useAppStore((state) =>
+    selectedConversationId
+      ? (state.conversationDetails[selectedConversationId]?.messages.length ?? 0) > 0
+      : false
+  );
   /**
    * The context strip above the composer is pre-flight chrome — folder,
    * execution target, branch, PR, all there to aim the first message. Once
@@ -442,7 +515,7 @@ export default function App() {
    * plugin-tool chips only): the chips that remain are ones with no other
    * home, and the slab below gets the composer row to itself.
    */
-  const conversationStarted = (activeConversation?.messages.length ?? 0) > 0;
+
 
   /**
    * Back/forward through the conversations visited this session — the Codex
@@ -452,6 +525,14 @@ export default function App() {
    * selection change that a back/forward click itself causes, so restoring
    * position does not re-push the entry it is restoring.
    */
+  /*
+    Latches on the first gallery open so the modal's chunk is fetched on demand
+    but the dialog is not torn out from under its own exit animation.
+  */
+  const galleryEverOpenedRef = useRef(false);
+  if (galleryOpen) galleryEverOpenedRef.current = true;
+  const galleryMounted = galleryOpen || galleryEverOpenedRef.current;
+
   const [navigation, setNavigation] = useState<{ history: string[]; index: number }>({
     history: [],
     index: -1,
@@ -499,7 +580,15 @@ export default function App() {
   );
   const canNavigateBack = navigation.index > 0;
   const canNavigateForward = navigation.index < navigation.history.length - 1;
-  const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+  /*
+    Status only, for the same reason: the draft object is replaced per token,
+    its status is not. Everything that renders draft *content* reads the draft
+    itself, one level down.
+  */
+  const activeDraftStatus = useAppStore((state) =>
+    selectedConversationId ? state.draftsByConversation[selectedConversationId]?.status ?? null : null
+  );
+  const isActiveDraftStreaming = activeDraftStatus === 'streaming';
 
   /**
    * Composer takeover (plan §3.5). A subagent conversation must not send
@@ -513,7 +602,11 @@ export default function App() {
   const sendSubagentFollowup = useCallback(
     async (text: string) => {
       if (!selectedConversationId) return;
-      const parentId = activeConversation?.conversation.sideOfConversationId ?? null;
+      // Read live: the callback must not re-create when the page object is
+      // replaced mid-stream, and this field never changes within a session.
+      const parentId =
+        useAppStore.getState().conversationDetails[selectedConversationId]?.conversation
+          .sideOfConversationId ?? null;
       if (!parentId) {
         notify({ tone: 'error', title: 'Parent conversation unavailable', description: 'This session can no longer accept messages' });
         return;
@@ -523,7 +616,7 @@ export default function App() {
       // accepted message in; the hook's sync poll carries the rest.
       void reloadConversationDetail(selectedConversationId);
     },
-    [activeConversation, reloadConversationDetail, selectedConversationId]
+    [reloadConversationDetail, selectedConversationId]
   );
 
   const stopSubagent = useCallback(() => {
@@ -543,6 +636,7 @@ export default function App() {
   const isLoadingConversation =
     selectedConversationId != null && isLoadingConversationId === selectedConversationId;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
+  const selectedProviderId = selectedConversationId ? selectedProviderIdByConversation[selectedConversationId] ?? null : null;
 
   // Mode and project are per conversation, not per window: two threads on two
   // repos are the normal case, and a global switch would silently retarget the
@@ -724,6 +818,31 @@ export default function App() {
    * The card owns the "Undone" state, so success is silent here — only the
    * outcomes the user cannot see from the transcript get a toast.
    */
+  /*
+    The transcript's row callbacks are `useCallback`-stable because `MessageRow`
+    is memoised on them: recreated inline, every unrelated App render (a
+    settings toggle, a sidebar rename) would invalidate every visible row.
+  */
+  const openWorkbenchReview = useCallback(() => {
+    setWorkbenchOpen(true);
+    setWorkbenchTab('review');
+  }, []);
+  const openWorkbenchAgents = useCallback(() => {
+    setWorkbenchOpen(true);
+    setWorkbenchTab('agents');
+  }, []);
+  const handleRespondToolApproval = useCallback(
+    (request: Parameters<typeof respondToolApproval>[0]) => respondToolApproval(request),
+    [respondToolApproval]
+  );
+  const handleRetryLastMessage = useCallback(() => {
+    void resendLastUserMessage();
+  }, [resendLastUserMessage]);
+  const handleLoadOlderMessages = useCallback(
+    (conversationId: string) => loadOlderMessages(conversationId),
+    [loadOlderMessages]
+  );
+
   const handleUndoTurnEdits = useCallback(
     async (toolCallIds: string[]) => {
       const conversationId = selectedConversationId;
@@ -819,10 +938,20 @@ export default function App() {
     },
     [requestComposerFocus, selectedConversationId, setComposerDraft]
   );
-  const selectedModelSummary = useMemo(
-    () => (selectedModelId ? models.find((m) => m.id === selectedModelId) ?? null : null),
-    [models, selectedModelId]
-  );
+  const selectedModelSummary = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
   // `!== false`, not `Boolean(...)`: unknown means nobody has said, and the
   // request is allowed to carry tools until a provider refuses them.
   const hasModelTools = selectedModelSummary != null && selectedModelSummary.supportsTools !== false;
@@ -833,26 +962,39 @@ export default function App() {
   );
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
-  const [livenessMap, setLivenessMap] = useState<Map<string, 'working' | 'monitoring' | null>>(new Map());
+  const [livenessMap, setLivenessMap] = useState<Map<string, LivenessState>>(new Map());
   // Whole-window background-job rollups: sidebar rows, the bell, and ⌘⌥A all
   // project this one map, so no surface can disagree about liveness.
   const jobSummaries = useConversationJobSummaries();
   useEffect(() => {
     let cancelled = false;
+    // The poll runs twice a second for the life of the window, so a broken
+    // liveness channel would print thousands of identical lines. Reported once
+    // per mount: enough to see it, quiet enough to keep the console usable.
+    let reportedFailure = false;
     const fetchLiveness = async () => {
       try {
-        const map = (await (window as any).atlasChat?.subagents?.getLiveness?.()) as Record<string, 'working' | 'monitoring' | null> | undefined;
-        if (!cancelled && map) setLivenessMap(new Map(Object.entries(map)));
-      } catch {}
+        const map = await window.atlasChat.subagents.getLiveness();
+        if (cancelled) return;
+        // Same reading as last time is the normal case for a poll this
+        // frequent. Keeping the previous Map means no state change, so the
+        // window stays still instead of re-rendering twice a second at rest.
+        const next = new Map(Object.entries(map));
+        setLivenessMap((previous) => (sameLivenessMap(previous, next) ? previous : next));
+      } catch (error) {
+        if (cancelled || reportedFailure) return;
+        reportedFailure = true;
+        console.warn('[liveness] poll failed; agent activity may look stale', error);
+      }
     };
     void fetchLiveness();
-    const unsub = (window as any).atlasChat?.chat?.subscribe?.((event: any) => {
+    const unsub = window.atlasChat.chat.subscribe((event) => {
       if (event?.type === 'runtime-sync') void fetchLiveness();
-    }) as (() => void) | undefined;
+    });
     const interval = setInterval(() => void fetchLiveness(), 2000);
     return () => {
       cancelled = true;
-      try { unsub?.(); } catch {}
+      unsub();
       clearInterval(interval);
     };
   }, []);
@@ -922,7 +1064,7 @@ export default function App() {
     () =>
       buildSidebarConversationItems({
         conversations,
-        draftsByConversation,
+        draftsByConversation: draftSummaries,
         now: nowMs,
         livenessByConversation: livenessMap,
         jobSummariesByConversation: jobSummaries,
@@ -932,7 +1074,7 @@ export default function App() {
       }),
     [
       conversations,
-      draftsByConversation,
+      draftSummaries,
       nowMs,
       livenessMap,
       jobSummaries,
@@ -944,19 +1086,19 @@ export default function App() {
   /**
    * Archived chats get the same row view model as live ones — they are the same
    * rows with different verbs, and building them a second way would drift.
-   * `draftsByConversation` still applies: an archived chat keeps its in-memory
+   * The draft summary still applies: an archived chat keeps its in-memory
    * transcript, so a row can legitimately report the turn it was on.
    */
   const archivedSidebarItems = useMemo(
     () =>
       buildSidebarConversationItems({
         conversations: archivedConversations,
-        draftsByConversation,
+        draftsByConversation: draftSummaries,
         now: nowMs,
         livenessByConversation: livenessMap,
         unreadByConversation,
       }),
-    [archivedConversations, draftsByConversation, nowMs, livenessMap, unreadByConversation, goalsByConversation]
+    [archivedConversations, draftSummaries, nowMs, livenessMap, unreadByConversation, goalsByConversation]
   );
   const hasArchivedChats = hasArchivedConversations({
     storedConversationCount: conversationStats?.storedConversationCount ?? null,
@@ -1036,7 +1178,7 @@ export default function App() {
         disabled:
           ((definition.command === 'sidebar.toggle' || definition.command === 'terminal.toggle') &&
             activeView !== 'chat') ||
-          (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming')) ||
+          (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || isActiveDraftStreaming)) ||
           ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
             !selectedConversationId) ||
           ((definition.command === 'workspace.mode.toggle' || definition.command === 'workspace.project.attach') &&
@@ -1052,7 +1194,7 @@ export default function App() {
         // matches what people type, not only the command's own wording.
         keywords: definition.keywords,
       })),
-    [activeDraft?.status, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
+    [isActiveDraftStreaming, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
   );
   /**
    * The sidebar's "Search" row opens the palette, so the palette has to offer
@@ -1458,24 +1600,27 @@ export default function App() {
     root.style.setProperty('--font-code-mono', buildFontFamilyValue(appearance.codeFontFamily, '--font-mono-system'));
   }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
 
-  const activitiesByConversation = useAppStore((state) => state.activitiesByConversation);
-  const activeActivities = selectedConversationId
-    ? (activitiesByConversation[selectedConversationId] ?? [])
-    : [];
+  /*
+    The activity log is rewritten on every stream flush (a text delta folds
+    into a `message.*` entry), so subscribing to the log here put App on the
+    token path. All App does with it is notice when the first agent starts, so
+    it subscribes to that count instead — a number, which holds still between
+    the events that actually matter.
+  */
+  const runningAgentsCount = useAppStore((state) =>
+    countRunningAgents(
+      selectedConversationId ? state.activitiesByConversation[selectedConversationId] : undefined
+    )
+  );
 
   const prevRunningAgentsCountRef = useRef(0);
   useEffect(() => {
-    const runningAgentsCount = activeActivities.filter((a) => {
-      const isAgent = a.payload?.agentKind === 'agent';
-      return isAgent && (a.status === 'running' || a.status === 'pending_approval');
-    }).length;
-
     if (runningAgentsCount > 0 && prevRunningAgentsCountRef.current === 0) {
       setWorkbenchTab('agents');
       setWorkbenchOpen(true);
     }
     prevRunningAgentsCountRef.current = runningAgentsCount;
-  }, [activeActivities]);
+  }, [runningAgentsCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1569,16 +1714,16 @@ export default function App() {
     ) : activeView === 'sites' ? (
       <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
     ) : activeView === 'settings' ? (
-      <SettingsWorkspace
+      <SettingsWorkspaceRoute
         settings={settings}
         updateState={updateState}
-        usageSummary={buildUsageSummary({
+        usageInputs={{
           settings,
-          conversationPages: conversationDetails,
+          conversationPages: settingsConversationPages,
           conversationStats,
           diagnostics,
           rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
-        })}
+        }}
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
         shortcutPlatform={shortcutPlatform}
@@ -1727,7 +1872,7 @@ export default function App() {
               disabled={!selectedConversationId}
               variant="heading"
               permissionMode={toolPermissionMode}
-              permissionDisabled={activeDraft?.status === 'streaming'}
+              permissionDisabled={isActiveDraftStreaming}
               executionTarget={executionTarget}
               cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
               isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
@@ -1844,12 +1989,12 @@ export default function App() {
                   <TooltipContent side="bottom">Forward</TooltipContent>
                 </Tooltip>
               </div>
-              {activeConversation?.conversation ? (
+              {activeConversationTitle ? (
                 <h2 className="truncate text-md font-medium text-text-primary">
-                  {activeConversation.conversation.title}
+                  {activeConversationTitle}
                 </h2>
               ) : null}
-              {activeDraft?.status === 'streaming' ? (
+              {isActiveDraftStreaming ? (
                 <span
                   className="inline-flex items-center gap-1.5 text-2xs text-text-muted"
                   role="status"
@@ -1919,26 +2064,19 @@ export default function App() {
               to start a new chat, since the transcript is what crashed.
             */}
             <RendererErrorBoundary resetKey={selectedConversationId}>
-              <ChatWindow
-                detail={activeConversation}
-                draft={activeDraft}
+              <ChatWindowSlot
+                conversationId={selectedConversationId}
                 hasCredential={hasCredential}
                 isLoadingConversation={isLoadingConversation}
                 isLoadingOlder={isLoadingOlder}
                 onOpenSettings={() => runViewTransition(() => openSettings())}
                 onSuggestionClick={appendToComposer}
-                onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
-                onRespondToolApproval={(request) => respondToolApproval(request)}
-                onRetryLastMessage={() => void resendLastUserMessage()}
-                onReviewChanges={() => {
-                  setWorkbenchOpen(true);
-                  setWorkbenchTab('review');
-                }}
+                onLoadOlderMessages={handleLoadOlderMessages}
+                onRespondToolApproval={handleRespondToolApproval}
+                onRetryLastMessage={handleRetryLastMessage}
+                onReviewChanges={openWorkbenchReview}
                 onUndoChanges={handleUndoTurnEdits}
-                onOpenAgentsPanel={() => {
-                  setWorkbenchOpen(true);
-                  setWorkbenchTab('agents');
-                }}
+                onOpenAgentsPanel={openWorkbenchAgents}
                 hasTools={hasModelTools}
                 projectName={activeProject?.exists ? activeProject.title : null}
               />
@@ -2005,14 +2143,12 @@ export default function App() {
                 <ChatComposerSlot
                   conversationId={selectedConversationId}
                   disabled={!selectedConversationId}
-                isStreaming={activeDraft?.status === 'streaming'}
                 onSlashAction={handleSlashAction}
                 models={models}
                 selectedModelId={selectedModelId}
+                selectedProviderId={selectedProviderId}
                 modelPickerOpen={modelPickerOpen}
                 composerFocusNonce={composerFocusNonce}
-                detail={activeConversation}
-                draft={activeDraft}
                 onSend={(message) => {
                   const conversationId = selectedConversationId;
                   captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
@@ -2040,10 +2176,10 @@ export default function App() {
                     void abortConversation(selectedConversationId);
                   }
                 }}
-                onSelectModel={(modelId) => {
+                onSelectModel={(modelId, providerId) => {
                   if (selectedConversationId) {
                     captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
-                    setSelectedModel(selectedConversationId, modelId);
+                    setSelectedModel(selectedConversationId, modelId, providerId);
                   }
                 }}
                 onModelPickerOpenChange={setModelPickerOpen}
@@ -2093,6 +2229,9 @@ export default function App() {
                 onReset={terminalResize.reset}
               />
               <RendererErrorBoundary resetKey={selectedConversationId}>
+                {/* xterm and its addons ride in the dock's chunk; the dock only
+                    mounts once someone opens the terminal. */}
+                <Suspense fallback={null}>
                 <TerminalDock
                   conversationId={selectedConversationId ?? undefined}
                   // First-paint cwd must mirror main's spawn rule (worktree
@@ -2117,6 +2256,7 @@ export default function App() {
                   className="shrink-0"
                   style={{ height: terminalResize.width }}
                 />
+                </Suspense>
               </RendererErrorBoundary>
             </>
           )}
@@ -2148,11 +2288,9 @@ export default function App() {
               inert={workbenchDerivedClosed || undefined}
             >
               <RendererErrorBoundary resetKey={selectedConversationId}>
-                <WorkbenchPanel
+                <WorkbenchPanelSlot
                   conversationId={selectedConversationId ?? undefined}
                   mode={workspaceMode}
-                  messages={activeConversation?.messages ?? []}
-                  activities={activeActivities}
                   activeTab={workbenchTab}
                   onTabChange={setWorkbenchTab}
                   onClose={() => setWorkbenchOpen(false)}
@@ -2182,15 +2320,29 @@ export default function App() {
         onSelect={runCommand}
         open={commandPaletteOpen}
       />
-      <VisualGallery
+      {/*
+        Mounted on first open and kept mounted after that: mounting it eagerly
+        would load the chunk during boot for a modal most sessions never open,
+        and unmounting it on close would cut the dialog's exit animation.
+      */}
+      {galleryMounted ? (
+        <Suspense fallback={null}>
+          <VisualGallery
         isOpen={galleryOpen}
         onClose={() => setGalleryOpen(false)}
         onSelect={(visual) => {
           setGalleryOpen(false);
           appendToComposer(visual.content);
         }}
-      />
-      {content}
+          />
+        </Suspense>
+      ) : null}
+      {/*
+        One boundary for every route-level chunk. The chat shell is not lazy, so
+        this only ever shows while a full-screen view (settings, sites, plugins,
+        landing) is being fetched — a few milliseconds from local disk.
+      */}
+      <Suspense fallback={<LoadingScreen />}>{content}</Suspense>
     </TooltipProvider>
   );
 }

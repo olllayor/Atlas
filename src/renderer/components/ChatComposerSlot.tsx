@@ -13,7 +13,14 @@ import { GoalDock } from './goal/GoalDock';
  */
 type ChatComposerSlotProps = Omit<
   ComposerProps,
-  'value' | 'attachments' | 'onChange' | 'onAttachmentsChange'
+  | 'value'
+  | 'attachments'
+  | 'onChange'
+  | 'onAttachmentsChange'
+  | 'conversationId'
+  | 'draftRequestId'
+  | 'draftStatus'
+  | 'isStreaming'
 > & {
   conversationId: string | null;
 };
@@ -51,6 +58,18 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
       ? state.composerAttachmentsByConversation[conversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
       : EMPTY_COMPOSER_ATTACHMENTS
   );
+  /*
+    Turn identity, not turn content. `draftsByConversation` is replaced on every
+    33ms stream flush; these two fields change when a request starts, settles or
+    fails. Subscribing to them instead keeps the composer — and the context
+    meter it owns — off the token path.
+  */
+  const draftRequestId = useAppStore((state) =>
+    conversationId ? state.draftsByConversation[conversationId]?.requestId ?? null : null
+  );
+  const draftStatus = useAppStore((state) =>
+    conversationId ? state.draftsByConversation[conversationId]?.status ?? null : null
+  );
   const setComposerDraft = useAppStore((state) => state.setComposerDraft);
   const setComposerAttachments = useAppStore((state) => state.setComposerAttachments);
   const cancelQueuedFollowup = useAppStore((state) => state.cancelQueuedFollowup);
@@ -83,6 +102,10 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
       />
       <Composer
         {...composerProps}
+        conversationId={conversationId}
+        draftRequestId={draftRequestId}
+        draftStatus={draftStatus}
+        isStreaming={draftStatus === 'streaming'}
         queuedCount={queuedFollowups.length}
         attachments={attachments}
         onAttachmentsChange={handleAttachmentsChange}

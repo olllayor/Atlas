@@ -719,6 +719,42 @@ select {
 }
 
 /*
+ * Branded loader. The keycap is square - spinning it reads as a bug, and a
+ * continuous scale interpolation would paint a frame every vsync for the whole
+ * load. Duty-cycled opacity + scale (steps) matches atlas-glyph-pulse cost:
+ * ~20% of the cycle actually presents, rest is hold, and the 1.8s period is
+ * close enough to the shimmer (2s) to avoid visual beating.
+ */
+@keyframes atlas-logo-breathe {
+  0%,
+  45% {
+    opacity: 1;
+    scale: 1;
+    animation-timing-function: steps(6);
+  }
+  55%,
+  90% {
+    opacity: 0.52;
+    scale: 0.96;
+    animation-timing-function: steps(6);
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+.motion-logo-breathe {
+  animation: atlas-logo-breathe 1.8s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-logo-breathe {
+    animation: none;
+  }
+}
+
+/*
  * Duty-cycled rotation for the app's progress rings, replacing Tailwind's
  * `animate-spin` (a continuous transform interpolation — a compositor frame
  * every vsync for as long as a fetch runs). `steps(12)` presents ~13 frames

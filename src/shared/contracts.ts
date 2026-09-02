@@ -934,6 +934,10 @@ export type ContextUsageSnapshot = {
   keptTurnCount: number;
   /** True when the prompt exceeds the usable budget and may be rejected. */
   overflow: boolean;
+  /** Token threshold at which compaction fires; null when window unknown. Derived as (max - reservedOutput - floor) * ratio. */
+  compactionThresholdTokens: number | null;
+  /** Ratio used for this snapshot, in [0.5,0.95]. */
+  compactionThresholdPercent?: number;
   /**
    * Provider accounting for the most recent completed turn, for cost display.
    *
@@ -968,6 +972,7 @@ export type ContextUsageSnapshot = {
 export type GetContextUsageRequest = {
   conversationId: string;
   modelId: string;
+  providerId?: ProviderId;
   enableTools?: boolean;
   toolPermissionMode?: ToolPermissionMode;
   mentions?: MentionId[];
@@ -1153,6 +1158,8 @@ export type SettingsChatSummary = {
   lastModelId: string | null;
   /** When the assistant is allowed to answer with an inline visual. */
   visualMode: VisualMode;
+  /** Compaction pressure threshold percent, 50..95, default 85. */
+  compactionThresholdPercent: number;
   /** Whether the experimental Cloud Sandbox execution target is enabled. */
   cloudSandboxEnabled: boolean;
   /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
@@ -2176,6 +2183,7 @@ export type SettingsUpdateRequest = {
     lastProjectId?: string | null;
     lastModelId?: string | null;
     visualMode?: VisualMode;
+    compactionThresholdPercent?: number;
     cloudSandboxEnabled?: boolean;
     cloudSandboxWorkerUrl?: string | null;
     cloudSandboxWorkerSecret?: string | null;
@@ -2529,7 +2537,7 @@ export type RendererApi = {
     interrupt: (childId: string) => Promise<{ accepted: true }>;
     /** Stops every live agent in a conversation, leaving the parent turn alone. */
     interruptAll: (conversationId: string) => Promise<{ interrupted: number }>;
-    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) => Promise<any>;
+    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) => Promise<ConversationDetail>;
     getLiveness: () => Promise<Record<string, 'working' | 'monitoring' | null>>;
     /** Composer takeover input: is this conversation a subagent, and can it still be driven? */
     getComposerState: (childId: string) => Promise<SubagentComposerState | null>;

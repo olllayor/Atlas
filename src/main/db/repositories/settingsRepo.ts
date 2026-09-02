@@ -13,6 +13,11 @@ import {
   isReduceMotionMode,
   normalizeThemeColor,
 } from '../../../shared/contracts';
+import {
+  COMPACTION_THRESHOLD_DEFAULT,
+  normalizeCompactionThresholdPercent,
+  clampCompactionThresholdPercent,
+} from '../../../shared/contextCompaction';
 import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
 import type { VisualMode } from '../../../shared/visualIntent';
 import { DEFAULT_VISUAL_MODE, isVisualMode } from '../../../shared/visualIntent';
@@ -278,6 +283,16 @@ export class SettingsRepo {
 
   setVisualMode(value: VisualMode) {
     this.setJsonSetting('chat.visualMode', value);
+  }
+
+  getCompactionThresholdPercent(): number {
+    const value = this.getJsonSetting<unknown>('chat.compactionThresholdPercent', COMPACTION_THRESHOLD_DEFAULT);
+    return normalizeCompactionThresholdPercent(value);
+  }
+
+  setCompactionThresholdPercent(value: number) {
+    const normalized = clampCompactionThresholdPercent(value);
+    this.setJsonSetting('chat.compactionThresholdPercent', normalized);
   }
 
   getReasoningEffort(): ReasoningEffort {

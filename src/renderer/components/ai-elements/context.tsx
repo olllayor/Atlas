@@ -1,10 +1,11 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import { costFromUsage } from "tokenlens";
-import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
-import { createContext, useContext, useMemo } from "react";
+import type { ComponentProps, HTMLAttributes } from "react";
+import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef } from "react";
 
 import type { ContextUsageSnapshot } from "../../../shared/contracts";
+import { COMPACTION_THRESHOLD_MIN, COMPACTION_THRESHOLD_MAX } from "../../../shared/contextCompaction";
 
 type ContextUsage = {
   inputTokens?: number;
@@ -18,13 +19,15 @@ type ContextContextValue = {
   usedTokens: number;
   usage?: ContextUsage;
   modelId?: string;
-  /** Share of the window still free. The headline figure everywhere. */
   remainingPercentage: number;
   remainingLabel: string;
   tone: ContextTone;
   totalCost?: number;
-  /** Where the prompt's tokens actually go, when the main process measured it. */
   breakdown?: ContextUsageSnapshot;
+  compactionThresholdPercent?: number | null;
+  compactionThresholdTokens?: number | null;
+  onCompactionThresholdChange?: (next: number) => void;
+  onCompactNow?: () => void;
 };
 
 const ContextData = createContext<ContextContextValue | null>(null);
@@ -46,74 +49,43 @@ function formatTokenCount(value: number) {
 
 /**
  * Neither end of the scale is allowed to round into an absolute.
- *
- * `0` and `100` are claims about an empty and an untouched window, and rounding
- * must never manufacture either. The original bug was at the bottom: anything
- * under 0.05% went through `toFixed(1)`, lost its `.0`, and rendered as a flat
- * `0` — the same glyph as no prompt at all. Reading the window as *remaining*
- * moves that hazard to the top as well: 99.6% left is a used window, and
- * printing it as `100` says nothing has been spent. Both ends therefore keep an
- * operator — `<1`, `>99` — which is a fact rather than a rounding artefact.
  */
 export function formatContextPercentage(value: number) {
   if (value <= 0) {
     return "0";
   }
-
   if (value >= 100) {
     return "100";
   }
-
   if (value < 1) {
     return "<1";
   }
-
   if (value < 10) {
     return value.toFixed(1).replace(/\.0$/, "");
   }
-
   const rounded = Math.round(value);
   return rounded >= 100 ? ">99" : rounded.toString();
 }
 
-/**
- * Spoken form of a percentage label.
- *
- * The visible figure and the `aria-label` have to be the same claim, so the
- * label is reused rather than recomputed — but a screen reader may drop a bare
- * `<` or read it as punctuation, which would announce `<1% left` as `1% left`.
- * Spelling the operator keeps the two in agreement out loud.
- */
 export function toSpokenPercentage(label: string) {
   if (label.startsWith("<")) {
     return `less than ${label.slice(1)}`;
   }
-
   if (label.startsWith(">")) {
     return `more than ${label.slice(1)}`;
   }
-
   return label;
 }
 
 export type ContextTone = "normal" | "warning" | "critical";
 
-/**
- * The ramp is keyed on what is LEFT, so it escalates as the figure falls.
- *
- * The thresholds are the mirror of the consumed ramp they replace (warning at
- * 70% used, error at 90%), which lands them at the same two points on the
- * window — only now the direction of travel matches the number beside them.
- */
 export function contextToneForRemaining(remainingPercentage: number): ContextTone {
   if (remainingPercentage <= 10) {
     return "critical";
   }
-
   if (remainingPercentage <= 30) {
     return "warning";
   }
-
   return "normal";
 }
 
@@ -123,7 +95,6 @@ const TONE_COLOR: Record<ContextTone, string> = {
   critical: "var(--error)",
 };
 
-/** Share of the window still free, given what the main process measured. */
 export function computeRemainingPercentage(usedTokens: number, maxTokens: number) {
   const safeMax = Math.max(1, maxTokens);
   const safeUsed = Math.max(0, usedTokens);
@@ -134,7 +105,6 @@ function formatUsd(value?: number) {
   if (value == null) {
     return null;
   }
-
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -146,7 +116,6 @@ function getCost(modelId: string | undefined, usage: ContextUsage | undefined) {
   if (!modelId || !usage) {
     return undefined;
   }
-
   try {
     return costFromUsage({ id: modelId, usage });
   } catch {
@@ -160,6 +129,10 @@ export type ContextProps = ComponentProps<typeof HoverCard> & {
   usage?: ContextUsage;
   modelId?: string;
   breakdown?: ContextUsageSnapshot;
+  compactionThresholdPercent?: number | null;
+  compactionThresholdTokens?: number | null;
+  onCompactionThresholdChange?: (next: number) => void;
+  onCompactNow?: () => void;
 };
 
 export const Context = ({
@@ -168,6 +141,10 @@ export const Context = ({
   usage,
   modelId,
   breakdown,
+  compactionThresholdPercent,
+  compactionThresholdTokens,
+  onCompactionThresholdChange,
+  onCompactNow,
   children,
   openDelay = 120,
   closeDelay = 80,
@@ -177,7 +154,6 @@ export const Context = ({
     const safeMax = Math.max(1, maxTokens);
     const safeUsed = Math.max(0, usedTokens);
     const remainingPercentage = computeRemainingPercentage(safeUsed, safeMax);
-
     return {
       breakdown,
       maxTokens: safeMax,
@@ -188,8 +164,12 @@ export const Context = ({
       totalCost: getCost(modelId, usage),
       usage,
       usedTokens: safeUsed,
+      compactionThresholdPercent: compactionThresholdPercent ?? breakdown?.compactionThresholdPercent ?? null,
+      compactionThresholdTokens: compactionThresholdTokens ?? breakdown?.compactionThresholdTokens ?? null,
+      onCompactionThresholdChange,
+      onCompactNow,
     };
-  }, [breakdown, maxTokens, modelId, usage, usedTokens]);
+  }, [breakdown, compactionThresholdPercent, compactionThresholdTokens, maxTokens, modelId, onCompactNow, onCompactionThresholdChange, usage, usedTokens]);
 
   return (
     <ContextData.Provider value={value}>
@@ -210,27 +190,10 @@ export const ContextTrigger = ({
   const { remainingLabel, remainingPercentage, tone, usedTokens, maxTokens } = useContextData();
   const color = TONE_COLOR[tone];
   const circumference = 2 * Math.PI * 11;
-
-  // An untouched thread has no story to tell: a full accent circle reads as
-  // "something is full", when the fact is the opposite. Below ~0.5% used the
-  // ring draws as an empty track — the same neutral grey the dial carries
-  // before the first token — and only starts arcing once there is something
-  // to arc about.
   const isEmpty = usedTokens <= 0 || remainingPercentage >= 99.5;
-
-  // The arc is the headroom, so it drains as the window fills — the ring and
-  // the figure it stands for move together, which a consumed arc under a
-  // remaining figure would not. Above zero it keeps a 2% floor so the last
-  // sliver of a nearly-full window is still drawn rather than vanishing at the
-  // one moment it matters most.
   const exhausted = remainingPercentage <= 0;
   const progress = exhausted ? 0 : Math.max(0.02, Math.min(1, remainingPercentage / 100));
   const dashOffset = circumference * (1 - progress);
-
-  // An empty gauge draws no arc, so the state with the least ink would
-  // otherwise be the most urgent one. The track carries the alarm instead: a
-  // solid error-coloured ring, which cannot be mistaken for the full accent
-  // ring of an untouched window.
   const glow = `drop-shadow(0 0 4px ${color})`;
 
   if (children) {
@@ -244,24 +207,13 @@ export const ContextTrigger = ({
         aria-label={`Context: ${toSpokenPercentage(remainingLabel)}% left, ${formatTokenCount(
           usedTokens
         )} of ${formatTokenCount(maxTokens)} used`}
-        // Borderless size-8 circle so it reads as one of the row's ghost
-        // buttons instead of the only bordered, square, press-animated control.
-        // The dial is the whole control: the figure it used to carry was three
-        // glyphs of noise next to the model name, and the hover card already
-        // states it exactly, alongside the breakdown that explains it.
         className={cn(
           "group relative inline-flex size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-bg-hover hover:text-[var(--text-primary)]",
           className
         )}
         {...props}
       >
-        {/* Main progress ring */}
-        <svg
-          aria-hidden="true"
-          className="absolute inset-[2px] -rotate-90"
-          viewBox="0 0 32 32"
-        >
-          {/* Background track — becomes the alarm once nothing is left */}
+        <svg aria-hidden="true" className="absolute inset-[2px] -rotate-90" viewBox="0 0 32 32">
           <circle
             cx="16"
             cy="16"
@@ -272,7 +224,6 @@ export const ContextTrigger = ({
             opacity={exhausted ? 1 : isEmpty ? 0.6 : 0.3}
             style={{ filter: exhausted ? glow : "none" }}
           />
-          {/* Remaining arc — not drawn at all while the thread is untouched */}
           {isEmpty ? null : (
             <circle
               cx="16"
@@ -303,10 +254,10 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
     side="top"
     align="end"
     sideOffset={12}
-      className={cn(
-        "w-[292px] border border-[var(--border-strong)] bg-bg-overlay p-0 text-text-primary shadow-elevated",
-        className
-      )}
+    className={cn(
+      "w-[280px] border border-[var(--border-strong)] bg-bg-overlay p-0 text-text-primary shadow-elevated",
+      className
+    )}
     {...props}
   />
 );
@@ -321,14 +272,10 @@ export const ContextContentHeader = ({
   const { remainingLabel, usedTokens, maxTokens } = useContextData();
 
   return (
-    <div className={cn("px-4 pt-3.5", className)} {...props}>
+    <div className={cn("px-3.5 pt-3", className)} {...props}>
       {children ?? (
         <div className="space-y-1.5">
-          <div className="text-2xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-            Context Window
-          </div>
-          {/* The headline is the headroom; the absolute pair stays beside it so
-              the figure can still be checked against real token counts. */}
+          <div className="text-2xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">Context Window</div>
           <div className="text-sm font-medium leading-none tracking-tight">
             <span className="tabular-nums font-semibold text-[var(--text-primary)]">{remainingLabel}% left</span>
             <span className="px-1.5 text-[var(--text-muted)]">•</span>
@@ -349,25 +296,174 @@ export const ContextContentBody = ({
   children,
   ...props
 }: ContextContentBodyProps) => {
-  const { breakdown } = useContextData();
+  const data = useContextData();
+  const { breakdown } = data;
 
   return (
-    <div className={cn("px-4 pt-2 text-sm leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
-      {children ?? (breakdown ? <ContextBreakdownRows breakdown={breakdown} /> : null)}
+    <div className={cn("px-3.5 pt-2.5 text-sm leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
+      {children ??
+        (breakdown ? (
+          <>
+            <ContextThresholdBar />
+            <div className="mt-2.5">
+              <ContextBreakdownRows breakdown={breakdown} />
+            </div>
+          </>
+        ) : null)}
     </div>
   );
 };
 
 /**
- * Where the prompt's tokens go.
- *
- * The headroom figure counts only what the conversation put in the window. The
- * instructions and tool schemas are a fixed floor charged on every request, and
- * omitting them entirely would misstate what a turn costs — so they are listed
- * here, below the conversation rows and explicitly marked as sitting outside
- * the figure above. Rows are omitted when zero so a tools-off conversation does
- * not carry an empty line.
+ * Single blue usage bar with draggable threshold marker.
+ * The threshold is the conversation-token budget after reserved output, system and tools excluded.
  */
+function ContextThresholdBar() {
+  const {
+    usedTokens,
+    maxTokens,
+    compactionThresholdPercent,
+    compactionThresholdTokens,
+    onCompactionThresholdChange,
+    onCompactNow,
+  } = useContextData();
+
+  const hasThreshold = typeof compactionThresholdPercent === 'number' && compactionThresholdTokens != null && maxTokens > 0;
+  const thresholdPercent = hasThreshold ? (compactionThresholdPercent as number) : 85;
+  const thresholdTokens = hasThreshold ? (compactionThresholdTokens as number) : null;
+
+  // Slider local draft so dragging updates marker immediately without spamming IPC.
+  const [draftPercent, setDraftPercent] = useState<number>(thresholdPercent);
+  const isDraggingRef = useRef(false);
+  const committedRef = useRef<number>(thresholdPercent);
+
+  useEffect(() => {
+    if (!isDraggingRef.current) {
+      setDraftPercent(thresholdPercent);
+      committedRef.current = thresholdPercent;
+    }
+  }, [thresholdPercent]);
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const next = Number(e.target.value);
+      if (!Number.isFinite(next)) return;
+      const clamped = Math.min(COMPACTION_THRESHOLD_MAX, Math.max(COMPACTION_THRESHOLD_MIN, Math.round(next)));
+      setDraftPercent(clamped);
+      // Live preview for keyboard; pointer commits on change as well but debounced by parent.
+      // We commit on every change for keyboard accessibility; parent should debounce persistence.
+      // For pointer, this still updates marker immediately.
+    },
+    []
+  );
+
+  const handleCommit = useCallback(() => {
+    if (committedRef.current !== draftPercent) {
+      committedRef.current = draftPercent;
+      onCompactionThresholdChange?.(draftPercent);
+    }
+  }, [draftPercent, onCompactionThresholdChange]);
+
+  const handlePointerDown = useCallback(() => {
+    isDraggingRef.current = true;
+  }, []);
+  const handlePointerUp = useCallback(() => {
+    isDraggingRef.current = false;
+    handleCommit();
+  }, [handleCommit]);
+
+  const handleKeyUp = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') {
+        handleCommit();
+      }
+    },
+    [handleCommit]
+  );
+
+  // Percent for bar fill and marker. Conversation threshold vs window scale.
+  const usedPercent = Math.min(100, Math.max(0, (usedTokens / Math.max(1, maxTokens)) * 100));
+  // Marker position: thresholdTokens / maxTokens (conversation budget on window scale). Fallback to percent of window.
+  const markerPercent = hasThreshold && thresholdTokens != null ? Math.min(100, Math.max(0, (thresholdTokens / Math.max(1, maxTokens)) * 100)) : (draftPercent / 100) * 100;
+  // Draft marker mirrors the pending percent value while dragging: need to convert draft percent to token space for preview?
+  // For preview while dragging, compute draftThresholdTokens = available * draftRatio. Approximate by scaling marker linearly with draft percent.
+  // Simpler: marker follows draftPercent proportionally when dragging without recomputed tokens (approx). For committed state, use real tokens.
+  const displayMarkerPercent = isDraggingRef.current ? (draftPercent / 100) * (markerPercent / Math.max(1, thresholdPercent)) * 100 : markerPercent;
+  // Actually simpler: if dragging, compute marker as draftPercent/100 * 100 but scaled to available ratio? Keep linear to avoid jump.
+  // Use draftMarker = (draftPercent / thresholdPercent) * markerPercent while dragging.
+  const effectiveMarker = (() => {
+    if (!isDraggingRef.current) return markerPercent;
+    if (!hasThreshold || thresholdPercent === 0) return (draftPercent / 100) * 100;
+    return Math.min(100, Math.max(0, (draftPercent / thresholdPercent) * markerPercent));
+  })();
+
+  return (
+    <div className="space-y-2.5">
+      {/* Blue usage bar with threshold marker */}
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-bg-subtle" aria-hidden="true">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-[var(--accent)] transition-all duration-200" style={{ width: `${usedPercent}%` }} />
+        {hasThreshold ? (
+          <div
+            className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-[var(--text-primary)] shadow-[0_0_0_2px_var(--bg-overlay)]"
+            style={{ left: `${effectiveMarker}%` }}
+            title={`Threshold ${thresholdPercent}%`}
+          />
+        ) : null}
+      </div>
+
+      {/* Range input overlays bar for a11y; visually separate but controls same value */}
+      {onCompactionThresholdChange ? (
+        <div className="relative">
+          <input
+            type="range"
+            min={COMPACTION_THRESHOLD_MIN}
+            max={COMPACTION_THRESHOLD_MAX}
+            step={1}
+            value={draftPercent}
+            onChange={handleChange}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onTouchEnd={handleCommit}
+            onMouseUp={handleCommit}
+            onBlur={handleCommit}
+            onKeyUp={handleKeyUp}
+            aria-label="Automatic compaction threshold"
+            aria-valuetext={`${draftPercent} percent, compact at ${thresholdTokens != null ? formatTokenCount(thresholdTokens) : '—'}`}
+            className="h-1.5 w-full cursor-pointer appearance-none bg-transparent accent-[var(--accent)]"
+          />
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between text-2xs">
+        <span className="tabular-nums text-text-tertiary">
+          {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}
+        </span>
+        <span className="tabular-nums text-text-secondary">
+          {thresholdTokens != null ? `Compact at ${formatTokenCount(thresholdTokens)}` : `Compact at ${thresholdPercent}%`}
+        </span>
+      </div>
+
+      {onCompactNow ? (
+        <button
+          type="button"
+          onClick={onCompactNow}
+          className="inline-flex h-7 w-full items-center justify-center rounded-md border border-border-default bg-bg-base px-2.5 text-xs font-medium text-text-primary transition hover:bg-bg-hover"
+        >
+          Compact Now
+        </button>
+      ) : null}
+
+      <div className="flex items-center justify-between pt-0.5 text-2xs">
+        <span className="text-text-tertiary">Automatic Compaction</span>
+        <span className="text-[var(--accent)]" aria-hidden="true">
+          ✓
+        </span>
+        <span className="sr-only">enabled</span>
+      </div>
+    </div>
+  );
+}
+
 function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }) {
   const rows: Array<{ label: string; tokens: number }> = [
     { label: "Conversation", tokens: breakdown.historyTokens },
@@ -398,28 +494,16 @@ function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }
 
       {breakdown.droppedTurnCount > 0 ? (
         <div className="pt-1 text-2xs leading-4 text-text-tertiary">
-          {breakdown.droppedTurnCount} older {breakdown.droppedTurnCount === 1 ? "turn" : "turns"} compressed to
-          fit; the {breakdown.keptTurnCount} most recent are sent in full.
+          {breakdown.droppedTurnCount} older {breakdown.droppedTurnCount === 1 ? "turn" : "turns"} compressed to fit; the{" "}
+          {breakdown.keptTurnCount} most recent are sent in full.
         </div>
       ) : null}
     </div>
   );
 }
 
-/**
- * The prompt as one stacked bar (dsh's composition strip).
- *
- * Proportions read at a glance in a way five rows of numbers do not: a window
- * dominated by the fixed floor says "this model carries heavy tools", one
- * dominated by the summary says "this conversation is being compressed hard".
- * Every segment is an estimate, so the bar carries `~` in its tooltips and
- * never claims to sum to the anchored total.
- */
 function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot }) {
   const segments = [
-    // The fixed floor stays grey: accent is reserved for what the
-    // conversation itself put in the window, so an untouched thread's bar is
-    // all neutral and reads as empty even though the floor is real.
     { label: "Instructions", tokens: breakdown.systemTokens, color: "var(--text-tertiary)" },
     { label: "Tools", tokens: breakdown.toolTokens, color: "color-mix(in oklab, var(--text-tertiary) 55%, transparent)" },
     { label: "Summarised turns", tokens: breakdown.summaryTokens, color: "var(--warning)" },
@@ -433,8 +517,6 @@ function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot 
   }
 
   return (
-    // Decorative: the rows below carry the same figures as text, so the bar
-    // is a shape, not a second data source screen readers must re-read.
     <div aria-hidden="true" className="flex h-1.5 w-full gap-px overflow-hidden rounded-full bg-bg-subtle">
       {segments.map((segment) => (
         <div
@@ -448,15 +530,6 @@ function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot 
   );
 }
 
-/**
- * One-decimal cache-hit percentage, dsh's high-cache-hit display.
- *
- * The decimal is the point: a harness living at 98.2% and one at 94% are both
- * "high", but only the fraction says which prefix discipline is actually
- * holding. Whole-number rounding would read both as 98 / 94 — fine — but would
- * also flatten 97.96 → 98 next to a true 98.0, hiding drift inside the same
- * glyph.
- */
 export function formatCacheHitRate(hitRate: number) {
   return `${(Math.min(1, Math.max(0, hitRate)) * 100).toFixed(1).replace(/\.0$/, "")}%`;
 }
@@ -473,19 +546,12 @@ export const ContextContentFooter = ({
   const cache = breakdown?.cache ?? null;
 
   return (
-    <div
-      className={cn(
-        "px-4 pb-3.5 pt-2 text-2xs leading-[1.35] text-[var(--text-muted)]",
-        className
-      )}
-      {...props}
-    >
+    <div className={cn("px-3.5 pb-3 pt-2 text-2xs leading-[1.35] text-[var(--text-muted)]", className)} {...props}>
       {children ?? (
         <span>
           {cache && cache.hitRate != null ? (
             <>
-              {formatCacheHitRate(cache.hitRate)} prompt cache hit across{" "}
-              {cache.reportedTurns} {cache.reportedTurns === 1 ? "turn" : "turns"}.
+              {formatCacheHitRate(cache.hitRate)} prompt cache hit across {cache.reportedTurns} {cache.reportedTurns === 1 ? "turn" : "turns"}.
               <br />
             </>
           ) : null}

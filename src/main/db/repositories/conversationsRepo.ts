@@ -685,8 +685,12 @@ const NOOP_TOOL_EXECUTIONS_REPO: Pick<ToolExecutionsRepo, 'listByMessageIds'> = 
   listByMessageIds: () => [],
 };
 
-const NOOP_RUNTIME_STATE_REPO: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = {
+const NOOP_RUNTIME_STATE_REPO: Pick<
+  RuntimeStateRepo,
+  'listActivitiesByMessageIds' | 'forgetConversationEvents'
+> = {
   listActivitiesByMessageIds: () => [],
+  forgetConversationEvents: () => undefined,
 };
 
 export class ConversationsRepo {
@@ -697,7 +701,10 @@ export class ConversationsRepo {
       'deleteConversationAttachments' | 'readAttachmentData' | 'copyAttachment'
     > = NOOP_ATTACHMENT_STORE,
     private readonly toolExecutionsRepo: Pick<ToolExecutionsRepo, 'listByMessageIds'> = NOOP_TOOL_EXECUTIONS_REPO,
-    private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
+    private readonly runtimeStateRepo: Pick<
+      RuntimeStateRepo,
+      'listActivitiesByMessageIds' | 'forgetConversationEvents'
+    > = NOOP_RUNTIME_STATE_REPO,
   ) {}
 
   private messageSearchRepo: MessageSearchRepo | null = null;
@@ -1036,6 +1043,10 @@ export class ConversationsRepo {
       )
       .run({ conversationId });
 
+    // The event rows went with the conversation (ON DELETE CASCADE); drop the
+    // runtime repo's cached sequence watermark so it can never resurrect.
+    this.runtimeStateRepo.forgetConversationEvents(conversationId);
+
     this.attachmentStore.deleteConversationAttachments(conversationId);
   }
 
@@ -1351,7 +1362,13 @@ export class ConversationsRepo {
     }
 
     const limit = Math.max(1, Math.min(Math.floor(request.limit ?? 100), 250));
-    const cursor = request.cursor ? decodeConversationPageCursor(request.cursor) : null;
+    let cursor: ReturnType<typeof decodeConversationPageCursor> = null;
+    if (request.cursor) {
+      cursor = decodeConversationPageCursor(request.cursor);
+      if (!cursor) {
+        throw new Error('Invalid conversation page cursor');
+      }
+    }
     const rows =
       cursor == null
         ? this.db

@@ -24,7 +24,7 @@ export function compactConversationPage(detail: ConversationPage, limit = DEFAUL
   return {
     ...detail,
     messages,
-    hasOlder: Boolean(oldestLoadedMessage),
+    hasOlder: Boolean(oldestLoadedMessage) || detail.hasOlder || detail.messages.length > limit,
     nextCursor: oldestLoadedMessage
       ? encodeConversationPageCursor({
           createdAt: oldestLoadedMessage.createdAt,
@@ -53,7 +53,8 @@ export function mergeConversationPage(existing: ConversationPage | undefined, la
   });
 
   const oldestLoadedMessage = retainedOlderMessages[0] ?? latestPage.messages[0];
-  const hasOlder = retainedOlderMessages.length > 0 ? existing.hasOlder : latestPage.hasOlder;
+  const hasOlder =
+    retainedOlderMessages.length > 0 ? existing.hasOlder || latestPage.hasOlder : latestPage.hasOlder;
 
   return {
     ...latestPage,

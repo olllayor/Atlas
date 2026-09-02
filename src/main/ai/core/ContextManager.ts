@@ -5,6 +5,10 @@ import type { ModelMessage } from 'ai';
 import { pruneModelHistory } from '../compaction/toolResultPruner';
 import { estimateMessagesTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
 import type { ConversationSummariesRepo } from '../../db/repositories/conversationSummariesRepo';
+import {
+  COMPACTION_THRESHOLD_DEFAULT,
+  compactionPercentToRatio,
+} from '../../../shared/contextCompaction';
 
 /**
  * 'standard' and 'aggressive' are the proactive modes; 'maximal' is the last
@@ -33,6 +37,8 @@ export type ContextBudget = {
   totalTokens: number;
   /** Already committed by the system prompt and tool schemas. */
   reservedTokens: number;
+  /** Compaction pressure ratio in [0.5,0.95]; defaults to 0.85 when omitted. */
+  compactionRatio?: number;
 };
 
 export type BuildModelInputArgs = {
@@ -173,10 +179,14 @@ const MEMORY_CACHE_LIMIT = 50;
  * Waiting for the window to actually overflow means the turn that crosses the
  * line pays for an emergency compression mid-request and the *next* user
  * message starts with no headroom at all. Walking the boundary at 85% keeps
- ~15% of the window free for the reply and the question after it, and the
+ * ~15% of the window free for the reply and the question after it, and the
  * boundary then re-sticks — so the cost is paid once, not every turn.
+ *
+ * Configurable via `ContextBudget.compactionRatio`; this constant is the
+ * fallback when no ratio is supplied, kept in sync with
+ * `COMPACTION_THRESHOLD_DEFAULT`.
  */
-const PRESSURE_RATIO = 0.85;
+const PRESSURE_RATIO = COMPACTION_THRESHOLD_DEFAULT / 100;
 
 export class ContextManager {
   private readonly cache = new Map<string, CachedOlderContext>();
@@ -390,10 +400,11 @@ export class ContextManager {
     olderCount: number,
   ): boolean {
     const available = budget.totalTokens - budget.reservedTokens;
+    const ratio = budget.compactionRatio ?? PRESSURE_RATIO;
     // The pressure line, not the wall: the boundary moves while the kept
     // slice still *fits*, once it has eaten into the headroom. See
     // `PRESSURE_RATIO`.
-    return costFrom(split, mode, olderCount) <= available * PRESSURE_RATIO;
+    return costFrom(split, mode, olderCount) <= available * ratio;
   }
 
   /** Insertion-ordered cap shared by both per-conversation maps. */
@@ -508,7 +519,8 @@ function walkToBudget(
   budget: ContextBudget,
   from: number,
 ): number {
-  const available = (budget.totalTokens - budget.reservedTokens) * PRESSURE_RATIO;
+  const ratio = budget.compactionRatio ?? PRESSURE_RATIO;
+  const available = (budget.totalTokens - budget.reservedTokens) * ratio;
   const maxOlder = Math.max(0, split.turns.length - 1);
   let older = Math.min(from, maxOlder);
   while (older < maxOlder && costFrom(split, mode, older) > available) {

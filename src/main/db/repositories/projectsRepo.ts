@@ -239,8 +239,9 @@ export class ProjectsRepo {
   }
 
   touch(projectId: string) {
+    const now = new Date().toISOString();
     this.db
-      .prepare('UPDATE projects SET last_used_at = @now WHERE id = @projectId')
-      .run({ projectId, now: new Date().toISOString() });
+      .prepare('UPDATE projects SET last_used_at = @now, updated_at = @nowUpdate WHERE id = @projectId')
+      .run({ projectId, now, nowUpdate: now });
   }
 }

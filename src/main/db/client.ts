@@ -57,6 +57,28 @@ export function createAppDatabase(
   mkdirSync(dirname(databasePath), { recursive: true });
 
   const raw = new Database(databasePath);
+
+  // Connection-level performance pragmas. `journal_mode = WAL` lives in the
+  // schema (it persists in the file); everything here is per-connection and
+  // must be set on every open.
+  //
+  // `synchronous = NORMAL` is the deliberate durability tradeoff: under WAL it
+  // keeps every committed transaction durable across an application crash
+  // (the data is in the WAL file), while a power loss / OS crash may roll back
+  // the most recent commits instead of waiting on an fsync per commit. The
+  // event log is replayable from the provider and the transcript rebuilds from
+  // it on reconnect, so that window is acceptable; the fsync-per-commit it
+  // removes sat on the streaming hot path (one commit per coalesced flush).
+  // See `RuntimeStateRepo.recordEvent` for the write cadence.
+  raw.pragma('synchronous = NORMAL');
+  // Contention is only ever against our own checkpoints, but a five-second
+  // wait beats a spurious SQLITE_BUSY surfacing as a failed turn.
+  raw.pragma('busy_timeout = 5000');
+  // 16 MB page cache (default is 2 MB): the event-log and message UPDATEs
+  // touch the same hot pages every flush, and 16 MB is nothing next to a
+  // multi-GB transcript database.
+  raw.pragma('cache_size = -16000');
+
   applySchema(raw);
   const toolExecutions = new ToolExecutionsRepo(raw);
   const runtimeState = new RuntimeStateRepo(raw);

@@ -11,6 +11,7 @@ import type {
   ChatStartRequest,
   ChatStartResponse,
   ChatInputPart,
+  ConversationDetail,
   ConversationStatus,
   ContextUsageSnapshot,
   GetContextUsageRequest,
@@ -357,12 +358,12 @@ export class ChatEngine {
   ) {
     this.backgroundLiveness = new BackgroundLivenessService();
     this.continuationManager = new SubagentContinuationManager({
-      conversationsRepo: this.conversationsRepo as unknown as ConversationsRepo,
-      runtimeStateRepo: this.runtimeStateRepo as unknown as any,
+      conversationsRepo: this.conversationsRepo,
+      runtimeStateRepo: this.runtimeStateRepo,
       executeTurn: async ({ childId, parentConversationId, prompt, model, tools, depth, parentAgentId, signal }) => {
         // Resolve provider/model: inherit from parent conversation or use child's override, fallback to first configured model
-        const parentSummary = this.conversationsRepo.getSummary(parentConversationId) as any;
-        const childSummary = this.conversationsRepo.getSummary(childId) as any;
+        const parentSummary = this.conversationsRepo.getSummary(parentConversationId);
+        const childSummary = this.conversationsRepo.getSummary(childId);
         const fallback = this.resolveFallbackModel();
         const providerId = parentSummary?.defaultProviderId ?? childSummary?.defaultProviderId ?? fallback?.providerId ?? 'openrouter';
         const modelId = model ?? parentSummary?.defaultModelId ?? childSummary?.defaultModelId ?? fallback?.modelId ?? 'unknown';
@@ -374,7 +375,7 @@ export class ChatEngine {
             conversationId: childId,
             providerId,
             modelId,
-            messages: [{ role: 'user', content: prompt } as any],
+            messages: [{ role: 'user', content: prompt }],
             enableTools: true,
           },
           signal,
@@ -414,7 +415,7 @@ export class ChatEngine {
     });
     this.subagentRuntime = new SubagentRuntime({
       runtimeStateRepo,
-      continuationManager: this.continuationManager as any,
+      continuationManager: this.continuationManager,
       createChildConversation: (input) => {
         const maybeRepo = this.conversationsRepo as unknown as Partial<Pick<ConversationsRepo, 'createSubagentConversation'>>;
         if (typeof maybeRepo.createSubagentConversation !== 'function') return null;
@@ -685,7 +686,7 @@ export class ChatEngine {
 
   private resolveFallbackModel(): { providerId: string; modelId: string } | null {
     try {
-      const configured = this.modelsRepo.list({ configuredOnly: true } as any);
+      const configured = this.modelsRepo.list({ configuredOnly: true });
       if (configured.length > 0) return { providerId: configured[0].providerId, modelId: configured[0].id };
       const all = this.modelsRepo.list();
       if (all.length > 0) return { providerId: all[0].providerId, modelId: all[0].id };
@@ -710,7 +711,7 @@ export class ChatEngine {
 
   listSubagents(parentConversationId: string) {
     const raw = this.conversationsRepo.listSubagentChildren(parentConversationId);
-    return enrichSubagentEntries(raw as any, this.conversationsRepo as any, this.continuationManager as any);
+    return enrichSubagentEntries(raw, this.conversationsRepo, this.continuationManager);
   }
 
   async followupSubagent(parentConversationId: string, childId: string, content: string): Promise<string> {
@@ -766,7 +767,7 @@ export class ChatEngine {
     return { isSubagent: true, mode: meta.mode === 'continuable' ? 'continuable' : 'one-shot', parentAvailable, running };
   }
 
-  getSubagentHistory(request: { parentConversationId: string; childId: string; mode?: string | null }): { conversation: any; messages: any[] } {
+  getSubagentHistory(request: { parentConversationId: string; childId: string; mode?: string | null }): ConversationDetail {
     const meta = this.conversationsRepo.getSubagentMeta(request.childId);
     if (!meta || meta.origin !== 'subagent') {
       throw new Error(`Conversation ${request.childId} is not a subagent`);
@@ -777,8 +778,7 @@ export class ChatEngine {
     if (request.mode != null && meta.mode !== request.mode) {
       throw new Error(`Mode mismatch for subagent ${request.childId}: expected ${request.mode}, got ${meta.mode}`);
     }
-    // Also verify via descriptor if present (handles version skew)
-    return this.conversationsRepo.get(request.childId) as any;
+    return this.conversationsRepo.get(request.childId);
   }
 
   getSubagentsLiveness(): Map<string, 'working' | 'monitoring' | null> {
@@ -811,7 +811,7 @@ export class ChatEngine {
       throw new Error('Attachments are too large to send together.');
     }
 
-    const selectedModel = this.modelsRepo.getById(request.modelId);
+    const selectedModel = this.modelsRepo.getById(request.modelId, request.providerId);
     const capabilityError = getAttachmentCapabilityError(selectedModel, fileParts);
     if (capabilityError) {
       throw new Error(capabilityError);
@@ -920,6 +920,18 @@ export class ChatEngine {
     // is created and let the dispatcher retry once one exists.
     const effectiveWindow = window ?? this.resolveMainWindow();
     if (!effectiveWindow) {
+      return;
+    }
+
+    if (origin === 'direct' && this.hasLiveTurn(request.conversationId)) {
+      const lastMessage = request.messages.at(-1);
+      const preview = lastMessage ? getContentPreviewText(lastMessage.content, lastMessage.parts ?? []) : '';
+      const onWindowClosed = this.dropFollowupListener(requestId);
+      if (window && !window.isDestroyed()) window.once('closed', onWindowClosed);
+      const idx = this.followupQueue.findIndex((e) => e.request.conversationId === request.conversationId);
+      this.followupQueue.splice(idx + 1, 0, { requestId, request, window, preview });
+      this.recordFollowupEvent(request.conversationId, 'turn.followup_queued', requestId, { preview, request });
+      this.markConversationStatus(request.conversationId, 'queued', { lastError: null });
       return;
     }
 
@@ -1064,6 +1076,9 @@ export class ChatEngine {
     for (const conversationId of this.runtimeStateRepo.listConversationsWithFollowups()) {
       const pending = this.runtimeStateRepo.listPendingFollowups(conversationId);
       for (const entry of pending) {
+        if (this.followupQueue.some((q) => q.requestId === entry.requestId) || this.activeRequests.has(entry.requestId)) {
+          continue;
+        }
         const stored = this.runtimeStateRepo.getFollowupQueuedEvent(conversationId, entry.requestId);
         if (!stored) {
           // The enqueue payload was torn or predates durability; drop the
@@ -1178,8 +1193,15 @@ export class ChatEngine {
         // Held synchronously: prepareTurn's beginRun only fires after the
         // checkpoint capture resolves, and without this the dispatch loop
         // would keep reading the slot as free and over-fill it.
+        // If prepareTurn bails (no window), clean the reservation.
+        const beforeSize = this.runningRequestIds.size;
         this.runningRequestIds.add(requestId);
+        const activeBefore = this.activeRequests.size;
         this.prepareTurn(window, requestId, request, 'followup');
+        // prepareTurn may have early-exited without creating activeRequest (no window or busy race) -> release slot
+        if (this.activeRequests.size === activeBefore && this.runningRequestIds.size === beforeSize + 1) {
+          this.runningRequestIds.delete(requestId);
+        }
         continue;
       }
 
@@ -2394,7 +2416,7 @@ export class ChatEngine {
           // Same catalog facts the turn itself uses. Without them the
           // request carries a default temperature, which reasoning models
           // reject with a hard 400 (see `resolveTemperature`).
-          modelHints: this.modelsRepo.getRuntimeHints(active.request.modelId),
+          modelHints: this.modelsRepo.getRuntimeHints(active.request.modelId, active.request.providerId),
           // A title needs no deliberation, and on a reasoning model the
           // thinking tokens come out of the same budget as the answer —
           // leaving the reply empty if the model is allowed to ruminate.

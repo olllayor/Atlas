@@ -814,6 +814,8 @@ export function Sidebar({
                     <SidebarConversationRow
                       isRunning={item.isRunning}
                       isFailed={item.isFailed}
+                      attentionLevel={item.attention}
+                      unreadCount={item.unreadCount}
                       primaryLabel={item.primaryLabel}
                       secondaryLabel={item.secondaryLabel}
                       timestampLabel={showTimestamp ? item.timestampLabel : null}

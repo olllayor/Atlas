@@ -534,9 +534,18 @@ export class SubagentContinuationManager {
         } catch {}
       }
     }
+    if (act) {
+      // completionNotices is keyed by parentConversationId, not childId — remove the child's notice from its parent bucket.
+      const parentId = act.parentConversationId;
+      const bucket = this.completionNotices.get(parentId);
+      if (bucket) {
+        const filtered = bucket.filter((n) => n.childId !== childId);
+        if (filtered.length === 0) this.completionNotices.delete(parentId);
+        else this.completionNotices.set(parentId, filtered);
+      }
+    }
     this.activations.delete(childId);
     this.mutexes.delete(childId);
-    this.completionNotices.delete(childId);
   }
 
   /**

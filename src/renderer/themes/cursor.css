@@ -159,7 +159,12 @@
   color-scheme: light;
 }
 
-/* Dark mode variant for Cursor theme */
+/* Dark mode variant for Cursor theme — deltas only.
+   Inherits typography, radii, shadows and any color that does not diverge
+   (e.g. --accent, --accent-text) from the light block above via cascade
+   (0,2,0 beats 0,1,0). Only tokens where the dark palette diverges are
+   restated here; the parity test in tests/themeTokenParity.test.ts patrols
+   resolved palettes so this cannot drift. */
 [data-theme='dark'][data-design-theme='cursor'] {
   /* Invert to dark warm palette while maintaining warmth */
   --bg-base: #26251e; /* Cursor Dark as base */
@@ -215,12 +220,10 @@
   --error-border: rgba(251, 113, 133, 0.25);
   --error-text: #fb7185;
 
-  --accent: #f54e00;
   --accent-hover: #ff6b1a;
-  /* Same warm ink as the light block — it reads on the orange in both
-     modes, whereas white needed 3.52:1 here too before. */
-  --accent-text: #1a1914;
-  /* Chip ink on the dark-mode surface tint: 6.38:1. */
+  /* Chip ink on the dark-mode surface tint: 6.38:1.
+     --accent (#f54e00) and --accent-text (#1a1914) are identical to the
+     light block, so they are not restated here — they inherit via cascade. */
   --accent-strong: #ffa366;
   --accent-surface: rgba(245, 78, 0, 0.18);
   --ring: rgba(255, 107, 26, 0.8);

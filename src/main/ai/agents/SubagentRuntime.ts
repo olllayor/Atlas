@@ -561,6 +561,7 @@ export class SubagentRuntime {
         try { this.emitEvent(state, 'task.started'); } catch {}
         return state;
       } catch (err) {
+        this.backgroundTasks.delete(state.agentId);
         const msg = err instanceof Error ? err.message : String(err);
         return applyTaskPatch(state, { status: 'failed', error: msg });
       }

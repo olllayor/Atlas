@@ -21,6 +21,7 @@ const PENDING_TEXT_DEBOUNCE_MS = 250;
 export type ContextUsageInput = {
   conversationId: string | null;
   modelId: string | null;
+  providerId?: string | null;
   enableTools: boolean;
   toolPermissionMode: ToolPermissionMode;
   pendingText: string;
@@ -36,6 +37,7 @@ export type ContextUsageInput = {
 export function useContextUsage({
   conversationId,
   modelId,
+  providerId,
   enableTools,
   toolPermissionMode,
   pendingText,
@@ -66,6 +68,7 @@ export function useContextUsage({
         .getContextUsage({
           conversationId,
           modelId,
+          providerId: providerId ?? undefined,
           enableTools,
           toolPermissionMode,
           pendingText,
@@ -100,6 +103,7 @@ export function useContextUsage({
   }, [
     conversationId,
     modelId,
+    providerId,
     enableTools,
     toolPermissionMode,
     pendingText,

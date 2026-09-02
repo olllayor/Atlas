@@ -1,4 +1,4 @@
-import { Check, Clock, Folder, Pin, PinOff } from 'lucide-react';
+import { Check, Clock, Folder, Pin } from 'lucide-react';
 
 import { cn } from '../lib/utils';
 import type { AttentionLevel } from '../lib/attention';
@@ -59,10 +59,20 @@ export function SidebarConversationRow({
 
   const isUnread = !stateWord && !isRunning && attentionLevel === 'unread' && unreadCount > 0;
 
+  const pinIndicator =
+    isPinned && onPin ? (
+      <RowIconButton
+        icon={<Pin className="size-3 shrink-0" strokeWidth={1.75} aria-hidden />}
+        label="Unpin chat"
+        onClick={onPin}
+        className="size-5 rounded text-text-tertiary hover:text-text-primary"
+      />
+    ) : null;
+
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-left py-0.5">
-      {/* Line 1: Project Header + Status / Inline Actions */}
-      <div className="flex items-center justify-between gap-1 text-xs">
+      {/* Line 1: Project Header + Pin + Status / Hover Actions Slot */}
+      <div className="flex h-5 items-center justify-between gap-1 text-xs">
         {/* A chat filed under no project has no folder to name. The slot
             still holds its width so the status badge stays put down the
             column, but it says nothing rather than naming a project the chat
@@ -76,69 +86,68 @@ export function SidebarConversationRow({
           <span className="min-w-0 flex-1" />
         )}
 
-        <div className="flex items-center gap-1 shrink-0">
-          {stateWord ? (
-            <span
-              className={cn(
-                'inline-flex h-4 items-center rounded-sm px-1.5 text-3xs font-medium leading-none',
-                stateWord.tone === 'warning'
-                  ? 'bg-warning-bg text-warning-text'
-                  : 'bg-error-bg text-error-text'
-              )}
-            >
-              {stateWord.label}
-            </span>
-          ) : timestampLabel ? (
-            <span
-              className={cn(
-                'flex items-center gap-1 text-3xs tabular-nums transition-opacity',
-                isUnread ? 'font-medium text-text-primary' : 'text-text-tertiary'
-              )}
-            >
-              <Clock className="size-3 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
-              <span>{timestampLabel}</span>
-            </span>
-          ) : null}
+        {/* Pin indicator: inline on line 1, only when already pinned */}
+        {pinIndicator}
 
-          {/* Action buttons (Pin & Settle) inline in the row */}
-          <div className="flex items-center gap-0.5">
-            {onPin ? (
-              <RowIconButton
-                icon={
-                  isPinned ? (
-                    <PinOff className="size-3 shrink-0" strokeWidth={1.75} aria-hidden />
-                  ) : (
-                    <Pin className="size-3 shrink-0" strokeWidth={1.75} aria-hidden />
-                  )
-                }
-                label={isPinned ? 'Unpin chat' : 'Pin chat'}
-                onClick={onPin}
+        {/* Trailing slot: status at rest, actions on hover or focus-visible */}
+        <span className="group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-center justify-end text-xs">
+          {/* Status child: in flow at rest, out of flow on hover or focus-visible */}
+          <span
+            className={cn(
+              'pointer-events-none flex items-center gap-1 tabular-nums text-text-secondary transition-opacity motion-reduce:transition-none',
+              'group-hover/row:absolute group-hover/row:right-0 group-hover/row:opacity-0',
+              'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0'
+            )}
+          >
+            {stateWord ? (
+              <span
                 className={cn(
-                  'size-5 rounded transition-opacity',
-                  isPinned
-                    ? 'text-text-primary opacity-100'
-                    : 'text-text-tertiary opacity-0 group-hover/row:opacity-100'
+                  'inline-flex h-4 items-center rounded-sm px-1.5 text-3xs font-medium leading-none',
+                  stateWord.tone === 'warning'
+                    ? 'bg-warning-bg text-warning-text'
+                    : 'bg-error-bg text-error-text'
                 )}
-              />
+              >
+                {stateWord.label}
+              </span>
+            ) : timestampLabel ? (
+              <span
+                className={cn(
+                  'flex items-center gap-1 text-3xs tabular-nums',
+                  isUnread ? 'font-medium text-text-primary' : 'text-text-tertiary'
+                )}
+              >
+                <Clock className="size-3 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
+                <span>{timestampLabel}</span>
+              </span>
             ) : null}
 
-            {onSettle ? (
+            {jumpLabel && showJumpHint ? (
+              <span className="inline-flex h-4 items-center rounded-sm bg-bg-hover px-1 font-mono text-3xs leading-none text-text-tertiary">
+                {jumpLabel}
+              </span>
+            ) : null}
+          </span>
+
+          {/* Actions child: out of flow at rest, in flow on hover or focus-visible */}
+          {onSettle ? (
+            <span
+              className={cn(
+                'pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity motion-reduce:transition-none',
+                'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100',
+                'group-hover/row:pointer-events-auto group-hover/row:static group-hover/row:opacity-100'
+              )}
+            >
               <RowIconButton
                 icon={<Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
                 label={isSettled ? 'Restore chat' : 'Settle chat'}
                 text={isSettled ? 'Restore' : 'Settle'}
                 onClick={onSettle}
-                className="h-auto gap-0.5 rounded px-1 py-0.5 text-3xs text-text-tertiary transition-colors"
+                className="h-auto gap-0.5 rounded px-1.5 py-0.5 text-3xs text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors"
               />
-            ) : null}
-          </div>
-
-          {jumpLabel && showJumpHint ? (
-            <span className="inline-flex h-4 items-center rounded-sm bg-bg-hover px-1 font-mono text-3xs leading-none text-text-tertiary">
-              {jumpLabel}
             </span>
           ) : null}
-        </div>
+        </span>
       </div>
 
       {/* Line 2: Prompt / Message preview */}

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas Sidebar Density and Row Surface Mocks</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg-page: #000000;
+    --bg-sidebar: #09090b;
+    --bg-hover: #18181b;
+    --bg-active: #27272a;
+    --border-subtle: #1c1c20;
+    --border-strong: #2c2c34;
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --text-faint: #52525b;
+    --warning-bg: #2d1c02;
+    --warning-text: #f59e0b;
+    --error-bg: #2d0606;
+    --error-text: #f87171;
+    --accent: #38bdf8;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 5rem;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin: 0 0 0.5rem;
+    color: #ffffff;
+  }
+
+  p.desc {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 68ch;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 2rem;
+    margin-bottom: 3rem;
+  }
+
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .panel {
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--bg-page);
+    padding: 1.25rem;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .panel-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #ffffff;
+  }
+
+  .panel-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .sidebar-box {
+    width: 260px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 0.5rem;
+  }
+
+  .section-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+    padding: 0.5rem 0.625rem 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* Flat row container */
+  .row-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  /* Card variant: 3 lines, flat surface */
+  .row-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 120ms;
+    min-height: 68px;
+  }
+
+  .row-card:hover {
+    background: var(--bg-hover);
+  }
+
+  .row-card.active {
+    background: var(--bg-active);
+  }
+
+  .row-card.active .title-text {
+    color: #ffffff;
+    font-weight: 500;
+  }
+
+  /* Slim variant: 1 line, h-9 (36px) */
+  .row-slim {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 120ms;
+  }
+
+  .row-slim:hover {
+    background: var(--bg-hover);
+  }
+
+  .row-slim.active {
+    background: var(--bg-active);
+  }
+
+  /* Slot mechanics */
+  .slot {
+    position: relative;
+    margin-left: auto;
+    display: flex;
+    height: 20px;
+    min-width: 32px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .slot-status {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    transition: opacity 120ms;
+  }
+
+  .slot-actions {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
+  }
+
+  .row-card:hover .slot-status,
+  .row-slim:hover .slot-status {
+    opacity: 0;
+    position: absolute;
+    right: 0;
+    pointer-events: none;
+  }
+
+  .row-card:hover .slot-actions,
+  .row-slim:hover .slot-actions {
+    opacity: 1;
+    position: static;
+    pointer-events: auto;
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .action-btn:hover {
+    background: var(--bg-active);
+    color: var(--text-primary);
+  }
+
+  .pin-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    color: var(--text-tertiary);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  .pin-btn:hover {
+    color: var(--text-primary);
+  }
+
+  .icon {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    fill: none;
+    flex-shrink: 0;
+  }
+
+  .badge {
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .badge.warning {
+    background: var(--warning-bg);
+    color: var(--warning-text);
+  }
+
+  .badge.error {
+    background: var(--error-bg);
+    color: var(--error-text);
+  }
+
+  .truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .line-1 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 20px;
+    font-size: 11px;
+  }
+
+  .project-title {
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .line-2 {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.25;
+  }
+
+  .line-3 {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    padding-top: 1px;
+  }
+
+  .decision-box {
+    margin-top: 2rem;
+    padding: 1.25rem;
+    border-left: 2px solid var(--accent);
+    background: #09090b;
+    border-radius: 0 6px 6px 0;
+  }
+
+  .decision-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 0.35rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Visual Spec &middot; Phase 3 Design</div>
+    <h1>Sidebar Row Density: Card vs Slim Variants</h1>
+    <p class="desc">
+      Comparing the three-line card row for active projects against the one-line 36px slim row
+      for archived work, alongside flat surface styling and header count models.
+    </p>
+  </header>
+
+  <div class="grid-2">
+
+    <!-- Active List: 3-line card variant -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Active chats &middot; Card variant</span>
+        <span class="panel-meta">3 lines &middot; ~68px</span>
+      </div>
+      <p style="color:var(--text-secondary); font-size:12px; margin:0 0 1rem;">
+        Full density with project name, single-line truncated prompt, and branch. Hover any row to test the Settle action swap.
+      </p>
+
+      <div class="sidebar-box">
+        <div class="section-label">
+          <span>Atlas</span>
+          <span style="font-family:var(--mono); font-size:9px;">4 chats</span>
+        </div>
+
+        <div class="row-list">
+          <!-- Row 1: Active with approval -->
+          <div class="row-card active">
+            <div class="line-1">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+              <span class="project-title truncate">Atlas</span>
+              <button class="pin-btn" title="Unpin chat">
+                <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+              </button>
+              <div class="slot">
+                <div class="slot-status">
+                  <span class="badge warning">Approve</span>
+                </div>
+                <div class="slot-actions">
+                  <button class="action-btn">
+                    <svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                    Settle
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="line-2 title-text truncate">Port T3 Code settle action and row density</div>
+            <div class="line-3 truncate">feat/right-panel-surfaces</div>
+          </div>
+
+          <!-- Row 2: Ordinary row at rest -->
+          <div class="row-card">
+            <div class="line-1">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+              <span class="project-title truncate">Atlas</span>
+              <div class="slot">
+                <div class="slot-status">
+                  <span>14m</span>
+                </div>
+                <div class="slot-actions">
+                  <button class="action-btn">
+                    <svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                    Settle
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="line-2 truncate">Fix terminal split layout overflow</div>
+            <div class="line-3 truncate">main</div>
+          </div>
+
+          <!-- Row 3: Orphan in recents (no project, no branch) -->
+          <div class="row-card">
+            <div class="line-1">
+              <span style="flex:1;"></span>
+              <div class="slot">
+                <div class="slot-status">
+                  <span>2h</span>
+                </div>
+                <div class="slot-actions">
+                  <button class="action-btn">
+                    <svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                    Settle
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="line-2 truncate">Explain postgres index locking during migrations</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Archived List: 1-line slim variant -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Archived shelf &middot; Slim variant</span>
+        <span class="panel-meta">1 line &middot; 36px</span>
+      </div>
+      <p style="color:var(--text-secondary); font-size:12px; margin:0 0 1rem;">
+        Single line with title, timestamp, and Restore action in the hover slot. Occupies half the height per item.
+      </p>
+
+      <div class="sidebar-box">
+        <div class="section-label">
+          <span>Archived</span>
+          <span style="font-family:var(--mono); font-size:9px;">5 chats</span>
+        </div>
+
+        <div class="row-list">
+          <div class="row-slim">
+            <span class="truncate" style="flex:1; font-size:12.5px; color:var(--text-secondary);">
+              Inspect Electron memory leaks in audio worker
+            </span>
+            <div class="slot">
+              <div class="slot-status">
+                <span>3d</span>
+              </div>
+              <div class="slot-actions">
+                <button class="action-btn">
+                  <svg class="icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                  Restore
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row-slim">
+            <span class="truncate" style="flex:1; font-size:12.5px; color:var(--text-secondary);">
+              Clean up deprecated prompt template helpers
+            </span>
+            <div class="slot">
+              <div class="slot-status">
+                <span>1w</span>
+              </div>
+              <div class="slot-actions">
+                <button class="action-btn">
+                  <svg class="icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                  Restore
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row-slim">
+            <span class="truncate" style="flex:1; font-size:12.5px; color:var(--text-secondary);">
+              Review provider catalog schema updates
+            </span>
+            <div class="slot">
+              <div class="slot-status">
+                <span>2w</span>
+              </div>
+              <div class="slot-actions">
+                <button class="action-btn">
+                  <svg class="icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                  Restore
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row-slim">
+            <span class="truncate" style="flex:1; font-size:12.5px; color:var(--text-secondary);">
+              Rewrite sandbox denial detection heuristics
+            </span>
+            <div class="slot">
+              <div class="slot-status">
+                <span>1mo</span>
+              </div>
+              <div class="slot-actions">
+                <button class="action-btn">
+                  <svg class="icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                  Restore
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="decision-box">
+    <div class="decision-title">Phase 3 Decisions for User Input</div>
+    <p style="margin: 0 0 0.5rem; color: var(--text-secondary);">
+      1. <strong>Labeling:</strong> Keep the upstream rename to "Settled" / "Settle", or revert to "Archived" / "Archive" / "Restore"?
+      The plan recommends reverting to Archive/Archived/Restore because Atlas archives manually on click rather than automatically after 3 days or PR merge.
+    </p>
+    <p style="margin: 0; color: var(--text-secondary);">
+      2. <strong>Count:</strong> Add a lightweight <code>archivedCount: number</code> so the collapsed section header shows <code>Archived (N)</code>, or drop the count and render a clean header without count?
+    </p>
+  </div>
+
+</div>
+</body>
+</html>

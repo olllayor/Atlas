@@ -3,6 +3,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'electron-vite';
 import path from 'node:path';
 import dotenv from 'dotenv';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 dotenv.config();
 
@@ -40,7 +41,11 @@ export default defineConfig({
   },
   renderer: {
     root: 'src/renderer',
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      visualizer({ filename: 'out/renderer/stats.html', open: false, gzipSize: true })
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src/renderer')

@@ -78,6 +78,9 @@ export function createAppDatabase(
   // touch the same hot pages every flush, and 16 MB is nothing next to a
   // multi-GB transcript database.
   raw.pragma('cache_size = -16000');
+  // 256 MB memory-mapped I/O: accelerates reads and index lookups by avoiding
+  // repeated read() syscalls and buffer copies into user space.
+  raw.pragma('mmap_size = 268435456');
 
   applySchema(raw);
   const toolExecutions = new ToolExecutionsRepo(raw);

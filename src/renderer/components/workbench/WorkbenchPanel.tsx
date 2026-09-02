@@ -24,7 +24,7 @@
  * borderless rows, hairline separators only, opacity-based hierarchy.
  */
 
-import { useMemo } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 
 import type { ChatMessage, ChatToolPart, WorkspaceMode } from '../../../shared/contracts';
 import {
@@ -54,7 +54,7 @@ import { FileViewerPanel } from './FileViewerPanel';
 import { fileSurfaceLabel } from './fileTreeModel';
 import { SurfacePicker } from './SurfacePicker';
 import { SurfaceTabStrip } from './SurfaceTabStrip';
-import { TerminalSurface } from './TerminalSurface';
+const TerminalSurface = lazy(() => import('./TerminalSurface').then((module) => ({ default: module.TerminalSurface })));
 import {
   type RightPanelKind,
   type RightPanelSurface,
@@ -331,17 +331,19 @@ export function WorkbenchPanel({
           />
         )}
         {active?.kind === 'terminal' && (
-          <TerminalSurface
-            // Keyed so switching tabs gives each shell its own xterm rather
-            // than re-pointing one view at a different PTY.
-            key={active.id}
-            conversationId={conversationId}
-            rootTerminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
-            terminals={terminals}
-            allocateTerminalId={() => nextTerminalId(takenTerminalIds())}
-            onCloseSurface={() => closeSurfaceAt(active.id)}
-            onAddSelectionToPrompt={onAddSelectionToPrompt}
-          />
+          <Suspense fallback={<div className="h-full w-full animate-pulse bg-bg-surface" />}>
+            <TerminalSurface
+              // Keyed so switching tabs gives each shell its own xterm rather
+              // than re-pointing one view at a different PTY.
+              key={active.id}
+              conversationId={conversationId}
+              rootTerminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
+              terminals={terminals}
+              allocateTerminalId={() => nextTerminalId(takenTerminalIds())}
+              onCloseSurface={() => closeSurfaceAt(active.id)}
+              onAddSelectionToPrompt={onAddSelectionToPrompt}
+            />
+          </Suspense>
         )}
         {active?.kind === 'tasks' && (
           <TasksTab parts={toolParts} hasJobs={jobs.length > 0} conversationId={conversationId} />

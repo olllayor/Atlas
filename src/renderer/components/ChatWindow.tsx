@@ -7,6 +7,8 @@ import {
 } from '@tanstack/react-virtual';
 import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
 import {
+  Suspense,
+  lazy,
   memo,
   useCallback,
   useEffect,
@@ -42,7 +44,7 @@ import { MessageResponse } from './ai-elements/message';
 import { PluginInvocationRow } from './transcript/PluginInvocationRow';
 import { TimelineMinimap } from './transcript/TimelineMinimap';
 import { deriveMinimapItems } from '../lib/timelineMinimap';
-import { VisualBlock } from './ai-elements/visual';
+const VisualBlock = lazy(() => import('./ai-elements/visual').then((module) => ({ default: module.VisualBlock })));
 import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
 import { isPlanToolPart } from '../../shared/planTool';
@@ -424,7 +426,11 @@ function AssistantParts({
     }
 
     if (part.type === 'visual') {
-      return <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />;
+      return (
+        <Suspense fallback={<div className="h-40 animate-pulse rounded bg-bg-surface" />}>
+          <VisualBlock key={part.id} visualId={part.id} content={part.content} title={part.title} state={part.state} />
+        </Suspense>
+      );
     }
 
     if (part.type === 'plugin-invocation') {

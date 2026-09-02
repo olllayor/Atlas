@@ -32,9 +32,9 @@ import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { cn } from '../lib/utils';
 import { RailSectionLabel } from './railPrimitives';
 import { RowIconButton } from './RowIconButton';
-import { SidebarConversationRow } from './SidebarConversationRow';
+import { SidebarThreadRow } from './SidebarThreadRow';
 import { SidebarActivityBell } from './SidebarActivityBell';
-import { SidebarConversationHoverCard, SidebarProjectHoverCard } from './SidebarHoverCard';
+import { SidebarProjectHoverCard } from './SidebarHoverCard';
 import {
   SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS,
   notifySidebarHoverCardOpenChange,
@@ -683,6 +683,52 @@ export function Sidebar({
    * tabindex are all identical, and only the click target and the two actions
    * differ.
    */
+  const handleHoverCardOpenChange = useCallback((cardId: string, open: boolean) => {
+    if (open) {
+      setActiveHoverCardId(cardId);
+      notifySidebarHoverCardOpenChange(true);
+    } else {
+      setActiveHoverCardId((current) => (current === cardId ? null : current));
+      notifySidebarHoverCardOpenChange(false);
+    }
+  }, []);
+
+  const handleCancelRename = useCallback(() => {
+    cancelRenameRef.current = true;
+    setRenamingId(null);
+  }, []);
+
+  const handleRenameChange = useCallback((value: string) => {
+    setRenameValue(value);
+  }, []);
+
+  const handleSetPendingDeleteId = useCallback((id: string | null) => {
+    setPendingDeleteId(id);
+  }, []);
+
+  const handleSetRovingId = useCallback((id: string) => {
+    setRovingId(id);
+  }, []);
+
+  const handleSetPinned = useCallback(
+    (id: string, pinned: boolean) => {
+      onSetConversationPinned(id, pinned);
+    },
+    [onSetConversationPinned]
+  );
+
+  const handleDelete = useCallback(
+    (id: string) => {
+      onDelete(id);
+    },
+    [onDelete]
+  );
+
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects]
+  );
+
   const renderConversationRow = useCallback(
     (
       item: SidebarConversationItem,
@@ -690,243 +736,67 @@ export function Sidebar({
     ) => {
       const isArchived = options.archived ?? false;
       const variant = resolveSidebarRowVariant(options);
-      // An archived row is never the open chat: clicking one restores it, which
-      // moves it out of this list before it could be selected here.
       const isActive = !isArchived && item.id === selectedConversationId;
-      const indentClass = options.indented ? 'pl-8' : 'px-2';
-      const showTimestamp = options.showTimestamp ?? true;
-
-      if (renamingId === item.id) {
-        return (
-          <input
-            key={item.id}
-            autoFocus
-            value={renameValue}
-            aria-label="Rename chat"
-            onChange={(event) => setRenameValue(event.target.value)}
-            onFocus={(event) => event.currentTarget.select()}
-            onBlur={commitRename}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                commitRename();
-              } else if (event.key === 'Escape') {
-                event.preventDefault();
-                cancelRenameRef.current = true;
-                setRenamingId(null);
-              }
-            }}
-            className="h-8 w-full rounded-md bg-bg-hover px-2 text-md text-text-primary ring-1 ring-border-strong outline-none"
-          />
-        );
-      }
-
-      if (pendingDeleteId === item.id) {
-        return (
-          <div
-            key={item.id}
-            data-delete-confirm
-            className="flex h-8 w-full items-center gap-1 rounded-md bg-bg-hover px-2"
-          >
-            <span className="min-w-0 flex-1 truncate text-sm text-text-secondary">Delete chat?</span>
-            <button
-              type="button"
-              autoFocus
-              onClick={() => {
-                setPendingDeleteId(null);
-                onDelete(item.id);
-              }}
-              className="h-6 shrink-0 rounded-md px-1.5 text-sm text-error transition-colors hover:bg-error-bg hover:text-error-text"
-            >
-              Delete
-            </button>
-            <button
-              type="button"
-              onClick={() => setPendingDeleteId(null)}
-              className="h-6 shrink-0 rounded-md px-1.5 text-sm text-text-tertiary transition-colors hover:bg-bg-active hover:text-text-primary"
-            >
-              Cancel
-            </button>
-          </div>
-        );
-      }
-
-      const project = item.projectId
-        ? (projects.find((candidate) => candidate.id === item.projectId) ?? null)
-        : null;
-      const isPinned = Boolean(item.pinnedAt);
-      const cardId = `conv:${item.id}`;
+      const isRenaming = renamingId === item.id;
+      const isPendingDelete = pendingDeleteId === item.id;
+      const project = item.projectId ? (projectById.get(item.projectId) ?? null) : null;
+      const isHoverCardOpen = activeHoverCardId === `conv:${item.id}`;
 
       return (
-        <HoverCard
+        <SidebarThreadRow
           key={item.id}
-          open={activeHoverCardId === cardId}
-          openDelay={hoverCardOpenDelay}
-          closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
-          onOpenChange={(open) => {
-            if (open) {
-              setActiveHoverCardId(cardId);
-              notifySidebarHoverCardOpenChange(true);
-            } else {
-              setActiveHoverCardId((current) => (current === cardId ? null : current));
-              notifySidebarHoverCardOpenChange(false);
-            }
-          }}
-        >
-          <ContextMenu>
-            <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
-              <ContextMenuTrigger asChild>
-                <div
-                  className={cn(
-                    'group/row relative flex items-center rounded-md transition-colors duration-150',
-                    isActive
-                      ? 'bg-bg-active text-text-primary'
-                      : 'bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                  )}
-                >
-                  <div
-                    role="button"
-                    data-conversation-row
-                    aria-current={isActive ? 'page' : undefined}
-                    tabIndex={item.id === rovingTargetId ? 0 : -1}
-                    onFocus={() => setRovingId(item.id)}
-                    onClick={() => {
-                      setPendingDeleteId(null);
-                      if (isArchived) {
-                        onRestoreConversation(item.id);
-                        return;
-                      }
-                      onSelect(item.id);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) return;
-                      if (event.key !== 'Enter' && event.key !== ' ') return;
-                      event.preventDefault();
-                      setPendingDeleteId(null);
-                      if (isArchived) {
-                        onRestoreConversation(item.id);
-                        return;
-                      }
-                      onSelect(item.id);
-                    }}
-                    // Renaming an archived row would write through to a list
-                    // this row is not in, so the title would not change until
-                    // the next fetch. Restore first, then rename.
-                    onDoubleClick={isArchived ? undefined : () => startRename(item)}
-                    className={cn(
-                      'relative flex min-w-0 flex-1 items-center rounded-md px-2.5 text-left cursor-pointer select-none',
-                      variant === 'slim' ? 'h-9 py-0' : 'min-h-8 py-1.5',
-                      indentClass,
-                      isActive
-                        ? 'font-medium text-text-primary'
-                        : 'text-text-secondary group-hover/row:text-text-primary'
-                    )}
-                  >
-                    <SidebarConversationRow
-                      variant={variant}
-                      isRunning={item.isRunning}
-                      isFailed={item.isFailed}
-                      attentionLevel={item.attention}
-                      unreadCount={item.unreadCount}
-                      primaryLabel={item.primaryLabel}
-                      secondaryLabel={item.secondaryLabel}
-                      timestampLabel={showTimestamp ? item.timestampLabel : null}
-                      jumpLabel={conversationJumpLabelById.get(item.id)}
-                      showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
-                      projectTitle={project?.title ?? null}
-                      branch={project?.branch ?? null}
-                      isSettled={isArchived}
-                      onSettle={isArchived ? () => onRestoreConversation(item.id) : () => onArchiveConversation(item.id)}
-                      isPinned={isPinned}
-                      onPin={() => onSetConversationPinned(item.id, !isPinned)}
-                    />
-                  </div>
-                </div>
-              </ContextMenuTrigger>
-            </HoverCardTrigger>
-            <ContextMenuContent className="w-44">
-              {/*
-                Archived rows get Restore and Delete and nothing else. Pin,
-                Archive and Rename all act on the live list this row has left,
-                so they would either no-op or write a change nothing here shows.
-              */}
-              {isArchived ? (
-                <ContextMenuItem onSelect={() => onRestoreConversation(item.id)}>
-                  <ArchiveRestore aria-hidden />
-                  Restore
-                </ContextMenuItem>
-              ) : (
-                <>
-                  <ContextMenuItem onSelect={() => onSetConversationPinned(item.id, !isPinned)}>
-                    {isPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-                    {isPinned ? 'Unpin' : 'Pin'}
-                  </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => onArchiveConversation(item.id)}>
-                    <Archive aria-hidden />
-                    Archive
-                  </ContextMenuItem>
-                  {onForkConversation ? (
-                    // Not in the hover slot: forking creates a chat, and the
-                    // hover slot is reserved for the two actions that can be
-                    // taken back. This one costs a deliberate right-click.
-                    <ContextMenuItem onSelect={() => onForkConversation(item.id)}>
-                      <GitBranch aria-hidden />
-                      Fork
-                    </ContextMenuItem>
-                  ) : null}
-                  {onRename ? (
-                    <ContextMenuItem onSelect={() => startRename(item)}>
-                      <Pencil aria-hidden />
-                      Rename
-                    </ContextMenuItem>
-                  ) : null}
-                </>
-              )}
-              <ContextMenuItem
-                variant="destructive"
-                onSelect={() => {
-                  // Radix restores focus on close; arm after that so the
-                  // confirm's autoFocus wins.
-                  setTimeout(() => setPendingDeleteId(item.id), 0);
-                }}
-              >
-                <Trash2 aria-hidden />
-                Delete
-              </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
-
-          <SidebarConversationHoverCard
-            title={item.primaryLabel}
-            timestampLabel={item.timestampLabel}
-            project={project}
-            isRunning={item.isRunning}
-            isFailed={item.isFailed}
-            workspaceMode={item.workspaceMode}
-            modelId={item.modelId}
-            changeStats={item.changeStats}
-            attentionLevel={item.attention}
-            modelLabel={item.modelId === null ? null : (modelLabelById.get(item.modelId) ?? null)}
-          />
-        </HoverCard>
+          item={item}
+          variant={variant}
+          project={project}
+          isActive={isActive}
+          isArchived={isArchived}
+          indented={options.indented ?? false}
+          showTimestamp={options.showTimestamp ?? true}
+          isRovingTarget={item.id === rovingTargetId}
+          isRenaming={isRenaming}
+          renameValue={isRenaming ? renameValue : ''}
+          isPendingDelete={isPendingDelete}
+          jumpLabel={conversationJumpLabelById.get(item.id) ?? null}
+          showJumpHint={showConversationJumpHints && conversationJumpLabelById.has(item.id)}
+          modelLabel={item.modelId === null ? null : (modelLabelById.get(item.modelId) ?? null)}
+          isHoverCardOpen={isHoverCardOpen}
+          hoverCardOpenDelay={hoverCardOpenDelay}
+          onSelect={onSelect}
+          onRestore={onRestoreConversation}
+          onArchive={onArchiveConversation}
+          onSetPinned={handleSetPinned}
+          onFork={onForkConversation}
+          onDelete={handleDelete}
+          onStartRename={onRename ? startRename : undefined}
+          onCommitRename={commitRename}
+          onCancelRename={handleCancelRename}
+          onRenameChange={handleRenameChange}
+          onSetPendingDeleteId={handleSetPendingDeleteId}
+          onSetRovingId={handleSetRovingId}
+          onHoverCardOpenChange={handleHoverCardOpenChange}
+        />
       );
     },
     [
       activeHoverCardId,
       commitRename,
       conversationJumpLabelById,
+      handleCancelRename,
+      handleDelete,
+      handleHoverCardOpenChange,
+      handleRenameChange,
+      handleSetPendingDeleteId,
+      handleSetPinned,
+      handleSetRovingId,
       hoverCardOpenDelay,
       modelLabelById,
       onArchiveConversation,
-      onDelete,
       onForkConversation,
       onRename,
       onRestoreConversation,
       onSelect,
-      onSetConversationPinned,
       pendingDeleteId,
-      projects,
+      projectById,
       renameValue,
       renamingId,
       rovingTargetId,

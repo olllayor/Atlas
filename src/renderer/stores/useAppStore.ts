@@ -107,6 +107,7 @@ type AppState = {
   activeView: AppView;
   settingsSection: SettingsSection;
   commandPaletteOpen: boolean;
+  commandPaletteInitialQuery: string | null;
   modelPickerOpen: boolean;
   composerFocused: boolean;
   composerFocusNonce: number;
@@ -194,6 +195,8 @@ type AppState = {
    */
   unreadByConversation: Record<string, number>;
   markConversationRead: (conversationId: string) => void;
+  markConversationUnread: (conversationId: string) => void;
+  regenerateConversationTitle: (conversationId: string) => Promise<void>;
   markAllConversationsRead: () => void;
   /**
    * Refetches one conversation's page into the cache without touching the
@@ -269,6 +272,7 @@ type AppState = {
   closeSites: () => void;
   setSettingsSection: (section: SettingsSection) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setCommandPaletteInitialQuery: (query: string | null) => void;
   setModelPickerOpen: (open: boolean) => void;
   setComposerFocused: (focused: boolean) => void;
   requestComposerFocus: () => void;
@@ -607,6 +611,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeView: 'chat',
   settingsSection: 'general',
   commandPaletteOpen: false,
+  commandPaletteInitialQuery: null,
   modelPickerOpen: false,
   composerFocused: false,
   composerFocusNonce: 0,
@@ -646,6 +651,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
       return { unreadByConversation: rest };
     });
+  },
+  markConversationUnread: (conversationId) => {
+    set((current) => ({
+      unreadByConversation: {
+        ...current.unreadByConversation,
+        [conversationId]: (current.unreadByConversation[conversationId] ?? 0) + 1 || 1,
+      },
+    }));
+  },
+  regenerateConversationTitle: async (conversationId) => {
+    try {
+      const updated = await window.atlasChat.conversations.regenerateTitle(conversationId);
+      set((current) => ({
+        conversations: current.conversations.map((c) =>
+          c.id === conversationId ? { ...c, title: updated.title } : c
+        ),
+        archivedConversations: current.archivedConversations.map((c) =>
+          c.id === conversationId ? { ...c, title: updated.title } : c
+        ),
+      }));
+    } catch (error) {
+      console.error('Failed to regenerate conversation title', error);
+    }
   },
   markAllConversationsRead: () => {
     set({ unreadByConversation: {} });
@@ -1095,6 +1123,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       modelPickerOpen: false,
       // Main persists this as the new fallback; mirror it so the cached
       // summary does not report a project the user has moved on from.
@@ -1114,6 +1143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       modelPickerOpen: false,
       settings: state.settings
         ? { ...state.settings, chat: { ...state.settings.chat, lastProjectId: created.projectId } }
@@ -1129,7 +1159,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // and the IPC already accepts one.
       const fork = await window.atlasChat.conversations.fork({ conversationId });
       await get().refreshConversationList();
-      set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+      set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
       await get().loadConversation(fork.id);
     } catch (error) {
       notifyError('Could not fork the chat', error);
@@ -1686,23 +1716,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openSettings: (section = 'general') =>
-    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, modelPickerOpen: false }),
+    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
-  openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, modelPickerOpen: false }),
+  openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   openPlugins: () =>
-    set({ activeView: 'plugins', commandPaletteOpen: false, modelPickerOpen: false }),
+    set({ activeView: 'plugins', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closePlugins: () => set({ activeView: 'chat' }),
   closeSites: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
-  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setCommandPaletteOpen: (open) =>
+    set(open ? { commandPaletteOpen: open } : { commandPaletteOpen: open, commandPaletteInitialQuery: null }),
+  setCommandPaletteInitialQuery: (query) => set({ commandPaletteInitialQuery: query }),
   setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
   setComposerFocused: (focused) => set({ composerFocused: focused }),
   requestComposerFocus: () =>
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       composerFocusNonce: state.composerFocusNonce + 1
     })),
   setActiveCredentialProvider: (providerId) => set({ activeCredentialProviderId: providerId, keyDraft: '' }),
@@ -1920,7 +1953,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!nextConversation) {
       return;
     }
-    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+    set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
     await get().loadConversation(nextConversation.id);
   },
 
@@ -1929,7 +1962,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!conversation) {
       return;
     }
-    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+    set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
     await get().loadConversation(conversation.id);
   },
 

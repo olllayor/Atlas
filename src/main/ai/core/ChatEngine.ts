@@ -12,6 +12,7 @@ import type {
   ChatStartResponse,
   ChatInputPart,
   ConversationDetail,
+  ConversationSummary,
   ConversationStatus,
   ContextUsageSnapshot,
   GetContextUsageRequest,
@@ -2545,6 +2546,86 @@ export class ChatEngine {
       conversationId,
       title: renamed.title,
     });
+  }
+
+  /**
+   * Explicit user-triggered title regeneration. Re-reads the opening
+   * exchange and calls the model to produce a fresh 3-6 word title,
+   * falling back to the heuristic generator if offline or erroring.
+   */
+  async regenerateTitle(conversationId: string): Promise<ConversationSummary> {
+    const detail = this.conversationsRepo.get(conversationId);
+    if (!detail) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    const messages = detail.messages ?? [];
+    const firstUserMessage = messages.find((message) => message.role === 'user');
+    const firstAssistantMessage = messages.find((message) => message.role === 'assistant');
+
+    let title: string | null = null;
+    const userText = firstUserMessage?.content?.trim().slice(0, 600);
+    const assistantText = firstAssistantMessage
+      ? getTextContentFromParts(firstAssistantMessage.parts).trim().slice(0, 600)
+      : '';
+
+    if (userText) {
+      const fallback = this.resolveFallbackModel();
+      const modelId = detail.conversation.defaultModelId || fallback?.modelId || 'gpt-4o-mini';
+      const providerId = detail.conversation.defaultProviderId || fallback?.providerId || 'opencode';
+      const adapter = this.providers.get(providerId);
+      const apiKey = adapter ? await this.keychain.getSecret(providerId) : null;
+
+      if (adapter && (apiKey || !requiresStoredCredential(adapter))) {
+        try {
+          const result = await adapter.streamChat({
+            apiKey: apiKey ?? '',
+            modelId,
+            modelHints: this.modelsRepo.getRuntimeHints(modelId, providerId),
+            reasoningEffort: 'minimal',
+            system:
+              'Generate a short title for a chat session based on its opening exchange. ' +
+              'Reply with the title only: 3-6 words, no quotes, no trailing punctuation, ' +
+              'same language as the conversation.',
+            messages: [
+              {
+                role: 'user',
+                content: `User message:\n${userText}\n\nAssistant reply:\n${assistantText || '(none)'}`,
+              },
+            ],
+            maxOutputTokens: 1_000,
+            signal: AbortSignal.timeout(TITLE_GENERATION_TIMEOUT_MS),
+            onChunk: () => {},
+          });
+
+          title = sanitizeGeneratedTitle(result.content) ?? null;
+        } catch (error) {
+          console.warn(
+            `[titles] model title regeneration failed for ${modelId}; falling back to heuristic.`,
+            error
+          );
+        }
+      }
+
+      if (!title) {
+        title = deriveTitleFromUserMessage(userText);
+      }
+    }
+
+    const finalTitle = title || detail.conversation.title || 'New conversation';
+
+    const renamed = this.conversationsRepo.rename(conversationId, finalTitle, { auto: true });
+
+    const mainWindow = this.resolveMainWindow();
+    if (mainWindow) {
+      this.sendToWindow(mainWindow, {
+        type: 'conversation-title',
+        conversationId,
+        title: renamed.title,
+      });
+    }
+
+    return renamed;
   }
 
   private sendToWindow(window: BrowserWindow, event: StreamEvent) {

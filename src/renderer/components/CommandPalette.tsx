@@ -52,6 +52,7 @@ type CommandPaletteProps = {
    * commands and nothing else.
    */
   conversations?: CommandPaletteConversation[];
+  initialQuery?: string | null;
   /**
    * How many chats to show before the user types anything. Every chat is
    * always searchable — this only trims the resting list so the launcher
@@ -115,6 +116,7 @@ function SnippetText({ snippet }: { snippet: string }) {
 export function CommandPalette({
   items,
   conversations,
+  initialQuery,
   onSelectConversation,
   onOpenChange,
   onSelect,
@@ -123,7 +125,13 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   // cmdk can only match what is rendered, so the full chat list is mounted
   // once the user types. The slice applies to the resting list only.
-  const [search, setSearch] = React.useState('');
+  const [search, setSearch] = React.useState(initialQuery ?? '');
+
+  React.useEffect(() => {
+    if (open && initialQuery !== undefined && initialQuery !== null) {
+      setSearch(initialQuery);
+    }
+  }, [open, initialQuery]);
   // A disabled row explains nothing and can't be tooltipped through cmdk's
   // `pointer-events-none`, so unavailable commands are simply not offered.
   const availableItems = items.filter((item) => !item.disabled);

@@ -66,6 +66,19 @@ import { SpawnAgentCta } from './agents/SpawnAgentCta';
 import { SubagentBreadcrumbs } from './subagents/SubagentBreadcrumbs';
 import { useAppStore } from '../stores/useAppStore';
 import { foldAgents, selectBatchAgents } from '../lib/agentFold';
+import type { AssistantCitation } from '../../shared/citations';
+import {
+  createAssistantCitation,
+  serializeAssistantCitation,
+  withAssistantCitationComment,
+} from '../../shared/citations';
+import {
+  CITE_SOURCE_ATTR,
+  captureCiteSelection,
+  type CiteSourceAnchor,
+} from '../lib/citeSelection';
+import { CiteToolbar } from './CiteToolbar';
+import { CiteCommentEditor, type CiteCommentAnchorRect } from './CiteCommentEditor';
 
 export type ChatWindowProps = {
   detail: ConversationPage | null;
@@ -90,6 +103,13 @@ export type ChatWindowProps = {
   hasTools?: boolean;
   /** Attached project, so the opening question names what you are working in. */
   projectName?: string | null;
+  onQuoteInPrompt?: (text: string) => void;
+  onExplainSelection?: (text: string) => void;
+  onSearchInWorkspace?: (text: string) => void;
+  /** Structured cite: appends a serialized citation link to the composer draft. */
+  onCiteCitation?: (citation: AssistantCitation) => void;
+  /** Rewrites one serialized citation link (comment edit) in the composer draft. */
+  onCiteCommentChange?: (oldSource: string, newSource: string) => void;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
@@ -718,7 +738,9 @@ const MessageRow = memo(function MessageRow({
 
   return (
     <div className="group flex w-full">
-      <div className={cn(MEASURE, 'min-w-0')}>
+      {/* Cite source marker: captureCiteSelection resolves selections inside it
+          back to this message. Streaming rows carry no marker and stay uncitable. */}
+      <div className={cn(MEASURE, 'min-w-0')} {...{ [CITE_SOURCE_ATTR]: message.id }}>
         <AssistantParts
           content={message.content}
           parts={message.parts}
@@ -1143,6 +1165,11 @@ export function ChatWindow({
   onOpenAgentsPanel,
   hasTools = false,
   projectName = null,
+  onQuoteInPrompt,
+  onExplainSelection,
+  onSearchInWorkspace,
+  onCiteCitation,
+  onCiteCommentChange,
 }: ChatWindowProps) {
   const {
     scrollRef,
@@ -1180,6 +1207,61 @@ export function ChatWindow({
 
   const conversationId = detail?.conversation?.id ?? null;
   const messages = useMemo(() => detail?.messages ?? [], [detail]);
+
+  /**
+   * Pending cite comment: set when a Cite lands in the composer, cleared on
+   * save, cancel, or conversation switch. The link bytes are already in the
+   * draft; save rewrites them with the comment attached.
+   */
+  const [pendingCite, setPendingCite] = useState<{
+    citation: AssistantCitation;
+    linkSource: string;
+    rect: CiteCommentAnchorRect;
+  } | null>(null);
+
+  useEffect(() => {
+    setPendingCite(null);
+  }, [conversationId]);
+
+  const snapshotRangeRect = useCallback((range: Range): CiteCommentAnchorRect => {
+    const rects = range.getClientRects();
+    const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }, []);
+
+  const beginCiteFlow = useCallback(
+    (citation: AssistantCitation, range: Range) => {
+      onCiteCitation?.(citation);
+      setPendingCite({
+        citation,
+        linkSource: serializeAssistantCitation(citation),
+        rect: snapshotRangeRect(range),
+      });
+    },
+    [onCiteCitation, snapshotRangeRect]
+  );
+
+  const handleToolbarCite = useCallback(
+    (citation: AssistantCitation, anchor: CiteSourceAnchor) => {
+      beginCiteFlow(citation, anchor.range);
+    },
+    [beginCiteFlow]
+  );
+
+  const handleCiteCommentSave = useCallback(
+    (comment: string) => {
+      if (!pendingCite) return;
+      const next = withAssistantCitationComment(pendingCite.citation, comment);
+      onCiteCommentChange?.(pendingCite.linkSource, serializeAssistantCitation(next));
+      setPendingCite(null);
+    },
+    [pendingCite, onCiteCommentChange]
+  );
+
+  const handleCiteCommentCancel = useCallback(() => {
+    // Cancel keeps the uncommented citation; only the comment is discarded.
+    setPendingCite(null);
+  }, []);
   const hasOlder = detail?.hasOlder ?? false;
   const nextCursor = detail?.nextCursor ?? null;
   const isStreaming = draft?.status === 'streaming';
@@ -1773,6 +1855,92 @@ export function ChatWindow({
     );
   }
 
+  const handleContextMenu = useCallback(
+    async (event: React.MouseEvent) => {
+      const selection = window.getSelection();
+      const rawText = selection?.toString() ?? '';
+      if (!rawText.trim()) {
+        return;
+      }
+
+      // Only selections anchored inside this transcript own this menu. Without
+      // this, right-clicking transcript padding while text is selected in the
+      // sidebar/composer would act on that far-away selection.
+      const container = event.currentTarget as HTMLElement | null;
+      const anchorNode = selection?.anchorNode ?? null;
+      const focusNode = selection?.focusNode ?? null;
+      const inside = (node: Node | null) =>
+        !!node && !!container && (node === container || container.contains(node));
+      if (!inside(anchorNode) && !inside(focusNode)) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('input, textarea, [contenteditable="true"]')) {
+        return;
+      }
+
+      if (!window.atlasChat?.contextMenu?.showChatSelection) {
+        return;
+      }
+
+      event.preventDefault();
+
+      // Structured-cite attempt, resolved before the native menu opens: the
+      // menu round-trip may clear the selection, and capture needs live DOM.
+      const citeAttempt = (() => {
+        try {
+          const viewport = scrollNode ?? container;
+          if (!viewport || !conversationId) return null;
+          const captured = captureCiteSelection(viewport, selection);
+          if (!captured) return null;
+          const citation = createAssistantCitation({
+            conversationId,
+            messageId: captured.messageId,
+            ...captured.selector,
+          });
+          return citation ? { citation, range: captured.range } : null;
+        } catch {
+          return null;
+        }
+      })();
+
+      const linkURL = target?.closest?.('a[href]')?.getAttribute('href') ?? null;
+      const selectionText = rawText.trim().slice(0, 4000);
+      if (!selectionText) return;
+
+      let result: Awaited<ReturnType<NonNullable<typeof window.atlasChat.contextMenu>['showChatSelection']>>;
+      try {
+        result = await window.atlasChat.contextMenu.showChatSelection({
+          selectionText,
+          hasActiveConversation: Boolean(conversationId),
+          ...(linkURL ? { linkURL } : {}),
+        });
+      } catch {
+        return;
+      }
+
+      if (!result) return;
+
+      if (result.action === 'quote-in-prompt') {
+        onQuoteInPrompt?.(result.text);
+      } else if (result.action === 'cite-in-prompt') {
+        // Structured cite when the selection resolved to a message source;
+        // plain blockquote otherwise (uncapturable DOM, overlong text).
+        if (citeAttempt) {
+          beginCiteFlow(citeAttempt.citation, citeAttempt.range);
+        } else {
+          onQuoteInPrompt?.(result.text);
+        }
+      } else if (result.action === 'explain-selection') {
+        onExplainSelection?.(result.text);
+      } else if (result.action === 'search-in-workspace') {
+        onSearchInWorkspace?.(result.text);
+      }
+    },
+    [conversationId, scrollNode, beginCiteFlow, onQuoteInPrompt, onExplainSelection, onSearchInWorkspace]
+  );
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {conversationId && (
@@ -1784,6 +1952,14 @@ export function ChatWindow({
           <SubagentBreadcrumbs conversationId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
         </>
       )}
+      <CiteToolbar viewport={scrollNode} conversationId={conversationId} onCite={handleToolbarCite} />
+      {pendingCite ? (
+        <CiteCommentEditor
+          anchor={pendingCite.rect}
+          onSave={handleCiteCommentSave}
+          onCancel={handleCiteCommentCancel}
+        />
+      ) : null}
       <div
         ref={attachScrollRef}
         /*
@@ -1794,6 +1970,9 @@ export function ChatWindow({
         tabIndex={0}
         role="region"
         aria-label="Conversation transcript"
+        onContextMenu={handleContextMenu}
+        // Must match CITE_VIEWPORT_ATTR in lib/citeSelection.
+        data-cite-viewport="true"
         className="scrollbar-auto-hide relative min-h-0 flex-1 overflow-y-auto focus-visible:[outline-offset:-2px]"
       >
         <div

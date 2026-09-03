@@ -8,6 +8,7 @@ import {
   Pin,
   PinOff,
   Settings2,
+  SquarePen,
 } from 'lucide-react';
 
 import type {
@@ -31,9 +32,9 @@ import { HoverCardContent } from './ui/hover-card';
  * that opens by accident can never do anything by accident.
  */
 
-/** Shared geometry: 15px title row, 13px metadata rows, hairline dividers. */
+/** Shared geometry: title row, metadata rows, hairline dividers. */
 const CARD_CLASS =
-  'w-64 overflow-hidden p-0 data-[state=closed]:duration-0 data-[state=closed]:animate-none';
+  'w-72 overflow-hidden rounded-xl p-0 data-[state=closed]:duration-0 data-[state=closed]:animate-none';
 const ROW_CLASS = 'flex items-center gap-2 px-3 py-2 text-sm text-text-secondary';
 const ICON_CLASS = 'size-3.5 shrink-0 text-text-tertiary';
 
@@ -178,6 +179,8 @@ type ConversationHoverCardProps = {
   /** What the chat did to the working tree. Zeros mean the row stays silent. */
   changeStats?: ConversationChangeStats | null;
   attentionLevel?: AttentionLevel;
+  /** First line of unsent composer text, when the box holds unsent work. */
+  draftPreview?: string | null;
 };
 
 export function SidebarConversationHoverCard({
@@ -191,6 +194,7 @@ export function SidebarConversationHoverCard({
   modelId = null,
   changeStats = null,
   attentionLevel = 'idle',
+  draftPreview = null,
 }: ConversationHoverCardProps) {
   const stats = formatConversationChangeStats(changeStats);
   const modeLabel = workspaceMode ? `${describeWorkspaceMode(workspaceMode).label} mode` : null;
@@ -282,6 +286,15 @@ export function SidebarConversationHoverCard({
           <div className="flex items-center gap-2">
             <Settings2 className={ICON_CLASS} strokeWidth={1.75} aria-hidden />
             <span className="min-w-0 flex-1 truncate">{modeLabel}</span>
+          </div>
+        ) : null}
+
+        {draftPreview ? (
+          <div className="flex items-center gap-2" title={draftPreview}>
+            <SquarePen className={ICON_CLASS} strokeWidth={1.75} aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-warning-text">
+              Unsent: {draftPreview}
+            </span>
           </div>
         ) : null}
 

@@ -1,7 +1,10 @@
 import {
   Archive,
   ArchiveRestore,
+  Check,
+  ChevronDown,
   ChevronRight,
+  Clock,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -17,6 +20,7 @@ import {
   SquarePen,
   Trash2,
   Unlink,
+  X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -31,7 +35,7 @@ import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { useNow } from '../hooks/useNow';
 import { cn } from '../lib/utils';
-import { isTimerWoken, snoozeWakeLabel } from '../lib/snooze';
+import { isTimerWoken, resolveSnoozePresets, snoozeWakeLabel } from '../lib/snooze';
 import { RailSectionLabel } from './railPrimitives';
 import { RowIconButton } from './RowIconButton';
 import { SidebarThreadRow } from './SidebarThreadRow';
@@ -45,15 +49,10 @@ import {
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
 import { StatusDot } from './ui/status-dot';
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from './ui/context-menu';
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { HoverCard, HoverCardTrigger } from './ui/hover-card';
@@ -85,6 +84,22 @@ const SETTLED_SHELF_PAGE_COUNT = 25;
 
 /** Stable identity, so "no rows here" does not invalidate a memo every render. */
 const EMPTY_SIDEBAR_ITEMS: SidebarConversationItem[] = [];
+
+/** Manual pinned order lives outside the store: ids only, persisted locally. */
+const PIN_ORDER_STORAGE_KEY = 'atlas.sidebar.pin-order';
+
+function loadPinOrder(): string[] | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(PIN_ORDER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((entry): entry is string => typeof entry === 'string')
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 type SidebarProps = {
   items: SidebarConversationItem[];
@@ -127,6 +142,9 @@ type SidebarProps = {
    * absent the Rename affordances hide themselves rather than no-op.
    */
   onRename?: (conversationId: string, title: string) => void;
+  onRegenerateTitle?: (conversationId: string) => void;
+  onMarkUnread?: (conversationId: string) => void;
+  onMarkRead?: (conversationId: string) => void;
   onOpenSettings: (section?: SettingsSection) => void;
   /** Opens the folder picker to attach a project to the workspace. */
   onAttachProject: () => void;
@@ -321,6 +339,9 @@ export function Sidebar({
   onCreate,
   onDelete,
   onRename,
+  onRegenerateTitle,
+  onMarkUnread,
+  onMarkRead,
   onOpenSettings,
   onAttachProject,
   onCreateInProject,
@@ -355,6 +376,20 @@ export function Sidebar({
   const [projectRenameValue, setProjectRenameValue] = useState('');
   /** The project whose "…" menu is open, so its icons stay put under it. */
   const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
+  /** In-list thread search (T3 parity): filters every shelf by title. */
+  const [threadQuery, setThreadQuery] = useState('');
+  /** Project scope filter (T3 parity): null means all projects. */
+  const [scopeProjectId, setScopeProjectId] = useState<string | null>(null);
+  /** Multi-select (T3 parity): mod-click toggles, shift-click ranges. */
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const selectionAnchorRef = useRef<string | null>(null);
+  const modifierRef = useRef({ toggle: false, range: false });
+  const [bulkDeleteArmed, setBulkDeleteArmed] = useState(false);
+  /** Manual pinned order override (T3 parity): null means store order. */
+  const [pinOrderOverride, setPinOrderOverride] = useState<string[] | null>(loadPinOrder);
+  const [draggingPinId, setDraggingPinId] = useState<string | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<{ id: string; after: boolean } | null>(null);
+  const dragPinIdRef = useRef<string | null>(null);
   const [rovingId, setRovingId] = useState<string | null>(null);
   const [isScrolled, setIsScrolled] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -400,10 +435,103 @@ export function Sidebar({
     () => splitPinnedSidebarItems(inboxItems),
     [inboxItems]
   );
+
+  /**
+   * In-list filter: scope narrows to one project, search narrows by title.
+   * Applied upstream so sections, groups, shelves and keyboard order all agree.
+   * The open chat still pins itself visible inside shelves (existing fallbacks).
+   */
+  const threadQueryText = threadQuery.trim().toLowerCase();
+  const isListFiltering = threadQueryText !== '' || scopeProjectId !== null;
+  const matchesThreadFilter = useCallback(
+    (item: SidebarConversationItem) => {
+      if (scopeProjectId !== null && item.projectId !== scopeProjectId) return false;
+      if (threadQueryText !== '' && !item.primaryLabel.toLowerCase().includes(threadQueryText)) {
+        return false;
+      }
+      return true;
+    },
+    [scopeProjectId, threadQueryText]
+  );
+  const filteredPinnedItems = useMemo(
+    () => pinnedItems.filter(matchesThreadFilter),
+    [pinnedItems, matchesThreadFilter]
+  );
+  const filteredUnpinnedItems = useMemo(
+    () => unpinnedItems.filter(matchesThreadFilter),
+    [unpinnedItems, matchesThreadFilter]
+  );
+  const filteredSnoozedItems = useMemo(
+    () => snoozedItems.filter(matchesThreadFilter),
+    [snoozedItems, matchesThreadFilter]
+  );
+  const filteredSettledItems = useMemo(
+    () => settledItems.filter(matchesThreadFilter),
+    [settledItems, matchesThreadFilter]
+  );
+
+  // Modifier clicks need the held keys at click time, not at render time.
+  useEffect(() => {
+    const syncModifiers = (event: KeyboardEvent) => {
+      modifierRef.current = { toggle: event.metaKey || event.ctrlKey, range: event.shiftKey };
+    };
+    const clearModifiers = () => {
+      modifierRef.current = { toggle: false, range: false };
+    };
+    window.addEventListener('keydown', syncModifiers, true);
+    window.addEventListener('keyup', syncModifiers, true);
+    window.addEventListener('blur', clearModifiers);
+    return () => {
+      window.removeEventListener('keydown', syncModifiers, true);
+      window.removeEventListener('keyup', syncModifiers, true);
+      window.removeEventListener('blur', clearModifiers);
+    };
+  }, []);
+
+  // A new filter is a new list: stale ranges would act on hidden rows.
+  useEffect(() => {
+    setSelectedIds(new Set());
+    selectionAnchorRef.current = null;
+    setBulkDeleteArmed(false);
+  }, [scopeProjectId, threadQueryText]);
+
+  /** Pinned display order: manual override first, store order for the rest. */
+  const orderedPinnedItems = useMemo(() => {
+    if (!pinOrderOverride) return filteredPinnedItems;
+    const rank = new Map(pinOrderOverride.map((id, index) => [id, index] as const));
+    return [...filteredPinnedItems].sort(
+      (left, right) =>
+        (rank.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(right.id) ?? Number.MAX_SAFE_INTEGER) ||
+        (right.pinnedAt ?? '').localeCompare(left.pinnedAt ?? '')
+    );
+  }, [filteredPinnedItems, pinOrderOverride]);
+
+  // Keep the override to live pins: fresh pins float top, unpins drop out.
+  useEffect(() => {
+    setPinOrderOverride((current) => {
+      const live = new Set(pinnedItems.map((item) => item.id));
+      const kept = (current ?? []).filter((id) => live.has(id));
+      const known = new Set(kept);
+      const fresh = pinnedItems.filter((item) => !known.has(item.id)).map((item) => item.id);
+      if (fresh.length === 0 && kept.length === (current ?? []).length) return current;
+      return [...fresh, ...kept];
+    });
+  }, [pinnedItems]);
+
+  useEffect(() => {
+    try {
+      if (pinOrderOverride) {
+        globalThis.localStorage?.setItem(PIN_ORDER_STORAGE_KEY, JSON.stringify(pinOrderOverride));
+      }
+    } catch {
+      // Private window: order stays session-only.
+    }
+  }, [pinOrderOverride]);
   const orderedProjects = useMemo(() => sortProjectsByPin(projects), [projects]);
   const { sections, ungrouped } = useMemo(
-    () => splitSidebarItemsByProject(unpinnedItems, orderedProjects),
-    [orderedProjects, unpinnedItems]
+    () => splitSidebarItemsByProject(filteredUnpinnedItems, orderedProjects),
+    [orderedProjects, filteredUnpinnedItems]
   );
   const groups = useMemo(() => groupSidebarConversationItems(ungrouped, now), [ungrouped, now]);
 
@@ -543,9 +671,23 @@ export function Sidebar({
    * resolved once here and reused by both the markup and `visibleRowIds`.
    */
   const visibleArchivedItems = useMemo(
-    () => (hasArchivedChats && archivedExpanded ? archivedItems : EMPTY_SIDEBAR_ITEMS),
-    [archivedExpanded, archivedItems, hasArchivedChats]
+    () =>
+      hasArchivedChats && archivedExpanded
+        ? archivedItems.filter(matchesThreadFilter)
+        : EMPTY_SIDEBAR_ITEMS,
+    [archivedExpanded, archivedItems, hasArchivedChats, matchesThreadFilter]
   );
+
+  const archivedIdSet = useMemo(
+    () => new Set(visibleArchivedItems.map((item) => item.id)),
+    [visibleArchivedItems]
+  );
+  /** Bulk verbs skip archived rows (restore is their only verb). */
+  const bulkActionIds = useMemo(
+    () => [...selectedIds].filter((id) => !archivedIdSet.has(id)),
+    [archivedIdSet, selectedIds]
+  );
+  const bulkSnoozePresets = useMemo(() => resolveSnoozePresets(new Date()), [selectedIds]);
 
   /**
    * The Snoozed shelf, collapsed by default: out of the way, never gone. Rows
@@ -569,11 +711,11 @@ export function Sidebar({
 
   const [snoozedExpanded, setSnoozedExpanded] = usePersistentFlag('atlas.sidebar.snoozed-open', false);
   const visibleSnoozedItems = useMemo(() => {
-    if (snoozedExpanded) return snoozedItems;
+    if (snoozedExpanded) return filteredSnoozedItems;
     if (!selectedConversationId) return EMPTY_SIDEBAR_ITEMS;
-    const selected = snoozedItems.find((item) => item.id === selectedConversationId);
+    const selected = filteredSnoozedItems.find((item) => item.id === selectedConversationId);
     return selected ? [selected] : EMPTY_SIDEBAR_ITEMS;
-  }, [snoozedExpanded, snoozedItems, selectedConversationId]);
+  }, [snoozedExpanded, filteredSnoozedItems, selectedConversationId]);
 
   /**
    * The Settled shelf, collapsed by default: recent history is the common
@@ -585,22 +727,22 @@ export function Sidebar({
   const visibleSettledItems = useMemo(() => {
     if (!settledExpanded) {
       if (!selectedConversationId) return EMPTY_SIDEBAR_ITEMS;
-      const selected = settledItems.find((item) => item.id === selectedConversationId);
+      const selected = filteredSettledItems.find((item) => item.id === selectedConversationId);
       return selected ? [selected] : EMPTY_SIDEBAR_ITEMS;
     }
-    if (settledItems.length <= settledVisibleCount) return settledItems;
-    const head = settledItems.slice(0, settledVisibleCount);
+    if (filteredSettledItems.length <= settledVisibleCount) return filteredSettledItems;
+    const head = filteredSettledItems.slice(0, settledVisibleCount);
     if (!selectedConversationId) return head;
-    const selected = settledItems.find((item) => item.id === selectedConversationId);
+    const selected = filteredSettledItems.find((item) => item.id === selectedConversationId);
     return selected && !head.includes(selected) ? [...head, selected] : head;
-  }, [settledExpanded, settledItems, settledVisibleCount, selectedConversationId]);
-  const hiddenSettledCount = settledExpanded ? settledItems.length - visibleSettledItems.length : 0;
+  }, [settledExpanded, filteredSettledItems, settledVisibleCount, selectedConversationId]);
+  const hiddenSettledCount = settledExpanded ? filteredSettledItems.length - visibleSettledItems.length : 0;
 
   /** Rendered rows, in visual order — collapsed sections contribute nothing. */
   const visibleRowIds = useMemo(() => {
     const ids: string[] = [];
 
-    for (const item of pinnedItems) {
+    for (const item of orderedPinnedItems) {
       ids.push(item.id);
     }
 
@@ -637,7 +779,7 @@ export function Sidebar({
     return ids;
   }, [
     groups,
-    pinnedItems,
+    orderedPinnedItems,
     projectVisibility,
     recentsExpanded,
     selectedUngroupedItem,
@@ -645,6 +787,91 @@ export function Sidebar({
     visibleSettledItems,
     visibleSnoozedItems,
   ]);
+
+  /**
+   * Row activation with T3 selection semantics: plain click navigates and
+   * clears, mod-click toggles one row, shift-click ranges from the anchor over
+   * rendered rows. (Archived rows restore inside the row itself.)
+   */
+  const handleRowActivate = useCallback(
+    (id: string) => {
+      const { toggle, range } = modifierRef.current;
+      if (range && selectionAnchorRef.current && selectionAnchorRef.current !== id) {
+        const order = visibleRowIds;
+        const from = order.indexOf(selectionAnchorRef.current);
+        const to = order.indexOf(id);
+        if (from !== -1 && to !== -1) {
+          const [start, end] = from < to ? [from, to] : [to, from];
+          setSelectedIds(new Set(order.slice(start, end + 1)));
+          setBulkDeleteArmed(false);
+          return;
+        }
+      }
+      if (toggle) {
+        selectionAnchorRef.current = id;
+        setBulkDeleteArmed(false);
+        setSelectedIds((current) => {
+          const next = new Set(current);
+          if (next.has(id)) {
+            next.delete(id);
+          } else {
+            next.add(id);
+          }
+          return next;
+        });
+        return;
+      }
+      selectionAnchorRef.current = id;
+      setSelectedIds((current) => (current.size === 0 ? current : new Set()));
+      setBulkDeleteArmed(false);
+      handleSelectConversation(id);
+    },
+    [handleSelectConversation, visibleRowIds]
+  );
+
+  /** Pinned drag reorder (T3 parity, native DnD): drop position sets order. */
+  const handlePinDragStart = useCallback((id: string) => {
+    dragPinIdRef.current = id;
+    setDraggingPinId(id);
+  }, []);
+
+  const handlePinDragOver = useCallback((event: React.DragEvent, id: string) => {
+    if (!dragPinIdRef.current || dragPinIdRef.current === id) return;
+    event.preventDefault();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const after = event.clientY - rect.top > rect.height / 2;
+    setDropIndicator((current) =>
+      current && current.id === id && current.after === after ? current : { id, after }
+    );
+  }, []);
+
+  const handlePinDrop = useCallback(
+    (event: React.DragEvent, id: string) => {
+      event.preventDefault();
+      const moving = dragPinIdRef.current;
+      dragPinIdRef.current = null;
+      setDraggingPinId(null);
+      setDropIndicator(null);
+      if (!moving || moving === id || isListFiltering) return;
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const after = event.clientY - rect.top > rect.height / 2;
+      setPinOrderOverride((current) => {
+        const order = (current ?? pinnedItems.map((item) => item.id)).filter(
+          (entry) => entry !== moving
+        );
+        const at = order.indexOf(id);
+        order.splice(at === -1 ? order.length : at + (after ? 1 : 0), 0, moving);
+        return order;
+      });
+    },
+    [isListFiltering, pinnedItems]
+  );
+
+  const handlePinDragEnd = useCallback(() => {
+    dragPinIdRef.current = null;
+    setDraggingPinId(null);
+    setDropIndicator(null);
+  }, []);
 
   // Exactly one row is tabbable; the arrow keys move focus inside the list.
   // The candidate must be *rendered* — a target inside a collapsed section
@@ -752,7 +979,82 @@ export function Sidebar({
     }
   }, [onRenameProject, projectRenameValue, projects, renamingProjectId]);
 
+  const handleProjectContextMenu = useCallback(
+    async (event: React.MouseEvent, project: WorkspaceProject) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setActiveHoverCardId(null);
+      notifySidebarHoverCardOpenChange(false);
+
+      if (!window.atlasChat?.contextMenu?.showProject) {
+        return;
+      }
+
+      const isProjectPinned = Boolean(project.pinnedAt);
+      const result = await window.atlasChat.contextMenu.showProject({
+        projectId: project.id,
+        projectTitle: project.title,
+        projectExists: project.exists,
+        isPinned: isProjectPinned,
+        canRename: Boolean(onRenameProject),
+      });
+
+      if (!result) return;
+
+      if (result.action === 'new-chat') {
+        onCreateInProject(project.id);
+      } else if (result.action === 'toggle-pin') {
+        onSetProjectPinned(project.id, !isProjectPinned);
+      } else if (result.action === 'rename') {
+        startProjectRename(project);
+      } else if (result.action === 'reveal') {
+        onRevealProject(project.id);
+      } else if (result.action === 'remove') {
+        onDetachProject(project.id);
+      }
+    },
+    [
+      notifySidebarHoverCardOpenChange,
+      onCreateInProject,
+      onDetachProject,
+      onRenameProject,
+      onRevealProject,
+      onSetProjectPinned,
+      startProjectRename,
+    ]
+  );
+
+  const handleSidebarBackgroundContextMenu = useCallback(
+    async (event: React.MouseEvent) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+
+      if (!window.atlasChat?.contextMenu?.showSidebarBackground) {
+        return;
+      }
+
+      const result = await window.atlasChat.contextMenu.showSidebarBackground();
+      if (!result) return;
+
+      if (result.action === 'new-chat') {
+        onCreate();
+      } else if (result.action === 'attach-project') {
+        onAttachProject();
+      }
+    },
+    [onAttachProject, onCreate]
+  );
+
   const onListKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    // Escape clears a multi-select first; rows handle their own renames.
+    if (event.key === 'Escape' && selectedIds.size > 0) {
+      event.preventDefault();
+      setSelectedIds(new Set());
+      selectionAnchorRef.current = null;
+      setBulkDeleteArmed(false);
+      return;
+    }
+
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       return;
     }
@@ -778,7 +1080,7 @@ export function Sidebar({
               : Math.max(0, currentIndex - 1);
 
     rows[nextIndex]?.focus();
-  }, []);
+  }, [selectedIds.size]);
 
   /**
    * One conversation row, in every state it can be in (renaming, armed for
@@ -871,6 +1173,7 @@ export function Sidebar({
           project={project}
           isActive={isActive}
           isArchived={isArchived}
+          isSelected={selectedIds.has(item.id)}
           indented={options.indented ?? false}
           showTimestamp={options.showTimestamp ?? true}
           isRovingTarget={item.id === rovingTargetId}
@@ -882,7 +1185,7 @@ export function Sidebar({
           modelLabel={item.modelId === null ? null : (modelLabelById.get(item.modelId) ?? null)}
           isHoverCardOpen={isHoverCardOpen}
           hoverCardOpenDelay={hoverCardOpenDelay}
-          onSelect={handleSelectConversation}
+          onSelect={handleRowActivate}
           onRestore={onRestoreConversation}
           onArchive={onArchiveConversation}
           onToggleSettled={onSetConversationSettled}
@@ -894,6 +1197,10 @@ export function Sidebar({
           onFork={onForkConversation}
           onDelete={handleDelete}
           onStartRename={onRename ? startRename : undefined}
+          onRegenerateTitle={onRegenerateTitle}
+          onMarkUnread={onMarkUnread}
+          onMarkRead={onMarkRead}
+          onOpenProjectSettings={onOpenSettings ? () => onOpenSettings('general') : undefined}
           onCommitRename={commitRename}
           onCancelRename={handleCancelRename}
           onRenameChange={handleRenameChange}
@@ -907,7 +1214,8 @@ export function Sidebar({
       activeHoverCardId,
       commitRename,
       dismissedWokeIds,
-      handleSelectConversation,
+      handleRowActivate,
+      selectedIds,
       conversationJumpLabelById,
       handleCancelRename,
       handleDelete,
@@ -921,6 +1229,10 @@ export function Sidebar({
       now,
       onArchiveConversation,
       onForkConversation,
+      onMarkRead,
+      onMarkUnread,
+      onOpenSettings,
+      onRegenerateTitle,
       onRename,
       onRestoreConversation,
       onSetConversationSettled,
@@ -939,6 +1251,7 @@ export function Sidebar({
 
   return (
     <aside
+      onContextMenu={handleSidebarBackgroundContextMenu}
       className="sidebar-surface relative flex shrink-0 flex-col overflow-hidden"
       style={{
         viewTransitionName: 'app-sidebar',
@@ -983,7 +1296,7 @@ export function Sidebar({
           {/* Additive hint — the chip sits *beside* the icon so the button
               never changes size when a modifier is held. */}
           {!collapsed && showSidebarToggleShortcutHint && sidebarToggleShortcutLabel ? (
-            <span className="inline-flex items-center rounded-sm bg-bg-hover px-1.5 py-0.5 font-mono text-3xs leading-none text-text-tertiary">
+            <span className="inline-flex animate-in items-center rounded-sm bg-bg-hover px-1.5 py-0.5 font-mono text-3xs leading-none text-text-tertiary fade-in-0 duration-150">
               {sidebarToggleShortcutLabel}
             </span>
           ) : null}
@@ -1101,21 +1414,94 @@ export function Sidebar({
 
       {!collapsed ? (
         <>
-          {/* Primary nav */}
+          {/* Primary nav: T3-style search plus scope above the destinations. */}
           <div className="shrink-0 px-3">
-            <SidebarNavRow
-              icon={<SquarePen className="size-4" strokeWidth={1.75} aria-hidden />}
-              label="New chat"
-              onClick={onCreate}
-              title={newChatShortcutLabel ? `New chat (${newChatShortcutLabel})` : undefined}
-              trailing={
-                showNewChatShortcutHint && newChatShortcutLabel ? (
-                  <span className="rounded-sm bg-bg-hover px-1.5 py-0.5 font-mono text-3xs leading-none text-text-tertiary">
-                    {newChatShortcutLabel}
-                  </span>
-                ) : undefined
-              }
-            />
+            <div className="flex items-center gap-1">
+              <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-sm text-text-tertiary transition-colors hover:bg-bg-hover focus-within:bg-bg-hover focus-within:text-text-primary">
+                <Search className="size-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                <input
+                  value={threadQuery}
+                  onChange={(event) => setThreadQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.stopPropagation();
+                      setThreadQuery('');
+                    }
+                  }}
+                  placeholder="Search"
+                  aria-label="Search threads"
+                  className="min-w-0 flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-faint"
+                />
+                {threadQuery ? (
+                  <button
+                    type="button"
+                    aria-label="Clear thread search"
+                    onClick={() => setThreadQuery('')}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-active hover:text-text-primary"
+                  >
+                    <X className="size-3.5" strokeWidth={1.75} aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onCreate}
+                    aria-label={newChatShortcutLabel ? `New chat (${newChatShortcutLabel})` : 'New chat'}
+                    title={newChatShortcutLabel ? `New chat (${newChatShortcutLabel})` : 'New chat'}
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+                  >
+                    <SquarePen className="size-4" strokeWidth={1.75} aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {newChatShortcutLabel ? `New chat (${newChatShortcutLabel})` : 'New chat'}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Filter threads by project"
+                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-md text-text-primary transition-colors hover:bg-bg-hover"
+                  >
+                    <Folder className="size-4 shrink-0 text-text-secondary" strokeWidth={1.75} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">
+                      {scopeProjectId
+                        ? (projects.find((project) => project.id === scopeProjectId)?.title ?? 'All projects')
+                        : 'All projects'}
+                    </span>
+                    <ChevronDown className="size-4 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-56">
+                  <DropdownMenuItem onSelect={() => setScopeProjectId(null)}>
+                    <Folder aria-hidden />
+                    All projects
+                  </DropdownMenuItem>
+                  {projects.map((project) => (
+                    <DropdownMenuItem key={project.id} onSelect={() => setScopeProjectId(project.id)}>
+                      <Folder aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">{project.title}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => onAttachProject()}>
+                    <FolderPlus aria-hidden />
+                    Attach a folder
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {showNewChatShortcutHint && newChatShortcutLabel ? (
+                <span className="animate-in rounded-sm bg-bg-hover px-1.5 py-0.5 font-mono text-3xs leading-none text-text-tertiary fade-in-0 duration-150">
+                  {newChatShortcutLabel}
+                </span>
+              ) : null}
+            </div>
             {/*
               One mode-specific destination. Sites is where a Code-mode chat's
               output goes. Work mode's slot held Connectors, the hand-rolled MCP
@@ -1142,6 +1528,104 @@ export function Sidebar({
             ) : null}
           </div>
 
+          {/* Bulk bar: appears while a multi-select is held. */}
+          {selectedIds.size > 0 ? (
+            <div className="shrink-0 px-3 pb-1">
+              <div
+                role="toolbar"
+                aria-label={`${selectedIds.size} chats selected`}
+                className="flex animate-in items-center gap-0.5 rounded-md bg-bg-hover px-1.5 py-1 text-xs text-text-secondary fade-in-0 duration-150"
+              >
+                <span className="shrink-0 px-1 tabular-nums">{selectedIds.size} selected</span>
+                <RowIconButton
+                  icon={<Check className="size-3.5" strokeWidth={2} aria-hidden />}
+                  label={`Settle ${bulkActionIds.length} chats`}
+                  text="Settle"
+                  onClick={() => {
+                    for (const id of bulkActionIds) onSetConversationSettled(id, true);
+                    selectionAnchorRef.current = null;
+                    setSelectedIds(new Set());
+                    setBulkDeleteArmed(false);
+                  }}
+                  className="h-6 gap-1 px-1.5 text-xs text-text-secondary hover:bg-bg-active hover:text-text-primary"
+                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Snooze selected chats"
+                      title="Snooze selected chats"
+                      className="flex h-6 shrink-0 items-center justify-center rounded-md px-1.5 text-text-secondary transition-colors hover:bg-bg-active hover:text-text-primary"
+                    >
+                      <Clock className="size-3.5" strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-52">
+                    {bulkSnoozePresets.map((preset) => (
+                      <DropdownMenuItem
+                        key={preset.id}
+                        onSelect={() => {
+                          for (const id of bulkActionIds) {
+                            onSetConversationSnoozed(id, preset.snoozedUntil);
+                          }
+                          selectionAnchorRef.current = null;
+                          setSelectedIds(new Set());
+                          setBulkDeleteArmed(false);
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{preset.label}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-text-faint">
+                          {preset.whenLabel}
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {bulkDeleteArmed ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        for (const id of selectedIds) handleDelete(id);
+                        selectionAnchorRef.current = null;
+                        setSelectedIds(new Set());
+                        setBulkDeleteArmed(false);
+                      }}
+                      className="h-6 shrink-0 rounded-md px-1.5 text-xs text-error transition-colors hover:bg-error-bg hover:text-error-text"
+                    >
+                      Delete {selectedIds.size}?
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBulkDeleteArmed(false)}
+                      className="h-6 shrink-0 rounded-md px-1.5 text-xs text-text-tertiary transition-colors hover:bg-bg-active hover:text-text-primary"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <RowIconButton
+                    icon={<Trash2 className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                    label={`Delete ${selectedIds.size} chats`}
+                    onClick={() => setBulkDeleteArmed(true)}
+                    className="size-6"
+                  />
+                )}
+                <span className="min-w-0 flex-1" />
+                <RowIconButton
+                  icon={<X className="size-3.5" strokeWidth={1.75} aria-hidden />}
+                  label="Clear selection"
+                  onClick={() => {
+                    selectionAnchorRef.current = null;
+                    setSelectedIds(new Set());
+                    setBulkDeleteArmed(false);
+                  }}
+                  className="size-6"
+                />
+              </div>
+            </div>
+          ) : null}
+
           <nav
             aria-label="Conversations"
             ref={listRef}
@@ -1162,6 +1646,21 @@ export function Sidebar({
                 : undefined
             }
           >
+            {isListFiltering &&
+            filteredPinnedItems.length === 0 &&
+            projectVisibility.every((section) => section.visibleItems.length === 0) &&
+            groups.every((group) => group.items.length === 0) &&
+            visibleSnoozedItems.length === 0 &&
+            visibleSettledItems.length === 0 &&
+            visibleArchivedItems.length === 0 ? (
+              <div className="flex flex-col items-center gap-1 px-4 py-12 text-center">
+                <p className="text-sm text-text-tertiary">No matches</p>
+                <p className="text-2xs text-text-faint">
+                  {threadQueryText ? `Nothing titled like "${threadQuery.trim()}"` : 'Nothing in this project yet'}
+                </p>
+              </div>
+            ) : null}
+
             {items.length === 0 ? (
               <div className="flex flex-col items-center gap-1 px-4 py-12 text-center">
                 <p className="text-sm text-text-tertiary">No chats yet</p>
@@ -1177,13 +1676,32 @@ export function Sidebar({
               short by construction, and hiding it behind a chevron would undo
               the only thing pinning does.
             */}
-            {pinnedItems.length > 0 ? (
+            {orderedPinnedItems.length > 0 ? (
               <section aria-label="Pinned">
                 <div className="sidebar-section-heading sticky top-0 z-10 flex items-center gap-1 px-2 pb-1.5 pt-5">
                   <SidebarSectionLabel>Pinned</SidebarSectionLabel>
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  {pinnedItems.map((item) => renderConversationRow(item))}
+                  {orderedPinnedItems.map((item) => (
+                    <div
+                      key={item.id}
+                      draggable={!isListFiltering}
+                      onDragStart={() => handlePinDragStart(item.id)}
+                      onDragOver={(event) => handlePinDragOver(event, item.id)}
+                      onDrop={(event) => handlePinDrop(event, item.id)}
+                      onDragEnd={handlePinDragEnd}
+                      title={isListFiltering ? undefined : 'Drag to reorder pins'}
+                      className={cn(draggingPinId === item.id && 'opacity-50')}
+                    >
+                      {dropIndicator && dropIndicator.id === item.id && !dropIndicator.after ? (
+                        <div aria-hidden className="mx-2 h-0.5 rounded-full bg-accent" />
+                      ) : null}
+                      {renderConversationRow(item)}
+                      {dropIndicator && dropIndicator.id === item.id && dropIndicator.after ? (
+                        <div aria-hidden className="mx-2 h-0.5 rounded-full bg-accent" />
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
               </section>
             ) : null}
@@ -1208,6 +1726,8 @@ export function Sidebar({
                 </div>
 
                 {projectVisibility.map(({ project, projectItems, isCollapsed, visibleItems, hiddenCount }) => {
+                  // Scoped-out and query-missed sections leave no header behind.
+                  if (isListFiltering && projectItems.length === 0) return null;
                   const isCurrent = project.id === selectedProjectId;
                   const isProjectPinned = Boolean(project.pinnedAt);
                   const FolderIcon = isCollapsed ? Folder : FolderOpen;
@@ -1251,20 +1771,19 @@ export function Sidebar({
                             }
                           }}
                         >
-                          <ContextMenu>
-                            <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
-                              <ContextMenuTrigger asChild>
-                                <div
-                                  className={cn(
-                                    // No fill on the current project: the
-                                    // selected chat directly beneath it is also
-                                    // filled, and the two merged into one
-                                    // anonymous slab that read as a single
-                                    // selected item.
-                                    'group/row relative flex items-center rounded-md transition-colors hover:bg-bg-hover',
-                                    isCurrent ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
-                                  )}
-                                >
+                          <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
+                            <div
+                              onContextMenu={(event) => handleProjectContextMenu(event, project)}
+                              className={cn(
+                                // No fill on the current project: the
+                                // selected chat directly beneath it is also
+                                // filled, and the two merged into one
+                                // anonymous slab that read as a single
+                                // selected item.
+                                'group/row relative flex items-center rounded-md transition-colors hover:bg-bg-hover',
+                                isCurrent ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
+                              )}
+                            >
                                   <button
                                     type="button"
                                     onClick={() => toggleProject(project.id)}
@@ -1354,38 +1873,7 @@ export function Sidebar({
                                     />
                                   </div>
                                 </div>
-                              </ContextMenuTrigger>
-                            </HoverCardTrigger>
-                            <ContextMenuContent className="w-52">
-                              <ContextMenuItem onSelect={() => onCreateInProject(project.id)}>
-                                <SquarePen aria-hidden />
-                                New chat here
-                              </ContextMenuItem>
-                              <ContextMenuItem
-                                onSelect={() => onSetProjectPinned(project.id, !isProjectPinned)}
-                              >
-                                {isProjectPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-                                {isProjectPinned ? 'Unpin project' : 'Pin project'}
-                              </ContextMenuItem>
-                              {onRenameProject ? (
-                                <ContextMenuItem onSelect={() => startProjectRename(project)}>
-                                  <Pencil aria-hidden />
-                                  Rename project
-                                </ContextMenuItem>
-                              ) : null}
-                              <ContextMenuItem
-                                disabled={!project.exists}
-                                onSelect={() => onRevealProject(project.id)}
-                              >
-                                <FolderOpen aria-hidden />
-                                Reveal in file manager
-                              </ContextMenuItem>
-                              <ContextMenuItem variant="destructive" onSelect={() => onDetachProject(project.id)}>
-                                <Unlink aria-hidden />
-                                Remove project
-                              </ContextMenuItem>
-                            </ContextMenuContent>
-                          </ContextMenu>
+                              </HoverCardTrigger>
 
                           <SidebarProjectHoverCard
                             project={project}
@@ -1455,7 +1943,7 @@ export function Sidebar({
               </section>
             ) : null}
 
-            {ungrouped.length > 0 ? (
+            {ungrouped.length > 0 && scopeProjectId === null ? (
               <section aria-label="Recents">
                 {/*
                   One disclosure for all of history. Its own header is the only
@@ -1504,7 +1992,7 @@ export function Sidebar({
               count is the whole footprint when collapsed. Rows show their
               wake time rather than their age.
             */}
-            {snoozedItems.length > 0 ? (
+            {filteredSnoozedItems.length > 0 ? (
               <section aria-label="Snoozed">
                 <button
                   type="button"
@@ -1515,14 +2003,12 @@ export function Sidebar({
                   <SidebarSectionLabel>
                     {formatShelfSectionLabel('Snoozed', {
                       expanded: snoozedExpanded,
-                      count: snoozedItems.length,
+                      count: filteredSnoozedItems.length,
                     })}
                   </SidebarSectionLabel>
-                  <ChevronRight
-                    className={cn(
-                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
-                      snoozedExpanded && 'rotate-90'
-                    )}
+                  <span aria-hidden className="h-px min-w-4 flex-1 bg-border-subtle" />
+                  <ChevronDown
+                    className="size-3.5 shrink-0 text-text-faint transition-colors group-hover:text-text-tertiary"
                     strokeWidth={2}
                     aria-hidden
                   />
@@ -1554,7 +2040,7 @@ export function Sidebar({
               — which removes the row from the sidebar — settling keeps the
               chat one click away.
             */}
-            {settledItems.length > 0 ? (
+            {filteredSettledItems.length > 0 ? (
               <section aria-label="Settled">
                 <button
                   type="button"
@@ -1565,14 +2051,12 @@ export function Sidebar({
                   <SidebarSectionLabel>
                     {formatShelfSectionLabel('Settled', {
                       expanded: settledExpanded,
-                      count: settledItems.length,
+                      count: filteredSettledItems.length,
                     })}
                   </SidebarSectionLabel>
-                  <ChevronRight
-                    className={cn(
-                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
-                      settledExpanded && 'rotate-90'
-                    )}
+                  <span aria-hidden className="h-px min-w-4 flex-1 bg-border-subtle" />
+                  <ChevronDown
+                    className="size-3.5 shrink-0 text-text-faint transition-colors group-hover:text-text-tertiary"
                     strokeWidth={2}
                     aria-hidden
                   />
@@ -1618,16 +2102,14 @@ export function Sidebar({
                     {formatShelfSectionLabel('Archived', {
                       expanded: archivedExpanded,
                       count:
-                        archivedItems.length > 0
-                          ? archivedItems.length
+                        visibleArchivedItems.length > 0
+                          ? visibleArchivedItems.length
                           : (archivedCount ?? 0),
                     })}
                   </SidebarSectionLabel>
-                  <ChevronRight
-                    className={cn(
-                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
-                      archivedExpanded && 'rotate-90'
-                    )}
+                  <span aria-hidden className="h-px min-w-4 flex-1 bg-border-subtle" />
+                  <ChevronDown
+                    className="size-3.5 shrink-0 text-text-faint transition-colors group-hover:text-text-tertiary"
                     strokeWidth={2}
                     aria-hidden
                   />

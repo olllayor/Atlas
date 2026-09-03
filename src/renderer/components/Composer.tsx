@@ -30,6 +30,7 @@ import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParam
 import { planImageDownscale } from '../../shared/imageDownscale';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
+import { CitationStrip } from './CitationStrip';
 import { AtlasLoader } from './ui/atlas-loader';
 import { useAppStore } from '../stores/useAppStore';
 import type {
@@ -1129,6 +1130,14 @@ export function Composer({
                 </Attachments>
               </div>
             ) : null}
+
+            {/* Cited quotes live in the draft as serialized links; the strip
+                keeps them readable until the phase-2 composer renders them
+                inline. Removing a chip deletes its link bytes. */}
+            <CitationStrip
+              value={value}
+              onRemove={(source) => onChange(value.replace(source, ''))}
+            />
 
             {footerMessage ? (
               <div

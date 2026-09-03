@@ -12,6 +12,7 @@ import type { ThemeMode } from '../../shared/contracts';
 import { installWebviewHardening } from '../browser/webviewSecurity';
 import { getAppIconPath } from './iconPath';
 import { perfMark } from './perfTrace';
+import { attachContextMenu } from '../ipc/contextMenu';
 
 /**
  * The renderer paints its own titlebar (52px, `--titlebar-height`), so the
@@ -195,6 +196,7 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
   });
 
   attachRendererRecovery(window);
+  attachContextMenu(window);
 
   window.webContents.on('will-navigate', (event: Event, url: string) => {
     const isLocalFile = url.startsWith('file://');

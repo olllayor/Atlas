@@ -28,6 +28,7 @@ export const IPC_CHANNELS = {
   conversationsGetStats: 'conversations:getStats',
   conversationsDelete: 'conversations:delete',
   conversationsRename: 'conversations:rename',
+  conversationsRegenerateTitle: 'conversations:regenerate-title',
   conversationsGetWorkspace: 'conversations:getWorkspace',
   conversationsSetWorkspace: 'conversations:setWorkspace',
   conversationsResetCloudSandbox: 'conversations:resetCloudSandbox',
@@ -176,5 +177,9 @@ export const IPC_CHANNELS = {
   posthogGetAnonymousId: 'posthog:getAnonymousId',
   posthogCaptureEvent: 'posthog:captureEvent',
   posthogGetTelemetryEnabled: 'posthog:getTelemetryEnabled',
-  posthogSetTelemetryEnabled: 'posthog:setTelemetryEnabled'
+  posthogSetTelemetryEnabled: 'posthog:setTelemetryEnabled',
+  contextMenuShowChatSelection: 'context-menu:show-chat-selection',
+  contextMenuShowConversation: 'context-menu:show-conversation',
+  contextMenuShowProject: 'context-menu:show-project',
+  contextMenuShowSidebarBackground: 'context-menu:show-sidebar-background'
 } as const;

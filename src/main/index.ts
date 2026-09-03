@@ -88,6 +88,7 @@ import { assertTrustedSender } from './ipc/security';
 import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
+import { registerContextMenuIpc } from './ipc/contextMenu';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
@@ -762,6 +763,7 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     projectsRepo: database.projects,
     settingsRepo: database.settings,
+    onRegenerateTitle: (conversationId) => chatEngine.regenerateTitle(conversationId),
     onConversationDeleted: (conversationId) => {
       ptyService.killConversation(conversationId);
       // Spill files are an implementation detail of the conversation's turns;
@@ -838,6 +840,7 @@ app.whenReady().then(async () => {
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
+  registerContextMenuIpc();
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
   // Wrapped like every other handler: these are registered here rather than in

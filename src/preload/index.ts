@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { AtlasDeepLink, RendererApi } from '../shared/contracts';
+import type {
+  AtlasDeepLink,
+  ChatContextMenuAction,
+  ConversationContextMenuAction,
+  ProjectContextMenuAction,
+  RendererApi,
+  ShowChatSelectionMenuRequest,
+  ShowConversationContextMenuRequest,
+  ShowProjectContextMenuRequest,
+  ShowSidebarBackgroundContextMenuRequest,
+  SidebarBackgroundContextMenuAction
+} from '../shared/contracts';
 import { IPC_CHANNELS } from '../shared/ipc';
 
 const api: RendererApi = {
@@ -57,6 +68,7 @@ const api: RendererApi = {
     getStats: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetStats),
     delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId),
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
+    regenerateTitle: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRegenerateTitle, conversationId),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
     setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
     resetCloudSandbox: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsResetCloudSandbox, conversationId),
@@ -357,6 +369,16 @@ const api: RendererApi = {
     },
     consumePending: () =>
       ipcRenderer.invoke(IPC_CHANNELS.deepLinkConsume) as Promise<AtlasDeepLink | null>
+  },
+  contextMenu: {
+    showChatSelection: (request: ShowChatSelectionMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowChatSelection, request) as Promise<ChatContextMenuAction | null>,
+    showConversation: (request: ShowConversationContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowConversation, request) as Promise<ConversationContextMenuAction | null>,
+    showProject: (request: ShowProjectContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowProject, request) as Promise<ProjectContextMenuAction | null>,
+    showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowSidebarBackground, request) as Promise<SidebarBackgroundContextMenuAction | null>
   }
 };
 

@@ -53,9 +53,9 @@ export function registerPluginsIpc(deps: {
   /**
    * The beta switch, read live per call.
    *
-   * The renderer hides every entry point when this is off, so a handler
-   * reaching here means a stale window or a hand-built invoke. Both refuse:
-   * the feature is off, and an off feature's surface answers nothing.
+   * The renderer hides every entry point when this is off, so a gated handler
+   * reaching here means a stale window or a hand-built invoke. Writes refuse;
+   * the quiet reads answer empty, and an off feature's surface reveals nothing.
    */
   isEnabled: () => boolean;
 }) {
@@ -66,13 +66,26 @@ export function registerPluginsIpc(deps: {
   };
 
   /**
-   * Every plugins channel goes through the beta gate.
+   * Every plugins channel goes through the beta gate, except the reads the
+   * composer makes on every mount.
    *
-   * One wrapper rather than a check in each handler: a handler added later
-   * inherits the gate by construction instead of by remembering.
+   * list/commands/activation/marketplaces answer empty while the beta is off
+   * instead of throwing: a throw is a rejected handle, an Electron "Error
+   * occurred in handler" line on stderr, and a logger.error per call — per
+   * mount, per chat — for a feature the user simply left off. Writes keep
+   * the gate by construction instead of by remembering.
    */
+  const QUIET_EMPTY: Record<string, () => unknown> = {
+    [IPC_CHANNELS.pluginsList]: () => ({ root: deps.registry.root, plugins: [], failures: [] }),
+    [IPC_CHANNELS.pluginsCommands]: () => [],
+    [IPC_CHANNELS.pluginsActivation]: () => [],
+    [IPC_CHANNELS.pluginsMarketplaces]: () => ({ marketplaces: [] }),
+  };
+
   const handle = (channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: never[]) => unknown) =>
     ipcMain.handle(channel, async (event, ...args) => {
+      const quiet = QUIET_EMPTY[channel];
+      if (quiet && !deps.isEnabled()) return quiet();
       requireEnabled();
       return listener(event, ...(args as never[]));
     });

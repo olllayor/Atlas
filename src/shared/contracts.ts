@@ -2402,6 +2402,7 @@ export type RendererApi = {
     getStats: () => Promise<ConversationStats>;
     delete: (conversationId: string) => Promise<void>;
     rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
+    regenerateTitle: (conversationId: string) => Promise<ConversationSummary>;
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
     resetCloudSandbox: (conversationId: string) => Promise<{ success: boolean; error?: string }>;
@@ -2713,4 +2714,82 @@ export type RendererApi = {
      */
     consumePending: () => Promise<AtlasDeepLink | null>;
   };
+  contextMenu?: {
+    showChatSelection: (request: ShowChatSelectionMenuRequest) => Promise<ChatContextMenuAction | null>;
+    showConversation: (request: ShowConversationContextMenuRequest) => Promise<ConversationContextMenuAction | null>;
+    showProject: (request: ShowProjectContextMenuRequest) => Promise<ProjectContextMenuAction | null>;
+    showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) => Promise<SidebarBackgroundContextMenuAction | null>;
+  };
 };
+
+export type ShowChatSelectionMenuRequest = {
+  selectionText: string;
+  hasActiveConversation: boolean;
+  /** Href of the anchor under the cursor, if the selection touches a link. */
+  linkURL?: string | null;
+};
+
+export type ChatContextMenuAction =
+  | { action: 'quote-in-prompt'; text: string }
+  | { action: 'cite-in-prompt'; text: string }
+  | { action: 'explain-selection'; text: string }
+  | { action: 'search-in-workspace'; text: string };
+
+export type ConversationSnoozePreset = {
+  id: string;
+  label: string;
+  whenLabel: string;
+  snoozedUntil: string;
+};
+
+export type ShowConversationContextMenuRequest = {
+  conversationId: string;
+  conversationTitle?: string;
+  isArchived: boolean;
+  isPinned: boolean;
+  isSettled: boolean;
+  isSnoozed: boolean;
+  isUnread?: boolean;
+  hasProject?: boolean;
+  snoozePresets?: readonly ConversationSnoozePreset[];
+  canFork: boolean;
+  canRename: boolean;
+};
+
+export type ConversationContextMenuAction =
+  | { action: 'restore'; conversationId: string }
+  | { action: 'toggle-pin'; conversationId: string }
+  | { action: 'toggle-settled'; conversationId: string }
+  | { action: 'wake'; conversationId: string }
+  | { action: 'snooze'; conversationId: string; snoozedUntil: string }
+  | { action: 'rename'; conversationId: string }
+  | { action: 'regenerate-title'; conversationId: string }
+  | { action: 'mark-unread'; conversationId: string }
+  | { action: 'mark-read'; conversationId: string }
+  | { action: 'project-settings'; conversationId: string }
+  | { action: 'archive'; conversationId: string }
+  | { action: 'fork'; conversationId: string }
+  | { action: 'delete'; conversationId: string };
+
+export type ShowProjectContextMenuRequest = {
+  projectId: string;
+  projectTitle: string;
+  projectExists: boolean;
+  isPinned: boolean;
+  canRename: boolean;
+};
+
+export type ProjectContextMenuAction =
+  | { action: 'new-chat'; projectId: string }
+  | { action: 'toggle-pin'; projectId: string }
+  | { action: 'rename'; projectId: string }
+  | { action: 'reveal'; projectId: string }
+  | { action: 'remove'; projectId: string };
+
+export type ShowSidebarBackgroundContextMenuRequest = {
+  hasActiveProject?: boolean;
+};
+
+export type SidebarBackgroundContextMenuAction =
+  | { action: 'new-chat' }
+  | { action: 'attach-project' };

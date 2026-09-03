@@ -37,13 +37,15 @@ type ConversationsIpcDependencies = {
   /** Lets the deleted conversation's shell and other per-conversation
    *  resources be torn down with it. */
   onConversationDeleted?: (conversationId: string) => void;
+  onRegenerateTitle?: (conversationId: string) => Promise<import('../../shared/contracts').ConversationSummary>;
 };
 
 export function registerConversationsIpc({
   conversationsRepo,
   projectsRepo,
   settingsRepo,
-  onConversationDeleted
+  onConversationDeleted,
+  onRegenerateTitle
 }: ConversationsIpcDependencies) {
   const database = { conversations: conversationsRepo, projects: projectsRepo };
 
@@ -142,6 +144,17 @@ export function registerConversationsIpc({
     withUserFacingErrors(IPC_CHANNELS.conversationsRename, (event, conversationId: string, title: string) => {
       assertTrustedSender(event);
       return conversationsRepo.rename(conversationId, title);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsRegenerateTitle,
+    withUserFacingErrors(IPC_CHANNELS.conversationsRegenerateTitle, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+      if (!onRegenerateTitle) {
+        throw new Error('Title regeneration is not available.');
+      }
+      return await onRegenerateTitle(conversationId);
     })
   );
 

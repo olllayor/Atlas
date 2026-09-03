@@ -36,6 +36,8 @@ import { useDraftSummaries } from './hooks/useDraftSummaries';
 import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindowSlot } from './components/ChatWindowSlot';
 import { CommandPalette } from './components/CommandPalette';
+import { formatExplainPrompt, formatMarkdownQuote, sanitizeSearchQuery } from './lib/contextMenu';
+import { formatCitationForComposer, type AssistantCitation } from '../shared/citations';
 import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
@@ -123,6 +125,11 @@ import {
 // is too narrow to clear them (Windows/Linux controls sit top-right via
 // titleBarOverlay).
 const isMacLike = isMacPlatform;
+
+// Hold-to-reveal for sidebar shortcut badges (⌘B / ⌘N / ⌘1-9). Long enough
+// that a quick ⌘K / ⌘S never flashes the list, short enough that an
+// intentional hold still feels instant.
+const SIDEBAR_SHORTCUT_HINT_DELAY_MS = 500;
 
 function LoadingScreen() {
   return (
@@ -322,6 +329,7 @@ export default function App() {
     activeView,
     settingsSection,
     commandPaletteOpen,
+    commandPaletteInitialQuery,
     modelPickerOpen,
     composerFocused,
     composerFocusNonce,
@@ -341,6 +349,9 @@ export default function App() {
     isLoadingConversationId,
     selectedConversationId,
     unreadByConversation,
+    markConversationUnread,
+    markConversationRead,
+    regenerateConversationTitle,
     queuedByConversation,
     selectedModelIdByConversation,
     selectedProviderIdByConversation,
@@ -357,6 +368,7 @@ export default function App() {
     closeSettings,
     setSettingsSection,
     setCommandPaletteOpen,
+    setCommandPaletteInitialQuery,
     setModelPickerOpen,
     setComposerFocused,
     requestComposerFocus,
@@ -408,6 +420,7 @@ export default function App() {
       activeView: state.activeView,
       settingsSection: state.settingsSection,
       commandPaletteOpen: state.commandPaletteOpen,
+      commandPaletteInitialQuery: state.commandPaletteInitialQuery,
       modelPickerOpen: state.modelPickerOpen,
       composerFocused: state.composerFocused,
       composerFocusNonce: state.composerFocusNonce,
@@ -429,6 +442,9 @@ export default function App() {
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
       unreadByConversation: state.unreadByConversation,
+      markConversationUnread: state.markConversationUnread,
+      markConversationRead: state.markConversationRead,
+      regenerateConversationTitle: state.regenerateConversationTitle,
       queuedByConversation: state.queuedByConversation,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
       selectedProviderIdByConversation: state.selectedProviderIdByConversation,
@@ -454,6 +470,7 @@ export default function App() {
       closeSettings: state.closeSettings,
       setSettingsSection: state.setSettingsSection,
       setCommandPaletteOpen: state.setCommandPaletteOpen,
+      setCommandPaletteInitialQuery: state.setCommandPaletteInitialQuery,
       setModelPickerOpen: state.setModelPickerOpen,
       setComposerFocused: state.setComposerFocused,
       requestComposerFocus: state.requestComposerFocus,
@@ -960,6 +977,66 @@ export default function App() {
     },
     [requestComposerFocus, selectedConversationId, setComposerDraft]
   );
+
+  const handleQuoteInPrompt = useCallback(
+    (text: string) => {
+      if (!selectedConversationId) return;
+      const quote = formatMarkdownQuote(text);
+      if (!quote) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(selectedConversationId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${quote}` : quote);
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
+  );
+
+  const handleExplainSelection = useCallback(
+    (text: string) => {
+      if (!selectedConversationId) return;
+      const prompt = formatExplainPrompt(text);
+      if (!prompt) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(selectedConversationId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${prompt}` : prompt);
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
+  );
+
+  const handleCiteCitation = useCallback(
+    (citation: AssistantCitation) => {
+      if (!selectedConversationId) return;
+      const link = formatCitationForComposer(citation);
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(
+        selectedConversationId,
+        current.trim() ? `${current.replace(/\s+$/, '')} ${link}` : link,
+      );
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
+  );
+
+  const handleCiteCommentChange = useCallback(
+    (oldSource: string, newSource: string) => {
+      if (!selectedConversationId || oldSource === newSource) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      if (!current.includes(oldSource)) return;
+      setComposerDraft(selectedConversationId, current.replace(oldSource, newSource));
+    },
+    [selectedConversationId, setComposerDraft]
+  );
+
+  const handleSearchInWorkspace = useCallback(
+    (text: string) => {
+      const query = sanitizeSearchQuery(text);
+      if (!query) return;
+      setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      setCommandPaletteInitialQuery(query);
+      setCommandPaletteOpen(true);
+    },
+    [captureEvent, setCommandPaletteInitialQuery, setCommandPaletteOpen, setModelPickerOpen]
+  );
   const selectedModelSummary = useMemo(() => {
     if (!selectedModelId) return null;
     if (selectedProviderId) {
@@ -1260,7 +1337,13 @@ export default function App() {
 
     if (command === 'app.commandPalette.toggle') {
       live.setModelPickerOpen(false);
-      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      if (!livePaletteOpen) {
+        // Normal open, not search-in-workspace: drop any stale selection query
+        // left behind (e.g. palette closed via a store path that bypassed
+        // onOpenChange before the close-clearing fix).
+        live.setCommandPaletteInitialQuery(null);
+        captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      }
       live.setCommandPaletteOpen(!livePaletteOpen);
       return;
     }
@@ -1648,30 +1731,74 @@ export default function App() {
     prevRunningAgentsCountRef.current = runningAgentsCount;
   }, [openRightPanelSurface, runningAgentsCount]);
 
+  // Badges (⌘B / ⌘N / ⌘1-9) appear only while the modifier is held, and only
+  // after a short hold so a quick ⌘K / ⌘S never flashes the whole sidebar.
+  const shortcutHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shortcutHintsVisibleRef = useRef(false);
+
   useEffect(() => {
+    const clearShortcutHintTimer = () => {
+      if (shortcutHintTimerRef.current) {
+        clearTimeout(shortcutHintTimerRef.current);
+        shortcutHintTimerRef.current = null;
+      }
+    };
+
+    const hideShortcutHints = () => {
+      clearShortcutHintTimer();
+      shortcutHintsVisibleRef.current = false;
+      setShowConversationJumpHints(false);
+      setShowNewChatShortcutHint(false);
+      setShowSidebarToggleShortcutHint(false);
+    };
+
+    const scheduleShortcutHints = (wantsJump: boolean, wantsNewChat: boolean, wantsToggle: boolean) => {
+      if (!wantsJump && !wantsNewChat && !wantsToggle) {
+        hideShortcutHints();
+        return;
+      }
+      // Already on screen: sync immediately (covers keybinding/context swaps mid-hold).
+      if (shortcutHintsVisibleRef.current) {
+        setShowConversationJumpHints(wantsJump);
+        setShowNewChatShortcutHint(wantsNewChat);
+        setShowSidebarToggleShortcutHint(wantsToggle);
+        return;
+      }
+      // A hold fires repeat keydowns; one pending timer is enough.
+      if (shortcutHintTimerRef.current) {
+        return;
+      }
+      shortcutHintTimerRef.current = setTimeout(() => {
+        shortcutHintTimerRef.current = null;
+        shortcutHintsVisibleRef.current = true;
+        setShowConversationJumpHints(wantsJump);
+        setShowNewChatShortcutHint(wantsNewChat);
+        setShowSidebarToggleShortcutHint(wantsToggle);
+      }, SIDEBAR_SHORTCUT_HINT_DELAY_MS);
+    };
+
+    const readHintWants = (event: KeyboardEvent) => ({
+      jump: shouldShowConversationJumpHints(event, resolvedKeybindings, {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+      newChat: shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+      toggle: shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      })
+    });
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) {
         return;
       }
 
-      setShowConversationJumpHints(
-        shouldShowConversationJumpHints(event, resolvedKeybindings, {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowNewChatShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowSidebarToggleShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
+      const wants = readHintWants(event);
+      scheduleShortcutHints(wants.jump, wants.newChat, wants.toggle);
 
       const command = resolveShortcutCommand(event, resolvedKeybindings, {
         context: keybindingContext,
@@ -1692,30 +1819,12 @@ export default function App() {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      setShowConversationJumpHints(
-        shouldShowConversationJumpHints(event, resolvedKeybindings, {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowNewChatShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowSidebarToggleShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
+      const wants = readHintWants(event);
+      scheduleShortcutHints(wants.jump, wants.newChat, wants.toggle);
     };
 
     const onWindowBlur = () => {
-      setShowConversationJumpHints(false);
-      setShowNewChatShortcutHint(false);
-      setShowSidebarToggleShortcutHint(false);
+      hideShortcutHints();
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -1723,6 +1832,7 @@ export default function App() {
     window.addEventListener('blur', onWindowBlur);
 
     return () => {
+      clearShortcutHintTimer();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onWindowBlur);
@@ -1865,6 +1975,9 @@ export default function App() {
           onCreate={() => void createConversation()}
           onDelete={(id) => void deleteConversation(id)}
           onRename={(id, title) => void renameConversation(id, title)}
+          onRegenerateTitle={(id) => void regenerateConversationTitle(id)}
+          onMarkUnread={(id) => markConversationUnread(id)}
+          onMarkRead={(id) => markConversationRead(id)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onAttachProject={() => {
             void attachProject();
@@ -1888,6 +2001,7 @@ export default function App() {
           showPlugins={settings?.pluginsBetaEnabled ?? false}
           onOpenSearch={() => {
             setModelPickerOpen(false);
+            setCommandPaletteInitialQuery(null);
             captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
             setCommandPaletteOpen(true);
           }}
@@ -2114,6 +2228,11 @@ export default function App() {
                 onOpenAgentsPanel={openWorkbenchAgents}
                 hasTools={hasModelTools}
                 projectName={activeProject?.exists ? activeProject.title : null}
+                onQuoteInPrompt={handleQuoteInPrompt}
+                onExplainSelection={handleExplainSelection}
+                onSearchInWorkspace={handleSearchInWorkspace}
+                onCiteCitation={handleCiteCitation}
+                onCiteCommentChange={handleCiteCommentChange}
               />
             </RendererErrorBoundary>
 
@@ -2349,8 +2468,14 @@ export default function App() {
       <CommandPalette
         items={commandPaletteItems}
         conversations={commandPaletteConversations}
+        initialQuery={commandPaletteInitialQuery}
         onSelectConversation={(id) => void loadConversation(id)}
-        onOpenChange={setCommandPaletteOpen}
+        onOpenChange={(open) => {
+          setCommandPaletteOpen(open);
+          if (!open) {
+            setCommandPaletteInitialQuery(null);
+          }
+        }}
         onSelect={runCommand}
         open={commandPaletteOpen}
       />

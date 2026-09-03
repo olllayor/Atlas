@@ -7,7 +7,7 @@ import {
   probeOpenCode
 } from '../src/main/ai/providers/opencode/probeOpenCode.js';
 import type { OpenCodeInventoryClient } from '../src/main/ai/providers/opencode/OpenCodeClient.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettings.js';
+import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
 
 /* ------------------------------------------------------------------ *
  * Error taxonomy (t3 branch table)

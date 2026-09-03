@@ -16,7 +16,7 @@ import {
   resolveOpenCodeSpawnEnvironment
 } from '../src/main/ai/providers/opencode/openCodeEnvironment.js';
 import { OpenCodeRuntime } from '../src/main/ai/providers/opencode/OpenCodeRuntime.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettings.js';
+import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
 
 /* ------------------------------------------------------------------ *
  * Parsers (pure)

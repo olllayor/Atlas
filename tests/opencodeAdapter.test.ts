@@ -16,7 +16,7 @@ import type {
 import { isOpenCodeNotFound } from '../src/main/ai/providers/opencode/OpenCodeAgentClient.js';
 import { normalizeProviderListPayload } from '../src/main/ai/providers/opencode/OpenCodeClient.js';
 import { buildOpenCodePromptParts } from '../src/main/ai/providers/opencode/openCodePrompt.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettings.js';
+import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
 
 const USER_TURN: ModelMessage[] = [{ role: 'user', content: 'ship it' }];
 

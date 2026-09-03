@@ -3,10 +3,10 @@ import test from 'node:test';
 
 import {
   getDefaultKeybindingRules,
-  parseKeybindingRules,
   parseKeybindingWhenExpression,
   resolveKeybindingRules,
 } from '../src/shared/keybindings.js';
+import { parseKeybindingRules } from '../src/shared/keybindingSchemas.js';
 import { getAdjacentConversationId, getConversationJumpId } from '../src/renderer/lib/keybindingCommands.js';
 import {
   formatShortcutLabel,

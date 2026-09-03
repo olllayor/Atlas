@@ -9,11 +9,11 @@
  */
 
 import type { OpenCodeSettings, OpenCodeStatusView } from '../../../../shared/opencodeSettings.js';
+import { OPENCODE_PROVIDER_ID } from '../../../../shared/opencodeSettings.js';
 import {
-  OPENCODE_PROVIDER_ID,
   defaultOpenCodeSettings,
   parseOpenCodeSettings
-} from '../../../../shared/opencodeSettings.js';
+} from '../../../../shared/opencodeSettingsSchema.js';
 import type { OpenCodeSessionsRepo } from '../../../db/repositories/opencodeSessionsRepo.js';
 import type { SettingsRepo } from '../../../db/repositories/settingsRepo.js';
 import type { KeychainStore } from '../../../secrets/keychain.js';

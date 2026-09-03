@@ -13,8 +13,16 @@ import './themes/landing.css';
 import './themes/cursor.css';
 import './themes/codex.css';
 
-initPostHog();
+// Telemetry preference is an IPC read and gates capture, so it resolves now.
+// The PostHog client itself is ~175 kB of dynamic import with nothing on the
+// first frame depending on it, so its load waits for idle; events captured in
+// between are queued by `captureEvent` and replayed once the client lands.
 void syncTelemetryStatus();
+if (typeof requestIdleCallback === 'function') {
+  requestIdleCallback(() => void initPostHog(), { timeout: 5000 });
+} else {
+  setTimeout(() => void initPostHog(), 2000);
+}
 
 // Before the first paint, not in an effect: the sidebar renders opaque until
 // this attribute lands, and a late stamp reads as a flash on every launch.

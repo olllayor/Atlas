@@ -4,11 +4,11 @@ import test from 'node:test';
 import { OpenCodeController } from '../src/main/ai/providers/opencode/openCodeController.js';
 import type { OpenCodeSessionsRepo } from '../src/main/db/repositories/opencodeSessionsRepo.js';
 import type { ProviderRegistry } from '../src/main/ai/core/providerRegistry.js';
+import type { OpenCodeSettings } from '../src/shared/opencodeSettings.js';
 import {
   defaultOpenCodeSettings,
-  parseOpenCodeSettings,
-  type OpenCodeSettings
-} from '../src/shared/opencodeSettings.js';
+  parseOpenCodeSettings
+} from '../src/shared/opencodeSettingsSchema.js';
 
 function fakeSettingsRepo(initial: OpenCodeSettings = defaultOpenCodeSettings()) {
   let stored = initial;

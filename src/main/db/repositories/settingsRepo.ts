@@ -24,7 +24,7 @@ import { DEFAULT_VISUAL_MODE, isVisualMode } from '../../../shared/visualIntent'
 import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isExecutionTarget, isWorkspaceMode } from '../../../shared/workspaceModes';
 import type { OpenCodeSettings, ParseOpenCodeSettingsResult } from '../../../shared/opencodeSettings.js';
-import { parseOpenCodeSettings } from '../../../shared/opencodeSettings.js';
+import { parseOpenCodeSettings } from '../../../shared/opencodeSettingsSchema.js';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
@@ -34,7 +34,7 @@ import {
 import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ReduceMotionMode, ThemeColorOverride, ThemeMode } from '../../../shared/contracts';
 import { isDesignTheme } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
-import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindings';
+import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindingSchemas';
 import type { SqliteDatabase } from '../client';
 import { CloudSandboxSecretStore } from '../../secrets/cloudSandboxSecretStore';
 

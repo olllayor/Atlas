@@ -1,28 +1,73 @@
-import posthog from 'posthog-js';
+import type { PostHog } from 'posthog-js';
 
 import { POSTHOG_CONFIG } from '../../shared/posthog';
 
-let initialized = false;
+/*
+  `posthog-js` is ~175 kB and nothing on the first frame depends on it, so the
+  client is imported dynamically instead of riding in the entry chunk. Everything
+  below is written against a client that may not exist yet: `initPostHog` starts
+  the load and returns immediately, and events captured before it lands are held
+  in `pendingEvents` and replayed in order once it does.
+*/
+let client: PostHog | null = null;
+let clientLoad: Promise<void> | null = null;
 let telemetryEnabled = true;
 
+type PendingEvent = { event: string; properties?: Record<string, unknown> };
+
+// Bounded: telemetry is not worth unbounded retention if the client never loads.
+const MAX_PENDING_EVENTS = 50;
+const pendingEvents: PendingEvent[] = [];
+
+/**
+ * Starts loading the PostHog client. Safe to call more than once — subsequent
+ * calls join the in-flight load.
+ */
 export function initPostHog() {
-  if (initialized) return;
+  if (clientLoad) return clientLoad;
 
   const { apiKey, host } = POSTHOG_CONFIG;
-  if (!apiKey) return;
+  if (!apiKey) {
+    // No key: drop whatever queued, and never look again.
+    pendingEvents.length = 0;
+    clientLoad = Promise.resolve();
+    return clientLoad;
+  }
 
-  try {
-    posthog.init(apiKey, {
-      api_host: host,
-      capture_pageview: false,
-      capture_pageleave: false,
-      disable_session_recording: true,
-      persistence: 'localStorage',
+  clientLoad = import('posthog-js')
+    .then(({ default: posthog }) => {
+      posthog.init(apiKey, {
+        api_host: host,
+        capture_pageview: false,
+        capture_pageleave: false,
+        disable_session_recording: true,
+        persistence: 'localStorage',
+      });
+
+      client = posthog;
+      applyTelemetryStateToClient();
+      flushPendingEvents();
+    })
+    .catch((err) => {
+      console.warn('[PostHog] Failed to initialize:', err);
+      pendingEvents.length = 0;
     });
 
-    initialized = true;
-  } catch (err) {
-    console.warn('[PostHog] Failed to initialize:', err);
+  return clientLoad;
+}
+
+function flushPendingEvents() {
+  if (!client || !telemetryEnabled) {
+    pendingEvents.length = 0;
+    return;
+  }
+
+  for (const { event, properties } of pendingEvents.splice(0)) {
+    try {
+      client.capture(event, properties);
+    } catch (err) {
+      console.warn('[PostHog] Failed to capture event:', err);
+    }
   }
 }
 
@@ -51,32 +96,42 @@ export async function setTelemetryEnabled(enabled: boolean): Promise<boolean> {
 }
 
 function applyTelemetryStateToClient() {
-  if (!initialized) return;
+  if (!client) return;
   if (telemetryEnabled) {
-    posthog.opt_in_capturing();
+    client.opt_in_capturing();
   } else {
-    posthog.opt_out_capturing();
+    client.opt_out_capturing();
+    pendingEvents.length = 0;
   }
 }
 
 export async function identifyUser() {
-  if (!initialized || !telemetryEnabled) return;
+  await clientLoad;
+  if (!client || !telemetryEnabled) return;
 
   try {
     const anonymousId = await window.atlasChat.posthog.getAnonymousId();
-    posthog.identify(anonymousId);
+    client.identify(anonymousId);
   } catch (err) {
     console.warn('[PostHog] Failed to identify user:', err);
   }
 }
 
 export function captureEvent(event: string, properties?: Record<string, unknown>) {
-  if (!initialized || !telemetryEnabled) return;
+  if (!telemetryEnabled) return;
+
+  if (!client) {
+    // The client is still loading (or was never started). Hold the event so a
+    // launch-time capture is not lost to the import.
+    if (clientLoad && pendingEvents.length < MAX_PENDING_EVENTS) {
+      pendingEvents.push({ event, properties });
+    }
+    return;
+  }
+
   try {
-    posthog.capture(event, properties);
+    client.capture(event, properties);
   } catch (err) {
     console.warn('[PostHog] Failed to capture event:', err);
   }
 }
-
-export { posthog };

@@ -7,11 +7,13 @@ import test from 'node:test';
 
 import {
   OPENCODE_PROVIDER_ID,
-  defaultOpenCodeSettings,
   isOpenCodeIntegrationMode,
-  openCodeServerMode,
-  parseOpenCodeSettings
+  openCodeServerMode
 } from '../src/shared/opencodeSettings.js';
+import {
+  defaultOpenCodeSettings,
+  parseOpenCodeSettings
+} from '../src/shared/opencodeSettingsSchema.js';
 import { SettingsRepo } from '../src/main/db/repositories/settingsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
 import type { SqliteDatabase } from '../src/main/db/client.js';

@@ -1,8 +1,7 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
-import { costFromUsage } from "tokenlens";
 import type { ComponentProps, HTMLAttributes } from "react";
-import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { ContextUsageSnapshot } from "../../../shared/contracts";
 import { COMPACTION_THRESHOLD_MIN, COMPACTION_THRESHOLD_MAX } from "../../../shared/contextCompaction";
@@ -112,8 +111,55 @@ function formatUsd(value?: number) {
   }).format(value);
 }
 
+/*
+  `tokenlens` bundles a model-pricing catalog that costs ~485 kB of the entry
+  chunk, and cost only ever renders inside the hover card. So the catalog is
+  imported on idle after the meter mounts rather than at boot: `costFromUsage`
+  is null until it lands, and `useCostCatalog` re-renders the subscribers that
+  display a price once it does. A failed load leaves prices hidden; the token
+  counts and the ring do not depend on it.
+*/
+type CostFromUsage = typeof import("tokenlens").costFromUsage;
+
+let costFromUsage: CostFromUsage | null = null;
+let costCatalogLoad: Promise<void> | null = null;
+const costCatalogListeners = new Set<() => void>();
+
+function loadCostCatalog() {
+  costCatalogLoad ??= import("tokenlens")
+    .then((module) => {
+      costFromUsage = module.costFromUsage;
+      for (const notify of costCatalogListeners) {
+        notify();
+      }
+    })
+    .catch(() => {
+      // Prices stay hidden. Nothing else in the meter needs the catalog.
+    });
+  return costCatalogLoad;
+}
+
+function subscribeToCostCatalog(notify: () => void) {
+  costCatalogListeners.add(notify);
+  return () => {
+    costCatalogListeners.delete(notify);
+  };
+}
+
+function readCostCatalog() {
+  return costFromUsage;
+}
+
+/**
+ * Subscribes a component to the deferred pricing catalog so it re-renders when
+ * the catalog arrives. Call it in anything that formats a cost.
+ */
+function useCostCatalog() {
+  return useSyncExternalStore(subscribeToCostCatalog, readCostCatalog, readCostCatalog);
+}
+
 function getCost(modelId: string | undefined, usage: ContextUsage | undefined) {
-  if (!modelId || !usage) {
+  if (!modelId || !usage || !costFromUsage) {
     return undefined;
   }
   try {
@@ -150,6 +196,20 @@ export const Context = ({
   closeDelay = 80,
   ...props
 }: ContextProps) => {
+  const costCatalog = useCostCatalog();
+
+  // Warmed on idle rather than on first hover: the catalog is off the boot
+  // critical path either way, and by the time anyone opens the card the price
+  // is already there instead of popping in a frame late.
+  useEffect(() => {
+    if (typeof requestIdleCallback !== "function") {
+      const timer = setTimeout(loadCostCatalog, 2000);
+      return () => clearTimeout(timer);
+    }
+    const handle = requestIdleCallback(() => loadCostCatalog(), { timeout: 5000 });
+    return () => cancelIdleCallback(handle);
+  }, []);
+
   const value = useMemo<ContextContextValue>(() => {
     const safeMax = Math.max(1, maxTokens);
     const safeUsed = Math.max(0, usedTokens);
@@ -169,7 +229,7 @@ export const Context = ({
       onCompactionThresholdChange,
       onCompactNow,
     };
-  }, [breakdown, compactionThresholdPercent, compactionThresholdTokens, maxTokens, modelId, onCompactNow, onCompactionThresholdChange, usage, usedTokens]);
+  }, [breakdown, compactionThresholdPercent, compactionThresholdTokens, costCatalog, maxTokens, modelId, onCompactNow, onCompactionThresholdChange, usage, usedTokens]);
 
   return (
     <ContextData.Provider value={value}>
@@ -574,6 +634,9 @@ type UsageRowProps = HTMLAttributes<HTMLDivElement> & {
 
 function UsageRow({ className, children, label, tokens, usageKey, ...props }: UsageRowProps) {
   const { modelId } = useContextData();
+  // Subscribed for the re-render, not the value: `getCost` reads the catalog
+  // itself once it has landed.
+  useCostCatalog();
   const usage = tokens != null ? { [usageKey]: tokens } : undefined;
   const formattedCost = formatUsd(getCost(modelId, usage));
 

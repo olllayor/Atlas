@@ -1313,6 +1313,29 @@ export type ConversationSummary = {
    * with `includeArchived`.
    */
   archivedAt: string | null;
+  /**
+   * When the chat was parked as done, or null. Settled is not archived: the
+   * chat stays in the default listing and renders in the sidebar's Settled
+   * shelf. Null means active.
+   */
+  settledAt: string | null;
+  /**
+   * When the chat last re-entered the active list (explicit unsettle or new
+   * user activity after settling), or null. Anchors sidebar ordering so an
+   * unsettled chat surfaces at the top instead of sinking back to its
+   * creation slot. Cleared on settle.
+   */
+  unsettledAt: string | null;
+  /**
+   * When a snooze wakes the chat, or null. Snooze is an overlay on the active
+   * lifecycle, not a destination: a snoozed chat stays active in the model
+   * and is only suppressed from the inbox until this time passes or the chat
+   * demands attention. Wakes are derived from the clock — nothing fires on
+   * the server when the time passes.
+   */
+  snoozedUntil: string | null;
+  /** When the current snooze was set, or null when never snoozed. */
+  snoozedAt: string | null;
   /** The conversation this one was forked from, or null. Provenance only. */
   forkOfConversationId: string | null;
   /** The event-log watermark the fork was cut at. Null when there was none. */
@@ -1447,6 +1470,17 @@ export type SetConversationPinnedRequest = {
 export type SetConversationArchivedRequest = {
   conversationId: string;
   archived: boolean;
+};
+
+export type SetConversationSettledRequest = {
+  conversationId: string;
+  settled: boolean;
+};
+
+export type SetConversationSnoozedRequest = {
+  conversationId: string;
+  /** ISO wake time. Null clears the snooze (wake now). */
+  snoozedUntil: string | null;
 };
 
 export type SearchMessagesRequest = {
@@ -2381,6 +2415,18 @@ export type RendererApi = {
     /** Resolves to the updated row so an optimistic sidebar can reconcile. */
     setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
     setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;
+    /**
+     * Parks the chat as done (or re-activates it). Settled chats stay in the
+     * default listing and render in the sidebar's Settled shelf. Resolves to
+     * the updated row.
+     */
+    setSettled: (request: SetConversationSettledRequest) => Promise<ConversationSummary>;
+    /**
+     * Snoozes the chat until an ISO wake time, or clears the snooze with null.
+     * Snooze suppresses the chat from the inbox; the wake is derived from the
+     * clock, nothing fires when it passes. Resolves to the updated row.
+     */
+    setSnoozed: (request: SetConversationSnoozedRequest) => Promise<ConversationSummary>;
     /**
      * A new conversation seeded with this one's history. The original is not
      * written to. Resolves to the fork's row.

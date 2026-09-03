@@ -29,7 +29,9 @@ import type {
 } from '../../shared/contracts';
 import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
+import { useNow } from '../hooks/useNow';
 import { cn } from '../lib/utils';
+import { isTimerWoken, snoozeWakeLabel } from '../lib/snooze';
 import { RailSectionLabel } from './railPrimitives';
 import { RowIconButton } from './RowIconButton';
 import { SidebarThreadRow } from './SidebarThreadRow';
@@ -58,18 +60,28 @@ import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useAppStore } from '../stores/useAppStore';
 import {
-  formatSettledSectionLabel,
+  formatShelfSectionLabel,
   groupSidebarConversationItems,
   resolveModelDisplayLabel,
   resolveSidebarRowVariant,
   sortProjectsByPin,
   splitPinnedSidebarItems,
+  splitSettledSidebarItems,
   splitSidebarItemsByProject,
+  splitSnoozedSidebarItems,
+  floatUnsettledSidebarItems,
   type SidebarConversationItem,
 } from './sidebarViewModel';
 
 /** Chats shown per project before the section collapses behind "Show more". */
 const PROJECT_PREVIEW_COUNT = 5;
+
+/**
+ * Settled-shelf paging: recent history is the common lookup, and the deep
+ * tail stays behind an explicit Show more rather than dominating the list.
+ */
+const SETTLED_SHELF_INITIAL_COUNT = 10;
+const SETTLED_SHELF_PAGE_COUNT = 25;
 
 /** Stable identity, so "no rows here" does not invalidate a memo every render. */
 const EMPTY_SIDEBAR_ITEMS: SidebarConversationItem[] = [];
@@ -136,6 +148,18 @@ type SidebarProps = {
   /** Pinning lifts a chat into its own section; archiving hides it, reversibly. */
   onSetConversationPinned: (conversationId: string, pinned: boolean) => void;
   onArchiveConversation: (conversationId: string) => void;
+  /**
+   * Parks a chat as done (true) or returns it to the active list (false).
+   * Settled chats stay listed in the Settled shelf — unlike archiving, which
+   * removes the row from the sidebar. Pin is preserved across the transition.
+   */
+  onSetConversationSettled: (conversationId: string, settled: boolean) => void;
+  /**
+   * Snoozes until an ISO wake time, or wakes immediately with null. Snooze
+   * only suppresses the row from the inbox; the wake is derived from the
+   * clock, so nothing fires server-side when it passes.
+   */
+  onSetConversationSnoozed: (conversationId: string, snoozedUntil: string | null) => void;
   /**
    * Un-archives the chat *and* opens it. Archived is a holding area, not a
    * read-only mode: nothing downstream models an open-but-archived chat, so
@@ -306,6 +330,8 @@ export function Sidebar({
   onForkConversation,
   onSetConversationPinned,
   onArchiveConversation,
+  onSetConversationSettled,
+  onSetConversationSnoozed,
   onRestoreConversation,
   onLoadArchivedChats,
   onSetProjectPinned,
@@ -344,20 +370,42 @@ export function Sidebar({
   const hoverCardOpenDelay = useSidebarHoverCardDelay();
 
   /**
-   * Pinned chats come out of the list before anything else is grouped, so a
+   * Lifecycle order: re-activated chats float first (their `unsettledAt`
+   * postdates their own `updatedAt`, so nothing else moves), then settled
+   * chats leave for the Settled shelf, then snoozed chats leave for the
+   * Snoozed shelf, and only then does pinning lift rows into Pinned. Each
+   * step moves rows rather than copying them, so every chat renders exactly
+   * once.
+   */
+  const floatedItems = useMemo(() => floatUnsettledSidebarItems(items), [items]);
+  const { settled: settledItems, rest: unsettledItems } = useMemo(
+    () => splitSettledSidebarItems(floatedItems),
+    [floatedItems]
+  );
+  // `now` ticks every minute: snooze wakes are derived from the clock with no
+  // server event, so without a moving time source a woken chat would sit
+  // hidden until the next unrelated render.
+  const now = useNow();
+  const { snoozed: snoozedItems, rest: inboxItems } = useMemo(
+    () => splitSnoozedSidebarItems(unsettledItems, now),
+    [unsettledItems, now]
+  );
+  /**
+   * Pinned chats come out of the inbox before anything else is grouped, so a
    * pinned chat appears once — in Pinned — rather than once there and once
-   * under its project.
+   * under its project. A pinned-and-settled chat stays in Pinned: settling
+   * never unpins.
    */
   const { pinned: pinnedItems, rest: unpinnedItems } = useMemo(
-    () => splitPinnedSidebarItems(items),
-    [items]
+    () => splitPinnedSidebarItems(inboxItems),
+    [inboxItems]
   );
   const orderedProjects = useMemo(() => sortProjectsByPin(projects), [projects]);
   const { sections, ungrouped } = useMemo(
     () => splitSidebarItemsByProject(unpinnedItems, orderedProjects),
     [orderedProjects, unpinnedItems]
   );
-  const groups = useMemo(() => groupSidebarConversationItems(ungrouped, Date.now()), [ungrouped]);
+  const groups = useMemo(() => groupSidebarConversationItems(ungrouped, now), [ungrouped, now]);
 
   // Which project the open chat lives in — that section is force-expanded so
   // the current chat is never hidden behind a collapsed header.
@@ -499,6 +547,55 @@ export function Sidebar({
     [archivedExpanded, archivedItems, hasArchivedChats]
   );
 
+  /**
+   * The Snoozed shelf, collapsed by default: out of the way, never gone. Rows
+   * show their wake ("2h") rather than their age — the return time is the
+   * row's whole story. The open chat is always rendered even when collapsed,
+   * so collapsing the shelf never hides the thing being looked at.
+   */
+  const [dismissedWokeIds, setDismissedWokeIds] = useState<ReadonlySet<string>>(() => new Set());
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      setDismissedWokeIds((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      onSelect(id);
+    },
+    [onSelect]
+  );
+
+  const [snoozedExpanded, setSnoozedExpanded] = usePersistentFlag('atlas.sidebar.snoozed-open', false);
+  const visibleSnoozedItems = useMemo(() => {
+    if (snoozedExpanded) return snoozedItems;
+    if (!selectedConversationId) return EMPTY_SIDEBAR_ITEMS;
+    const selected = snoozedItems.find((item) => item.id === selectedConversationId);
+    return selected ? [selected] : EMPTY_SIDEBAR_ITEMS;
+  }, [snoozedExpanded, snoozedItems, selectedConversationId]);
+
+  /**
+   * The Settled shelf, collapsed by default: recent history is the common
+   * lookup, and the deep tail stays behind an explicit Show more. The open
+   * chat is always rendered even when collapsed or past the cut.
+   */
+  const [settledExpanded, setSettledExpanded] = usePersistentFlag('atlas.sidebar.settled-open', false);
+  const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_SHELF_INITIAL_COUNT);
+  const visibleSettledItems = useMemo(() => {
+    if (!settledExpanded) {
+      if (!selectedConversationId) return EMPTY_SIDEBAR_ITEMS;
+      const selected = settledItems.find((item) => item.id === selectedConversationId);
+      return selected ? [selected] : EMPTY_SIDEBAR_ITEMS;
+    }
+    if (settledItems.length <= settledVisibleCount) return settledItems;
+    const head = settledItems.slice(0, settledVisibleCount);
+    if (!selectedConversationId) return head;
+    const selected = settledItems.find((item) => item.id === selectedConversationId);
+    return selected && !head.includes(selected) ? [...head, selected] : head;
+  }, [settledExpanded, settledItems, settledVisibleCount, selectedConversationId]);
+  const hiddenSettledCount = settledExpanded ? settledItems.length - visibleSettledItems.length : 0;
+
   /** Rendered rows, in visual order — collapsed sections contribute nothing. */
   const visibleRowIds = useMemo(() => {
     const ids: string[] = [];
@@ -523,6 +620,14 @@ export function Sidebar({
       ids.push(selectedUngroupedItem.id);
     }
 
+    for (const item of visibleSnoozedItems) {
+      ids.push(item.id);
+    }
+
+    for (const item of visibleSettledItems) {
+      ids.push(item.id);
+    }
+
     // Last, because Archived is the last section: this list is what End and the
     // arrow keys walk, and an order that disagrees with the markup skips rows.
     for (const item of visibleArchivedItems) {
@@ -537,6 +642,8 @@ export function Sidebar({
     recentsExpanded,
     selectedUngroupedItem,
     visibleArchivedItems,
+    visibleSettledItems,
+    visibleSnoozedItems,
   ]);
 
   // Exactly one row is tabbable; the arrow keys move focus inside the list.
@@ -732,15 +839,29 @@ export function Sidebar({
   const renderConversationRow = useCallback(
     (
       item: SidebarConversationItem,
-      options: { indented?: boolean; showTimestamp?: boolean; archived?: boolean } = {}
+      options: { indented?: boolean; showTimestamp?: boolean; archived?: boolean; settled?: boolean; snoozed?: boolean } = {}
     ) => {
       const isArchived = options.archived ?? false;
-      const variant = resolveSidebarRowVariant(options);
-      const isActive = !isArchived && item.id === selectedConversationId;
+      const isSettledShelf = options.settled ?? false;
+      const isSnoozedShelf = options.snoozed ?? false;
+      const variant = resolveSidebarRowVariant({
+        archived: isArchived,
+        settled: isSettledShelf,
+        snoozed: isSnoozedShelf,
+      });
+      const isActive = !isArchived && !isSettledShelf && !isSnoozedShelf && item.id === selectedConversationId;
       const isRenaming = renamingId === item.id;
       const isPendingDelete = pendingDeleteId === item.id;
       const project = item.projectId ? (projectById.get(item.projectId) ?? null) : null;
       const isHoverCardOpen = activeHoverCardId === `conv:${item.id}`;
+      const isWoke = isTimerWoken(
+        {
+          snoozedUntil: item.snoozedUntil,
+          settledAt: item.settledAt,
+          isDismissed: dismissedWokeIds.has(item.id) || item.id === selectedConversationId,
+        },
+        now
+      );
 
       return (
         <SidebarThreadRow
@@ -761,9 +882,14 @@ export function Sidebar({
           modelLabel={item.modelId === null ? null : (modelLabelById.get(item.modelId) ?? null)}
           isHoverCardOpen={isHoverCardOpen}
           hoverCardOpenDelay={hoverCardOpenDelay}
-          onSelect={onSelect}
+          onSelect={handleSelectConversation}
           onRestore={onRestoreConversation}
           onArchive={onArchiveConversation}
+          onToggleSettled={onSetConversationSettled}
+          onSnooze={onSetConversationSnoozed}
+          isSettledShelf={isSettledShelf}
+          isSnoozedShelf={isSnoozedShelf}
+          isWoke={isWoke}
           onSetPinned={handleSetPinned}
           onFork={onForkConversation}
           onDelete={handleDelete}
@@ -780,6 +906,8 @@ export function Sidebar({
     [
       activeHoverCardId,
       commitRename,
+      dismissedWokeIds,
+      handleSelectConversation,
       conversationJumpLabelById,
       handleCancelRename,
       handleDelete,
@@ -790,10 +918,13 @@ export function Sidebar({
       handleSetRovingId,
       hoverCardOpenDelay,
       modelLabelById,
+      now,
       onArchiveConversation,
       onForkConversation,
       onRename,
       onRestoreConversation,
+      onSetConversationSettled,
+      onSetConversationSnoozed,
       onSelect,
       pendingDeleteId,
       projectById,
@@ -1368,6 +1499,107 @@ export function Sidebar({
             ) : null}
 
             {/*
+              Snoozed, between the inbox and Settled: out of the way, never
+              gone. The header always renders while anything is snoozed — the
+              count is the whole footprint when collapsed. Rows show their
+              wake time rather than their age.
+            */}
+            {snoozedItems.length > 0 ? (
+              <section aria-label="Snoozed">
+                <button
+                  type="button"
+                  onClick={() => setSnoozedExpanded((current) => !current)}
+                  aria-expanded={snoozedExpanded}
+                  className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
+                >
+                  <SidebarSectionLabel>
+                    {formatShelfSectionLabel('Snoozed', {
+                      expanded: snoozedExpanded,
+                      count: snoozedItems.length,
+                    })}
+                  </SidebarSectionLabel>
+                  <ChevronRight
+                    className={cn(
+                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
+                      snoozedExpanded && 'rotate-90'
+                    )}
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                </button>
+
+                {snoozedExpanded || visibleSnoozedItems.length > 0 ? (
+                  <div className="flex flex-col gap-0.5">
+                    {(snoozedExpanded ? snoozedItems : visibleSnoozedItems).map((item) =>
+                      renderConversationRow(
+                        {
+                          ...item,
+                          timestampLabel:
+                            item.snoozedUntil !== null
+                              ? snoozeWakeLabel(item.snoozedUntil, now)
+                              : item.timestampLabel,
+                        },
+                        { snoozed: true }
+                      )
+                    )}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/*
+              Settled, before Archived: parked-as-done chats stay listed here
+              in slim rows, most recently parked first. The tail pages rather
+              than rendering unbounded history into the list. Unlike archiving
+              — which removes the row from the sidebar — settling keeps the
+              chat one click away.
+            */}
+            {settledItems.length > 0 ? (
+              <section aria-label="Settled">
+                <button
+                  type="button"
+                  onClick={() => setSettledExpanded((current) => !current)}
+                  aria-expanded={settledExpanded}
+                  className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
+                >
+                  <SidebarSectionLabel>
+                    {formatShelfSectionLabel('Settled', {
+                      expanded: settledExpanded,
+                      count: settledItems.length,
+                    })}
+                  </SidebarSectionLabel>
+                  <ChevronRight
+                    className={cn(
+                      'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
+                      settledExpanded && 'rotate-90'
+                    )}
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                </button>
+
+                {settledExpanded || visibleSettledItems.length > 0 ? (
+                  <div className="flex flex-col gap-0.5">
+                    {visibleSettledItems.map((item) =>
+                      renderConversationRow(item, { settled: true })
+                    )}
+                    {settledExpanded && hiddenSettledCount > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettledVisibleCount((count) => count + SETTLED_SHELF_PAGE_COUNT)
+                        }
+                        className="flex h-8 w-full items-center rounded-md px-2 text-left text-sm text-text-faint transition-colors hover:bg-bg-hover hover:text-text-secondary"
+                      >
+                        Show {Math.min(hiddenSettledCount, SETTLED_SHELF_PAGE_COUNT)} more
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/*
               Archived, last and collapsed by default. It exists because
               archiving was otherwise a one-way door: the toast's Undo expired
               after six seconds and nothing in the app could reach the chat
@@ -1375,7 +1607,7 @@ export function Sidebar({
               a user who has never archived never sees it.
             */}
             {hasArchivedChats ? (
-              <section aria-label="Settled">
+              <section aria-label="Archived">
                 <button
                   type="button"
                   onClick={() => setArchivedExpanded((current) => !current)}
@@ -1383,7 +1615,7 @@ export function Sidebar({
                   className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left"
                 >
                   <SidebarSectionLabel>
-                    {formatSettledSectionLabel({
+                    {formatShelfSectionLabel('Archived', {
                       expanded: archivedExpanded,
                       count:
                         archivedItems.length > 0
@@ -1411,9 +1643,9 @@ export function Sidebar({
                   ) : (
                     // The fetch is a table scan, so the wait is real and the
                     // empty state has to wait for it — showing "Nothing
-                    // settled" first and then filling the list reads as a bug.
+                    // archived" first and then filling the list reads as a bug.
                     <div className="flex h-8 w-full items-center px-2 text-sm text-text-faint">
-                      {isLoadingArchivedChats || !archivedRequested ? 'Loading…' : 'Nothing settled'}
+                      {isLoadingArchivedChats || !archivedRequested ? 'Loading…' : 'Nothing archived'}
                     </div>
                   )
                 ) : null}

@@ -393,6 +393,8 @@ export default function App() {
     setProjectPinned,
     setConversationPinned,
     setConversationArchived,
+    setConversationSettled,
+    setConversationSnoozed,
     setConversationWorkspace,
     setConversationToolPermissionMode,
     removeConversationWorktree,
@@ -490,6 +492,8 @@ export default function App() {
       setProjectPinned: state.setProjectPinned,
       setConversationPinned: state.setConversationPinned,
       setConversationArchived: state.setConversationArchived,
+      setConversationSettled: state.setConversationSettled,
+      setConversationSnoozed: state.setConversationSnoozed,
       setConversationWorkspace: state.setConversationWorkspace,
       setConversationToolPermissionMode: state.setConversationToolPermissionMode,
       removeConversationWorktree: state.removeConversationWorktree,
@@ -1872,6 +1876,8 @@ export default function App() {
           onForkConversation={(id) => void forkConversation(id)}
           onSetConversationPinned={(id, pinned) => void setConversationPinned(id, pinned)}
           onArchiveConversation={(id) => void setConversationArchived(id, true)}
+          onSetConversationSettled={(id, settled) => void setConversationSettled(id, settled)}
+          onSetConversationSnoozed={(id, snoozedUntil) => void setConversationSnoozed(id, snoozedUntil)}
           onRestoreConversation={(id) => void setConversationArchived(id, false)}
           onLoadArchivedChats={() => void loadArchivedConversations()}
           onSetProjectPinned={(projectId, pinned) => void setProjectPinned(projectId, pinned)}

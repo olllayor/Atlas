@@ -7,6 +7,7 @@ import type {
 } from '../../shared/contracts';
 import { deriveAttentionState, type AttentionLevel } from '../lib/attention';
 import { liveJobCountFor, type ConversationJobSummary } from '../lib/jobActivity';
+import { effectiveSnoozed } from '../lib/snooze';
 import type { DraftSummary } from '../stores/draftSummaries';
 
 export type SidebarConversationItem = {
@@ -54,6 +55,22 @@ export type SidebarConversationItem = {
   changeStats: ConversationChangeStats;
   /** When the chat was pinned, or null. Orders the Pinned section. */
   pinnedAt: string | null;
+  /**
+   * When the chat was parked as done, or null. Settled chats render in the
+   * Settled shelf, never in project/Recents sections. Null means active.
+   */
+  settledAt: string | null;
+  /**
+   * When the chat last re-entered the active list, or null. Floats the chat
+   * to the top of the active list instead of its recency slot.
+   */
+  unsettledAt: string | null;
+  /** Snooze wake time, or null when never snoozed / woken. */
+  snoozedUntil: string | null;
+  /** When the current snooze was set, or null. */
+  snoozedAt: string | null;
+  /** When the latest turn completed, or null. Used to raise snoozed threads early on completion. */
+  completedAt: string | null;
 };
 
 export type SidebarConversationGroup = {
@@ -363,16 +380,44 @@ export type SidebarRowVariant = 'card' | 'slim';
 
 /**
  * Resolves whether a sidebar row should render as a three-line card or a
- * one-line slim row. Only archived/settled chats collapse into slim rows;
- * live and pinned threads remain full cards.
+ * one-line slim row. Parked chats — settled, snoozed, archived — collapse
+ * into slim rows; live and pinned chats remain full cards.
  */
 export function resolveSidebarRowVariant(
-  sectionOrOptions?: 'pinned' | 'project' | 'recents' | 'archived' | { archived?: boolean } | null
+  sectionOrOptions?:
+    | 'pinned'
+    | 'project'
+    | 'recents'
+    | 'archived'
+    | 'settled'
+    | 'snoozed'
+    | { archived?: boolean; settled?: boolean; snoozed?: boolean }
+    | null
 ): SidebarRowVariant {
   if (typeof sectionOrOptions === 'string') {
-    return sectionOrOptions === 'archived' ? 'slim' : 'card';
+    return sectionOrOptions === 'pinned' || sectionOrOptions === 'project' || sectionOrOptions === 'recents'
+      ? 'card'
+      : 'slim';
   }
-  return sectionOrOptions?.archived ? 'slim' : 'card';
+  const options = sectionOrOptions ?? {};
+  return options.archived || options.settled || options.snoozed ? 'slim' : 'card';
+}
+
+/**
+ * Formats a shelf header label ("Archived", "Settled", "Snoozed"). Shows the
+ * count only while collapsed, and never renders a trailing space.
+ */
+export function formatShelfSectionLabel(
+  base: 'Archived' | 'Settled' | 'Snoozed',
+  params: {
+    expanded: boolean;
+    count: number;
+  }
+): string {
+  if (params.expanded || params.count <= 0) {
+    return base;
+  }
+  return `${base} (${params.count})`;
 }
 
 /**
@@ -383,10 +428,7 @@ export function formatSettledSectionLabel(params: {
   expanded: boolean;
   count: number;
 }): string {
-  if (params.expanded || params.count <= 0) {
-    return 'Settled';
-  }
-  return `Settled (${params.count})`;
+  return formatShelfSectionLabel('Settled', params);
 }
 
 function startOfDay(value: number) {
@@ -543,6 +585,13 @@ export function buildSidebarConversationItems({
       // back here keeps that one row from reading `undefined files`.
       changeStats: conversation.changeStats ?? NO_CHANGE_STATS,
       pinnedAt: conversation.pinnedAt ?? null,
+      // Same pre-column tolerance as changeStats: cached summaries predate
+      // these fields, and undefined must read as active/never-snoozed.
+      settledAt: conversation.settledAt ?? null,
+      unsettledAt: conversation.unsettledAt ?? null,
+      snoozedUntil: conversation.snoozedUntil ?? null,
+      snoozedAt: conversation.snoozedAt ?? null,
+      completedAt: conversation.completedAt ?? null,
     };
   });
 }
@@ -565,6 +614,75 @@ export function splitPinnedSidebarItems(items: SidebarConversationItem[]) {
   pinned.sort((left, right) => (right.pinnedAt ?? '').localeCompare(left.pinnedAt ?? ''));
 
   return { pinned, rest };
+}
+
+/**
+ * Lift settled chats out of the list into the Settled shelf, most recently
+ * parked first. Settled sorts by wrap-up time (`settledAt`), not by thread
+ * age — the shelf answers "what did I finish lately", and creation order
+ * cannot answer that.
+ *
+ * Pinned chats never move here: pin is preserved across settling, so a
+ * pinned-and-settled chat keeps its place in Pinned.
+ */
+export function splitSettledSidebarItems(items: SidebarConversationItem[]) {
+  const settled: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    (item.settledAt && !item.pinnedAt ? settled : rest).push(item);
+  }
+
+  settled.sort((left, right) => (right.settledAt ?? '').localeCompare(left.settledAt ?? ''));
+
+  return { settled, rest };
+}
+
+/**
+ * Lift snoozed chats out of the list into the Snoozed shelf, soonest wake
+ * first: "what comes back next" is the shelf's question. Only chats whose
+ * wake still lies in the future and that demand nothing count — an approval
+ * lifts the snooze early, and an elapsed wake simply stops classifying.
+ */
+export function splitSnoozedSidebarItems(items: SidebarConversationItem[], now: number) {
+  const snoozed: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    const hidden = effectiveSnoozed(
+      {
+        snoozedUntil: item.snoozedUntil,
+        needsInput: item.attention === 'needsInput',
+        snoozedAt: item.snoozedAt,
+        completedAt: item.completedAt,
+      },
+      now
+    );
+    (hidden ? snoozed : rest).push(item);
+  }
+
+  snoozed.sort((left, right) => (left.snoozedUntil ?? '').localeCompare(right.snoozedUntil ?? ''));
+
+  return { snoozed, rest };
+}
+
+/**
+ * Float re-activated chats above the active list. An unsettle stamps
+ * `unsettledAt`, which always postdates the chat's own `updatedAt` — so
+ * comparing the two only ever moves chats that re-entered, and everything
+ * else keeps exactly the order it arrived in.
+ */
+export function floatUnsettledSidebarItems(items: SidebarConversationItem[]) {
+  const floated: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    (item.unsettledAt ? floated : rest).push(item);
+  }
+
+  floated.sort((left, right) => (right.unsettledAt ?? '').localeCompare(left.unsettledAt ?? ''));
+
+  return [...floated, ...rest];
 }
 
 /**

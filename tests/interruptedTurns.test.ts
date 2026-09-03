@@ -296,6 +296,7 @@ async function createQueuedEngineHarness() {
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: (input: Record<string, unknown>) => {
         addedMessages.push(input);
         return `message-${addedMessages.length}`;

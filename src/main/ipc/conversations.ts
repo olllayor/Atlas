@@ -10,6 +10,8 @@ import type {
   SetConversationArchivedRequest,
   SetConversationDefaultModelRequest,
   SetConversationPinnedRequest,
+  SetConversationSettledRequest,
+  SetConversationSnoozedRequest,
   SetConversationWorkspaceRequest,
   StartSideConversationRequest
 } from '../../shared/contracts';
@@ -384,6 +386,39 @@ export function registerConversationsIpc({
       // Nothing is torn down the way `delete` does: an archived chat can be
       // restored, so its shell and attachments have to survive.
       return conversationsRepo.setArchived(request.conversationId, request.archived);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetSettled,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetSettled, (event, request: SetConversationSettledRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string' || typeof request?.settled !== 'boolean') {
+        throw new Error('A conversation id and a settled flag are required.');
+      }
+
+      // Eligibility (notably: no live turn) is enforced inside the repo —
+      // the renderer pre-checks for instant feedback, but this is the check
+      // that counts.
+      return conversationsRepo.setSettled(request.conversationId, request.settled);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetSnoozed,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetSnoozed, (event, request: SetConversationSnoozedRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string') {
+        throw new Error('A conversation id is required.');
+      }
+
+      if (request?.snoozedUntil !== null && typeof request?.snoozedUntil !== 'string') {
+        throw new Error('A snooze wake time must be an ISO string or null.');
+      }
+
+      return conversationsRepo.setSnoozed(request.conversationId, request.snoozedUntil);
     })
   );
 

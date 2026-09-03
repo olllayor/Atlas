@@ -62,6 +62,7 @@ function createHarness(options: {
 
   const conversationsRepo = {
     setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
     addMessage: () => 'message-1',
     updateMessage: () => undefined,
     getTitleState: () => ({ title: currentTitle, auto: currentTitleIsAuto }),

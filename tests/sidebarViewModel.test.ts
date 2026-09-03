@@ -89,6 +89,8 @@ function item(id: string, pinnedAt: string | null): SidebarConversationItem {
     isRunning: false,
     isFailed: false,
     status: 'idle',
+    attention: 'idle',
+    unreadCount: 0,
     primaryLabel: id,
     secondaryLabel: null,
     timestampLabel: null,
@@ -97,6 +99,10 @@ function item(id: string, pinnedAt: string | null): SidebarConversationItem {
     modelId: null,
     changeStats: stats(0),
     pinnedAt,
+    settledAt: null,
+    unsettledAt: null,
+    snoozedUntil: null,
+    snoozedAt: null,
   };
 }
 

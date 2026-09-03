@@ -1,12 +1,16 @@
-import { memo } from 'react';
-import { Archive, ArchiveRestore, GitBranch, Pencil, Pin, PinOff, Trash2 } from 'lucide-react';
+import { memo, useMemo } from 'react';
+import { Archive, ArchiveRestore, ChevronRight, Clock, GitBranch, Pencil, Pin, PinOff, Trash2 } from 'lucide-react';
 
 import type { WorkspaceProject } from '../../shared/contracts';
 import { cn } from '../lib/utils';
+import { resolveSnoozePresets } from '../lib/snooze';
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from './ui/context-menu';
 import { HoverCard, HoverCardTrigger } from './ui/hover-card';
@@ -23,6 +27,11 @@ export type SidebarThreadRowProps = {
   project: WorkspaceProject | null;
   isActive: boolean;
   isArchived: boolean;
+  /** Rendered inside the Settled shelf: the hover action un-settles. */
+  isSettledShelf: boolean;
+  /** Rendered inside the Snoozed shelf: the hover action wakes. */
+  isSnoozedShelf: boolean;
+  isWoke?: boolean;
   indented: boolean;
   showTimestamp: boolean;
   isRovingTarget: boolean;
@@ -37,6 +46,10 @@ export type SidebarThreadRowProps = {
   onSelect: (id: string) => void;
   onRestore: (id: string) => void;
   onArchive: (id: string) => void;
+  /** Parks as done (true) or returns to the active list (false). */
+  onToggleSettled: (id: string, settled: boolean) => void;
+  /** Snoozes until an ISO wake time, or wakes immediately with null. */
+  onSnooze: (id: string, snoozedUntil: string | null) => void;
   onSetPinned: (id: string, pinned: boolean) => void;
   onFork?: (id: string) => void;
   onDelete: (id: string) => void;
@@ -55,6 +68,9 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
   project,
   isActive,
   isArchived,
+  isSettledShelf,
+  isSnoozedShelf,
+  isWoke = false,
   indented,
   showTimestamp,
   isRovingTarget,
@@ -69,6 +85,8 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
   onSelect,
   onRestore,
   onArchive,
+  onToggleSettled,
+  onSnooze,
   onSetPinned,
   onFork,
   onDelete,
@@ -136,6 +154,21 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
   const isPinned = Boolean(item.pinnedAt);
   const cardId = `conv:${item.id}`;
   const indentClass = indented ? 'pl-8' : 'px-2';
+  // Snooze presets resolve per render so the wake times are fresh each time
+  // the menu opens. Cheap date math, no reason to memoize across rows.
+  const snoozePresets = useMemo(() => resolveSnoozePresets(new Date()), []);
+
+  // The row's verbs depend on which shelf it renders in. Archived rows only
+  // know restore; settled-shelf rows un-settle; snoozed-shelf rows wake; live
+  // rows settle. Archive stays a separate verb in the menu — parking as done
+  // and hiding from the sidebar are different promises.
+  const settleAction = isArchived
+    ? { settled: true as const, label: 'Restore', run: () => onRestore(item.id) }
+    : isSettledShelf
+      ? { settled: true as const, label: 'Restore', run: () => onToggleSettled(item.id, false) }
+      : isSnoozedShelf
+        ? { settled: true as const, label: 'Wake', run: () => onSnooze(item.id, null) }
+        : { settled: false as const, label: 'Settle', run: () => onToggleSettled(item.id, true) };
 
   return (
     <HoverCard
@@ -206,10 +239,12 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
                   showJumpHint={showJumpHint}
                   projectTitle={project?.title ?? null}
                   branch={project?.branch ?? null}
-                  isSettled={isArchived}
-                  onSettle={isArchived ? () => onRestore(item.id) : () => onArchive(item.id)}
+                  isSettled={settleAction.settled}
+                  onSettle={settleAction.run}
                   isPinned={isPinned}
                   onPin={() => onSetPinned(item.id, !isPinned)}
+                  isWoke={isWoke}
+                  settleActionLabel={settleAction.label}
                 />
               </div>
             </div>
@@ -227,6 +262,33 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
                 {isPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
                 {isPinned ? 'Unpin' : 'Pin'}
               </ContextMenuItem>
+              {item.snoozedUntil && !Number.isNaN(Date.parse(item.snoozedUntil)) && Date.parse(item.snoozedUntil) > Date.now() ? (
+                <ContextMenuItem onSelect={() => onSnooze(item.id, null)}>
+                  <Clock aria-hidden />
+                  Wake now
+                </ContextMenuItem>
+              ) : (
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>
+                    <Clock aria-hidden />
+                    Snooze
+                    <ChevronRight aria-hidden className="ml-auto size-3.5" />
+                  </ContextMenuSubTrigger>
+                  <ContextMenuSubContent className="w-48">
+                    {snoozePresets.map((preset) => (
+                      <ContextMenuItem
+                        key={preset.id}
+                        onSelect={() => onSnooze(item.id, preset.snoozedUntil)}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{preset.label}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-text-faint">
+                          {preset.whenLabel}
+                        </span>
+                      </ContextMenuItem>
+                    ))}
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              )}
               <ContextMenuItem onSelect={() => onArchive(item.id)}>
                 <Archive aria-hidden />
                 Archive

@@ -35,6 +35,8 @@ export const IPC_CHANNELS = {
   conversationsSetDefaultModel: 'conversations:setDefaultModel',
   conversationsSetPinned: 'conversations:setPinned',
   conversationsSetArchived: 'conversations:setArchived',
+  conversationsSetSettled: 'conversations:setSettled',
+  conversationsSetSnoozed: 'conversations:setSnoozed',
   conversationsSearchMessages: 'conversations:searchMessages',
   conversationsFork: 'conversations:fork',
   conversationsStartSide: 'conversations:startSide',

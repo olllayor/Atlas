@@ -85,6 +85,10 @@ type ConversationSummaryRow = {
   completedAt: string | null;
   pinnedAt: string | null;
   archivedAt: string | null;
+  settledAt: string | null;
+  unsettledAt: string | null;
+  snoozedUntil: string | null;
+  snoozedAt: string | null;
   forkOfConversationId: string | null;
   forkPointSequence: number | null;
   sideOfConversationId: string | null;
@@ -163,6 +167,10 @@ const SUMMARY_SELECT = `
     c.completed_at AS completedAt,
     c.pinned_at AS pinnedAt,
     c.archived_at AS archivedAt,
+    c.settled_at AS settledAt,
+    c.unsettled_at AS unsettledAt,
+    c.snoozed_until AS snoozedUntil,
+    c.snoozed_at AS snoozedAt,
     c.fork_of_conversation_id AS forkOfConversationId,
     c.fork_point_sequence AS forkPointSequence,
     c.side_of_conversation_id AS sideOfConversationId,
@@ -650,6 +658,10 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     },
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
+    settledAt: row.settledAt,
+    unsettledAt: row.unsettledAt,
+    snoozedUntil: row.snoozedUntil,
+    snoozedAt: row.snoozedAt,
     forkOfConversationId: row.forkOfConversationId,
     forkPointSequence: row.forkPointSequence,
     sideOfConversationId: row.sideOfConversationId
@@ -1131,6 +1143,137 @@ export class ConversationsRepo {
     }
 
     return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * Park a chat as done, or re-activate it. Settled is not archived: the row
+   * stays in `list()` and the sidebar renders it in the Settled shelf.
+   *
+   * Guards (main-process authoritative): a chat with a live turn cannot be
+   * settled — parking running work would hide it behind a "done" label while
+   * the agent is still writing. The renderer pre-checks the same condition
+   * for instant feedback, but this check is the one that counts.
+   *
+   * Idempotent: re-settling keeps the original `settled_at` (no reorder
+   * churn, silent no-op for double-clicks), and un-settling an active chat
+   * leaves `unsettled_at` alone. `updated_at` is untouched throughout, same
+   * as `setPinned`/`setArchived`.
+   *
+   * Pin is preserved: settling never unpins, so a pinned-and-settled chat
+   * keeps its place in Pinned rather than dropping to the shelf.
+   */
+  setSettled(conversationId: string, settled: boolean): ConversationSummary {
+    const current = this.getSummary(conversationId);
+    if (!current) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    if (settled && current.status === 'running') {
+      throw new Error('Cannot settle a chat while its turn is still running.');
+    }
+
+    const now = new Date().toISOString();
+    if (settled) {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET settled_at = COALESCE(settled_at, @now),
+                unsettled_at = NULL
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, now });
+    } else {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET settled_at = NULL,
+                unsettled_at = CASE WHEN settled_at IS NOT NULL THEN @now ELSE unsettled_at END
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, now });
+    }
+
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * Snooze until an ISO wake time, or clear with null. Snooze only affects
+   * visibility — a running turn keeps running — so unlike settle it is
+   * allowed while work is in flight.
+   *
+   * Guards: the wake time must parse and lie in the future. A past or
+   * unparseable wake would create a chat that is snoozed and woken at once,
+   * so the write is rejected instead of silently normalized. Re-snoozing to
+   * the same wake keeps the original `snoozed_at`.
+   */
+  setSnoozed(conversationId: string, snoozedUntil: string | null): ConversationSummary {
+    const current = this.getSummary(conversationId);
+    if (!current) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    const now = new Date().toISOString();
+    if (snoozedUntil !== null) {
+      const wakeMs = Date.parse(snoozedUntil);
+      if (Number.isNaN(wakeMs) || wakeMs <= Date.parse(now)) {
+        throw new Error('Snooze wake time must be a valid ISO timestamp in the future.');
+      }
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET snoozed_until = @wake,
+                snoozed_at = CASE WHEN snoozed_until = @wake THEN snoozed_at ELSE @now END
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, wake: snoozedUntil, now });
+    } else {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET snoozed_until = NULL,
+                snoozed_at = NULL
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId });
+    }
+
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * User-initiated activity resets parked lifecycle state: sending a message
+   * to a settled or snoozed chat re-engages it, so the row returns to the
+   * active list (stamping `unsettled_at` when it leaves settled) and the
+   * snooze return ticket is spent.
+   *
+   * Call only for user-initiated activity (a sent message). Background agent
+   * completions, approvals resolving, or goal-loop continuations must not
+   * call this — a finished turn is exactly what settle/snooze is for, and
+   * clearing on it would make parking meaningless.
+   */
+  clearLifecycleOnUserActivity(conversationId: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET settled_at = NULL,
+              unsettled_at = CASE WHEN settled_at IS NOT NULL THEN @now ELSE unsettled_at END,
+              snoozed_until = NULL,
+              snoozed_at = NULL
+          WHERE id = @conversationId
+            AND (settled_at IS NOT NULL OR snoozed_until IS NOT NULL)
+        `
+      )
+      .run({ conversationId, now });
   }
 
   /** The mode, execution target, worktree, and project a turn should run under. Never taken from the renderer. */

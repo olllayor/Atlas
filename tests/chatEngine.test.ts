@@ -63,6 +63,7 @@ test('ChatEngine start persists the user turn before async runtime execution beg
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: (input: Record<string, unknown>) => {
         addedMessages.push(input);
         return 'user-message-1';
@@ -109,6 +110,7 @@ test('ChatEngine emits sequenced runtime sync events before meta and done on suc
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
       // No title state means "no such conversation", so these tests opt out
@@ -164,6 +166,7 @@ test('ChatEngine normalizes runtime errors and preserves runtime sync behavior',
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
       // No title state means "no such conversation", so these tests opt out
@@ -214,11 +217,15 @@ test('ChatEngine handles inline approval denial in the same assistant turn', asy
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: (input: Record<string, unknown>) => {
         updateMessageCalls.push(input);
       },
       getModelHistory: () => [],
+      // No title state means "no such conversation", so these tests opt out
+      // of automatic naming entirely.
+      getTitleState: () => null,
     } as never,
     {
       getById: () => ({ supportsTools: true }),
@@ -284,6 +291,7 @@ test('ChatEngine childExecutor returns awaiting_approval and fails child task wh
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
       getSummary: () => ({ defaultProviderId: 'openrouter', defaultModelId: 'test-model' }),
@@ -339,6 +347,7 @@ test('ChatEngine childExecutor inherits session scope grant from approvalControl
   const engine = new ChatEngine(
     {
       setDefaults: () => undefined,
+      clearLifecycleOnUserActivity: () => undefined,
       addMessage: () => 'user-message-1',
       updateMessage: () => undefined,
       getSummary: () => ({ defaultProviderId: 'openrouter', defaultModelId: 'test-model' }),

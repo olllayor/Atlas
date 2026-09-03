@@ -740,6 +740,30 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE conversations ADD COLUMN archived_at TEXT');
   }
 
+  // Migration: settle/snooze lifecycle. All four default to NULL, so every
+  // existing conversation reads back as active and never-snoozed — the
+  // sidebar shows exactly what it showed before upgrade.
+  // settled_at: when the chat was parked as done (NULL = active).
+  // unsettled_at: when it last re-entered the active list; anchors sidebar
+  // ordering so an unsettled chat surfaces at the top instead of sinking.
+  // snoozed_until/snoozed_at: wake time and when the snooze was set (NULL pair
+  // = never snoozed). Wakes are derived from the clock, never scheduled.
+  if (!conversationColumns.includes('settled_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN settled_at TEXT');
+  }
+
+  if (!conversationColumns.includes('unsettled_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN unsettled_at TEXT');
+  }
+
+  if (!conversationColumns.includes('snoozed_until')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN snoozed_until TEXT');
+  }
+
+  if (!conversationColumns.includes('snoozed_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN snoozed_at TEXT');
+  }
+
   // Migration: fork and side-conversation provenance. All three default to
   // NULL, which reads back as "an ordinary chat that was not forked and is
   // nobody's tangent" — exactly what every existing row is. Nothing changes

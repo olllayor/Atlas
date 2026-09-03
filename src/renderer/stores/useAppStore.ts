@@ -48,6 +48,7 @@ import {
 } from './conversationCache';
 import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
 import { notify, notifyError } from '../lib/notify';
+import { hasPendingApprovalInParts } from '../lib/attention';
 import {
   applyMetaEvent,
   applyNoticeEvent,
@@ -238,6 +239,10 @@ type AppState = {
   setConversationPinned: (conversationId: string, pinned: boolean) => Promise<void>;
   /** Hides the chat from the sidebar without destroying it. Reversible. */
   setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
+  /** Parks the chat as done (or re-activates it). Settled chats stay listed. */
+  setConversationSettled: (conversationId: string, settled: boolean) => Promise<void>;
+  /** Snoozes until an ISO wake time, or clears the snooze with null. */
+  setConversationSnoozed: (conversationId: string, snoozedUntil: string | null) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
     patch: {
@@ -1462,6 +1467,97 @@ export const useAppStore = create<AppState>((set, get) => ({
         void get().setConversationArchived(conversationId, false);
       },
     });
+  },
+
+  setConversationSettled: async (conversationId, settled) => {
+    // Renderer pre-guard mirrors the main-process check so the failure is
+    // instant. The main-process guard inside `setSettled` is authoritative —
+    // a turn that starts between this check and the IPC call still fails
+    // there and rolls back below.
+    const draft = get().draftsByConversation[conversationId];
+    const conversation = get().conversations.find((entry) => entry.id === conversationId);
+    const running = draft ? draft.status === 'streaming' : conversation?.status === 'running';
+    if (settled && running) {
+      notifyError('Cannot settle a chat while its turn is still running', null);
+      return;
+    }
+
+    const previous = get().conversations;
+    const now = new Date().toISOString();
+
+    // Settling is high-frequency and stays silent — no toast. The Settled
+    // shelf header shows the new count, and un-settling is one hover away.
+    set((state) => ({
+      conversations: state.conversations.map((entry) =>
+        entry.id === conversationId
+          ? {
+              ...entry,
+              settledAt: settled ? (entry.settledAt ?? now) : null,
+              unsettledAt: settled ? null : (entry.settledAt ? now : entry.unsettledAt),
+            }
+          : entry
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.conversations.setSettled({ conversationId, settled });
+      set((state) => ({
+        conversations: state.conversations.map((entry) =>
+          entry.id === conversationId ? updated : entry
+        ),
+      }));
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError(settled ? 'Could not settle the chat' : 'Could not un-settle the chat', error);
+    }
+  },
+
+  setConversationSnoozed: async (conversationId, snoozedUntil) => {
+    // Client-side twin of the main-process invariants so the UI rejects
+    // before a round trip: parseable future wake, and no blocked-on-you work
+    // hidden away. Snooze stays allowed while a turn runs — it only affects
+    // visibility, never the agent.
+    if (snoozedUntil !== null) {
+      const wakeMs = Date.parse(snoozedUntil);
+      if (Number.isNaN(wakeMs) || wakeMs <= Date.now()) {
+        notifyError('Snooze wake time must be in the future', null);
+        return;
+      }
+      const details = get().conversationDetails[conversationId];
+      const liveParts = get().draftsByConversation[conversationId]?.parts;
+      const openParts = details?.messages.flatMap((message) => message.parts ?? []) ?? [];
+      if (hasPendingApprovalInParts(liveParts ?? openParts)) {
+        notifyError('Respond to the pending request before snoozing this chat', null);
+        return;
+      }
+    }
+
+    const previous = get().conversations;
+    const now = new Date().toISOString();
+
+    set((state) => ({
+      conversations: state.conversations.map((entry) =>
+        entry.id === conversationId
+          ? {
+              ...entry,
+              snoozedUntil,
+              snoozedAt: snoozedUntil === null ? null : (entry.snoozedUntil === snoozedUntil ? entry.snoozedAt : now),
+            }
+          : entry
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.conversations.setSnoozed({ conversationId, snoozedUntil });
+      set((state) => ({
+        conversations: state.conversations.map((entry) =>
+          entry.id === conversationId ? updated : entry
+        ),
+      }));
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError(snoozedUntil === null ? 'Could not wake the chat' : 'Could not snooze the chat', error);
+    }
   },
 
   detachProject: async (projectId) => {

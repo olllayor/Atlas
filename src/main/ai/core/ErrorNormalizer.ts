@@ -1,3 +1,21 @@
+import { Effect } from 'effect';
+import {
+  type AiDomainError,
+  AbortedError,
+  AuthError,
+  fromAiDomainError,
+  InsufficientCreditsError,
+  MissingCredentialError as TaggedMissingCredentialError,
+  ModelUnavailableError,
+  NetworkError,
+  ProviderError,
+  RateLimitError,
+  StreamStalledError,
+  TimeoutError,
+  UnknownAiError,
+  UpstreamUnavailableError
+} from './domainErrors';
+
 export class HttpStatusError extends Error {
   constructor(
     readonly status: number,
@@ -129,7 +147,7 @@ const TRANSIENT_NETWORK_PATTERNS = [
   'body timeout'
 ];
 
-function collectErrorText(error: unknown, depth = 0): string {
+export function collectErrorText(error: unknown, depth = 0): string {
   if (depth > 4 || error == null) {
     return '';
   }
@@ -142,11 +160,18 @@ function collectErrorText(error: unknown, depth = 0): string {
     return '';
   }
 
-  const candidate = error as { message?: unknown; code?: unknown; cause?: unknown; errors?: unknown };
+  const candidate = error as {
+    message?: unknown;
+    code?: unknown;
+    cause?: unknown;
+    errors?: unknown;
+    lastError?: unknown;
+  };
   const parts: string[] = [];
 
   if (typeof candidate.message === 'string') parts.push(candidate.message);
   if (typeof candidate.code === 'string') parts.push(candidate.code);
+  if (candidate.lastError != null) parts.push(collectErrorText(candidate.lastError, depth + 1));
   if (candidate.cause != null) parts.push(collectErrorText(candidate.cause, depth + 1));
   if (Array.isArray(candidate.errors)) {
     for (const nested of candidate.errors) {
@@ -158,23 +183,120 @@ function collectErrorText(error: unknown, depth = 0): string {
 }
 
 /**
+ * Extracts HTTP status code recursively from various library error formats (e.g. AI SDK, Axios, fetch).
+ */
+export function extractStatusCode(error: unknown, depth = 0): number | undefined {
+  if (depth > 4 || error == null || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    cause?: unknown;
+    lastError?: unknown;
+    errors?: unknown[];
+  };
+
+  if (typeof candidate.statusCode === 'number') return candidate.statusCode;
+  if (typeof candidate.status === 'number') return candidate.status;
+
+  if (candidate.lastError != null) {
+    const code = extractStatusCode(candidate.lastError, depth + 1);
+    if (code !== undefined) return code;
+  }
+
+  if (candidate.cause != null) {
+    const code = extractStatusCode(candidate.cause, depth + 1);
+    if (code !== undefined) return code;
+  }
+
+  if (Array.isArray(candidate.errors)) {
+    for (const nested of candidate.errors) {
+      const code = extractStatusCode(nested, depth + 1);
+      if (code !== undefined) return code;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Extracts response headers from various wrapped error formats.
+ */
+export function extractResponseHeaders(error: unknown, depth = 0): Record<string, string | undefined> | undefined {
+  if (depth > 4 || error == null || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const candidate = error as {
+    responseHeaders?: Record<string, string | undefined>;
+    headers?: Record<string, string | undefined>;
+    cause?: unknown;
+    lastError?: unknown;
+  };
+
+  if (candidate.responseHeaders && typeof candidate.responseHeaders === 'object') {
+    return candidate.responseHeaders;
+  }
+  if (candidate.headers && typeof candidate.headers === 'object') {
+    return candidate.headers;
+  }
+
+  if (candidate.lastError != null) {
+    const headers = extractResponseHeaders(candidate.lastError, depth + 1);
+    if (headers) return headers;
+  }
+
+  if (candidate.cause != null) {
+    const headers = extractResponseHeaders(candidate.cause, depth + 1);
+    if (headers) return headers;
+  }
+
+  return undefined;
+}
+
+const RATE_LIMIT_PATTERNS = [
+  /too many requests/i,
+  /rate[ -]?limit/i,
+  /resource_exhausted/i,
+  /quota exceeded/i,
+  /exceeded your current quota/i,
+  /requests per minute/i,
+  /tokens per minute/i
+];
+
+export function isRateLimitError(error: unknown): boolean {
+  const status = extractStatusCode(error);
+  if (status === 429) {
+    return true;
+  }
+  const text = collectErrorText(error);
+  return RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+const AUTH_PATTERNS = [
+  /invalid[ _]?api[ _]?key/i,
+  /incorrect[ _]?api[ _]?key/i,
+  /unauthorized/i,
+  /authentication failed/i,
+  /permission_denied/i
+];
+
+export function isAuthError(error: unknown): boolean {
+  const status = extractStatusCode(error);
+  if (status === 401 || status === 403) {
+    return true;
+  }
+  const text = collectErrorText(error);
+  return AUTH_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
  * A capability the provider just told us this model does not have.
- *
- * Modalities and tool-calling share a shape: the catalog cannot describe most
- * endpoints, the request is attempted anyway, and the refusal is the only
- * source that ever settles the question.
  */
 export type RejectedCapability = 'image' | 'document' | 'tools';
 
-/**
- * Providers say "this model cannot read that" in prose, not in a status code.
- *
- * A model's modality support is unknown until something proves otherwise, and a
- * refusal is that proof — the one signal available for an endpoint whose
- * `/models` list is bare ids. The patterns are deliberately narrow: a false
- * positive writes `false` into the catalog and stops the user attaching images
- * to a model that can read them, which is worse than one failed send.
- */
 const IMAGE_REJECTION_PATTERNS = [
   /does\s?n[o']?t\s+support\s+(image|vision|multimodal)/,
   /(image|vision)\s+(input|content)?\s*(is\s+)?not\s+supported/,
@@ -191,15 +313,11 @@ const DOCUMENT_REJECTION_PATTERNS = [
   /unsupported.{0,24}(file|document|pdf)/,
 ];
 
-/**
- * Tool-calling refusals. `tool_choice` is included because a model without tool
- * support commonly rejects the parameter before it rejects the tools.
- */
 const TOOL_REJECTION_PATTERNS = [
   /does\s?n[o']?t\s+support\s+(tool|function)/,
   /(tool|function)[ _]?(call|calling|use)?s?\s+(is|are)?\s*not\s+supported/,
   /no\s+support\s+for\s+(tool|function)/,
-  /unsupported\s+(parameter|field|value).{0,24}('|\\")?(tools|tool_choice|functions)/,
+  /unsupported\s+(parameter|field|value).{0,24}('|\\\\")?(tools|tool_choice|functions)/,
   /(tools|tool_choice|functions)\b.{0,24}(not\s+supported|unsupported|not\s+allowed)/,
 ];
 
@@ -224,11 +342,6 @@ export function detectRejectedCapability(error: unknown): RejectedCapability | n
   return null;
 }
 
-/**
- * Transport-level failures are the most common way a long stream dies and they
- * are always worth another attempt — the previous build classified them as
- * `unknown_error` and gave up immediately.
- */
 export function isTransientNetworkError(error: unknown) {
   const text = collectErrorText(error).toLowerCase();
   if (!text) {
@@ -258,164 +371,159 @@ function isAbortError(error: unknown) {
   return false;
 }
 
-function normalizeStatus(status: number | undefined, message: string, retryAfterMs: number | null): NormalizedError | null {
-  if (status === 401 || status === 403) {
-    return {
-      code: 'auth_error',
-      message: 'The provider rejected the API key. Revalidate it in settings.',
-      retryable: false
-    };
-  }
-
-  if (status === 402) {
-    return {
-      code: 'insufficient_credits',
-      message: 'The provider reports insufficient credits for this model.',
-      retryable: false
-    };
-  }
-
-  if (status === 404) {
-    return {
-      code: 'model_unavailable',
-      message: message || 'This model is not available right now. Try a different model.',
-      retryable: false
-    };
-  }
-
-  if (status === 408) {
-    return {
-      code: 'timeout',
-      message: 'The provider timed out before responding.',
-      retryable: true,
-      retryAfterMs
-    };
-  }
-
-  if (status === 429) {
-    return {
-      code: 'rate_limited',
-      message: retryAfterMs
-        ? `The provider is rate limiting this model. Retrying in ${Math.ceil(retryAfterMs / 1000)}s.`
-        : 'The provider is rate limiting this model right now. Pick another model or try again shortly.',
-      retryable: true,
-      retryAfterMs
-    };
-  }
-
-  if (status === 502 || status === 503 || status === 504) {
-    return {
-      code: 'upstream_unavailable',
-      message: 'The provider is temporarily unavailable.',
-      retryable: true,
-      retryAfterMs
-    };
-  }
-
-  if (status != null && status >= 500) {
-    return {
-      code: 'upstream_unavailable',
-      message: 'The provider is temporarily unavailable.',
-      retryable: true,
-      retryAfterMs
-    };
-  }
-
-  return null;
-}
-
-export function normalizeError(error: unknown): NormalizedError {
+/**
+ * Maps any unknown failure into a strongly typed Effect-TS domain error.
+ */
+export function toAiDomainError(error: unknown): AiDomainError {
   if (error instanceof MissingCredentialError) {
-    return {
-      code: 'missing_credential',
+    return new TaggedMissingCredentialError({
       message: error.message,
-      retryable: false
-    };
+      retryable: false,
+    });
   }
 
   if (error instanceof RequestTimeoutError) {
-    return {
-      code: 'timeout',
+    return new TimeoutError({
       message: error.message,
-      retryable: true
-    };
+      retryable: true,
+    });
   }
 
   if (error instanceof ProviderStalledError) {
-    return {
-      code: 'stream_stalled',
+    return new StreamStalledError({
       message: error.message,
-      retryable: true
-    };
+      retryable: true,
+    });
   }
 
-  if (error instanceof HttpStatusError) {
-    return (
-      normalizeStatus(error.status, error.message, error.retryAfterMs) ?? {
-        code: 'provider_error',
-        message: error.message,
-        retryable: false
-      }
-    );
+  const rawMessage =
+    error instanceof Error
+      ? error.message
+      : typeof (error as { message?: unknown })?.message === 'string'
+        ? String((error as { message: unknown }).message)
+        : '';
+
+  const headers = extractResponseHeaders(error);
+  const retryAfterMs =
+    error instanceof HttpStatusError && error.retryAfterMs != null
+      ? error.retryAfterMs
+      : parseRetryAfterMs(headers);
+
+  const status =
+    error instanceof HttpStatusError
+      ? error.status
+      : extractStatusCode(error);
+
+  // 1. Rate limiting (429 or text pattern like "Too Many Requests")
+  if (isRateLimitError(error)) {
+    return new RateLimitError({
+      message: retryAfterMs
+        ? `The provider is rate limiting this model. Retrying in ${Math.ceil(retryAfterMs / 1000)}s.`
+        : 'The provider is rate limiting this model right now. Pick another model or try again shortly.',
+      retryAfterMs,
+      retryable: true,
+    });
   }
 
-  if (isAIError(error)) {
-    const retryAfterMs = parseRetryAfterMs(error.responseHeaders);
-    const byStatus = normalizeStatus(error.statusCode, error.message, retryAfterMs);
-    if (byStatus) {
-      return byStatus;
-    }
-
-    // A wrapped transport failure carries no status but is still worth a retry.
-    if (error.statusCode == null && isTransientNetworkError(error)) {
-      return {
-        code: 'network_error',
-        message: 'The connection to the provider dropped. Retrying.',
-        retryable: true
-      };
-    }
-
-    return {
-      code: 'provider_error',
-      message: error.message || 'The model provider returned an error.',
-      retryable: error.isRetryable ?? false
-    };
+  // 2. Authentication failure (401, 403 or invalid API key pattern)
+  if (isAuthError(error)) {
+    return new AuthError({
+      message: 'The provider rejected the API key. Revalidate it in settings.',
+      retryable: false,
+    });
   }
 
+  // 3. Known HTTP status codes
+  if (status === 402) {
+    return new InsufficientCreditsError({
+      message: 'The provider reports insufficient credits for this model.',
+      retryable: false,
+    });
+  }
+
+  if (status === 404) {
+    return new ModelUnavailableError({
+      message: rawMessage || 'This model is not available right now. Try a different model.',
+      retryable: false,
+    });
+  }
+
+  if (status === 408) {
+    return new TimeoutError({
+      message: 'The provider timed out before responding.',
+      retryAfterMs,
+      retryable: true,
+    });
+  }
+
+  if (status != null && status >= 500) {
+    return new UpstreamUnavailableError({
+      message: 'The provider is temporarily unavailable.',
+      retryAfterMs,
+      retryable: true,
+    });
+  }
+
+  // 4. Client-side Abort
   if (isAbortError(error)) {
-    return {
-      code: 'aborted',
+    return new AbortedError({
       message: 'Generation stopped.',
-      retryable: false
-    };
+      retryable: false,
+    });
   }
 
+  // 5. Transient transport failure
   if (isTransientNetworkError(error)) {
-    return {
-      code: 'network_error',
+    return new NetworkError({
       message: 'The connection to the provider dropped. Retrying.',
-      retryable: true
-    };
+      retryable: true,
+    });
   }
 
+  // 6. AI SDK Error with retryable flag
+  if (isAIError(error)) {
+    return new ProviderError({
+      message: error.message || 'The model provider returned an error.',
+      retryable: error.isRetryable ?? false,
+    });
+  }
+
+  // 7. Generic / Unknown Error
   if (error instanceof Error) {
-    return {
-      code: 'unknown_error',
+    return new UnknownAiError({
       message: error.message,
-      retryable: false
-    };
+      retryable: false,
+      cause: error,
+    });
   }
 
-  return {
-    code: 'unknown_error',
+  return new UnknownAiError({
     message: 'Unexpected error',
-    retryable: false
-  };
+    retryable: false,
+    cause: error,
+  });
 }
 
 /**
- * Exponential backoff with full jitter, deferring to a provider-supplied
- * Retry-After when there is one.
+ * Normalizes an unknown error into a NormalizedError.
+ * Powered by Effect-TS domain error conversion under the hood.
+ */
+export function normalizeError(error: unknown): NormalizedError {
+  return fromAiDomainError(toAiDomainError(error));
+}
+
+/**
+ * Executes a Promise-based function and returns an Effect that fails with a typed AiDomainError.
+ */
+export function asAiEffect<A>(thunk: () => Promise<A>): Effect.Effect<A, AiDomainError> {
+  return Effect.tryPromise({
+    try: thunk,
+    catch: (raw) => toAiDomainError(raw),
+  });
+}
+
+/**
+ * Exponential backoff with full jitter, deferring to a provider-supplied Retry-After.
  */
 export function computeRetryDelayMs(attempt: number, retryAfterMs?: number | null) {
   if (typeof retryAfterMs === 'number' && retryAfterMs > 0) {

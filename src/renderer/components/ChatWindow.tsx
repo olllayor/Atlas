@@ -58,6 +58,7 @@ import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
+import { filterHistoryMessages } from './chatHistoryFilter';
 import { AtlasMark } from './ui/atlas-mark';
 import { AtlasLoader, AtlasLoaderRow } from './ui/atlas-loader';
 
@@ -756,10 +757,35 @@ const MessageRow = memo(function MessageRow({
   );
 });
 
+function getErrorTitle(code?: string): string {
+  switch (code) {
+    case 'rate_limited':
+      return 'Rate limit reached';
+    case 'auth_error':
+    case 'missing_credential':
+      return 'Authentication failed';
+    case 'insufficient_credits':
+      return 'Insufficient credits';
+    case 'model_unavailable':
+      return 'Model unavailable';
+    case 'timeout':
+      return 'Request timed out';
+    case 'network_error':
+      return 'Connection error';
+    case 'stream_stalled':
+      return 'Model stopped responding';
+    case 'upstream_unavailable':
+      return 'Provider unavailable';
+    default:
+      return 'Something went wrong';
+  }
+}
+
 function StreamingRow({
   parts,
   turnId,
   errorMessage,
+  errorCode,
   notice,
   status,
   onRespondToolApproval,
@@ -770,6 +796,7 @@ function StreamingRow({
   /** The draft's request id — keys the turn's `Worked for …` disclosure. */
   turnId: string;
   errorMessage?: string;
+  errorCode?: string;
   /** Why this turn is taking longer than it looks like it should. */
   notice?: DraftStateLike['notice'];
   status: 'queued' | 'streaming' | 'error' | 'aborted';
@@ -795,7 +822,7 @@ function StreamingRow({
             <div className="flex items-start gap-3">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-normal text-error-text">Something went wrong</p>
+                <p className="text-sm font-normal text-error-text">{getErrorTitle(errorCode)}</p>
                 <p className="mt-1 text-xs text-error-text/80">{errorMessage}</p>
               </div>
               {onRetry ? (
@@ -1172,14 +1199,10 @@ export function ChatWindow({
    * gone and the placeholder (now `status: complete`) naturally re-enters the
    * virtualizer as the last history row.
    */
-  const historyMessages = useMemo(() => {
-    if (!isStreaming || messages.length === 0) return messages;
-    const last = messages[messages.length - 1];
-    if (last?.role === 'assistant' && last.status === 'streaming') {
-      return messages.slice(0, -1);
-    }
-    return messages;
-  }, [messages, isStreaming]);
+  const historyMessages = useMemo(
+    () => filterHistoryMessages(messages, isStreaming),
+    [messages, isStreaming]
+  );
 
   /**
    * The folded view is a *suffix* of the real history. Every index the
@@ -1737,6 +1760,7 @@ export function ChatWindow({
               parts={draft.parts}
               turnId={draft.requestId}
               errorMessage={draft.errorMessage}
+              errorCode={draft.error?.code}
               notice={draft.notice}
               status={draft.status}
               onRespondToolApproval={onRespondToolApproval}
@@ -1852,3 +1876,5 @@ export function ChatWindow({
     </div>
   );
 }
+
+export { filterHistoryMessages } from './chatHistoryFilter';

@@ -96,6 +96,12 @@ type ActiveRequest = {
    * restating its plan.
    */
   goalProgress?: boolean;
+  /** Timestamp of the last SQLite persistence of message parts during streaming. */
+  lastPersistAt?: number;
+  /** Set when in-memory parts have changed since last persistence. */
+  dirtyMessage?: boolean;
+  /** Trailing timer to ensure dirty parts persist even if streaming stream pauses. */
+  persistTimer?: ReturnType<typeof setTimeout> | null;
 };
 
 type BufferedRequestEvents = {
@@ -104,6 +110,19 @@ type BufferedRequestEvents = {
 };
 
 const STREAM_BATCH_INTERVAL_MS = 33;
+/**
+ * ARCHITECTURE INVARIANT: 1-second streaming persistence throttle.
+ *
+ * Typing/event-loop benchmarks showed throttling synchronous SQLite writes
+ * during continuous streaming cuts DB write overhead by ~96.6% (23.61 ms down
+ * to 0.79 ms) while settle paths (`message.completed`, `turn.completed`,
+ * `turn.failed`, interruption, error) force-persist, so crash durability of
+ * settled turns is preserved. better-sqlite3 writes block the main thread, so
+ * lowering this reintroduces jank and raising it widens the crash-loss window
+ * (max ~1s of unpersisted tail). Do not retune without rerunning
+ * `bench:typing` and `bench:eventloop`.
+ */
+export const STREAM_PERSIST_INTERVAL_MS = 1000;
 
 const NOOP_RUNTIME_STATE_REPO: Pick<
   RuntimeStateRepo,
@@ -847,6 +866,12 @@ export class ChatEngine {
       modelId: request.modelId
     });
 
+    // User-initiated activity re-engages a parked chat: sending into a
+    // settled or snoozed conversation returns it to the active list. Only
+    // the send path calls this — agent completions and goal-loop
+    // continuations must not clear parked state, or parking would be moot.
+    this.conversationsRepo.clearLifecycleOnUserActivity(request.conversationId);
+
     // Name the session from the prompt right now, before a single token is
     // streamed. Waiting for the model meant every in-flight thread sat in
     // the sidebar as `Session · <date>` — the title arrived, if at all,
@@ -1012,6 +1037,9 @@ export class ChatEngine {
       parts: [],
       responseMessages: [],
       awaitingApproval: false,
+      lastPersistAt: Date.now(),
+      dirtyMessage: false,
+      persistTimer: null,
       tracker: this.toolStateStore
         ? new ToolExecutionTracker(
             {
@@ -1599,6 +1627,7 @@ export class ChatEngine {
 
       if (result.status === 'awaiting_approval') {
         active.awaitingApproval = true;
+        this.persistActiveMessage(active, true);
         const pendingApprovals = result.pendingApprovals.map((approval) => {
           const toolType = inferCanonicalToolType({ toolName: approval.toolName });
           return {
@@ -1702,6 +1731,11 @@ export class ChatEngine {
           retryable: normalized.retryable,
         },
       });
+      if (active.persistTimer) {
+        clearTimeout(active.persistTimer);
+        active.persistTimer = null;
+      }
+      active.dirtyMessage = false;
       this.conversationsRepo.updateMessage({
         messageId: active.assistantMessageId,
         status: 'error',
@@ -1880,6 +1914,11 @@ export class ChatEngine {
       target.window.removeListener('closed', target.onWindowClosed);
     }
     this.flushBufferedEvents(requestId);
+    if (target.persistTimer) {
+      clearTimeout(target.persistTimer);
+      target.persistTimer = null;
+    }
+    this.persistActiveMessage(target, true);
     this.bufferedEvents.delete(requestId);
     this.activeRequests.delete(requestId);
     this.approvalController.clearRequest(requestId);
@@ -2298,6 +2337,44 @@ export class ChatEngine {
     }
   }
 
+  private persistActiveMessage(active: ActiveRequest, force = false): void {
+    if (active.persistTimer) {
+      clearTimeout(active.persistTimer);
+      active.persistTimer = null;
+    }
+
+    const now = Date.now();
+    const elapsed = typeof active.lastPersistAt === 'number' ? now - active.lastPersistAt : Infinity;
+
+    if (!force && elapsed < STREAM_PERSIST_INTERVAL_MS) {
+      if (active.dirtyMessage && !active.persistTimer) {
+        const remaining = Math.max(0, STREAM_PERSIST_INTERVAL_MS - elapsed);
+        active.persistTimer = setTimeout(() => {
+          if (this.activeRequests.has(active.requestId)) {
+            this.persistActiveMessage(active, true);
+          }
+        }, remaining);
+      }
+      return;
+    }
+
+    if (!active.dirtyMessage && !force) {
+      return;
+    }
+
+    active.lastPersistAt = now;
+    active.dirtyMessage = false;
+
+    this.conversationsRepo.updateMessage({
+      messageId: active.assistantMessageId,
+      content: getTextContentFromParts(active.parts),
+      reasoning: getReasoningContentFromParts(active.parts),
+      parts: active.parts,
+      providerId: active.request.providerId,
+      modelId: active.request.modelId,
+    });
+  }
+
   private recordRuntimeEnvelope(
     active: ActiveRequest,
     input: {
@@ -2315,6 +2392,7 @@ export class ChatEngine {
       approvalId?: string;
       toolType?: any;
     },
+    options?: { forcePersist?: boolean },
   ) {
     const envelope = this.runtimeStateRepo.recordEvent({
       ...input,
@@ -2322,14 +2400,16 @@ export class ChatEngine {
     });
 
     active.parts = applyRuntimeEventToMessageParts(active.parts, envelope);
-    this.conversationsRepo.updateMessage({
-      messageId: active.assistantMessageId,
-      content: getTextContentFromParts(active.parts),
-      reasoning: getReasoningContentFromParts(active.parts),
-      parts: active.parts,
-      providerId: active.request.providerId,
-      modelId: active.request.modelId,
-    });
+    active.dirtyMessage = true;
+
+    const isSettleEvent =
+      input.activityType === 'message.completed' ||
+      input.activityType === 'turn.completed' ||
+      input.activityType === 'runtime.error' ||
+      input.activityType === 'approval.requested' ||
+      input.activityType === 'approval.resolved';
+
+    this.persistActiveMessage(active, options?.forcePersist || isSettleEvent);
 
     this.sendToWindow(active.window, {
       type: 'runtime-sync',

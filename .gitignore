@@ -5,6 +5,7 @@ node_modules
 dist
 out
 dist-tests
+dist-harness
 release
 .DS_Store
 *.log

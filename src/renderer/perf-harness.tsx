@@ -1,10 +1,30 @@
-import { Profiler, useEffect, useRef, useState } from 'react';
+import { Profiler, useCallback, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ChatWindow } from './components/ChatWindow';
+import { Composer } from './components/Composer';
 import { TooltipProvider } from './components/ui/tooltip';
 import { useAppStore } from './stores/useAppStore';
 import type { ConversationPage, ChatMessage } from '../shared/contracts';
 import './styles.css';
+
+// Mock window.atlasChat for harness runs outside Electron
+if (typeof window !== 'undefined' && !(window as unknown as Record<string, unknown>).atlasChat) {
+  (window as unknown as Record<string, unknown>).atlasChat = {
+    chat: {
+      start: async () => ({ requestId: 'mock-req' }),
+      stop: async () => {},
+    },
+    plugins: {
+      list: async () => ({ plugins: [] }),
+      listMarketplacePlugins: async () => [],
+      commands: async () => [],
+      getEnabled: async () => [],
+    },
+    conversations: {
+      setWorkspace: async () => {},
+    },
+  };
+}
 
 // 40 completed history messages with realistic markdown-ish bodies.
 function makeHistory(count: number): ChatMessage[] {
@@ -42,13 +62,43 @@ const STREAM_CHUNKS: string[] = (() => {
   return out;
 })();
 
-type Sample = { flushMs: number; chatMs: number };
+type FlushSample = { flushMs: number; chatMs: number };
+
+export type TypingLatencySample = {
+  key: string;
+  phase: 'idle' | 'streaming';
+  /** Event loop delay before keydown was processed (ms) */
+  eventQueueMs: number;
+  /** Synchronous keydown handling cost (ms) */
+  syncJsMs: number;
+  /** React commit time of Composer (ms) */
+  composerCommitMs: number;
+  /** Full keyboard-to-paint latency until frame presentation (ms) */
+  keyboardToPaintMs: number;
+};
 
 function Harness() {
   const [done, setDone] = useState(false);
-  const samplesRef = useRef<Sample[]>([]);
+  const [composerValue, setComposerValue] = useState('');
+  const samplesRef = useRef<FlushSample[]>([]);
   const longTasksRef = useRef<number[]>([]);
   const startedRef = useRef(false);
+  const isStreamingRef = useRef(false);
+  const flushIdxRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const typingSamplesRef = useRef<{
+    idle: TypingLatencySample[];
+    streaming: TypingLatencySample[];
+  }>({ idle: [], streaming: [] });
+
+  const activeKeySampleRef = useRef<{
+    key: string;
+    eventTime: number;
+    startTs: number;
+    syncJsMs: number;
+    composerCommitMs: number;
+  } | null>(null);
 
   const detail = useAppStore((s) =>
     s.selectedConversationId ? (s.conversationDetails[s.selectedConversationId] ?? null) : null,
@@ -56,6 +106,88 @@ function Harness() {
   const draft = useAppStore((s) =>
     s.selectedConversationId ? (s.draftsByConversation[s.selectedConversationId] ?? null) : null,
   );
+
+  const startStreaming = useCallback(() => {
+    if (isStreamingRef.current) return;
+    isStreamingRef.current = true;
+    flushIdxRef.current = 0;
+    samplesRef.current = [];
+
+    // Ensure draft is set to streaming
+    const st = useAppStore.getState();
+    useAppStore.setState({
+      draftsByConversation: {
+        ...st.draftsByConversation,
+        'perf-conv': {
+          requestId: 'req-perf',
+          providerId: 'test',
+          modelId: 'test',
+          parts: [],
+          status: 'streaming',
+          startedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    const total = STREAM_CHUNKS.length;
+    timerRef.current = setInterval(() => {
+      const idx = flushIdxRef.current;
+      if (idx >= total) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        isStreamingRef.current = false;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const samples = samplesRef.current;
+            const chat = samples.map((s) => s.chatMs).filter((v) => Number.isFinite(v));
+            const flush = samples.map((s) => s.flushMs);
+            const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+            const sorted = [...chat].sort((a, b) => a - b);
+            const p = (q: number) =>
+              sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0 : 0;
+            const storeState = useAppStore.getState();
+            const det = storeState.conversationDetails['perf-conv'];
+            const orderOk =
+              det != null &&
+              det.messages.length === 41 &&
+              det.messages[40]?.id === 'm-stream' &&
+              det.messages[39]?.id === 'm39';
+            (window as unknown as Record<string, unknown>).perfResults = {
+              totalFlushes: total,
+              samples: samples.length,
+              avgChatMs: avg(chat),
+              p50ChatMs: p(0.5),
+              p95ChatMs: p(0.95),
+              maxChatMs: sorted[sorted.length - 1] ?? 0,
+              avgFlushMs: avg(flush),
+              maxFlushMs: flush.length ? Math.max(...flush) : 0,
+              longTasks: [...longTasksRef.current],
+              longTaskCount: longTasksRef.current.length,
+              messageCount: det?.messages.length ?? -1,
+              orderOk,
+              streamingTextLen: JSON.stringify(det?.messages[40]?.parts ?? []).length,
+            };
+            (window as unknown as Record<string, unknown>).perfDone = true;
+            setDone(true);
+          });
+        });
+        return;
+      }
+
+      const t0 = performance.now();
+      const chunk = STREAM_CHUNKS[idx] ?? '';
+      void useAppStore.getState().handleStreamEvent({
+        type: 'chunk',
+        requestId: 'req-perf',
+        id: 'text-1',
+        delta: chunk,
+      } as never);
+      const t1 = performance.now();
+      samplesRef.current.push({ flushMs: t1 - t0, chatMs: Number.NaN });
+      flushIdxRef.current += 1;
+      const counter = document.getElementById('perf-flush-count');
+      if (counter) counter.textContent = `Flushes: ${flushIdxRef.current} / ${total} STREAMING`;
+    }, 33);
+  }, []);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -93,6 +225,7 @@ function Harness() {
       nextCursor: null,
       limit: 100,
     };
+
     useAppStore.setState({
       conversationDetails: { 'perf-conv': page },
       selectedConversationId: 'perf-conv',
@@ -102,7 +235,7 @@ function Harness() {
           providerId: 'test',
           modelId: 'test',
           parts: [],
-          status: 'streaming',
+          status: 'idle',
           startedAt: new Date().toISOString(),
         },
       },
@@ -122,114 +255,169 @@ function Harness() {
       observer = null;
     }
 
-    let flushIdx = 0;
-    const total = STREAM_CHUNKS.length;
-    const timer = setInterval(() => {
-      if (flushIdx >= total) {
-        clearInterval(timer);
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const samples = samplesRef.current;
-            const chat = samples.map((s) => s.chatMs).filter((v) => Number.isFinite(v));
-            const flush = samples.map((s) => s.flushMs);
-            const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
-            const sorted = [...chat].sort((a, b) => a - b);
-            const p = (q: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0 : 0);
-            const st = useAppStore.getState();
-            const det = st.conversationDetails['perf-conv'];
-            const orderOk =
-              det != null &&
-              det.messages.length === 41 &&
-              det.messages[40]?.id === 'm-stream' &&
-              det.messages[39]?.id === 'm39';
-            (window as unknown as Record<string, unknown>).perfResults = {
-              totalFlushes: total,
-              samples: samples.length,
-              avgChatMs: avg(chat),
-              p50ChatMs: p(0.5),
-              p95ChatMs: p(0.95),
-              maxChatMs: sorted[sorted.length - 1] ?? 0,
-              avgFlushMs: avg(flush),
-              maxFlushMs: flush.length ? Math.max(...flush) : 0,
-              longTasks: [...longTasksRef.current],
-              longTaskCount: longTasksRef.current.length,
-              messageCount: det?.messages.length ?? -1,
-              orderOk,
-              streamingTextLen: JSON.stringify(det?.messages[40]?.parts ?? []).length,
-            };
-            (window as unknown as Record<string, unknown>).perfDone = true;
-            setDone(true);
-            observer?.disconnect();
-          });
-        });
-        return;
-      }
-      const t0 = performance.now();
-      const chunk = STREAM_CHUNKS[flushIdx] ?? '';
-      void useAppStore.getState().handleStreamEvent({
-        type: 'chunk',
-        requestId: 'req-perf',
-        id: 'text-1',
-        delta: chunk,
-      } as never);
-      const t1 = performance.now();
-      // flushMs records the synchronous store-update cost; the React commit
-      // cost lands via the Profiler callback below, keyed by this flush.
-      samplesRef.current.push({ flushMs: t1 - t0, chatMs: Number.NaN });
-      flushIdx += 1;
-      const counter = document.getElementById('perf-flush-count');
-      if (counter) counter.textContent = `Flushes: ${flushIdx} / ${total} STREAMING`;
-    }, 33);
+    (window as unknown as Record<string, unknown>).__startStreaming = startStreaming;
+    (window as unknown as Record<string, unknown>).__getTypingMetrics = () => typingSamplesRef.current;
+    (window as unknown as Record<string, unknown>).__clearTypingMetrics = () => {
+      typingSamplesRef.current = { idle: [], streaming: [] };
+    };
+    (window as unknown as Record<string, unknown>).__isStreaming = () => isStreamingRef.current;
+    (window as unknown as Record<string, unknown>).__flushCount = () => flushIdxRef.current;
+
+    const params = new URLSearchParams(window.location.search);
+    const autostart = params.get('autostart') !== 'false';
+    if (autostart) {
+      startStreaming();
+    }
 
     return () => {
-      clearInterval(timer);
+      if (timerRef.current) clearInterval(timerRef.current);
       observer?.disconnect();
     };
-  }, []);
+  }, [startStreaming]);
 
-  const onRender = (_id: string, _phase: string, actualDuration: number) => {
-    // Pair each ChatWindow commit with the most recent flush that has no
-    // commit yet. Mount commits before the first flush find no sample and
-    // are ignored.
+  const onChatWindowRender = (_id: string, _phase: string, actualDuration: number) => {
     const pending = samplesRef.current[samplesRef.current.length - 1];
     if (pending && Number.isNaN(pending.chatMs)) {
       pending.chatMs = actualDuration;
     }
   };
 
+  const onComposerRender = (_id: string, _phase: string, actualDuration: number) => {
+    if (activeKeySampleRef.current) {
+      activeKeySampleRef.current.composerCommitMs = actualDuration;
+    }
+  };
+
+  // Set up high-resolution keyboard-to-paint measurement on the composer textarea
+  useEffect(() => {
+    const textarea = document.querySelector('textarea[aria-label="Message"]') as HTMLTextAreaElement | null;
+    if (!textarea) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+      const startTs = performance.now();
+      const eventTime = e.timeStamp;
+      const sample = {
+        key: e.key,
+        eventTime,
+        startTs,
+        syncJsMs: 0,
+        composerCommitMs: 0,
+      };
+      activeKeySampleRef.current = sample;
+
+      // Real keyboard-to-paint measurement: double rAF ensures paint has happened
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const paintDone = performance.now();
+          const phase = isStreamingRef.current ? 'streaming' : 'idle';
+          const completedSample: TypingLatencySample = {
+            key: sample.key,
+            phase,
+            eventQueueMs: Math.max(0, sample.startTs - sample.eventTime),
+            syncJsMs: sample.syncJsMs,
+            composerCommitMs: sample.composerCommitMs,
+            keyboardToPaintMs: Math.max(0, paintDone - sample.eventTime),
+          };
+          typingSamplesRef.current[phase].push(completedSample);
+          if (activeKeySampleRef.current === sample) {
+            activeKeySampleRef.current = null;
+          }
+        });
+      });
+    };
+
+    const onInput = () => {
+      if (activeKeySampleRef.current) {
+        activeKeySampleRef.current.syncJsMs = performance.now() - activeKeySampleRef.current.startTs;
+      }
+    };
+
+    textarea.addEventListener('keydown', onKeyDown);
+    textarea.addEventListener('input', onInput);
+    return () => {
+      textarea.removeEventListener('keydown', onKeyDown);
+      textarea.removeEventListener('input', onInput);
+    };
+  }, []);
+
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: 8, background: '#f5f5f5', fontSize: 12, fontFamily: 'monospace' }}>
-        <div id="perf-flush-count">Flushes: 0 / {STREAM_CHUNKS.length} STREAMING</div>
-        <input
-          id="perf-composer-input"
-          placeholder="type during streaming to test INP"
-          style={{ width: 320, marginTop: 4 }}
-        />
+        <div id="perf-flush-count">
+          Flushes: {flushIdxRef.current} / {STREAM_CHUNKS.length} {isStreamingRef.current ? 'STREAMING' : 'IDLE'}
+        </div>
       </div>
-      <Profiler id="ChatWindow" onRender={onRender}>
-        <TooltipProvider>
-          <ChatWindow
-            detail={detail}
-            draft={draft as never}
-            hasCredential
-            isLoadingConversation={false}
-            isLoadingOlder={false}
-            onOpenSettings={() => {}}
-            onSuggestionClick={() => {}}
-            onLoadOlderMessages={async () => {}}
-            onRespondToolApproval={async () => {}}
-          />
-        </TooltipProvider>
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <Profiler id="ChatWindow" onRender={onChatWindowRender}>
+          <TooltipProvider>
+            <ChatWindow
+              detail={detail}
+              draft={draft as never}
+              hasCredential
+              isLoadingConversation={false}
+              isLoadingOlder={false}
+              onOpenSettings={() => {}}
+              onSuggestionClick={() => {}}
+              onLoadOlderMessages={async () => {}}
+              onRespondToolApproval={async () => {}}
+            />
+          </TooltipProvider>
+        </Profiler>
+      </div>
+      <Profiler id="Composer" onRender={onComposerRender}>
+        <div style={{ borderTop: '1px solid #e5e5e5', padding: '8px 16px', background: '#fff' }}>
+          <TooltipProvider>
+            <Composer
+              conversationId="perf-conv"
+              draftRequestId="req-perf"
+              draftStatus={draft?.status === 'streaming' ? 'streaming' : null}
+              isStreaming={isStreamingRef.current}
+              queuedCount={0}
+              attachments={[]}
+              onAttachmentsChange={() => {}}
+              onChange={(text) => {
+                setComposerValue(text);
+                useAppStore.getState().setComposerDraft('perf-conv', text);
+              }}
+              value={composerValue}
+              disabled={false}
+              models={[]}
+              selectedModelId="test"
+              selectedProviderId="test"
+              onSend={() => {}}
+              onAbort={() => {}}
+              onOpenGallery={() => {}}
+              modelPickerOpen={false}
+              onModelPickerOpenChange={() => {}}
+              composerFocusNonce={0}
+              onComposerFocusChange={() => {}}
+              workspaceMode="work"
+              workspaceReady={true}
+              onWorkspaceModeChange={() => {}}
+              toolPermissionMode="ask"
+              onToolPermissionModeChange={() => {}}
+              credentials={[]}
+                            onSelectModel={() => {}}
+              reasoningEffort="off"
+              onReasoningEffortChange={() => {}}
+              customProviders={[]}
+            />
+          </TooltipProvider>
+        </div>
       </Profiler>
       {done && <div style={{ padding: 4, fontSize: 11, fontFamily: 'monospace' }}>DONE</div>}
     </div>
   );
 }
 
-// Test hooks for the Playwright driver (not part of the app).
+// Test hooks for the benchmark runner
 (window as unknown as Record<string, unknown>).harness = {
   store: useAppStore,
+  startStreaming: () => {
+    const fn = (window as unknown as Record<string, unknown>).__startStreaming as (() => void) | undefined;
+    fn?.();
+  },
   settleTurn: () => {
     const st = useAppStore.getState();
     const det = st.conversationDetails['perf-conv'];
@@ -246,7 +434,30 @@ function Harness() {
     });
     return { ok: true, beforeTop, beforeHeight };
   },
+  getTypingMetrics: () => {
+    const fn = (window as unknown as Record<string, unknown>).__getTypingMetrics as
+      | (() => { idle: TypingLatencySample[]; streaming: TypingLatencySample[] })
+      | undefined;
+    return fn ? fn() : { idle: [], streaming: [] };
+  },
+  clearTypingMetrics: () => {
+    const fn = (window as unknown as Record<string, unknown>).__clearTypingMetrics as (() => void) | undefined;
+    fn?.();
+  },
+  isStreaming: () => {
+    const fn = (window as unknown as Record<string, unknown>).__isStreaming as (() => boolean) | undefined;
+    return fn ? fn() : false;
+  },
+  flushCount: () => {
+    const fn = (window as unknown as Record<string, unknown>).__flushCount as (() => number) | undefined;
+    return fn ? fn() : 0;
+  },
 };
 
-// No StrictMode: double-mount would run the 33ms stream twice.
+function HarnessWrapper() {
+  const harnessRef = useRef<ReturnType<typeof Harness> | null>(null);
+  return <Harness />;
+}
+
+// Attach callbacks into window.__startStreaming and window.__getTypingMetrics inside Harness
 ReactDOM.createRoot(document.getElementById('root')!).render(<Harness />);

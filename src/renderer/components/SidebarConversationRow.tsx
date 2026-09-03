@@ -22,6 +22,8 @@ type SidebarConversationRowProps = {
   onSettle?: () => void;
   isPinned?: boolean;
   onPin?: () => void;
+  isWoke?: boolean;
+  settleActionLabel?: string;
 };
 
 /**
@@ -46,13 +48,20 @@ export function SidebarConversationRow({
   onSettle,
   isPinned = false,
   onPin,
+  isWoke = false,
+  settleActionLabel,
 }: SidebarConversationRowProps) {
   const stateWord =
     attentionLevel === 'needsInput' && !isFailed
       ? { label: 'Approve', tone: 'warning' as const }
       : isFailed
         ? { label: 'Failed', tone: 'error' as const }
-        : null;
+        : isWoke
+          ? { label: 'Woke', tone: 'warning' as const }
+          : null;
+
+  const settleButtonText = settleActionLabel ?? (isSettled ? 'Restore' : 'Settle');
+  const settleButtonLabel = `${settleButtonText} chat`;
 
   const isUnread = !stateWord && !isRunning && attentionLevel === 'unread' && unreadCount > 0;
 
@@ -105,9 +114,15 @@ export function SidebarConversationRow({
               )}
             >
               <RowIconButton
-                icon={<Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
-                label={isSettled ? 'Restore chat' : 'Settle chat'}
-                text={isSettled ? 'Restore' : 'Settle'}
+                icon={
+                  settleButtonText === 'Wake' ? (
+                    <Clock className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                  ) : (
+                    <Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                  )
+                }
+                label={settleButtonLabel}
+                text={settleButtonText}
                 onClick={onSettle}
                 className="h-auto gap-0.5 rounded px-1.5 py-0.5 text-3xs text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors"
               />
@@ -188,9 +203,15 @@ export function SidebarConversationRow({
               )}
             >
               <RowIconButton
-                icon={<Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
-                label={isSettled ? 'Restore chat' : 'Settle chat'}
-                text={isSettled ? 'Restore' : 'Settle'}
+                icon={
+                  settleButtonText === 'Wake' ? (
+                    <Clock className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                  ) : (
+                    <Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                  )
+                }
+                label={settleButtonLabel}
+                text={settleButtonText}
                 onClick={onSettle}
                 className="h-auto gap-0.5 rounded px-1.5 py-0.5 text-3xs text-text-tertiary hover:bg-bg-active hover:text-text-primary transition-colors"
               />

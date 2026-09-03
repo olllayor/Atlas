@@ -15,6 +15,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAppDatabase } from '../../src/main/db/client.ts';
 import { AttachmentStore } from '../../src/main/attachments/AttachmentStore.ts';
+import { ConversationsRepo } from '../../src/main/db/repositories/conversationsRepo.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +70,88 @@ async function runEventLoopProbe() {
     const writeElapsed = performance.now() - t0;
     console.log(`Executed 500 SQLite upserts in ${writeElapsed.toFixed(2)} ms (${(writeElapsed / 500).toFixed(3)} ms each, all of it blocking)`);
     printHistogram('2. SQLite rapid write burst (500 upserts)');
+
+    // Phase 2b: Streaming message persistence comparison (3.3s of 33ms streaming)
+    const repo = new ConversationsRepo(db.raw);
+    const convA = repo.create();
+    const msgIdA = repo.addMessage({
+      conversationId: convA.id,
+      role: 'assistant',
+      content: '',
+      parts: [],
+      status: 'streaming',
+      providerId: 'test',
+      modelId: 'test',
+    });
+
+    const chunk = 'This is streaming delta content with code and text. ';
+    let textA = '';
+    const partsA = [{ id: 'p0', type: 'text', text: '', state: 'streaming' }];
+
+    const tUnthrottled = performance.now();
+    for (let i = 0; i < 100; i++) {
+      await new Promise((r) => setTimeout(r, 33));
+      textA += chunk;
+      partsA[0].text = textA;
+      repo.updateMessage({
+        messageId: msgIdA,
+        content: textA,
+        parts: partsA,
+        providerId: 'test',
+        modelId: 'test',
+      });
+    }
+    const unthrottledElapsed = performance.now() - tUnthrottled;
+    console.log(`Executed 100 unthrottled streaming updateMessage writes in ${unthrottledElapsed.toFixed(2)} ms`);
+    printHistogram('2b. Streaming updateMessage unthrottled (100 writes @ 33ms)');
+
+    const convB = repo.create();
+    const msgIdB = repo.addMessage({
+      conversationId: convB.id,
+      role: 'assistant',
+      content: '',
+      parts: [],
+      status: 'streaming',
+      providerId: 'test',
+      modelId: 'test',
+    });
+
+    let textB = '';
+    const partsB = [{ id: 'p0', type: 'text', text: '', state: 'streaming' }];
+    let writesB = 0;
+    let lastPersistB = performance.now();
+
+    const tThrottled = performance.now();
+    for (let i = 0; i < 100; i++) {
+      await new Promise((r) => setTimeout(r, 33));
+      textB += chunk;
+      partsB[0].text = textB;
+      const now = performance.now();
+      if (now - lastPersistB >= 1000) {
+        lastPersistB = now;
+        writesB++;
+        repo.updateMessage({
+          messageId: msgIdB,
+          content: textB,
+          parts: partsB,
+          providerId: 'test',
+          modelId: 'test',
+        });
+      }
+    }
+    // Settle / finalization
+    writesB++;
+    repo.updateMessage({
+      messageId: msgIdB,
+      content: textB,
+      parts: partsB,
+      status: 'complete',
+      providerId: 'test',
+      modelId: 'test',
+    });
+    const throttledElapsed = performance.now() - tThrottled;
+    console.log(`Executed ${writesB} throttled (1s) streaming updateMessage writes in ${throttledElapsed.toFixed(2)} ms`);
+    printHistogram('2c. Streaming updateMessage throttled 1s (4 writes @ 1000ms + settle)');
 
     // Phase 3: Subprocess execution (simulating git probe / ps probe)
     const tSub = performance.now();

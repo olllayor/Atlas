@@ -209,3 +209,24 @@ test('the escalation flag runs the command unwrapped', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('seatbelt provides writable scratch cache directory for package managers', { skip: notSeatbelt }, async () => {
+  const root = makeProject({ withGit: true });
+
+  try {
+    const result = await bashToolExecute(
+      {
+        command:
+          'node -e "const fs = require(\'fs\'); fs.writeFileSync(process.env.npm_config_cache + \'/test.txt\', \'ok\'); console.log(\'wrote-ok\')"'
+      },
+      codeWorkspace(root),
+      'full-access'
+    );
+
+    assert.equal(result.returnCodeInterpretation, 'success');
+    assert.match(result.stdout, /wrote-ok/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

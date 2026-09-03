@@ -10,8 +10,12 @@ const SANDBOX_FS_DENIED_KEYWORDS = [
   'seccomp',
   'sandbox',
   'landlock',
-  'failed to write file'
+  'failed to write file',
+  'access is denied',
+  'os error 13'
 ] as const;
+
+const SANDBOX_FS_DENIED_REGEX = /\b(eperm|eacces|erofs)\b/i;
 
 /**
  * Phrases a command emits when network access is refused or unrouted.
@@ -23,8 +27,13 @@ const SANDBOX_FS_DENIED_KEYWORDS = [
 const SANDBOX_NETWORK_DENIED_KEYWORDS = [
   'network is unreachable',
   'could not resolve host',
-  'temporary failure in name resolution'
+  'temporary failure in name resolution',
+  'nodename nor servname provided',
+  'name or service not known',
+  'no such host'
 ] as const;
+
+const SANDBOX_NETWORK_DENIED_REGEX = /\b(enotfound|enetunreach|ehostunreach|gaierror)\b/i;
 
 const SANDBOX_DENIED_KEYWORDS = [
   ...SANDBOX_FS_DENIED_KEYWORDS,
@@ -74,12 +83,18 @@ export function isLikelySandboxDenied(
   }
 
   const haystack = `${stdout}\n${stderr}`.toLowerCase();
-  if (SANDBOX_FS_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
+  if (
+    SANDBOX_FS_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword)) ||
+    SANDBOX_FS_DENIED_REGEX.test(haystack)
+  ) {
     return true;
   }
 
   if (networkPolicy === 'deny') {
-    return SANDBOX_NETWORK_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword));
+    return (
+      SANDBOX_NETWORK_DENIED_KEYWORDS.some((keyword) => haystack.includes(keyword)) ||
+      SANDBOX_NETWORK_DENIED_REGEX.test(haystack)
+    );
   }
 
   return false;
@@ -99,14 +114,15 @@ export function isSandboxWrapperFailure(
   exitCode: number | null,
   stderr: string
 ): boolean {
-  const firstLine = stderr.split('\n', 1)[0]?.trim() ?? '';
+  const trimmedStderr = stderr.trimStart();
+  const firstLine = trimmedStderr.split('\n', 1)[0]?.trim() ?? '';
 
   if (mechanism === 'seatbelt') {
     return exitCode === 65 && firstLine.startsWith('sandbox-exec:');
   }
 
   if (mechanism === 'bubblewrap') {
-    return exitCode !== 0 && firstLine.startsWith('bwrap:');
+    return exitCode !== 0 && (firstLine.startsWith('bwrap:') || /^\s*bwrap:\s*/m.test(stderr));
   }
 
   return false;

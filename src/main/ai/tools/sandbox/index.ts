@@ -137,6 +137,8 @@ export function buildSandboxedLaunch(
   return buildBubblewrapLaunch(argv, policy);
 }
 
+export { buildSandboxCacheEnv, getSandboxCacheDir } from './cache';
 export { getSandboxDenialHint, isLikelySandboxDenied, isSandboxWrapperFailure, SANDBOX_DENIAL_HINT } from './denial';
 export { computeWritableRoots } from './policy';
 export * from './types';
+

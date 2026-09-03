@@ -392,11 +392,19 @@ export function runCommand(
     const stderrDecoder = new StringDecoder('utf8');
     let interrupted = false;
     let timeoutId: NodeJS.Timeout | undefined;
+    let killTimeoutId: NodeJS.Timeout | undefined;
 
     if (options.timeoutMs && options.timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         interrupted = true;
         child.kill('SIGTERM');
+        killTimeoutId = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Process may already have exited
+          }
+        }, 3_000);
       }, options.timeoutMs);
     }
 
@@ -412,12 +420,18 @@ export function runCommand(
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+      if (killTimeoutId) {
+        clearTimeout(killTimeoutId);
+      }
       reject(error);
     });
 
     child.on('close', async (code) => {
       if (timeoutId) {
         clearTimeout(timeoutId);
+      }
+      if (killTimeoutId) {
+        clearTimeout(killTimeoutId);
       }
 
       stdout.write(stdoutDecoder.end());
@@ -984,7 +998,7 @@ export async function bashToolExecute(input: {
     : deriveSandboxPolicy(workspace, permissionMode);
   const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
 
-  const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
+  const combinedEnv = { ...process.env, ...launch.env, ...(workspace?.env ?? {}) };
 
   if (input.run_in_background) {
     // With a registry the child is a tracked job: captured output, a real
@@ -1058,7 +1072,7 @@ export async function bashToolExecute(input: {
 
   const result = await runCommand(launch.command, launch.args, {
     cwd,
-    env: { ...(workspace?.env ?? {}), ...launch.env },
+    env: { ...launch.env, ...(workspace?.env ?? {}) },
     timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000)),
     spillSink
   });

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { buildBubblewrapLaunch } from '../src/main/ai/tools/sandbox/bubblewrap.js';
+import { buildSandboxCacheEnv, getSandboxCacheDir } from '../src/main/ai/tools/sandbox/cache.js';
 import { getSandboxDenialHint, isLikelySandboxDenied, isSandboxWrapperFailure } from '../src/main/ai/tools/sandbox/denial.js';
 import { buildSandboxedLaunch, deriveSandboxPolicy } from '../src/main/ai/tools/sandbox/index.js';
 import { computeWritableRoots } from '../src/main/ai/tools/sandbox/policy.js';
@@ -290,3 +291,52 @@ test('isSandboxWrapperFailure separates a broken wrapper from a failed command',
   assert.equal(isSandboxWrapperFailure('bubblewrap', 0, 'bwrap: warning'), false);
   assert.equal(isSandboxWrapperFailure('none', 1, 'bwrap: anything'), false);
 });
+
+test('buildSandboxCacheEnv redirects standard package manager caches to scratch space', () => {
+  const cacheDir = getSandboxCacheDir();
+  const env = buildSandboxCacheEnv(cacheDir);
+
+  assert.equal(env.XDG_CACHE_HOME, join(cacheDir, 'xdg'));
+  assert.equal(env.XDG_CONFIG_HOME, join(cacheDir, 'xdg-config'));
+  assert.equal(env.XDG_DATA_HOME, join(cacheDir, 'xdg-data'));
+  assert.equal(env.XDG_STATE_HOME, join(cacheDir, 'xdg-state'));
+  assert.equal(env.npm_config_cache, join(cacheDir, 'npm'));
+  assert.equal(env.PNPM_HOME, join(cacheDir, 'pnpm-home'));
+  assert.equal(env.YARN_CACHE_FOLDER, join(cacheDir, 'yarn'));
+  assert.equal(env.UV_CACHE_DIR, join(cacheDir, 'uv'));
+  assert.equal(env.PIP_CACHE_DIR, join(cacheDir, 'pip'));
+  assert.equal(env.GOCACHE, join(cacheDir, 'go-build'));
+  assert.equal(env.CARGO_HOME, join(cacheDir, 'cargo'));
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, join(cacheDir, 'ms-playwright'));
+  assert.equal(env.npm_config_yes, 'true');
+});
+
+test('isLikelySandboxDenied catches runtime error codes for filesystem and network', () => {
+  // Node / npm filesystem error
+  assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'npm error code EPERM\nnpm error errno EPERM', 'allow'), true);
+  assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'Error: EACCES: permission denied', 'allow'), true);
+
+  // Node getaddrinfo / ENOTFOUND (network blocked)
+  assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'Error: getaddrinfo ENOTFOUND example.com', 'deny'), true);
+  // Node getaddrinfo / ENOTFOUND ignored when network is allowed
+  assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'Error: getaddrinfo ENOTFOUND example.com', 'allow'), false);
+
+  // Python socket gaierror (network blocked)
+  assert.equal(isLikelySandboxDenied('seatbelt', 1, '', 'socket.gaierror: [Errno 8] nodename nor servname provided', 'deny'), true);
+
+  // Go net lookup (network blocked)
+  assert.equal(isLikelySandboxDenied('bubblewrap', 1, '', 'lookup example.com: no such host', 'deny'), true);
+});
+
+test('buildSeatbeltLaunch and buildBubblewrapLaunch inject sandbox cache env in workspace-write mode', () => {
+  const policy = workspaceWrite([{ root: '/Users/someone/project', readOnlySubpaths: [] }]);
+  const seatbeltLaunch = buildSeatbeltLaunch(['echo', 'hi'], policy);
+  const bubblewrapLaunch = buildBubblewrapLaunch(['echo', 'hi'], policy);
+
+  assert.match(seatbeltLaunch.env.XDG_CACHE_HOME ?? '', /atlas-sandbox-cache/);
+  assert.match(seatbeltLaunch.env.npm_config_cache ?? '', /atlas-sandbox-cache/);
+  assert.match(bubblewrapLaunch.env.XDG_CACHE_HOME ?? '', /atlas-sandbox-cache/);
+  assert.match(bubblewrapLaunch.env.npm_config_cache ?? '', /atlas-sandbox-cache/);
+});
+
+

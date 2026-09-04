@@ -117,6 +117,8 @@ export const IPC_CHANNELS = {
   jobsListAll: 'jobs:list-all',
   jobsKill: 'jobs:kill',
   jobsEvent: 'jobs:event',
+  imagesCopy: 'images:copy',
+  imagesCopyRequest: 'images:copy-request',
   appDeepLink: 'app:deepLink',
   deepLinkConsume: 'deepLink:consume',
   gitSwitchBranch: 'git:switchBranch',

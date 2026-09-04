@@ -5,7 +5,7 @@ import type { ChatMessagePart, ConversationStatus } from '../../shared/contracts
  * conversation: what in this thread needs a human, right now?
  *
  * Pure data-in/level-out so it unit-tests without a store and can be reused
- * by sidebar rows, the activity popover, and the ⌘⌥A cycle.
+ * by sidebar rows, the activity popover, and the ⌥⌘A cycle.
  */
 
 export type AttentionLevel = 'needsInput' | 'running' | 'queued' | 'unread' | 'idle';
@@ -29,8 +29,8 @@ export interface AttentionInput {
   readonly unreadCount?: number;
   /**
    * An active /goal: end-of-turn "unread" is expected continuation, not a
-   * human's turn (Codex suppresses the same notification). Needs-input and
-   * running still surface — only the idle-unread bump is suppressed.
+   * human's turn (Codex suppresses the same notification). Needs-input still
+   * surfaces — only the idle-unread bump is suppressed.
    */
   readonly hasActiveGoal?: boolean;
 }
@@ -45,7 +45,16 @@ export const ATTENTION_LEVEL_ORDER: readonly AttentionLevel[] = [
 ];
 
 export function deriveAttentionState(input: AttentionInput): AttentionLevel {
-  if (input.hasPendingApproval || input.draftStatus === 'error') return 'needsInput';
+  // Pending approval or failure halts progress and requires human decision.
+  // Needs-input strictly outranks running/liveness: a turn stalled on an approval
+  // card must alert the user rather than masquerading as actively computing.
+  if (
+    input.hasPendingApproval ||
+    input.draftStatus === 'error' ||
+    input.conversationStatus === 'failed'
+  ) {
+    return 'needsInput';
+  }
 
   const running =
     input.draftStatus === 'streaming' ||
@@ -76,7 +85,7 @@ export function hasPendingApprovalInParts(parts: readonly ChatMessagePart[] | un
 }
 
 /**
- * ⌘⌥A "next chat needing attention". Needs-input first, then running,
+ * ⌥⌘A "next chat needing attention". Needs-input first, then running,
  * queued, unread; within a tier most-recent first. The current selection is
  * skipped so mashing the shortcut cycles through *other* threads.
  *

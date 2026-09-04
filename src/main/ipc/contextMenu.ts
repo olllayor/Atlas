@@ -21,6 +21,9 @@ export const MAX_CHAT_SELECTION_CHARS = 4000;
  * 1. Editable elements (<input>, <textarea>, contentEditable) get native
  *    macOS Cut, Copy, Paste, Undo, Redo, Select All.
  * 2. Hyperlinks get "Open Link in Browser" and "Copy Link Address".
+ * 3. Images get "Copy Image". The click only forwards the source to the
+ *    renderer, which fetches the bytes (it alone can read `blob:` URLs) and
+ *    answers through the images IPC that writes the clipboard.
  */
 export function attachContextMenu(window: BrowserWindow): void {
   window.webContents.on('context-menu', (_event, params) => {
@@ -39,9 +42,44 @@ export function attachContextMenu(window: BrowserWindow): void {
       return;
     }
 
-    // Link-only right-clicks get the link menu here. Link *plus* selection is
-    // owned by the chat-selection IPC menu below (which includes the same two
-    // link items), so this branch stays selection-free to avoid double popups.
+    // Images get a copy item wherever they appear — transcript tiles,
+    // composer tiles, the lightbox. Link-only right-clicks get the link menu
+    // here. Link *plus* selection is owned by the chat-selection IPC menu
+    // below (which includes the same two link items), so this branch stays
+    // selection-free to avoid double popups. An image that is also a link
+    // keeps its link items below the copy item.
+    if (params.mediaType === 'image' && params.srcURL && !params.selectionText) {
+      const srcURL = params.srcURL;
+      const linkURL = params.linkURL;
+      const template: MenuItemConstructorOptions[] = [
+        {
+          label: 'Copy Image',
+          click: () => {
+            window.webContents.send(IPC_CHANNELS.imagesCopyRequest, srcURL);
+          },
+        },
+      ];
+      if (linkURL) {
+        template.push(
+          { type: 'separator' },
+          {
+            label: 'Open Link in Browser',
+            click: () => {
+              void shell.openExternal(linkURL);
+            },
+          },
+          {
+            label: 'Copy Link Address',
+            click: () => {
+              clipboard.writeText(linkURL);
+            },
+          },
+        );
+      }
+      Menu.buildFromTemplate(template).popup({ window });
+      return;
+    }
+
     if (params.linkURL && !params.selectionText) {
       const linkMenu = Menu.buildFromTemplate([
         {

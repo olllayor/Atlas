@@ -1,4 +1,5 @@
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { formatSkillBody } from '../../shared/plugins';
 import type { LoadedSkill } from './PluginLoader';
@@ -6,20 +7,16 @@ import { readSkillBody } from './PluginLoader';
 import type { WorkspaceMode } from '../../shared/workspaceModes';
 import type { LoadedPlugin } from './PluginLoader';
 import type { PluginRegistry, PluginSnapshot } from './PluginRegistry';
+import { StandaloneSkillsScanner } from './StandaloneSkillsScanner';
 
 /**
- * The skills every installed plugin offers.
- *
- * A view over `PluginRegistry` rather than its own scanner: skills are one of
- * several component types a bundle carries, and reading the directory once per
- * consumer would mean the prompt and the tool set could disagree about what is
- * installed.
+ * The skills available to an Atlas session, sourced from:
+ * 1. Global standalone Agent Skills (~/.agents/skills, ~/.claude/skills, ~/.codex/skills, ~/.atlas/skills)
+ * 2. Project standalone Agent Skills (<projectRoot>/.agents/skills, etc.)
+ * 3. Installed plugin bundles (~/.atlas/plugins)
  *
  * The two-phase split is the point. Only a name and a one-line description
- * reach the prompt; the body is read when `load_skill` asks for it. On a
- * machine with 34 bundles installed that is ~25 KiB of index against ~2 MB of
- * bodies — the standing cost is roughly 80x smaller than preloading would be,
- * for the same 208 skills.
+ * reach the prompt; the body is read when `load_skill` asks for it.
  */
 
 /** Ceiling on the whole index, so a machine full of bundles cannot flood the prompt. */
@@ -28,10 +25,11 @@ const MAX_INDEX_BYTES = 24 * 1024;
 /** Per-entry description cap. The parse limit is far too generous for an index. */
 const MAX_INDEX_DESCRIPTION_CHARS = 200;
 
-/** What a session is, for deciding which plugins belong in it. */
+/** What a session is, for deciding which plugins and skills belong in it. */
 export type SkillContext = {
   mode: WorkspaceMode;
   hasProject: boolean;
+  projectRoot?: string | null;
 };
 
 export type SkillsSnapshot = PluginSnapshot & {
@@ -40,60 +38,118 @@ export type SkillsSnapshot = PluginSnapshot & {
 };
 
 export class SkillsService {
+  private readonly standaloneScanner: StandaloneSkillsScanner;
+
   constructor(
     private readonly registry: PluginRegistry,
     /**
-     * The beta switch, read live on every access.
+     * The beta switch for plugin bundles, read live on every access.
      *
-     * Off, the service is inert: the snapshot is empty, so the prompt index,
-     * the `load_skill` tool and every `@plugin` mention resolve to nothing —
-     * the same shape as a machine with no plugins installed.
+     * Off, plugin bundles are withheld; standalone Agent Skills remain available.
      */
-    private readonly isEnabled: () => boolean = () => true
-  ) {}
+    private readonly isEnabled: () => boolean = () => true,
+    standaloneScanner?: StandaloneSkillsScanner
+  ) {
+    const isCustomRegistryRoot = registry.root !== join(homedir(), '.atlas', 'plugins');
+    this.standaloneScanner =
+      standaloneScanner ??
+      new StandaloneSkillsScanner(
+        isCustomRegistryRoot ? { globalRoots: [] } : undefined
+      );
+  }
 
-  /** The registry's view, plus every skill flattened across bundles. */
-  snapshot(): SkillsSnapshot {
+  /** The registry's view, plus every skill flattened across bundles and standalone locations. */
+  snapshot(projectRoot?: string | null): SkillsSnapshot {
     const snapshot = this.registry.snapshot();
     const plugins = this.isEnabled() ? snapshot.plugins : [];
-    return { ...snapshot, plugins, skills: plugins.flatMap((plugin) => plugin.skills) };
+    const pluginSkills = plugins.flatMap((plugin) => plugin.skills);
+    const standaloneSkills = this.standaloneScanner.scan(projectRoot);
+
+    const seen = new Set<string>();
+    const mergedSkills: LoadedSkill[] = [];
+
+    // Standalone skills (project and global)
+    for (const skill of standaloneSkills) {
+      const key = skill.name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        mergedSkills.push(skill);
+      }
+    }
+
+    // Plugin skills
+    for (const skill of pluginSkills) {
+      mergedSkills.push(skill);
+    }
+
+    return { ...snapshot, plugins, skills: mergedSkills };
   }
 
   /**
-   * Skills whose plugin fits the session it would be offered in.
+   * Skills whose plugin and scope fit the session it would be offered in.
    *
    * A code-only plugin has nothing to say in a work session, and a plugin that
-   * needs a project has nothing to act on without one. Filtering here rather
-   * than at selection time means those skills cost no tokens at all, instead of
-   * costing an index line and an occasional wrong choice.
-   *
-   * Absent context means no filtering: the context meter and any caller without
-   * a session should see the whole set rather than a guess.
+   * needs a project has nothing to act on without one. Standalone project skills
+   * require a project, while global skills apply anywhere.
    */
   applicableSkills(context?: SkillContext): LoadedSkill[] {
-    const snapshot = this.snapshot();
-
-    return snapshot.plugins
+    const snapshot = this.registry.snapshot();
+    const plugins = this.isEnabled() ? snapshot.plugins : [];
+    const pluginSkills = plugins
       .filter((plugin) => !context || pluginApplies(plugin, context))
       .flatMap((plugin) => plugin.skills);
+
+    const standaloneSkills = this.standaloneScanner.scan(context?.projectRoot);
+    const applicableStandalone = standaloneSkills.filter((skill) => {
+      if (skill.pluginName === 'project' && context && !context.hasProject) {
+        return false;
+      }
+      return true;
+    });
+
+    const seen = new Set<string>();
+    const mergedSkills: LoadedSkill[] = [];
+
+    for (const skill of applicableStandalone) {
+      const key = skill.name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        mergedSkills.push(skill);
+      }
+    }
+
+    for (const skill of pluginSkills) {
+      mergedSkills.push(skill);
+    }
+
+    return mergedSkills;
   }
 
   /**
-   * Resolves a skill by the name the model used.
+   * Resolves a skill by the name the model or user used.
    *
-   * Both the qualified `plugin:skill` and the bare `skill` are accepted: the
-   * index publishes the qualified form, but a user asking for a skill by name
-   * says the bare one, and refusing that would be pedantry.
+   * Accepts bare name ("apple-design"), qualified name ("demo:yeet"),
+   * or scope-prefixed name ("global:apple-design", "project:shadcn").
+   *
+   * Scoped strictly to the given project root: a skill from another project
+   * is never returned, so project boundaries are not crossed by name lookup.
    */
-  find(name: string): LoadedSkill | null {
+  find(name: string, projectRoot?: string | null): LoadedSkill | null {
     const wanted = name.trim().toLowerCase();
-    const skills = this.snapshot().skills;
+    const skills = this.snapshot(projectRoot).skills;
 
     return (
       skills.find((skill) => skill.qualifiedName.toLowerCase() === wanted) ??
       skills.find((skill) => skill.name.toLowerCase() === wanted) ??
+      skills.find((skill) => `${skill.pluginName}:${skill.name}`.toLowerCase() === wanted) ??
       null
     );
+  }
+
+  /** Drops standalone caches alongside the registry, so new skills appear. */
+  invalidate(): void {
+    this.registry.invalidate();
+    this.standaloneScanner.invalidate();
   }
 
   /**
@@ -104,8 +160,8 @@ export class SkillsService {
    * a skill is a directory rather than a file, and a body that points at
    * `references/` is unusable without knowing where `references/` is.
    */
-  read(name: string): string {
-    const skill = this.find(name);
+  read(name: string, projectRoot?: string | null): string {
+    const skill = this.find(name, projectRoot);
 
     if (!skill) {
       return `There is no skill called "${name}". Check the available skills listed in the system prompt.`;
@@ -159,13 +215,12 @@ export class SkillsService {
 
     return [
       '<available_skills>',
-      'Optional instruction sets contributed by installed plugins. Each line is a name and what it is for.',
+      'Optional instruction sets contributed by installed plugins and user skills. Each line is a name and what it is for.',
       'When one matches the task, call load_skill with its name and follow what it returns. Do not guess at a skill\'s contents from its description.',
       ...lines,
       '</available_skills>'
     ].join('\n');
   }
-
 }
 
 function pluginApplies(plugin: LoadedPlugin, context: SkillContext): boolean {

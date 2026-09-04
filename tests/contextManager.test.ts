@@ -750,3 +750,42 @@ test('ten-turn session grows the request as a pure prefix extension', () => {
   ).length;
   assert.equal(snapshotCount, 2);
 });
+
+test('ContextManager expands persisted citation links for the model only', async () => {
+  const { createAssistantCitation, serializeAssistantCitation } = await import(
+    '../src/shared/citations.js'
+  );
+  const citation = createAssistantCitation({
+    conversationId: 'conv-1',
+    messageId: 'msg-1',
+    text: 'quoted words here',
+    start: 0,
+    end: 17,
+    prefix: '',
+    suffix: '',
+  });
+  assert.ok(citation);
+  const link = serializeAssistantCitation(citation!);
+  const rawUserText = `why does this fail? ${link}`;
+
+  const manager = new ContextManager();
+  const history: ModelMessage[] = [
+    { role: 'user', content: rawUserText },
+    { role: 'assistant', content: 'Because the token expired.' },
+  ];
+  const input = manager.buildModelInput({
+    conversationId: 'conversation-cite',
+    history,
+    mode: 'standard',
+  });
+
+  const wireUser = input.recentMessages.find((message) => message.role === 'user');
+  assert.ok(wireUser);
+  const wireText = String(wireUser!.content);
+  // The model gets readable quotes with provenance, never href bytes.
+  assert.match(wireText, /\[assistant-quote-1\]/);
+  assert.match(wireText, /<assistant_citations>/);
+  assert.doesNotMatch(wireText, /atlas-citation:/);
+  // The persisted history keeps the clickable link bytes untouched.
+  assert.equal(history[0]!.content, rawUserText);
+});

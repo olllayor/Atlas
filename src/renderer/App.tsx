@@ -19,7 +19,6 @@ import type { AppUpdateSnapshot, AtlasDeepLink, DesignTheme, FontFamilyOverride,
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
-import type { PermissionPreset } from '../shared/permissionPresets';
 import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
@@ -37,7 +36,7 @@ import { POSTHOG_EVENTS } from '../shared/posthog';
 import { ChatWindowSlot } from './components/ChatWindowSlot';
 import { CommandPalette } from './components/CommandPalette';
 import { formatExplainPrompt, formatMarkdownQuote, sanitizeSearchQuery } from './lib/contextMenu';
-import { formatCitationForComposer, type AssistantCitation } from '../shared/citations';
+import { mergeCitationsIntoMessage, type AssistantCitation } from '../shared/citations';
 import { ChatComposerSlot } from './components/ChatComposerSlot';
 import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
@@ -105,6 +104,7 @@ import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { notify, notifyError } from './lib/notify';
+import { copyImageSrc } from './lib/copyImage';
 import { isMacPlatform } from './lib/platform';
 import { buildThemeOverrides } from './lib/themeOverrides';
 import { stampTranslucentSidebar } from './lib/translucentSidebar';
@@ -718,11 +718,17 @@ export default function App() {
   // Lives here rather than in the switcher because the mode is a property of
   // the open conversation, and the switcher itself now renders inside the
   // sidebar, which has no idea which conversation that is.
+  //
+  // Permission is a fixed function of mode — Work asks, Code runs with full
+  // access — so the switch writes both axes at once. There is no separate
+  // access UI; the approval ladder still gates at runtime, just not by hand.
   const handleWorkspaceModeChange = useCallback(
     (mode: WorkspaceMode) => {
       if (!selectedConversationId) return;
       captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: mode });
       void setConversationWorkspace(selectedConversationId, { mode });
+      const permission: ToolPermissionMode = mode === 'code' ? 'full-access' : 'ask';
+      void setConversationToolPermissionMode(selectedConversationId, permission);
       // Code is the mode with a panel worth seeing; opening it on the switch
       // saves the second click without locking the two together — the toggle
       // still wins afterwards.
@@ -739,7 +745,7 @@ export default function App() {
         }
       }
     },
-    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, showRightPanel]
+    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setConversationToolPermissionMode, showRightPanel]
   );
   const handleExecutionTargetChange = useCallback(
     (target: ExecutionTarget) => {
@@ -919,6 +925,12 @@ export default function App() {
     },
     [selectedConversationId]
   );
+  // What the main process detected about that folder — project type, framework,
+  // configured env keys. Fetched, not derived: it comes from the filesystem.
+  const { context: projectContext, refresh: refreshProjectContext } = useWorkspaceContext(
+    selectedConversationId,
+    activeProject?.id ?? null,
+  );
   // With no conversation open there is nothing to write the rung onto, so it
   // becomes the preference every later conversation starts from.
   const handleToolPermissionModeChange = useCallback(
@@ -930,34 +942,6 @@ export default function App() {
       }
     },
     [selectedConversationId, setConversationToolPermissionMode, updatePreferences]
-  );
-  /**
-   * A preset is the two axis handlers run back to back, so it inherits their
-   * side effects instead of reimplementing them: switching into Code opens the
-   * workbench and asks for a project folder when one is missing, and each axis
-   * write is optimistic with rollback in the store.
-   */
-  const handlePermissionPresetSelect = useCallback(
-    (preset: PermissionPreset) => {
-      // Both mounts are disabled without a selected conversation; guard anyway
-      // so a preset can never half-apply (the mode handler no-ops without a
-      // conversation while the permission handler would fall back to the
-      // settings default — writing one axis and not the other).
-      if (!selectedConversationId) return;
-      captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, {
-        setting: 'permissionPreset',
-        value: preset.id
-      });
-      handleWorkspaceModeChange(preset.workspaceMode);
-      handleToolPermissionModeChange(preset.toolPermissionMode);
-    },
-    [handleWorkspaceModeChange, handleToolPermissionModeChange, selectedConversationId]
-  );
-  // What the main process detected about that folder — project type, framework,
-  // configured env keys. Fetched, not derived: it comes from the filesystem.
-  const { context: projectContext, refresh: refreshProjectContext } = useWorkspaceContext(
-    selectedConversationId,
-    activeProject?.id ?? null,
   );
 
   /**
@@ -1004,26 +988,20 @@ export default function App() {
 
   const handleCiteCitation = useCallback(
     (citation: AssistantCitation) => {
-      if (!selectedConversationId) return;
-      const link = formatCitationForComposer(citation);
-      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
-      setComposerDraft(
-        selectedConversationId,
-        current.trim() ? `${current.replace(/\s+$/, '')} ${link}` : link,
-      );
+      if (!selectedConversationId) return '';
+      const key = useAppStore.getState().addComposerCitation(selectedConversationId, citation);
       requestComposerFocus();
+      return key;
     },
-    [requestComposerFocus, selectedConversationId, setComposerDraft]
+    [requestComposerFocus, selectedConversationId]
   );
 
   const handleCiteCommentChange = useCallback(
-    (oldSource: string, newSource: string) => {
-      if (!selectedConversationId || oldSource === newSource) return;
-      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
-      if (!current.includes(oldSource)) return;
-      setComposerDraft(selectedConversationId, current.replace(oldSource, newSource));
+    (key: string, next: AssistantCitation) => {
+      if (!selectedConversationId || !key) return;
+      useAppStore.getState().updateComposerCitation(selectedConversationId, key, next);
     },
-    [selectedConversationId, setComposerDraft]
+    [selectedConversationId]
   );
 
   const handleSearchInWorkspace = useCallback(
@@ -1153,6 +1131,14 @@ export default function App() {
   */
   useEffect(() => {
     useAppStore.getState().bindGoalEvents();
+  }, []);
+  // Native image menu: main forwards the source, this side fetches the bytes
+  // (only the renderer can read `blob:` URLs) and answers through images.copy.
+  useEffect(() => {
+    const off = window.atlasChat.images?.onCopyRequest?.((src) => {
+      void copyImageSrc(src);
+    });
+    return off;
   }, []);
   useEffect(() => {
     if (!selectedConversationId) return;
@@ -2016,19 +2002,8 @@ export default function App() {
               variant="heading"
               permissionMode={toolPermissionMode}
               permissionDisabled={isActiveDraftStreaming}
-              executionTarget={executionTarget}
-              cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
-              isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
-              conversationId={selectedConversationId ?? undefined}
-              currentBranch={activeProject?.exists ? activeProject.branch : null}
-              onBranchChanged={() => {
-                void refreshProjectContext();
-                void refreshProjects();
-              }}
               onChange={handleWorkspaceModeChange}
               onPermissionModeChange={handleToolPermissionModeChange}
-              onPresetSelect={handlePermissionPresetSelect}
-              onExecutionTargetChange={handleExecutionTargetChange}
               onRequestProject={
                 selectedConversationId
                   ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
@@ -2310,8 +2285,15 @@ export default function App() {
                     fileCount: message.files?.length ?? 0,
                   });
                   const sentAttachmentIds = message.files.map((file) => file.id);
+                  const sentCitationKeys = message.citations.map((entry) => entry.key);
+                  // Tray citations serialize here, at the boundary: the draft
+                  // text the user edited never held link bytes.
+                  const text = mergeCitationsIntoMessage(
+                    message.text,
+                    message.citations.map((entry) => entry.citation),
+                  );
                   return sendMessage({
-                    text: message.text,
+                    text,
                     files: message.files,
                     // Pin the thread: the composer awaits a blob→dataURL pass
                     // before calling us, so the selection may have moved on.
@@ -2320,7 +2302,7 @@ export default function App() {
                     // Only a successful send clears the thread's draft; a failure
                     // leaves the text (and files) in place to retry.
                     if (conversationId) {
-                      clearComposerDraft(conversationId, sentAttachmentIds);
+                      clearComposerDraft(conversationId, sentAttachmentIds, sentCitationKeys);
                     }
                   });
                 }}
@@ -2356,7 +2338,6 @@ export default function App() {
                 }
                 onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
                 onToolPermissionModeChange={handleToolPermissionModeChange}
-                onPermissionPresetSelect={handlePermissionPresetSelect}
                 onOpenGallery={() => setGalleryOpen(true)}
                 />
               )}

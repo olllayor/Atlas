@@ -30,7 +30,8 @@ import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParam
 import { planImageDownscale } from '../../shared/imageDownscale';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
-import { CitationStrip } from './CitationStrip';
+import { CitationTray } from './CitationTray';
+import type { CitedQuoteEntry } from '../../shared/citations';
 import { AtlasLoader } from './ui/atlas-loader';
 import { useAppStore } from '../stores/useAppStore';
 import type {
@@ -39,7 +40,6 @@ import type {
   ProviderCredentialSummary,
 } from '../../shared/contracts';
 import type { WorkspaceMode } from '../../shared/workspaceModes';
-import type { PermissionPreset } from '../../shared/permissionPresets';
 import { ModelSelector } from './ModelSelector';
 import { WorkspaceAccessChip } from './workspace/WorkspaceModeSwitch';
 import {
@@ -90,6 +90,8 @@ export type ComposerAttachment = {
 export type ComposerMessage = {
   text: string;
   files: ComposerAttachment[];
+  /** Staged cited quotes; merged into text as links at send time. */
+  citations: CitedQuoteEntry[];
 };
 
 export type ComposerProps = {
@@ -117,6 +119,9 @@ export type ComposerProps = {
   /** Staged files for the *current* conversation; owned by the store. */
   attachments: ComposerAttachment[];
   onAttachmentsChange: (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => void;
+  /** Staged cited quotes for the *current* conversation; owned by the store. */
+  citations: CitedQuoteEntry[];
+  onCitationsChange: (updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]) => void;
   onChange: (value: string) => void;
   onSend: (message: ComposerMessage) => Promise<void> | void;
   onAbort: () => void;
@@ -130,6 +135,7 @@ export type ComposerProps = {
   defaultFreeOnly?: boolean;
   onManageProviders?: () => void;
   reasoningEffort: ReasoningEffort;
+  /** Read by the context meter: read-only threads carry no tool tokens. */
   toolPermissionMode: ToolPermissionMode;
   /**
    * The other half of the access chip. The composer does not own the mode — the
@@ -143,8 +149,6 @@ export type ComposerProps = {
   onRequestProject?: () => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onToolPermissionModeChange: (value: ToolPermissionMode) => void;
-  /** One-click posture from the chip's menu: writes both access axes at once. */
-  onPermissionPresetSelect?: (preset: PermissionPreset) => void;
   /**
    * Receives built-in slash command names (`compact`, `review`…). A draft that
    * is exactly one of them is consumed as an action instead of sent.
@@ -517,6 +521,8 @@ export function Composer({
   draftStatus,
   attachments: stagedAttachments,
   onAttachmentsChange,
+  citations: stagedCitations,
+  onCitationsChange,
   onChange,
   onSend,
   onAbort,
@@ -537,7 +543,6 @@ export function Composer({
   onRequestProject,
   onReasoningEffortChange,
   onToolPermissionModeChange,
-  onPermissionPresetSelect,
   onSlashAction,
   onOpenGallery,
   selectedProviderId,
@@ -776,7 +781,8 @@ export function Composer({
 
     return candidates.find((model) => model.supportsVision === true) ?? candidates[0] ?? null;
   }, [attachments.files, models, selectedModelId, selectedProviderId, unsupportedReason]);
-  const hasSubmittableContent = Boolean(value.trim()) || attachments.files.length > 0;
+  const hasSubmittableContent =
+    Boolean(value.trim()) || attachments.files.length > 0 || stagedCitations.length > 0;
   const canSend = hasSubmittableContent && !disabled && !unsupportedReason && !isSubmitting;
 
   const submit = useCallback(async () => {
@@ -838,13 +844,13 @@ export function Composer({
 
       // Clearing the draft is the caller's job: it knows which conversation
       // the send belonged to, which may no longer be the selected one.
-      await onSend({ files, text: value });
+      await onSend({ files, text: value, citations: stagedCitations });
     } catch {
       // Keep the input so the user can retry.
     } finally {
       setIsSubmitting(false);
     }
-  }, [attachments, canSend, isStreaming, isSubmitting, onSend, onSlashAction, onChange, value]);
+  }, [attachments, canSend, isStreaming, isSubmitting, onSend, onSlashAction, onChange, value, stagedCitations]);
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashStopHint = useCallback(() => {
@@ -1131,12 +1137,13 @@ export function Composer({
               </div>
             ) : null}
 
-            {/* Cited quotes live in the draft as serialized links; the strip
-                keeps them readable until the phase-2 composer renders them
-                inline. Removing a chip deletes its link bytes. */}
-            <CitationStrip
-              value={value}
-              onRemove={(source) => onChange(value.replace(source, ''))}
+            {/* Cited quotes staged as tray objects above the textarea. The
+                draft string never holds serialized links, so the text the
+                user edits stays readable. Removing a chip drops its entry;
+                links serialize only at send time. */}
+            <CitationTray
+              entries={stagedCitations}
+              onRemove={(key) => onCitationsChange((previous) => previous.filter((entry) => entry.key !== key))}
             />
 
             {footerMessage ? (
@@ -1312,7 +1319,6 @@ export function Composer({
                 disabled={isStreaming || selectedModel?.supportsTools === false}
                 onModeChange={onWorkspaceModeChange}
                 onPermissionModeChange={onToolPermissionModeChange}
-                onPresetSelect={onPermissionPresetSelect}
                 onRequestProject={onRequestProject}
               />
 

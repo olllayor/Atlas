@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
 
-import { EMPTY_COMPOSER_ATTACHMENTS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
+import { EMPTY_COMPOSER_ATTACHMENTS, EMPTY_COMPOSER_CITATIONS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
 import { Composer, type ComposerAttachment, type ComposerProps } from './Composer';
+import type { CitedQuoteEntry } from '../../shared/citations';
 import { QueueDock } from './transcript/QueueDock';
 import { GoalDock } from './goal/GoalDock';
 
@@ -17,6 +18,8 @@ type ChatComposerSlotProps = Omit<
   | 'attachments'
   | 'onChange'
   | 'onAttachmentsChange'
+  | 'citations'
+  | 'onCitationsChange'
   | 'conversationId'
   | 'draftRequestId'
   | 'draftStatus'
@@ -58,6 +61,11 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
       ? state.composerAttachmentsByConversation[conversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
       : EMPTY_COMPOSER_ATTACHMENTS
   );
+  const citations = useAppStore((state) =>
+    conversationId
+      ? state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS
+      : EMPTY_COMPOSER_CITATIONS
+  );
   /*
     Turn identity, not turn content. `draftsByConversation` is replaced on every
     33ms stream flush; these two fields change when a request starts, settles or
@@ -72,6 +80,7 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
   );
   const setComposerDraft = useAppStore((state) => state.setComposerDraft);
   const setComposerAttachments = useAppStore((state) => state.setComposerAttachments);
+  const setComposerCitations = useAppStore((state) => state.setComposerCitations);
   const cancelQueuedFollowup = useAppStore((state) => state.cancelQueuedFollowup);
   // Queued follow-ups for this thread — the dock between transcript and slab.
   const queuedFollowups = useAppStore((state) => selectQueuedFollowups(state, conversationId));
@@ -93,6 +102,15 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
     [conversationId, setComposerAttachments]
   );
 
+  const handleCitationsChange = useCallback(
+    (updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]) => {
+      if (conversationId) {
+        setComposerCitations(conversationId, updater);
+      }
+    },
+    [conversationId, setComposerCitations]
+  );
+
   return (
     <>
       <GoalDock conversationId={conversationId} />
@@ -109,6 +127,8 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
         queuedCount={queuedFollowups.length}
         attachments={attachments}
         onAttachmentsChange={handleAttachmentsChange}
+        citations={citations}
+        onCitationsChange={handleCitationsChange}
         onChange={handleChange}
         value={value}
       />

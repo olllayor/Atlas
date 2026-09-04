@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   ASSISTANT_CITATION_MAX_COMMENT_LENGTH,
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
+  splitByCitations,
   assistantCitationsToPlainText,
   collectAssistantCitations,
   createAssistantCitation,
@@ -12,9 +13,11 @@ import {
   formatCitationForComposer,
   getCitationChipLabel,
   isAssistantCitation,
+  mergeCitationsIntoMessage,
   parseAssistantCitationHref,
   renderAssistantCitationsAsText,
   serializeAssistantCitation,
+  stripAssistantCitations,
   withAssistantCitationComment,
   type AssistantCitation,
 } from '../src/shared/citations';
@@ -188,4 +191,62 @@ test('chip label prefers comment and caps quote length', () => {
   assert.ok(label.length <= 65);
   assert.ok(label.endsWith('…'));
   assert.doesNotMatch(label, /\s{2,}/);
+});
+
+test('strip removes citation links entirely for mention detection', () => {
+  const link = serializeAssistantCitation(makeCitation({ text: 'use @Sites for this' }));
+  const stripped = stripAssistantCitations(`please ${link} now`);
+  assert.doesNotMatch(stripped, /atlas-citation:/);
+  assert.doesNotMatch(stripped, /@Sites/);
+  assert.match(stripped, /please/);
+  assert.match(stripped, /now/);
+});
+
+test('strip leaves plain text untouched', () => {
+  assert.equal(stripAssistantCitations('mention @Sites here'), 'mention @Sites here');
+  assert.equal(stripAssistantCitations(''), '');
+});
+
+test('merge appends serialized tray links after typed text', () => {
+  const first = makeCitation();
+  const { comment: _dropped, ...second } = makeCitation({ messageId: 'msg-2', text: 'second quote', start: 0, end: 12, prefix: '', suffix: '' });
+  const merged = mergeCitationsIntoMessage('why?', [first, second]);
+  assert.ok(merged.startsWith('why? '));
+  assert.equal(collectAssistantCitations(merged).length, 2);
+});
+
+test('merge handles empty text and empty tray', () => {
+  const link = serializeAssistantCitation(makeCitation());
+  assert.equal(mergeCitationsIntoMessage('', [makeCitation()]), link);
+  assert.equal(mergeCitationsIntoMessage('hello', []), 'hello');
+});
+
+test('splitByCitations segments text around links', () => {
+  const first = serializeAssistantCitation(makeCitation());
+  const secondCitation = makeCitation({ messageId: 'msg-2', text: 'second', start: 0, end: 6, prefix: '', suffix: '' });
+  const { comment: _dropped, ...bareSecond } = secondCitation;
+  const second = serializeAssistantCitation(bareSecond);
+  const segments = splitByCitations(`a ${first} b ${second} c`);
+  assert.equal(segments.length, 5);
+  assert.equal(segments[0]?.kind, 'text');
+  assert.equal(segments[1]?.kind, 'citation');
+  assert.equal(segments[2]?.kind, 'text');
+  assert.equal(segments[3]?.kind, 'citation');
+  assert.equal(segments[4]?.kind, 'text');
+  if (segments[1]?.kind === 'citation') {
+    assert.equal(segments[1].citation.messageId, 'msg-1');
+  } else {
+    assert.fail('expected citation segment');
+  }
+});
+
+test('splitByCitations keeps malformed links as text', () => {
+  const segments = splitByCitations('see [Assistant quote](atlas-citation://v1/nope) ok');
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0]?.kind, 'text');
+});
+
+test('splitByCitations returns one text segment for plain input', () => {
+  assert.deepEqual(splitByCitations('plain'), [{ kind: 'text', text: 'plain' }]);
+  assert.deepEqual(splitByCitations(''), []);
 });

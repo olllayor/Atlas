@@ -4,6 +4,7 @@ import type { ModelMessage } from 'ai';
 
 import { pruneModelHistory } from '../compaction/toolResultPruner';
 import { estimateMessagesTokens, estimateTextTokens } from '../../../shared/tokenEstimate';
+import { expandAssistantCitationsForProvider } from '../../../shared/citations';
 import type { ConversationSummariesRepo } from '../../db/repositories/conversationSummariesRepo';
 import {
   COMPACTION_THRESHOLD_DEFAULT,
@@ -596,7 +597,14 @@ function assembleWireTurns(
 ): ModelMessage[] {
   const out = [...split.prefaceMessages];
   for (const turn of split.turns.slice(from)) {
-    out.push(turn.user);
+    // Citations persist as self-contained links and expand only here, on the
+    // wire copy: the transcript keeps clickable bytes, the model gets readable
+    // quotes with their provenance block, and token accounting measures what
+    // is actually sent. Expansion is a pure function of history, so rebuilds
+    // stay byte-identical and the provider cache keeps hitting. Derivation
+    // (turn snapshots, summaries, fingerprints) still reads the raw text,
+    // where quoted words stay percent-encoded and cannot resolve as mentions.
+    out.push(expandCitationsForModel(turn.user));
     const snapshot = turnSnapshot
       ? turnSnapshot(extractMessageText(turn.user, { maxChars: Number.MAX_SAFE_INTEGER }))
       : null;
@@ -980,6 +988,35 @@ function firstDefined<T>(...items: T[]): T | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Expands persisted citation links into the provider-facing quote block.
+ * No-op fast path when the text carries no citation: most turns skip the
+ * regex entirely. Assistant follow-ups never carry citations — only user
+ * drafts do — but the check is shape-based, not role-based, so a pasted
+ * link in any text part expands the same way.
+ */
+function expandCitationsForModel(message: ModelMessage): ModelMessage {
+  const record = asRecord(message);
+  const content = record.content;
+  if (typeof content === 'string') {
+    if (!content.includes('atlas-citation:')) return message;
+    return { ...record, content: expandAssistantCitationsForProvider(content) } as ModelMessage;
+  }
+  if (Array.isArray(content)) {
+    let changed = false;
+    const next = content.map((item) => {
+      const part = asRecord(item);
+      if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('atlas-citation:')) {
+        changed = true;
+        return { ...part, text: expandAssistantCitationsForProvider(part.text) };
+      }
+      return item;
+    });
+    return changed ? ({ ...record, content: next } as ModelMessage) : message;
+  }
+  return message;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

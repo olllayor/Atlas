@@ -1,3 +1,4 @@
+import { DEFAULT_TOOL_PERMISSION_MODE, type ToolPermissionMode } from '../../../shared/chatParameters';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,6 +51,7 @@ import {
   isPlaceholderSessionTitle,
   sanitizeGeneratedTitle,
 } from '../../../shared/sessionTitles';
+import { assistantCitationsToPlainText } from '../../../shared/citations';
 import type { AttachmentStore } from '../../attachments/AttachmentStore';
 import type { ConversationsRepo } from '../../db/repositories/conversationsRepo';
 import type { ModelsRepo } from '../../db/repositories/modelsRepo';
@@ -103,6 +105,7 @@ type ActiveRequest = {
   dirtyMessage?: boolean;
   /** Trailing timer to ensure dirty parts persist even if streaming stream pauses. */
   persistTimer?: ReturnType<typeof setTimeout> | null;
+  resolvedApprovals?: Map<string, { approvalId: string; approved: boolean; reason?: string }>;
 };
 
 type BufferedRequestEvents = {
@@ -479,13 +482,18 @@ export class ChatEngine {
 
         const childRequestId = randomUUID();
 
+        const effectiveParentMode: ToolPermissionMode =
+          parentRequest?.toolPermissionMode ??
+          convSummary?.toolPermissionMode ??
+          DEFAULT_TOOL_PERMISSION_MODE;
+
         const childStartRequest: ChatStartRequest = {
           conversationId,
           providerId,
           modelId,
           messages: [],
           enableTools: true,
-          toolPermissionMode: parentRequest?.toolPermissionMode,
+          toolPermissionMode: effectiveParentMode === 'read-only' ? 'read-only' : 'full-access',
         };
 
         let currentMessages: ModelMessage[] = [
@@ -534,16 +542,21 @@ export class ChatEngine {
             break;
           }
 
-          const allAutoApproved = turnResult.pendingApprovals.every((approval) => {
-            const toolType = inferCanonicalToolType({ toolName: approval.toolName });
-            const sessionScopeKey = isSandboxEscalatedCall(accumulatedParts, approval.toolCallId)
-              ? null
-              : buildApprovalScopeKey(toolType, approval.toolName);
-            return (
-              sessionScopeKey &&
-              this.approvalController.hasConversationScopeGrant(conversationId, sessionScopeKey)
-            );
-          });
+          // Subagents run in full-access (unless the parent is read-only), so they
+          // never pause for approval — the parent already delegated.
+          const isFullAccessChild = childStartRequest.toolPermissionMode === 'full-access';
+          const allAutoApproved = isFullAccessChild
+            ? true
+            : turnResult.pendingApprovals.every((approval) => {
+                const toolType = inferCanonicalToolType({ toolName: approval.toolName });
+                const sessionScopeKey = isSandboxEscalatedCall(accumulatedParts, approval.toolCallId)
+                  ? null
+                  : buildApprovalScopeKey(toolType, approval.toolName);
+                return (
+                  sessionScopeKey &&
+                  this.approvalController.hasConversationScopeGrant(conversationId, sessionScopeKey)
+                );
+              });
 
           if (!allAutoApproved) {
             break;
@@ -1500,6 +1513,7 @@ export class ChatEngine {
     }
 
     if (request.decision === 'decline' || request.decision === 'cancel') {
+      active.resolvedApprovals?.clear();
       this.recordRuntimeEnvelope(active, {
         eventId: randomUUID(),
         conversationId: active.request.conversationId,
@@ -1546,17 +1560,32 @@ export class ChatEngine {
       return;
     }
 
+    if (!active.resolvedApprovals) {
+      active.resolvedApprovals = new Map();
+    }
+    active.resolvedApprovals.set(request.approvalId, {
+      approvalId: request.approvalId,
+      approved: true,
+      reason: request.reason,
+    });
+
+    if (this.approvalController.hasPendingApprovals(request.requestId)) {
+      active.awaitingApproval = true;
+      return;
+    }
+
     const history = this.conversationsRepo.getModelHistory(active.request.conversationId);
+    const resolvedList = Array.from(active.resolvedApprovals.values());
+    active.resolvedApprovals.clear();
+
     const approvalMessage: ModelMessage = {
       role: 'tool',
-      content: [
-        {
-          type: 'tool-approval-response',
-          approvalId: request.approvalId,
-          approved: true,
-          ...(request.reason?.trim() ? { reason: request.reason.trim() } : {}),
-        },
-      ],
+      content: resolvedList.map((item) => ({
+        type: 'tool-approval-response',
+        approvalId: item.approvalId,
+        approved: item.approved,
+        ...(item.reason?.trim() ? { reason: item.reason.trim() } : {}),
+      })),
     } as ModelMessage;
 
     active.awaitingApproval = false;
@@ -1648,12 +1677,23 @@ export class ChatEngine {
         });
         this.approvalController.setPendingApprovals(requestId, pendingApprovals);
         this.runtimeStateRepo.completeTurn(active.turnId, this.runtimeStateRepo.getLastSequence(request.conversationId), 'awaiting_approval');
-        const autoApproved = pendingApprovals.find(
-          (approval) =>
-            approval.sessionScopeKey &&
-            this.approvalController.hasConversationScopeGrant(request.conversationId, approval.sessionScopeKey),
-        );
-        if (autoApproved) {
+        // Full-access means "run without asking" — including OpenCode permission
+        // asks and any built-in approval that still slipped through. The user
+        // explicitly chose the high-risk mode, so auto-accept instead of
+        // parking the turn on an approval card.
+        const effectiveMode =
+          request.toolPermissionMode ??
+          this.conversationsRepo.getSummary(request.conversationId)?.toolPermissionMode ??
+          DEFAULT_TOOL_PERMISSION_MODE;
+        const autoApprovedList =
+          effectiveMode === 'full-access'
+            ? pendingApprovals
+            : pendingApprovals.filter(
+                (approval) =>
+                  approval.sessionScopeKey &&
+                  this.approvalController.hasConversationScopeGrant(request.conversationId, approval.sessionScopeKey),
+              );
+        for (const autoApproved of autoApprovedList) {
           void this.respondToolApproval({
             requestId,
             approvalId: autoApproved.approvalId,
@@ -1922,6 +1962,7 @@ export class ChatEngine {
     this.persistActiveMessage(target, true);
     this.bufferedEvents.delete(requestId);
     this.activeRequests.delete(requestId);
+    target.resolvedApprovals?.clear();
     this.approvalController.clearRequest(requestId);
     this.runningRequestIds.delete(requestId);
     this.startNextQueuedRequest();
@@ -2445,7 +2486,9 @@ export class ChatEngine {
         return;
       }
 
-      const title = deriveTitleFromUserMessage(userText);
+      // Titles see quote text, never href bytes: a cite-first message would
+      // otherwise name the session after `atlas-citation://` protocol noise.
+      const title = deriveTitleFromUserMessage(assistantCitationsToPlainText(userText));
       if (!title) {
         return;
       }
@@ -2564,9 +2607,14 @@ export class ChatEngine {
     const firstAssistantMessage = messages.find((message) => message.role === 'assistant');
 
     let title: string | null = null;
-    const userText = firstUserMessage?.content?.trim().slice(0, 600);
+    // Plain text, never href bytes: the model names the session from words.
+    const userText = firstUserMessage
+      ? assistantCitationsToPlainText(firstUserMessage.content).trim().slice(0, 600)
+      : undefined;
     const assistantText = firstAssistantMessage
-      ? getTextContentFromParts(firstAssistantMessage.parts).trim().slice(0, 600)
+      ? assistantCitationsToPlainText(getTextContentFromParts(firstAssistantMessage.parts))
+          .trim()
+          .slice(0, 600)
       : '';
 
     if (userText) {
@@ -2608,7 +2656,7 @@ export class ChatEngine {
       }
 
       if (!title) {
-        title = deriveTitleFromUserMessage(userText);
+        title = deriveTitleFromUserMessage(assistantCitationsToPlainText(userText));
       }
     }
 

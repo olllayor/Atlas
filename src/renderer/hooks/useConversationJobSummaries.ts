@@ -5,10 +5,12 @@ import {
   summarizeJobsByConversation,
   type ConversationJobSummary
 } from '../lib/jobActivity';
+import { notify } from '../lib/notify';
+import { useAppStore } from '../stores/useAppStore';
 
 /**
  * Live per-conversation job rollups for whole-app views (sidebar rows, the
- * activity bell, ⌘⌥A cycling).
+ * activity bell, ⌥⌘A cycling).
  *
  * One subscription per window — registry events carry the owning conversation
  * id, so a single listener maintains every conversation's counts. Seeded from
@@ -54,6 +56,26 @@ export function useConversationJobSummaries(): ReadonlyMap<string, ConversationJ
         roster = next;
       }
       recompute(roster);
+
+      if (event.type === 'done' && event.snapshot) {
+        const store = useAppStore.getState();
+        const convId = event.snapshot.conversationId;
+        if (convId && convId !== store.selectedConversationId) {
+          store.markConversationUnread(convId);
+          const conv = store.conversations.find((c) => c.id === convId);
+          const title = conv?.title ?? 'A conversation';
+          const isFailed = event.snapshot.status === 'failed';
+          notify({
+            tone: isFailed ? 'error' : 'info',
+            title: isFailed ? 'Background job failed' : 'Background job completed',
+            description: `${event.snapshot.label} · ${title}`,
+            actionLabel: 'Open',
+            onAction: () => {
+              void store.loadConversation(convId);
+            },
+          });
+        }
+      }
     });
 
     return () => {

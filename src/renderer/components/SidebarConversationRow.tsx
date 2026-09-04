@@ -31,6 +31,8 @@ type SidebarConversationRowProps = {
   jumpLabel?: string | null;
   showJumpHint?: boolean;
   projectTitle?: string | null;
+  /** Nested rows hide the project name: the section header already says it. */
+  hideProjectName?: boolean;
   branch?: string | null;
   changeStats?: ConversationChangeStats | null;
   /** Non-empty unsent composer text exists for this chat. */
@@ -69,6 +71,7 @@ export function SidebarConversationRow({
   jumpLabel,
   showJumpHint = false,
   projectTitle = null,
+  hideProjectName = false,
   branch = null,
   changeStats = null,
   hasUnsentDraft = false,
@@ -109,9 +112,7 @@ export function SidebarConversationRow({
       : isFailed
         ? 'text-error-text'
         : isRunning
-          ? isActive
-            ? 'text-accent'
-            : 'text-accent opacity-75'
+          ? 'text-brand-strong'
           : isUnread
             ? 'text-success'
             : 'text-text-tertiary';
@@ -124,7 +125,7 @@ export function SidebarConversationRow({
         <span
           className={cn(
             'min-w-0 flex-1 truncate text-xs text-text-secondary transition-colors group-hover/row:text-text-primary',
-            isRunning && 'motion-shimmer text-text-primary'
+            isRunning && 'text-text-primary'
           )}
           title={primaryLabel}
         >
@@ -185,10 +186,10 @@ export function SidebarConversationRow({
     !isActive && !isSelected && !isRunning && !isFailed && !needsInput && !isWoke && !isUnread;
 
   return (
-    <div className="relative flex min-w-0 flex-1 flex-col gap-0 text-left py-1">
+    <div className="relative flex min-w-0 flex-1 flex-col gap-1 text-left py-0.5">
       {/* Line 1: project + status. Status yields to hover actions. */}
       <div className="flex h-5 items-center gap-1.5 text-xs">
-        {projectTitle ? (
+        {projectTitle && !hideProjectName ? (
           <span className="flex min-w-0 items-center gap-1.5">
             <Folder className="size-3.5 shrink-0 text-text-tertiary" strokeWidth={1.75} aria-hidden />
             <span
@@ -225,7 +226,7 @@ export function SidebarConversationRow({
               </span>
             ) : isRunning ? (
               <span className={cn('inline-flex items-center gap-1 text-xs font-medium', statusClass)}>
-                <span className="size-1.5 shrink-0 rounded-full bg-accent motion-glyph-pulse" aria-hidden />
+                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong motion-glyph-pulse" aria-hidden />
                 <span role="status">Working</span>
                 {startedMs != null ? (
                   <span aria-hidden>
@@ -310,8 +311,7 @@ export function SidebarConversationRow({
         <span
           className={cn(
             'block truncate text-sm leading-snug transition-colors group-hover/row:text-text-primary',
-            recede ? 'font-normal text-text-secondary' : 'font-medium text-text-primary',
-            isRunning && 'motion-shimmer'
+            recede ? 'font-normal text-text-secondary' : 'font-medium text-text-primary'
           )}
           title={primaryLabel}
         >
@@ -320,7 +320,7 @@ export function SidebarConversationRow({
       </div>
 
       {/* Line 3: branch plus diff. Branch is the stable identifier. */}
-      <div className="flex min-w-0 items-center gap-1.5 pt-0.5 text-text-tertiary">
+      <div className="flex min-w-0 items-center gap-1.5 text-text-tertiary">
         {hasUnsentDraft ? (
           <span
             title="Unsent draft"

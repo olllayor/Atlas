@@ -36,9 +36,16 @@ export type CiteSourceAnchor = {
 
 export type CapturedCiteSelection = {
   messageId: string;
+  source: HTMLElement;
   selector: CiteSelector;
   range: Range;
 };
+
+/**
+ * DOM Range alias for modules where another `Range` type (e.g. the
+ * virtualizer's) shadows the global. Same type, unambiguous name.
+ */
+export type CiteDomRange = Range;
 
 const CONTROL_SELECTOR = 'button, input, textarea, select, [role=button], [contenteditable]';
 const EXCLUDED_SELECTOR = `${CONTROL_SELECTOR}, [hidden], [aria-hidden=true], script, style, template, noscript, svg`;
@@ -245,7 +252,7 @@ export function captureCiteSelection(
   }
   if (rawStart === null) return null;
   const selector = createCiteSelector(stream.text, rawStart, rawEnd);
-  return selector === null ? null : { messageId, selector, range };
+  return selector === null ? null : { messageId, source, selector, range };
 }
 
 function rawTextOffset(text: string, normalizedOffset: number): number {

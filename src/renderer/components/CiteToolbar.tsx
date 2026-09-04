@@ -92,7 +92,7 @@ export function CiteToolbar({ viewport, conversationId, onCite }: CiteToolbarPro
       const pointer = pointerRef.current;
       setSelection({
         citation,
-        anchor: { source: captured.source as HTMLElement, range: captured.range, viewport },
+        anchor: { source: captured.source, range: captured.range, viewport },
         x: pointer?.x ?? lastRect.right,
         y: (pointer?.y ?? lastRect.bottom) + 4,
       });

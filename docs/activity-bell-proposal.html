@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity Bell Popover — Now vs Proposed</title>
+<style>
+  :root {
+    --bg-page: #0d0d0d;
+    --bg-panel: #141414;
+    --bg-row-hover: #1f1f1f;
+    --bg-trigger: #1a1a1a;
+    --border-subtle: rgba(255,255,255,0.06);
+    --border-default: rgba(255,255,255,0.10);
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255,255,255,0.78);
+    --text-tertiary: rgba(255,255,255,0.55);
+    --text-muted: rgba(255,255,255,0.45);
+    --text-faint: rgba(255,255,255,0.32);
+    --accent: #2563eb;          /* default theme accent (blue) */
+    --accent-text: #ffffff;
+    --warning: #fbbf24;         /* default theme warning (amber) */
+    --shadow-elevated: 0 28px 70px rgba(0,0,0,0.45), 0 14px 32px rgba(0,0,0,0.30);
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .lede {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 0 0 40px;
+    max-width: 64ch;
+  }
+
+  /* ---------- Variant grid ---------- */
+  .variants {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .variants { grid-template-columns: 1fr; }
+  }
+
+  .variant {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .variant-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .variant-tag {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+  }
+  .variant-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .variant-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: -8px 0 4px;
+  }
+
+  /* ---------- Sidebar rail mock (shared) ---------- */
+  .rail {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+  }
+  .rail-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 36px;
+    padding: 0 8px;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+  .rail-row.is-active {
+    background: var(--bg-row-hover);
+    color: var(--text-secondary);
+  }
+  .rail-avatar {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    background: var(--border-default);
+    flex-shrink: 0;
+  }
+  .rail-actions {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 6px;
+  }
+  .rail-btn {
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+    color: var(--text-tertiary);
+    position: relative;
+  }
+  .rail-btn.is-open {
+    background: var(--bg-row-hover);
+    color: var(--text-primary);
+  }
+  .rail-btn svg { width: 16px; height: 16px; }
+
+  /* Bell badge — accent (current) and warning (proposed) variants */
+  .badge {
+    position: absolute;
+    top: 2px; right: 2px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 4px;
+    border-radius: 999px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9px;
+    font-weight: 500;
+    line-height: 14px;
+    text-align: center;
+    color: var(--accent-text);
+    background: var(--accent);
+  }
+  .badge.warn { background: var(--warning); color: #1a1914; }
+  .tier-dot {
+    position: absolute;
+    bottom: 4px; right: 4px;
+    width: 6px; height: 6px;
+    border-radius: 999px;
+    background: var(--warning);
+    box-shadow: 0 0 0 2px var(--bg-panel);
+  }
+
+  /* ---------- Popover shell ---------- */
+  .popover {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-elevated);
+    overflow: hidden;
+    position: relative;
+  }
+  .popover::before {
+    content: "";
+    position: absolute;
+    top: -6px; left: 18px;
+    width: 12px; height: 12px;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border-default);
+    border-top: 1px solid var(--border-default);
+    transform: rotate(45deg);
+  }
+
+  /* Popover header */
+  .pop-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px 10px;
+  }
+  .pop-header .label {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .pop-header .title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .pop-header .count {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.05);
+    padding: 2px 6px;
+    border-radius: 999px;
+  }
+  .pop-header .action {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .pop-header .action:hover { background: var(--bg-row-hover); color: var(--text-primary); }
+
+  .divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: 0 14px;
+  }
+
+  /* Popover body */
+  .pop-body {
+    padding: 6px 6px 8px;
+  }
+
+  /* Tier section */
+  .tier {
+    margin-top: 4px;
+  }
+  .tier-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 6px;
+  }
+  .tier-head .dot {
+    width: 6px; height: 6px;
+    border-radius: 999px;
+    background: var(--warning);
+  }
+  .tier-head .name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.01em;
+  }
+  .tier-head .tally {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-left: 2px;
+  }
+  .tier-head .spacer { flex: 1; }
+  .tier-head .hint {
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+
+  /* Tier rule (subtle bottom border under the section header) */
+  .tier + .tier { border-top: 1px solid var(--border-subtle); }
+
+  /* Row */
+  .row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: inherit;
+    cursor: pointer;
+  }
+  .row + .row { margin-top: 1px; }
+  .row:hover { background: var(--bg-row-hover); }
+
+  .row .top {
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .row .title {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .row .time {
+    flex-shrink: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .row .sub {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+  .row .sub.italic { font-style: italic; }
+  .row .sub.faint { color: var(--text-faint); }
+  .row .sub.clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ---------- Footer (proposed) ---------- */
+  .pop-footer {
+    border-top: 1px solid var(--border-subtle);
+    padding: 8px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .pop-footer .hint {
+    font-size: 10px;
+    color: var(--text-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .pop-footer .action {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .pop-footer .action:hover { background: var(--bg-row-hover); color: var(--text-primary); }
+
+  /* ---------- Change list ---------- */
+  .changes {
+    margin-top: 56px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 32px;
+  }
+  .changes h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 16px;
+    color: var(--text-secondary);
+  }
+  .changes ol {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .changes li { margin-bottom: 6px; }
+  .changes code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--text-primary);
+  }
+  .changes .num {
+    color: var(--text-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin-right: 4px;
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <h1>Activity Bell Popover — Now vs Proposed</h1>
+  <p class="lede">
+    Side-by-side mockup of the sidebar activity popover, using the current implementation
+    on the left and the proposed redesign on the right. The popover is mounted below the
+    bell in both rails so the visual relationship is honest.
+  </p>
+
+  <section class="variants">
+    <!-- ============ NOW ============ -->
+    <div class="variant">
+      <div class="variant-header">
+        <span class="variant-tag">A</span>
+        <h2 class="variant-title">Now</h2>
+        <span class="variant-tag" style="margin-left:auto">current code</span>
+      </div>
+      <p class="variant-sub">
+        Renders every group as a single 320px slab. One tier label, one tier, four items
+        pressed against the rounded border. No internal section rule.
+      </p>
+
+      <div class="rail">
+        <div class="rail-row"><span class="rail-avatar"></span>Project Aurora</div>
+        <div class="rail-row is-active"><span class="rail-avatar"></span>Build the parser</div>
+        <div class="rail-row"><span class="rail-avatar"></span>Refactor renderer</div>
+        <div class="rail-row"><span class="rail-avatar"></span>Add export pipeline</div>
+
+        <div class="rail-actions">
+          <div class="rail-btn" title="Search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </div>
+          <div class="rail-btn is-open" title="Activity">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            <span class="badge">9+</span>
+          </div>
+          <div class="rail-btn" title="Toggle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l-6-6 6-6"/><path d="M15 6l6 6-6 6"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="popover">
+        <!-- Header: title + count + action, all on one row. Action competes. -->
+        <div class="pop-header">
+          <div class="label">
+            <span class="title">Activity</span>
+            <span class="count">4</span>
+          </div>
+          <span class="action">Mark all read</span>
+        </div>
+        <div class="divider"></div>
+
+        <div class="pop-body">
+          <!-- Tier label is muted and small, reads as caption. -->
+          <div class="tier-head" style="padding: 6px 10px 4px">
+            <span class="dot"></span>
+            <span class="name" style="color: var(--text-muted); font-weight: 500">Needs input</span>
+            <span class="tally">4</span>
+          </div>
+
+          <!-- Rows: truncate the long title, optional subline reserves space. -->
+          <button class="row" type="button">
+            <div class="top">
+              <span class="title">and i want u fully dive deeper into our ag…</span>
+              <span class="time">0s</span>
+            </div>
+            <p class="sub">Thinking…</p>
+          </button>
+          <button class="row" type="button">
+            <div class="top">
+              <span class="title">explore the codebase with 5 subagent a…</span>
+              <span class="time">1d</span>
+            </div>
+            <p class="sub">I'll fan out 5 subagents, each owning a slice of t…</p>
+          </button>
+          <button class="row" type="button">
+            <div class="top">
+              <span class="title">explain this ai work and asking</span>
+              <span class="time">Aug 6</span>
+            </div>
+            <p class="sub">The user is asking me to explain what this AI wo…</p>
+          </button>
+          <button class="row" type="button">
+            <div class="top">
+              <span class="title">which model are u</span>
+              <span class="time">Aug 4</span>
+            </div>
+            <!-- No secondary label, but row reserves the same vertical space. Looks broken. -->
+            <p class="sub faint" style="visibility: hidden">placeholder</p>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ PROPOSED ============ -->
+    <div class="variant">
+      <div class="variant-header">
+        <span class="variant-tag">B</span>
+        <h2 class="variant-title">Proposed</h2>
+        <span class="variant-tag" style="margin-left:auto">mockup</span>
+      </div>
+      <p class="variant-sub">
+        Same data, regrouped. Tier is an actual section title; the bell uses the
+        <code>--warning</code> token so the badge reads "act now" instead of "brand".
+      </p>
+
+      <div class="rail">
+        <div class="rail-row"><span class="rail-avatar"></span>Project Aurora</div>
+        <div class="rail-row is-active"><span class="rail-avatar"></span>Build the parser</div>
+        <div class="rail-row"><span class="rail-avatar"></span>Refactor renderer</div>
+        <div class="rail-row"><span class="rail-avatar"></span>Add export pipeline</div>
+
+        <div class="rail-actions">
+          <div class="rail-btn" title="Search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </div>
+          <div class="rail-btn is-open" title="Activity">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            <span class="badge warn">4</span>
+            <span class="tier-dot"></span>
+          </div>
+          <div class="rail-btn" title="Toggle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l-6-6 6-6"/><path d="M15 6l6 6-6 6"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="popover">
+        <!-- Header: just title + count. Action moved to its own footer. -->
+        <div class="pop-header">
+          <div class="label">
+            <span class="title">Activity</span>
+            <span class="count">4</span>
+          </div>
+        </div>
+        <div class="divider"></div>
+
+        <div class="pop-body">
+          <!-- Tier is a section title with its own hairline. -->
+          <div class="tier">
+            <div class="tier-head">
+              <span class="dot"></span>
+              <span class="name">Needs input</span>
+              <span class="tally">4</span>
+              <span class="spacer"></span>
+              <span class="hint">⌥⌘A</span>
+            </div>
+            <!-- 1px hairline under the section header, as the rest of the sidebar does. -->
+            <div style="height:1px;background:var(--border-subtle);margin:0 4px"></div>
+
+            <!-- Rows: titles 2-line clamped, sublines italic + faint. -->
+            <div style="padding: 4px">
+              <button class="row" type="button">
+                <div class="top">
+                  <span class="title">and i want u fully dive deeper into our agentic plans</span>
+                  <span class="time">0s</span>
+                </div>
+                <p class="sub italic faint">Thinking…</p>
+              </button>
+              <button class="row" type="button">
+                <div class="top">
+                  <span class="title">explore the codebase with 5 subagent a…</span>
+                  <span class="time">1d</span>
+                </div>
+                <p class="sub italic faint">I'll fan out 5 subagents, each owning a slice of t…</p>
+              </button>
+              <button class="row" type="button">
+                <div class="top">
+                  <span class="title clamp-2" style="-webkit-line-clamp:1">explain this ai work and asking</span>
+                  <span class="time">Aug 6</span>
+                </div>
+                <p class="sub italic faint">The user is asking me to explain what this AI wo…</p>
+              </button>
+              <button class="row" type="button">
+                <div class="top">
+                  <span class="title">which model are u</span>
+                  <span class="time">Aug 4</span>
+                </div>
+                <!-- No subline, row collapses to single line. No phantom whitespace. -->
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer: action gets its own row, separated by a hairline. -->
+        <div class="pop-footer">
+          <span class="hint">⌥⌘A to jump to next</span>
+          <span class="action">Mark all read</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ Change list ============ -->
+  <section class="changes">
+    <h2>What changed</h2>
+    <ol>
+      <li><span class="num">1.</span>Popover base <code>p-4</code> no longer compounds with the call site's <code>p-1.5</code> — internal padding is now a deliberate 6px so rows sit at the right distance from the rounded border.</li>
+      <li><span class="num">2.</span>Tier label is an actual section title: <code>text-secondary</code> at 11px/600, with a 1px hairline rule under it, matching how the rest of the app separates sections.</li>
+      <li><span class="num">3.</span><code>Mark all read</code> moves out of the header into its own footer row separated by a hairline — no longer competing with the title.</li>
+      <li><span class="num">4.</span>Secondary line is <code>italic</code> + <code>text-faint</code> (one step quieter) so it reads as meta, not content. Title vs subtitle hierarchy is now driven by weight + style + color, not just size.</li>
+      <li><span class="num">5.</span>Row collapses to one line when <code>secondaryLabel</code> is absent — no more phantom whitespace under "which model are u".</li>
+      <li><span class="num">6.</span>Bell badge uses <code>--warning</code> (warm amber/orange across all themes) instead of <code>--accent</code> (blue in default/codex). Reads as "act now" rather than "brand".</li>
+      <li><span class="num">7.</span>Header gets the ⌥⌘A hint on the right, footer repeats it as a soft affordance, so the keyboard shortcut is discoverable both when the list is empty and when it's full.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

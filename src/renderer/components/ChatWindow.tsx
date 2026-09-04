@@ -29,6 +29,11 @@ import type {
 } from '../../shared/contracts';
 import { getMessageFileParts } from '../../shared/attachments';
 import { cn } from '../lib/utils';
+import {
+  clearConversationScrollAnchor,
+  getConversationScrollAnchor,
+  setConversationScrollAnchor,
+} from '../stores/conversationCache';
 import type { DraftStateLike } from './types';
 import {
   Attachment,
@@ -68,17 +73,22 @@ import { useAppStore } from '../stores/useAppStore';
 import { foldAgents, selectBatchAgents } from '../lib/agentFold';
 import type { AssistantCitation } from '../../shared/citations';
 import {
+  assistantCitationsToPlainText,
   createAssistantCitation,
-  serializeAssistantCitation,
+  splitByCitations,
   withAssistantCitationComment,
 } from '../../shared/citations';
 import {
   CITE_SOURCE_ATTR,
   captureCiteSelection,
+  resolveCiteRange,
+  type CiteDomRange,
   type CiteSourceAnchor,
 } from '../lib/citeSelection';
 import { CiteToolbar } from './CiteToolbar';
 import { CiteCommentEditor, type CiteCommentAnchorRect } from './CiteCommentEditor';
+import { CiteChip } from './CiteChip';
+import { CiteNavigationContext } from './citeNavigation';
 
 export type ChatWindowProps = {
   detail: ConversationPage | null;
@@ -106,10 +116,10 @@ export type ChatWindowProps = {
   onQuoteInPrompt?: (text: string) => void;
   onExplainSelection?: (text: string) => void;
   onSearchInWorkspace?: (text: string) => void;
-  /** Structured cite: appends a serialized citation link to the composer draft. */
-  onCiteCitation?: (citation: AssistantCitation) => void;
-  /** Rewrites one serialized citation link (comment edit) in the composer draft. */
-  onCiteCommentChange?: (oldSource: string, newSource: string) => void;
+  /** Structured cite: stages the quote in the composer tray, returns its key. */
+  onCiteCitation?: (citation: AssistantCitation) => string;
+  /** Rewrites one staged tray entry (comment edit), addressed by its key. */
+  onCiteCommentChange?: (key: string, next: AssistantCitation) => void;
 };
 
 const HISTORY_LEADING_OVERSCAN = 4;
@@ -643,6 +653,39 @@ function SpawnBatchRow({
   );
 }
 
+/**
+ * User message text with citation links rendered as chips. Malformed links
+ * stay verbatim inside text runs. Memoized per message by the caller.
+ */
+function CitedText({
+  text,
+  onNavigate,
+}: {
+  text: string;
+  onNavigate?: (citation: AssistantCitation) => void;
+}) {
+  const segments = useMemo(() => splitByCitations(text), [text]);
+  if (segments.length === 1 && segments[0]!.kind === 'text') {
+    return <>{text}</>;
+  }
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.kind === 'text' ? (
+          <span key={index}>{segment.text}</span>
+        ) : (
+          <CiteChip
+            key={index}
+            citation={segment.citation}
+            onNavigate={onNavigate}
+            className="translate-y-[0.1em] align-baseline"
+          />
+        ),
+      )}
+    </>
+  );
+}
+
 function hasRenderableAssistantParts(parts: ChatMessagePart[]) {
   return parts.some((part) => {
     if (part.type === 'text') {
@@ -679,6 +722,7 @@ const MessageRow = memo(function MessageRow({
   onReviewChanges,
   onUndoChanges,
   onOpenAgentsPanel,
+  onNavigateCitation,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
@@ -687,6 +731,7 @@ const MessageRow = memo(function MessageRow({
   onReviewChanges?: ChatWindowProps['onReviewChanges'];
   onUndoChanges?: ChatWindowProps['onUndoChanges'];
   onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
+  onNavigateCitation?: (citation: AssistantCitation) => void;
 }) {
   const isAssistant = message.role === 'assistant';
   const fileParts = getMessageFileParts(message.parts);
@@ -723,12 +768,15 @@ const MessageRow = memo(function MessageRow({
             // no avatar, no name, no timestamp (reference-visual-spec §5).
             // Radius ~22px: a single-line message reads as a pill.
             <div className="max-w-full rounded-2xl bg-bg-surface px-5 py-3">
-              <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">{userText}</p>
+              <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">
+                <CitedText text={userText} onNavigate={onNavigateCitation} />
+              </p>
             </div>
           ) : null}
           {userText ? (
             <div className={cn(ACTION_ROW, 'justify-end')}>
-              <CopyAction text={userText} label="Copy message" />
+              {/* Copy sees quote text, never href bytes. */}
+              <CopyAction text={assistantCitationsToPlainText(userText)} label="Copy message" />
             </div>
           ) : null}
         </div>
@@ -761,7 +809,7 @@ const MessageRow = memo(function MessageRow({
         ) : null}
 
         <div className={ACTION_ROW}>
-          <CopyAction text={message.content} label="Copy response" />
+          <CopyAction text={assistantCitationsToPlainText(message.content)} label="Copy response" />
           {onRegenerate ? (
             <button
               type="button"
@@ -1209,13 +1257,13 @@ export function ChatWindow({
   const messages = useMemo(() => detail?.messages ?? [], [detail]);
 
   /**
-   * Pending cite comment: set when a Cite lands in the composer, cleared on
-   * save, cancel, or conversation switch. The link bytes are already in the
-   * draft; save rewrites them with the comment attached.
+   * Pending cite comment: set when a Cite stages in the tray, cleared on
+   * save, cancel, or conversation switch. The entry already lives in the
+   * tray; save rewrites it with the comment attached.
    */
   const [pendingCite, setPendingCite] = useState<{
     citation: AssistantCitation;
-    linkSource: string;
+    citeKey: string;
     rect: CiteCommentAnchorRect;
   } | null>(null);
 
@@ -1223,18 +1271,21 @@ export function ChatWindow({
     setPendingCite(null);
   }, [conversationId]);
 
-  const snapshotRangeRect = useCallback((range: Range): CiteCommentAnchorRect => {
+  // CiteDomRange, not the virtualizer's Range imported above.
+  const snapshotRangeRect = useCallback((range: CiteDomRange): CiteCommentAnchorRect => {
     const rects = range.getClientRects();
     const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }, []);
 
   const beginCiteFlow = useCallback(
-    (citation: AssistantCitation, range: Range) => {
-      onCiteCitation?.(citation);
+    (citation: AssistantCitation, range: CiteDomRange) => {
+      const citeKey = onCiteCitation?.(citation);
+      // No tray behind this transcript (side pane): leave no orphan editor.
+      if (!citeKey) return;
       setPendingCite({
         citation,
-        linkSource: serializeAssistantCitation(citation),
+        citeKey,
         rect: snapshotRangeRect(range),
       });
     },
@@ -1252,7 +1303,7 @@ export function ChatWindow({
     (comment: string) => {
       if (!pendingCite) return;
       const next = withAssistantCitationComment(pendingCite.citation, comment);
-      onCiteCommentChange?.(pendingCite.linkSource, serializeAssistantCitation(next));
+      onCiteCommentChange?.(pendingCite.citeKey, next);
       setPendingCite(null);
     },
     [pendingCite, onCiteCommentChange]
@@ -1292,7 +1343,14 @@ export function ChatWindow({
    * array; the fold row itself lives outside the list as ordinary flow, so
    * the virtualizer never counts it.
    */
-  const [foldExpanded, setFoldExpanded] = useState(false);
+  const [foldExpanded, setFoldExpanded] = useState(() =>
+    Boolean(conversationId && getConversationScrollAnchor(conversationId)?.foldExpanded)
+  );
+  const [syncedConversationId, setSyncedConversationId] = useState(conversationId);
+  if (syncedConversationId !== conversationId) {
+    setSyncedConversationId(conversationId);
+    setFoldExpanded(Boolean(conversationId && getConversationScrollAnchor(conversationId)?.foldExpanded));
+  }
   const folded = historyMessages.length > HISTORY_FOLD_THRESHOLD && !foldExpanded;
   const visibleMessages = useMemo(
     () => (folded ? historyMessages.slice(-HISTORY_FOLD_KEEP) : historyMessages),
@@ -1415,6 +1473,140 @@ export function ChatWindow({
   );
 
   /*
+   * Click-through from a citation chip to its quoted source. Loaded-transcript
+   * scope only: a paged-out source is a no-op. Everything mutable goes through
+   * refs so the callback stays stable across stream flushes and memoized rows
+   * keep their memo.
+   */
+  const citeNavStateRef = useRef({ history: historyMessages, visible: visibleMessages });
+  citeNavStateRef.current = { history: historyMessages, visible: visibleMessages };
+  const scrollNodeRef = useRef(scrollNode);
+  scrollNodeRef.current = scrollNode;
+  const virtualizerRef = useRef(rowVirtualizer);
+  virtualizerRef.current = rowVirtualizer;
+  const citeHighlightRef = useRef<{ timeout: number | null; range: CiteDomRange | null }>({
+    timeout: null,
+    range: null,
+  });
+
+  const clearCiteHighlight = useCallback(() => {
+    const state = citeHighlightRef.current;
+    if (state.timeout !== null) {
+      window.clearTimeout(state.timeout);
+      state.timeout = null;
+    }
+    try {
+      const registry = (
+        CSS as unknown as { highlights?: { delete(key: string): void } }
+      ).highlights;
+      registry?.delete('atlas-citation');
+    } catch {
+      // CSS Highlights unsupported; the selection fallback clears below.
+    }
+    const owned = state.range;
+    state.range = null;
+    if (owned) {
+      const selection = window.getSelection();
+      if (selection?.rangeCount === 1 && selection.getRangeAt(0) === owned) {
+        selection.removeAllRanges();
+      }
+    }
+  }, []);
+
+  // A new conversation must not inherit the old thread's highlight.
+  useEffect(() => {
+    clearCiteHighlight();
+    return clearCiteHighlight;
+  }, [clearCiteHighlight, conversationId]);
+
+  const highlightCiteSource = useCallback(
+    (root: HTMLElement, selector: Parameters<typeof resolveCiteRange>[1]): boolean => {
+      clearCiteHighlight();
+      let range: CiteDomRange | null = null;
+      try {
+        range = resolveCiteRange(root, selector);
+      } catch {
+        return false;
+      }
+      if (!range) return false;
+
+      let highlighted = false;
+      try {
+        const highlightCtor = (
+          globalThis as unknown as { Highlight?: new (range: CiteDomRange) => unknown }
+        ).Highlight;
+        const registry = (
+          CSS as unknown as { highlights?: { set(key: string, value: unknown): void } }
+        ).highlights;
+        if (registry && highlightCtor) {
+          registry.set('atlas-citation', new highlightCtor(range));
+          highlighted = true;
+        }
+      } catch {
+        // Fall through to the selection fallback.
+      }
+      if (!highlighted) {
+        const selection = window.getSelection();
+        if (!selection) return false;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        citeHighlightRef.current.range = selection.getRangeAt(0);
+      }
+      citeHighlightRef.current.timeout = window.setTimeout(clearCiteHighlight, 2600);
+      return true;
+    },
+    [clearCiteHighlight]
+  );
+
+  const navigateToCitation = useCallback((citation: AssistantCitation) => {
+    const { history } = citeNavStateRef.current;
+    if (!history.some((message) => message.id === citation.messageId)) return;
+    // Unfold first when the source hides behind the fold; indices resolve late.
+    setFoldExpanded((expanded) => {
+      const hidden = citeNavStateRef.current.history.length - citeNavStateRef.current.visible.length;
+      const index = citeNavStateRef.current.history.findIndex(
+        (message) => message.id === citation.messageId
+      );
+      return index < hidden ? true : expanded;
+    });
+    stopScroll();
+
+    // The fold opening and the virtualizer both settle async; retry the
+    // scroll and the highlight until the source row mounts or attempts run out.
+    let attempts = 0;
+    const attempt = () => {
+      attempts += 1;
+      const state = citeNavStateRef.current;
+      const visibleIndex = state.visible.findIndex((message) => message.id === citation.messageId);
+      const scroller = scrollNodeRef.current;
+      const source = scroller?.querySelector<HTMLElement>(
+        `[${CITE_SOURCE_ATTR}="${CSS.escape(citation.messageId)}"]`
+      );
+      if (visibleIndex >= 0 && !source && attempts <= 4) {
+        try {
+          virtualizerRef.current.scrollToIndex(visibleIndex, { align: 'center' });
+        } catch {
+          // Virtualizer mid-measurement; the next attempt retries.
+        }
+      }
+      if (source) {
+        const selector = {
+          text: citation.text,
+          start: citation.start,
+          end: citation.end,
+          prefix: citation.prefix,
+          suffix: citation.suffix,
+        };
+        if (highlightCiteSource(source, selector)) return;
+      }
+      if (attempts < 8) {
+        window.setTimeout(attempt, 150);
+      }
+    };
+    window.setTimeout(attempt, 60);
+  }, [highlightCiteSource, stopScroll]);
+
+  /*
    * Toggling raw mode rewrites the height of every row in the transcript, and
    * the virtualizer is holding a measurement for each one it has ever
    * rendered. Without this the cached heights survive the toggle, so the
@@ -1439,32 +1631,108 @@ export function ChatWindow({
   // ---------------------------------------------------------------------
 
   /**
-   * Conversation switch.
-   *
-   * `ChatWindow` cannot be keyed by conversation id from here (`App.tsx`
-   * owns that element), so the equivalent reset happens by hand: drop every
-   * per-conversation ref, clear the escape lock inside the stick-to-bottom
-   * state object, and land at the bottom instantly. Without this you used
-   * to arrive in a new thread parked wherever you left the previous one.
+   * Continuous scroll tracking to keep the anchor for this conversation fresh.
+   * When scrolled away from bottom, saves topmost visible message ID + pixel delta.
+   * When returned to bottom, clears the anchor so subsequent visits land at bottom.
    */
-  useLayoutEffect(() => {
-    estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
-    pendingPrependRef.current = null;
-    lastAutoLoadCursorRef.current = null;
-    userHasScrolledRef.current = false;
-    // The fold re-arms per conversation: a thread you fully expanded stays
-    // expanded for the visit, but the next thread opens at the live end.
-    setFoldExpanded(false);
-
+  const saveCurrentScrollAnchor = useCallback(() => {
+    if (!conversationId) return;
     const element = scrollRef.current;
-    if (!element) {
+    if (!element) return;
+
+    if (!isScrolledUp) {
+      clearConversationScrollAnchor(conversationId);
       return;
     }
 
-    stickState.escapedFromLock = false;
-    element.scrollTop = element.scrollHeight;
-    void scrollToBottom({ animation: 'instant', wait: false });
-  }, [conversationId, scrollRef, scrollToBottom, stickState, userHasScrolledRef]);
+    const items = rowVirtualizer.getVirtualItems();
+    if (items.length === 0) return;
+
+    const scrollTop = element.scrollTop;
+    const anchorItem = items.find((item) => item.end > scrollTop) ?? items[0];
+    if (!anchorItem) return;
+
+    const message = visibleMessagesRef.current[anchorItem.index];
+    if (!message) return;
+
+    const delta = Math.max(0, scrollTop - anchorItem.start);
+    setConversationScrollAnchor(conversationId, {
+      messageId: message.id,
+      pixelDelta: delta,
+      foldExpanded,
+    });
+  }, [conversationId, isScrolledUp, foldExpanded, rowVirtualizer, scrollRef]);
+
+  useEffect(() => {
+    const element = scrollNode;
+    if (!element) return;
+
+    let rafId: number | null = null;
+    const handleScroll = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        saveCurrentScrollAnchor();
+      });
+    };
+
+    element.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      element.removeEventListener('scroll', handleScroll);
+      saveCurrentScrollAnchor();
+    };
+  }, [scrollNode, saveCurrentScrollAnchor]);
+
+  /**
+   * Conversation switch.
+   *
+   * If the thread was previously scrolled up, restores to the anchored message
+   * and pixel delta using rowVirtualizer.scrollToIndex.
+   * Otherwise, clears the escape lock and lands at the live bottom instantly.
+   */
+  const activeConversationIdRef = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (activeConversationIdRef.current === conversationId) {
+      return;
+    }
+    activeConversationIdRef.current = conversationId;
+
+    estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
+    pendingPrependRef.current = null;
+    lastAutoLoadCursorRef.current = null;
+
+    const element = scrollRef.current;
+    if (!element || !conversationId) {
+      return;
+    }
+
+    const anchor = getConversationScrollAnchor(conversationId);
+    if (!anchor) {
+      userHasScrolledRef.current = false;
+      stickState.escapedFromLock = false;
+      element.scrollTop = element.scrollHeight;
+      void scrollToBottom({ animation: 'instant', wait: false });
+      return;
+    }
+
+    userHasScrolledRef.current = true;
+    stickState.escapedFromLock = true;
+
+    const targetIndex = visibleMessages.findIndex((m) => m.id === anchor.messageId);
+    if (targetIndex !== -1) {
+      rowVirtualizer.scrollToIndex(targetIndex, { align: 'start' });
+      if (anchor.pixelDelta > 0) {
+        element.scrollTop += anchor.pixelDelta;
+      }
+    } else {
+      userHasScrolledRef.current = false;
+      stickState.escapedFromLock = false;
+      element.scrollTop = element.scrollHeight;
+      void scrollToBottom({ animation: 'instant', wait: false });
+    }
+  }, [conversationId, scrollRef, scrollToBottom, stickState, userHasScrolledRef, visibleMessages, rowVirtualizer]);
 
   /** Measure where the virtual list sits inside the scroller. */
   useLayoutEffect(() => {
@@ -1830,6 +2098,7 @@ export function ChatWindow({
                   onReviewChanges={onReviewChanges}
                   onUndoChanges={onUndoChanges}
                   onOpenAgentsPanel={onOpenAgentsPanel}
+                  onNavigateCitation={navigateToCitation}
                 />
               </div>
             );
@@ -1942,6 +2211,7 @@ export function ChatWindow({
   );
 
   return (
+    <CiteNavigationContext.Provider value={navigateToCitation}>
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {conversationId && (
         <>
@@ -1952,8 +2222,13 @@ export function ChatWindow({
           <SubagentBreadcrumbs conversationId={conversationId} onSelect={(id) => void useAppStore.getState().loadConversation(id)} />
         </>
       )}
-      <CiteToolbar viewport={scrollNode} conversationId={conversationId} onCite={handleToolbarCite} />
-      {pendingCite ? (
+      {/* Cite mounts only where a tray exists to receive it: the side pane
+          renders this same transcript with no cite handlers, and a pill
+          there would stage nothing and strand the comment editor. */}
+      {onCiteCitation ? (
+        <CiteToolbar viewport={scrollNode} conversationId={conversationId} onCite={handleToolbarCite} />
+      ) : null}
+      {pendingCite && onCiteCitation ? (
         <CiteCommentEditor
           anchor={pendingCite.rect}
           onSave={handleCiteCommentSave}
@@ -2053,6 +2328,7 @@ export function ChatWindow({
         {announcement}
       </div>
     </div>
+    </CiteNavigationContext.Provider>
   );
 }
 

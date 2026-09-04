@@ -3,21 +3,21 @@
  *
  * A citation quotes rendered assistant text and carries enough context to find
  * the quote again later: normalized offsets plus a short prefix/suffix window.
- * The composer holds citations as self-contained markdown links, so the draft
- * string, the clipboard, and the stored message all carry the same bytes with
- * no parallel channel:
+ * The composer holds citations as tray objects (`CitedQuoteEntry`), so the
+ * draft string, the textarea, and the clipboard stay readable. Links
+ * serialize only at send time (`mergeCitationsIntoMessage`), and the stored
+ * message carries the same bytes with no parallel channel:
  *
  *   [Assistant quote](atlas-citation://v1/<conversationId>/<messageId>?text=...&start=..&end=..&prefix=..&suffix=..[&comment=..])
  *
  * Everything here is pure so the renderer (capture, chips), the main process
  * (provider expansion), and unit tests read the same rules. Electron-free.
  *
- * Two send-path notes for later phases:
- * - Mention detection must run on `assistantCitationsToPlainText(draft)`, not
- *   the raw draft: quoted text lives inside the href query, and a literal
- *   `@Sites` in a quote must never enable a toolset.
- * - The "can send" emptiness check must do the same, so a draft holding only
- *   a citation link counts as non-empty via its quote text.
+ * Two send-path invariants:
+ * - Mention detection runs on `stripAssistantCitations(draft)`: quoted words
+ *   must never enable a toolset, and the plain-text form keeps them.
+ * - Provider input runs through `expandAssistantCitationsForProvider`, so the
+ *   model sees quotes with provenance instead of href bytes.
  */
 
 export const ASSISTANT_CITATION_MAX_TEXT_LENGTH = 8_000;
@@ -225,6 +225,16 @@ export function formatCitationForComposer(citation: AssistantCitation, comment =
   return `${serializeAssistantCitation(withAssistantCitationComment(citation, comment))} `;
 }
 
+/**
+ * A cited quote staged in the composer tray, keyed for stable identity across
+ * comment edits. The tray holds objects — never serialized bytes — so the
+ * textarea stays readable; links serialize only at send time.
+ */
+export type CitedQuoteEntry = {
+  key: string;
+  citation: AssistantCitation;
+};
+
 export type CollectedCitation = {
   citation: AssistantCitation;
   source: string;
@@ -247,6 +257,30 @@ export function collectAssistantCitations(text: string): CollectedCitation[] {
   return citations;
 }
 
+export type CitationSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'citation'; citation: AssistantCitation; source: string };
+
+/**
+ * Splits message text around citation links for inline chip rendering.
+ * Malformed links stay inside text runs; callers render those verbatim.
+ */
+export function splitByCitations(text: string): CitationSegment[] {
+  const segments: CitationSegment[] = [];
+  let cursor = 0;
+  for (const match of collectAssistantCitations(text)) {
+    if (match.start > cursor) {
+      segments.push({ kind: 'text', text: text.slice(cursor, match.start) });
+    }
+    segments.push({ kind: 'citation', citation: match.citation, source: match.source });
+    cursor = match.end;
+  }
+  if (cursor < text.length) {
+    segments.push({ kind: 'text', text: text.slice(cursor) });
+  }
+  return segments;
+}
+
 /** Titles, previews, and search indexing see quote text, never href bytes. */
 export function assistantCitationsToPlainText(prompt: string): string {
   return prompt.replace(CITATION_LINK, (source: string, href: string) => {
@@ -256,6 +290,29 @@ export function assistantCitationsToPlainText(prompt: string): string {
       ? citation.text
       : `${citation.text}\nComment: ${citation.comment}`;
   });
+}
+
+/**
+ * Mention detection sees neither href bytes nor quoted words: a literal
+ * `@Sites` inside a quote is assistant speech, not a user opt-in, and must
+ * never enable a toolset.
+ */
+export function stripAssistantCitations(prompt: string): string {
+  return prompt.replace(CITATION_LINK, ' ');
+}
+
+/**
+ * Merges tray citations into the outgoing message text. Links append after
+ * the typed text: the provider expansion is position-independent, and the
+ * persisted message keeps self-contained bytes with no sidecar.
+ */
+export function mergeCitationsIntoMessage(
+  text: string,
+  citations: readonly AssistantCitation[],
+): string {
+  if (citations.length === 0) return text;
+  const links = citations.map(serializeAssistantCitation).join(' ');
+  return text.trim() ? `${text.replace(/\s+$/, '')} ${links}` : links;
 }
 
 function escapeMarkdownText(text: string): string {

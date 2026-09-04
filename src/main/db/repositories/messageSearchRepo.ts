@@ -4,6 +4,7 @@ import {
   MESSAGE_SEARCH_MATCH_OPEN,
   MESSAGE_SEARCH_MAX_LIMIT
 } from '../../../shared/contracts';
+import { assistantCitationsToPlainText } from '../../../shared/citations';
 import type { SqliteDatabase } from '../client';
 import { MESSAGE_SEARCH_TABLE } from '../schema';
 
@@ -87,7 +88,10 @@ function mapRow(row: SearchRow): MessageSearchHit {
     conversationTitle: row.conversationTitle,
     messageId: row.messageId,
     role: row.role,
-    snippet: row.snippet,
+    // Snippets show quote text, never href bytes: citation links serialize
+    // into stored messages, and raw `atlas-citation://` URLs in a snippet
+    // would read as protocol noise.
+    snippet: assistantCitationsToPlainText(row.snippet),
     createdAt: row.createdAt,
     archived: row.archivedAt != null
   };

@@ -5,6 +5,8 @@ import type { ChatMessage, ConversationPage } from '../src/shared/contracts.js';
 import { decodeConversationPageCursor } from '../src/shared/conversationPaging.js';
 import {
   DEFAULT_CONVERSATION_PAGE_SIZE,
+  INACTIVE_CONVERSATION_CACHE_LIMIT,
+  MAX_INACTIVE_CACHED_MESSAGES,
   compactConversationPage,
   mergeConversationPage,
   reconcileConversationCache,
@@ -83,7 +85,7 @@ test('mergeConversationPage preserves already loaded older messages', () => {
   assert.equal(cursor.id, 'message-0');
 });
 
-test('reconcileConversationCache compacts the previous active conversation and evicts the oldest inactive entry', () => {
+test('reconcileConversationCache retains previous active conversation messages intact and evicts the oldest inactive entry when exceeding inactiveLimit', () => {
   const result = reconcileConversationCache({
     conversationDetails: {
       active: createPage(140, 'active'),
@@ -98,8 +100,82 @@ test('reconcileConversationCache compacts the previous active conversation and e
   });
 
   assert.deepEqual(result.inactiveConversationIds, ['active', 'inactiveA']);
+  // Does not compact by default — keeps full messages
+  assert.equal(result.conversationDetails.active.messages.length, 140);
+  assert.equal(result.conversationDetails.active.messages[0]?.id, 'message-0');
+  assert.ok(!('inactiveB' in result.conversationDetails));
+  assert.ok('next' in result.conversationDetails);
+});
+
+test('reconcileConversationCache compacts the previous active conversation when compactLimit is explicitly provided', () => {
+  const result = reconcileConversationCache({
+    conversationDetails: {
+      active: createPage(140, 'active'),
+      next: createPage(12, 'next'),
+      inactiveA: createPage(125, 'inactiveA'),
+      inactiveB: createPage(115, 'inactiveB'),
+    },
+    inactiveConversationIds: ['inactiveA', 'inactiveB'],
+    previousSelectedId: 'active',
+    nextSelectedId: 'next',
+    inactiveLimit: 2,
+    compactLimit: DEFAULT_CONVERSATION_PAGE_SIZE,
+  });
+
+  assert.deepEqual(result.inactiveConversationIds, ['active', 'inactiveA']);
   assert.equal(result.conversationDetails.active.messages.length, DEFAULT_CONVERSATION_PAGE_SIZE);
   assert.equal(result.conversationDetails.active.messages[0]?.id, 'message-40');
   assert.ok(!('inactiveB' in result.conversationDetails));
   assert.ok('next' in result.conversationDetails);
+});
+
+test('reconcileConversationCache compacts the fat offender instead of evicting innocent neighbors', () => {
+  const result = reconcileConversationCache({
+    conversationDetails: {
+      fat: createPage(500, 'fat'),
+      next: createPage(10, 'next'),
+      inactiveB: createPage(50, 'inactiveB'),
+      inactiveC: createPage(50, 'inactiveC'),
+    },
+    inactiveConversationIds: ['inactiveB', 'inactiveC'],
+    previousSelectedId: 'fat',
+    nextSelectedId: 'next',
+    inactiveLimit: 5,
+    maxInactiveMessages: 250, // 500 + 50 + 50 = 600 > 250
+  });
+
+  // 'fat' should be compacted down to DEFAULT_CONVERSATION_PAGE_SIZE (100 msgs),
+  // bringing total to 100 + 50 + 50 = 200 <= 250.
+  // Neither 'inactiveB' nor 'inactiveC' nor 'fat' should be evicted!
+  assert.deepEqual(result.inactiveConversationIds, ['fat', 'inactiveB', 'inactiveC']);
+  assert.equal(result.conversationDetails.fat.messages.length, DEFAULT_CONVERSATION_PAGE_SIZE);
+  assert.ok('fat' in result.conversationDetails);
+  assert.ok('inactiveB' in result.conversationDetails);
+  assert.ok('inactiveC' in result.conversationDetails);
+  assert.ok('next' in result.conversationDetails);
+});
+
+test('reconcileConversationCache never evicts the single most-recently-left inactive thread even if it exceeds watermark', () => {
+  const result = reconcileConversationCache({
+    conversationDetails: {
+      fat: createPage(1500, 'fat'),
+      next: createPage(10, 'next'),
+    },
+    inactiveConversationIds: [],
+    previousSelectedId: 'fat',
+    nextSelectedId: 'next',
+    inactiveLimit: 5,
+    maxInactiveMessages: 50, // lower than DEFAULT_CONVERSATION_PAGE_SIZE
+  });
+
+  // 'fat' is compacted to 100, and because it is the only inactive thread (length <= 1),
+  // it is kept in cache so Cmd+[ is an instant hit!
+  assert.deepEqual(result.inactiveConversationIds, ['fat']);
+  assert.equal(result.conversationDetails.fat.messages.length, DEFAULT_CONVERSATION_PAGE_SIZE);
+  assert.ok('fat' in result.conversationDetails);
+});
+
+test('INACTIVE_CONVERSATION_CACHE_LIMIT is 12 and MAX_INACTIVE_CACHED_MESSAGES is 3000', () => {
+  assert.equal(INACTIVE_CONVERSATION_CACHE_LIMIT, 12);
+  assert.equal(MAX_INACTIVE_CACHED_MESSAGES, 3000);
 });

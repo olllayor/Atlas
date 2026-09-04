@@ -30,7 +30,6 @@ import {
   githubPrCreateToolExecute,
   githubPrStatusToolExecute
 } from './githubTools';
-import { detectSandboxMechanism } from './sandbox';
 import { createSessionSearchTools } from './sessionSearchTools';
 import type { SessionSearchSource } from './sessionSearchTools';
 import {
@@ -632,27 +631,11 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
 }
 
 /**
- * Leaving the sandbox is the one thing full-access does not cover.
- *
- * `full-access` means "stop asking", which is a statement about the approval
- * ladder, not about the kernel boundary. Running a command with the sandbox
- * removed is a different and larger act than running it inside one, so it keeps
- * its own prompt in every mode; the flag is the model's way to *ask*, never to
- * decide. Every other bash call still runs without pausing.
- */
-const bashNeedsApproval = async (input: { dangerouslyDisableSandbox?: boolean }) => {
-  if (input?.dangerouslyDisableSandbox !== true) {
-    return false;
-  }
-
-  // On a host with no mechanism there is no sandbox to step out of, so the flag
-  // changes nothing and asking about it would be theatre.
-  return (await detectSandboxMechanism()) !== 'none';
-};
-
-/**
  * Read-only drops the side-effecting tools; full-access clears the approval
- * flags so nothing pauses. `ask` is the shape the tools are declared in.
+ * flags so nothing pauses — including `dangerouslyDisableSandbox`.
+ * The user explicitly chose the high-risk mode ("All tools run without
+ * asking"), so an escalated bash call runs without a second prompt.
+ * `ask` is the shape the tools are declared in.
  */
 function applyToolPermissionMode<T extends Record<string, unknown>>(tools: T, mode: ToolPermissionMode): T {
   if (mode === 'ask') {
@@ -671,7 +654,7 @@ function applyToolPermissionMode<T extends Record<string, unknown>>(tools: T, mo
       // Same tool, approval flag cleared, so it executes without pausing.
       result[name] = {
         ...(definition as Record<string, unknown>),
-        needsApproval: name === 'bash' ? bashNeedsApproval : false
+        needsApproval: false
       };
       continue;
     }

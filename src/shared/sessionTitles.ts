@@ -5,6 +5,8 @@
  * by the generator — and is fair game for an automatic title.
  */
 
+import { assistantCitationsToPlainText } from './citations';
+
 export const PLACEHOLDER_SESSION_TITLE_PATTERN = /^Session · /;
 
 export function isPlaceholderSessionTitle(title: string | null | undefined): boolean {
@@ -30,16 +32,16 @@ export function sanitizeGeneratedTitle(raw: string | null | undefined): string |
   title = title.split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? '';
 
   // Leading labels like "Title:" / "Session name:".
-  title = title.replace(/^(?:title|session(?: name)?|name)\s*[:\-–]\s*/i, '');
+  title = title.replace(/^(?:title|session(?: name)?|name)\s*[:\-\u2013]\s*/i, '');
 
   // Markdown emphasis and wrapping quotes/backticks.
   title = title.replace(/[*_`]/g, '');
-  title = title.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '');
+  title = title.replace(/^["'\u201c\u201d\u2018\u2019]+/, '').replace(/["'\u201c\u201d\u2018\u2019]+$/, '');
 
   title = title.replace(/\s+/g, ' ').trim();
 
   // Trailing sentence punctuation reads wrong in a list of names.
-  title = title.replace(/[.。!?…\s]+$/u, '');
+  title = title.replace(/[.\u3002!?\u2026\s]+$/u, '');
 
   if (!title) {
     return null;
@@ -67,9 +69,12 @@ export function deriveTitleFromUserMessage(message: string | null | undefined): 
     return null;
   }
 
+  // Citations see quote text, never href bytes:
+  let text = assistantCitationsToPlainText(message);
+
   // Fenced code and inline mentions make terrible titles; drop them before
   // taking the first sentence.
-  let text = message.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ');
+  text = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ');
   text = text.replace(/\s+/g, ' ').trim();
 
   if (!text) {
@@ -78,7 +83,7 @@ export function deriveTitleFromUserMessage(message: string | null | undefined): 
 
   // First sentence, when the message opens with one short enough to stand
   // on its own as a name.
-  const sentenceEnd = text.search(/[.!?。！？]\s|[.!?。！？]$/u);
+  const sentenceEnd = text.search(/[.!?\u3002\uff01\uff1f]\s|[.!?\u3002\uff01\uff1f]$/u);
   if (sentenceEnd > 0 && sentenceEnd + 1 <= SESSION_TITLE_MAX_LENGTH) {
     text = text.slice(0, sentenceEnd + 1);
   }

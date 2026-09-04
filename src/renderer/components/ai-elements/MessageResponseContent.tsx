@@ -8,8 +8,11 @@ import type { ComponentProps } from 'react';
 import { Streamdown, defaultRemarkPlugins, type Components, type CustomRenderer } from 'streamdown';
 
 import { parseFileRef } from '../../../shared/fileRef';
+import { parseAssistantCitationHref } from '../../../shared/citations';
 import { streamdownCodeLanguages } from './codeLanguages';
 import { FileRefChip } from './file-ref';
+import { CiteChip } from '../CiteChip';
+import { useCiteNavigation } from '../citeNavigation';
 import { markdownTableComponents } from './markdown-table';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
@@ -75,10 +78,31 @@ function MarkdownAnchor({
     return <FileRefChip href={href}>{children}</FileRefChip>;
   }
 
+  const citation = href ? parseAssistantCitationHref(href) : null;
+  if (citation) {
+    return <TranscriptCitationLink citation={citation} />;
+  }
+
   return (
     <a href={href} {...props}>
       {children}
     </a>
+  );
+}
+
+/** Hook boundary: the anchor itself stays a pure function of its props. */
+function TranscriptCitationLink({
+  citation,
+}: {
+  citation: NonNullable<ReturnType<typeof parseAssistantCitationHref>>;
+}) {
+  const navigate = useCiteNavigation();
+  return (
+    <CiteChip
+      citation={citation}
+      onNavigate={navigate ?? undefined}
+      className="translate-y-[0.1em] align-baseline"
+    />
   );
 }
 

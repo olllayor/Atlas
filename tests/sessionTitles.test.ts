@@ -48,6 +48,15 @@ test('local fallback names a session from the opening message', () => {
   );
 });
 
+test('local fallback converts citations to quote text and drops href bytes', () => {
+  const link =
+    '[Assistant quote](atlas-citation://v1/conv-1/msg-1?text=Database%20connection%20timeout&start=0&end=27&prefix=&suffix=)';
+  assert.equal(
+    deriveTitleFromUserMessage(`Investigate: ${link}`),
+    'Investigate: Database connection timeout'
+  );
+});
+
 test('local fallback takes the first sentence when it stands alone', () => {
   assert.equal(
     deriveTitleFromUserMessage('Fix the login bug. It throws on expired tokens and I cannot reproduce it.'),

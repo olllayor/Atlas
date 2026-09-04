@@ -10,6 +10,7 @@ import { isWorkspaceModeReady } from '../../../shared/workspaceModes';
 import { ChatWindow } from '../ChatWindow';
 import { ChatComposerSlot } from '../ChatComposerSlot';
 import { RendererErrorBoundary } from '../RendererErrorBoundary';
+import { mergeCitationsIntoMessage } from '../../../shared/citations';
 
 /**
  * The side chat (C5): an ephemeral transcript beside the main one.
@@ -140,12 +141,16 @@ export function SideChatPane() {
           composerFocusNonce={0}
           onSend={(message) => {
             const sentAttachmentIds = message.files.map((file) => file.id);
+            const sentCitationKeys = message.citations.map((entry) => entry.key);
             return sendMessage({
-              text: message.text,
+              text: mergeCitationsIntoMessage(
+                message.text,
+                message.citations.map((entry) => entry.citation),
+              ),
               files: message.files,
               conversationId: sideId,
             }).then(() => {
-              clearComposerDraft(sideId, sentAttachmentIds);
+              clearComposerDraft(sideId, sentAttachmentIds, sentCitationKeys);
             });
           }}
           onAbort={() => void abortConversation(sideId)}

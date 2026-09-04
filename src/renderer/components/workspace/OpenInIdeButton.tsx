@@ -24,7 +24,16 @@ function AppIcon({ ide, className }: { ide: DetectedIde; className?: string }) {
     return <AppWindow className={cn('text-text-tertiary', className)} strokeWidth={1.75} aria-hidden="true" />;
   }
 
-  return <img src={ide.iconDataUrl} alt="" className={cn('object-contain', className)} />;
+  // Etched edge: full-bleed dark marks (Cursor's black tile) melt into a dark
+  // button at 16px with no boundary. The ring draws the square's edge whatever
+  // the icon's own shape, in a theme token so it inverts with the theme.
+  return (
+    <img
+      src={ide.iconDataUrl}
+      alt=""
+      className={cn('rounded-[3px] object-contain ring-1 ring-border-subtle', className)}
+    />
+  );
 }
 
 /**

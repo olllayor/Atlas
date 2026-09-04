@@ -379,6 +379,16 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowProject, request) as Promise<ProjectContextMenuAction | null>,
     showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) =>
       ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowSidebarBackground, request) as Promise<SidebarBackgroundContextMenuAction | null>
+  },
+  images: {
+    copy: (dataUrl: string) => ipcRenderer.invoke(IPC_CHANNELS.imagesCopy, dataUrl) as Promise<void>,
+    onCopyRequest: (listener: (src: string) => void) => {
+      const handler = (_event: unknown, src: string) => listener(src);
+      ipcRenderer.on(IPC_CHANNELS.imagesCopyRequest, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.imagesCopyRequest, handler);
+      };
+    }
   }
 };
 

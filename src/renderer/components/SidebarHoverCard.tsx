@@ -268,7 +268,7 @@ export function SidebarConversationHoverCard({
             rest of the app's live marks and reduced-motion aware. */}
         {isRunning ? (
           <div className="flex items-center gap-2 text-text-tertiary">
-            <span className="size-1.5 shrink-0 rounded-full bg-accent motion-glyph-pulse" />
+            <span className="size-1.5 shrink-0 rounded-full bg-brand-strong motion-glyph-pulse" />
             <span className="min-w-0 flex-1 truncate">Working…</span>
           </div>
         ) : null}
@@ -317,4 +317,3 @@ export function SidebarConversationHoverCard({
     </HoverCardContent>
   );
 }
-

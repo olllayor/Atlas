@@ -628,7 +628,7 @@ export class ChatSessionRuntime {
    * precisely so the model cannot pick them, and naming one is the whole point
    * of the syntax.
    */
-  private describePluginMentionsForPrompt(targets: PluginMentionTarget[]): string | null {
+  private describePluginMentionsForPrompt(targets: PluginMentionTarget[], projectRoot?: string | null): string | null {
     if (targets.length === 0 || !this.skillsService) {
       return null;
     }
@@ -650,7 +650,10 @@ export class ChatSessionRuntime {
         continue;
       }
 
-      const skill = this.skillsService.find(`${target.plugin}:${target.skill}`);
+      const skill = this.skillsService.find(
+        target.skill ? `${target.plugin}:${target.skill}` : target.plugin,
+        projectRoot
+      );
 
       lines.push(
         skill
@@ -659,7 +662,7 @@ export class ChatSessionRuntime {
       );
 
       if (skill) {
-        lines.push(this.skillsService.read(skill.qualifiedName));
+        lines.push(this.skillsService.read(skill.qualifiedName, projectRoot));
       }
     }
 
@@ -1011,7 +1014,7 @@ export class ChatSessionRuntime {
     const tools = request.enableTools
       ? {
           ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace, undefined, undefined, this.conversationsRepo),
-          ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          ...(this.skillsService ? createSkillTools(this.skillsService, undefined, workspace.root) : {}),
           // Deliberately no activation hook here — see the constructor.
           // Last known catalog: this path cannot await a connection, and an
           // estimate is what it exists to produce.
@@ -1043,7 +1046,7 @@ export class ChatSessionRuntime {
     // Resolution only, and deliberately not wired to `onPluginMentioned` on
     // this path: measuring cannot activate a server.
     const pendingMentionTokens = estimateTextTokens(
-      this.describePluginMentionsForPrompt(this.resolvePluginMentions(request.pendingText ?? '')) ?? ''
+      this.describePluginMentionsForPrompt(this.resolvePluginMentions(request.pendingText ?? ''), workspace.root) ?? ''
     );
     const pendingTokens = estimatePendingTokens(request) + (pendingMentionTokens > 0 ? pendingMentionTokens : 0);
 
@@ -1161,7 +1164,8 @@ export class ChatSessionRuntime {
     const skillsPrompt =
       this.skillsService?.describeForPrompt({
         mode: workspace.mode,
-        hasProject: workspace.root != null
+        hasProject: workspace.root != null,
+        projectRoot: workspace.root
       }) ?? null;
     const toolPrompt = [
       basePrompt,
@@ -1226,8 +1230,8 @@ export class ChatSessionRuntime {
    * where dsh records a pre-step injection. Returns null for mention-free
    * turns, which contribute nothing and shift nothing.
    */
-  private deriveTurnSnapshot(userText: string): string | null {
-    return this.describePluginMentionsForPrompt(this.resolvePluginMentions(userText));
+  private deriveTurnSnapshot(userText: string, projectRoot?: string | null): string | null {
+    return this.describePluginMentionsForPrompt(this.resolvePluginMentions(userText), projectRoot);
   }
 
   private resolveSiteTools(request: {
@@ -1398,6 +1402,7 @@ export class ChatSessionRuntime {
                 this.skillsService,
                 (pluginName, requiredServers) =>
                   this.onSkillLoaded?.(request.conversationId, pluginName, requiredServers) ?? false,
+                workspace.root
               )
             : {}),
           ...mcpTools,
@@ -1486,7 +1491,7 @@ export class ChatSessionRuntime {
         mode: compactionMode,
         // Per-turn `@mention` context rides as a derived history snapshot, not
         // in the system prompt — see `deriveTurnSnapshot`.
-        turnSnapshot: (userText) => this.deriveTurnSnapshot(userText),
+        turnSnapshot: (userText) => this.deriveTurnSnapshot(userText, workspace.root),
         budget: this.resolveContextBudget({
           modelHints,
           requestedMaxOutputTokens: request.maxOutputTokens,

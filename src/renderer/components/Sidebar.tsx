@@ -1,25 +1,15 @@
 import {
-  Archive,
-  ArchiveRestore,
   Check,
   ChevronDown,
-  ChevronRight,
   Clock,
   Folder,
-  FolderOpen,
   FolderPlus,
-  GitBranch,
   LayoutGrid,
   Plug,
-  MoreHorizontal,
-  Pencil,
-  Pin,
-  PinOff,
   Plus,
   Search,
   SquarePen,
   Trash2,
-  Unlink,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -40,12 +30,11 @@ import { RailSectionLabel } from './railPrimitives';
 import { RowIconButton } from './RowIconButton';
 import { SidebarThreadRow } from './SidebarThreadRow';
 import { SidebarActivityBell } from './SidebarActivityBell';
-import { SidebarProjectHoverCard } from './SidebarHoverCard';
 import {
-  SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS,
   notifySidebarHoverCardOpenChange,
   useSidebarHoverCardDelay,
 } from './sidebarHoverCardDelay';
+import { DeleteThreadDialog } from './DeleteThreadDialog';
 import { SidebarSettingsMenu } from './SidebarSettingsMenu';
 import { StatusDot } from './ui/status-dot';
 import {
@@ -55,25 +44,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
-import { HoverCard, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useAppStore } from '../stores/useAppStore';
 import {
   formatShelfSectionLabel,
-  groupSidebarConversationItems,
   resolveModelDisplayLabel,
   resolveSidebarRowVariant,
-  sortProjectsByPin,
   splitPinnedSidebarItems,
   splitSettledSidebarItems,
-  splitSidebarItemsByProject,
   splitSnoozedSidebarItems,
   floatUnsettledSidebarItems,
   type SidebarConversationItem,
 } from './sidebarViewModel';
-
-/** Chats shown per project before the section collapses behind "Show more". */
-const PROJECT_PREVIEW_COUNT = 5;
 
 /**
  * Settled-shelf paging: recent history is the common lookup, and the deep
@@ -300,18 +282,6 @@ function RailButton({
   );
 }
 
-/**
- * Radix opens a hover card on focus as well as on hover, and the list moves
- * focus with the arrow keys — so keyboard navigation used to fire a card per
- * row, and clicking a row left its card parked over the transcript until focus
- * moved on. `preventDefault` is what `composeEventHandlers` checks before
- * running the primitive's own handler, so this suppresses the focus path and
- * leaves the pointer path alone.
- */
-function suppressHoverCardOnFocus(event: React.FocusEvent) {
-  event.preventDefault();
-}
-
 export { RowIconButton };
 
 export function Sidebar({
@@ -344,10 +314,6 @@ export function Sidebar({
   onMarkRead,
   onOpenSettings,
   onAttachProject,
-  onCreateInProject,
-  onRevealProject,
-  onDetachProject,
-  onRenameProject,
   onForkConversation,
   onSetConversationPinned,
   onArchiveConversation,
@@ -355,7 +321,6 @@ export function Sidebar({
   onSetConversationSnoozed,
   onRestoreConversation,
   onLoadArchivedChats,
-  onSetProjectPinned,
   onOpenLanding,
   onOpenSites,
   onOpenPlugins,
@@ -372,10 +337,6 @@ export function Sidebar({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
-  const [projectRenameValue, setProjectRenameValue] = useState('');
-  /** The project whose "…" menu is open, so its icons stay put under it. */
-  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
   /** In-list thread search (T3 parity): filters every shelf by title. */
   const [threadQuery, setThreadQuery] = useState('');
   /** Project scope filter (T3 parity): null means all projects. */
@@ -385,6 +346,7 @@ export function Sidebar({
   const selectionAnchorRef = useRef<string | null>(null);
   const modifierRef = useRef({ toggle: false, range: false });
   const [bulkDeleteArmed, setBulkDeleteArmed] = useState(false);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ id: string; title: string } | null>(null);
   /** Manual pinned order override (T3 parity): null means store order. */
   const [pinOrderOverride, setPinOrderOverride] = useState<string[] | null>(loadPinOrder);
   const [draggingPinId, setDraggingPinId] = useState<string | null>(null);
@@ -394,7 +356,6 @@ export function Sidebar({
   const [isScrolled, setIsScrolled] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const cancelRenameRef = useRef(false);
-  const cancelProjectRenameRef = useRef(false);
 
   /**
    * Project and chat cards share one delay, so the wait is paid once per run
@@ -528,17 +489,9 @@ export function Sidebar({
       // Private window: order stays session-only.
     }
   }, [pinOrderOverride]);
-  const orderedProjects = useMemo(() => sortProjectsByPin(projects), [projects]);
-  const { sections, ungrouped } = useMemo(
-    () => splitSidebarItemsByProject(filteredUnpinnedItems, orderedProjects),
-    [orderedProjects, filteredUnpinnedItems]
-  );
-  const groups = useMemo(() => groupSidebarConversationItems(ungrouped, now), [ungrouped, now]);
-
-  // Which project the open chat lives in — that section is force-expanded so
-  // the current chat is never hidden behind a collapsed header.
-  const selectedProjectId =
-    items.find((item) => item.id === selectedConversationId)?.projectId ?? null;
+  // Flat inbox (T3 method): every active chat in one chronological list with
+  // its project named on the row. No per-project sections, no date groups —
+  // the project is a row attribute, not list structure.
   const [activeHoverCardId, setActiveHoverCardId] = useState<string | null>(null);
   /**
    * Model ids resolved to their catalog names once per catalog change, rather
@@ -555,26 +508,9 @@ export function Sidebar({
     }
     return byId;
   }, [items, models]);
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(new Set());
-  const [expandedProjectIds, setExpandedProjectIds] = useState<ReadonlySet<string>>(new Set());
 
   /**
-   * Recents is one disclosure, collapsed by default, per the Codex reference:
-   * the projects you attached are the durable structure, and an always-open
-   * flat list of every session buried them under fifty rows.
-   *
-   * With no projects attached there is nothing else in the list, so the
-   * disclosure is forced open and its chevron hidden — a sidebar whose only
-   * content is a "Recents" label is not a sidebar.
-   */
-  const [recentsOpenPreference, setRecentsOpen] = usePersistentFlag('atlas.sidebar.recents-open', false);
-  const hasProjectSections = sections.length > 0 || projects.length > 0;
-  const recentsExpanded = recentsOpenPreference || !hasProjectSections;
-
-  /**
-   * Archived is the same kind of disclosure as Recents and remembers the same
-   * way — but it is never force-expanded: it is the bottom of the list and the
-   * one section whose contents you are done with.
+   * Archived is collapsed by default: bottom of the list, done chats only.
    */
   const [archivedExpanded, setArchivedExpanded] = usePersistentFlag('atlas.sidebar.archived-open', false);
 
@@ -593,77 +529,9 @@ export function Sidebar({
     onLoadArchivedChats();
   }, [archivedExpanded, archivedRequested, hasArchivedChats, onLoadArchivedChats]);
 
-  // Selecting a chat from a collapsed project used to hide the row you just
-  // clicked. Opening one always re-expands its section.
-  useEffect(() => {
-    if (!selectedProjectId) {
-      return;
-    }
-    setCollapsedProjectIds((current) => {
-      if (!current.has(selectedProjectId)) {
-        return current;
-      }
-      const next = new Set(current);
-      next.delete(selectedProjectId);
-      return next;
-    });
-  }, [selectedProjectId]);
-
-  const toggleProject = useCallback((projectId: string) => {
-    setCollapsedProjectIds((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return next;
-    });
-  }, []);
-
-  const showAllInProject = useCallback((projectId: string) => {
-    setExpandedProjectIds((current) => new Set(current).add(projectId));
-  }, []);
   const runningItem = items.find((item) => item.isRunning) ?? null;
 
-  /**
-   * The open chat when it lives in Recents — rendered under the collapsed
-   * "Recents" header so collapsing the section never makes the thing you are
-   * looking at disappear from the list.
-   */
-  const selectedUngroupedItem = recentsExpanded
-    ? null
-    : (ungrouped.find((item) => item.id === selectedConversationId) ?? null);
   const toggleLabel = collapsed ? 'Show sidebar' : 'Hide sidebar';
-
-  /**
-   * What each project section actually renders, resolved once so the roving
-   * tabindex and the markup agree on which rows exist.
-   *
-   * The open chat is always in `visibleItems` even when it sorts past the
-   * preview cut — it used to hide behind "Show more", which left the sidebar
-   * with no selected row at all.
-   */
-  const projectVisibility = useMemo(
-    () =>
-      sections.map(({ project, items: projectItems }) => {
-        const isCollapsed = collapsedProjectIds.has(project.id);
-        const head = expandedProjectIds.has(project.id)
-          ? projectItems
-          : projectItems.slice(0, PROJECT_PREVIEW_COUNT);
-        const selected = projectItems.find((item) => item.id === selectedConversationId);
-        const shown = selected && !head.includes(selected) ? [...head, selected] : head;
-
-        return {
-          project,
-          projectItems,
-          isCollapsed,
-          visibleItems: isCollapsed ? [] : shown,
-          hiddenCount: projectItems.length - shown.length,
-        };
-      }),
-    [collapsedProjectIds, expandedProjectIds, sections, selectedConversationId]
-  );
 
   /**
    * The archived rows that are actually on screen. Archived rows are rows: they
@@ -738,7 +606,7 @@ export function Sidebar({
   }, [settledExpanded, filteredSettledItems, settledVisibleCount, selectedConversationId]);
   const hiddenSettledCount = settledExpanded ? filteredSettledItems.length - visibleSettledItems.length : 0;
 
-  /** Rendered rows, in visual order — collapsed sections contribute nothing. */
+  /** Rendered rows, in visual order: pins, flat inbox, shelves. */
   const visibleRowIds = useMemo(() => {
     const ids: string[] = [];
 
@@ -746,20 +614,8 @@ export function Sidebar({
       ids.push(item.id);
     }
 
-    for (const section of projectVisibility) {
-      for (const item of section.visibleItems) {
-        ids.push(item.id);
-      }
-    }
-
-    if (recentsExpanded) {
-      for (const group of groups) {
-        for (const item of group.items) {
-          ids.push(item.id);
-        }
-      }
-    } else if (selectedUngroupedItem) {
-      ids.push(selectedUngroupedItem.id);
+    for (const item of filteredUnpinnedItems) {
+      ids.push(item.id);
     }
 
     for (const item of visibleSnoozedItems) {
@@ -778,11 +634,8 @@ export function Sidebar({
 
     return ids;
   }, [
-    groups,
+    filteredUnpinnedItems,
     orderedPinnedItems,
-    projectVisibility,
-    recentsExpanded,
-    selectedUngroupedItem,
     visibleArchivedItems,
     visibleSettledItems,
     visibleSnoozedItems,
@@ -946,84 +799,6 @@ export function Sidebar({
     }
   }, [items, onRename, renameValue, renamingId]);
 
-  /**
-   * "Edit project" in the hover card and the "…" menu both land here: the row
-   * turns into an input in place, same as a chat rename, rather than opening a
-   * dialog for a single text field.
-   */
-  const startProjectRename = useCallback(
-    (project: WorkspaceProject) => {
-      if (!onRenameProject) {
-        return;
-      }
-      cancelProjectRenameRef.current = false;
-      setProjectRenameValue(project.title);
-      setRenamingProjectId(project.id);
-    },
-    [onRenameProject]
-  );
-
-  const commitProjectRename = useCallback(() => {
-    const id = renamingProjectId;
-    setRenamingProjectId(null);
-
-    if (!id || cancelProjectRenameRef.current) {
-      cancelProjectRenameRef.current = false;
-      return;
-    }
-
-    const next = projectRenameValue.trim();
-    const current = projects.find((project) => project.id === id)?.title ?? '';
-    if (next && next !== current) {
-      onRenameProject?.(id, next);
-    }
-  }, [onRenameProject, projectRenameValue, projects, renamingProjectId]);
-
-  const handleProjectContextMenu = useCallback(
-    async (event: React.MouseEvent, project: WorkspaceProject) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setActiveHoverCardId(null);
-      notifySidebarHoverCardOpenChange(false);
-
-      if (!window.atlasChat?.contextMenu?.showProject) {
-        return;
-      }
-
-      const isProjectPinned = Boolean(project.pinnedAt);
-      const result = await window.atlasChat.contextMenu.showProject({
-        projectId: project.id,
-        projectTitle: project.title,
-        projectExists: project.exists,
-        isPinned: isProjectPinned,
-        canRename: Boolean(onRenameProject),
-      });
-
-      if (!result) return;
-
-      if (result.action === 'new-chat') {
-        onCreateInProject(project.id);
-      } else if (result.action === 'toggle-pin') {
-        onSetProjectPinned(project.id, !isProjectPinned);
-      } else if (result.action === 'rename') {
-        startProjectRename(project);
-      } else if (result.action === 'reveal') {
-        onRevealProject(project.id);
-      } else if (result.action === 'remove') {
-        onDetachProject(project.id);
-      }
-    },
-    [
-      notifySidebarHoverCardOpenChange,
-      onCreateInProject,
-      onDetachProject,
-      onRenameProject,
-      onRevealProject,
-      onSetProjectPinned,
-      startProjectRename,
-    ]
-  );
-
   const handleSidebarBackgroundContextMenu = useCallback(
     async (event: React.MouseEvent) => {
       if (event.defaultPrevented) return;
@@ -1084,13 +859,9 @@ export function Sidebar({
 
   /**
    * One conversation row, in every state it can be in (renaming, armed for
-   * delete, ordinary). Extracted because project sections and the Recents
-   * date groups render the same row and used to be a copy-paste apart.
-   *
-   * `archived` re-points the row's verbs rather than forking it: the row's
-   * chrome, its hover card, its delete confirm and its place in the roving
-   * tabindex are all identical, and only the click target and the two actions
-   * differ.
+   * delete, ordinary). Shared by the flat inbox and every shelf so chrome,
+   * hover card, delete confirm and roving tabindex stay identical and only
+   * the click target and actions differ per shelf.
    */
   const handleHoverCardOpenChange = useCallback((cardId: string, open: boolean) => {
     if (open) {
@@ -1128,10 +899,25 @@ export function Sidebar({
 
   const handleDelete = useCallback(
     (id: string) => {
-      onDelete(id);
+      const item = items.find((i) => i.id === id) ?? archivedItems.find((i) => i.id === id);
+      setDeleteConfirmTarget({
+        id,
+        title: item?.primaryLabel ?? 'Untitled thread',
+      });
     },
-    [onDelete]
+    [items, archivedItems]
   );
+
+  const handleConfirmDelete = useCallback(() => {
+    if (deleteConfirmTarget) {
+      onDelete(deleteConfirmTarget.id);
+      setDeleteConfirmTarget(null);
+    }
+  }, [deleteConfirmTarget, onDelete]);
+
+  const handleCancelDelete = useCallback(() => {
+    setDeleteConfirmTarget(null);
+  }, []);
 
   const projectById = useMemo(
     () => new Map(projects.map((project) => [project.id, project])),
@@ -1392,6 +1178,13 @@ export function Sidebar({
             />
           ) : null}
 
+          <SidebarActivityBell
+            items={items}
+            onSelect={(conversationId) => onSelect(conversationId)}
+            onMarkAllRead={() => useAppStore.getState().markAllConversationsRead()}
+            side="right"
+          />
+
           {runningItem ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1496,6 +1289,20 @@ export function Sidebar({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => onAttachProject()}
+                    aria-label="Attach a folder"
+                    title="Attach a folder"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+                  >
+                    <Plus className="size-4" strokeWidth={1.75} aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Attach a folder</TooltipContent>
+              </Tooltip>
               {showNewChatShortcutHint && newChatShortcutLabel ? (
                 <span className="animate-in rounded-sm bg-bg-hover px-1.5 py-0.5 font-mono text-3xs leading-none text-text-tertiary fade-in-0 duration-150">
                   {newChatShortcutLabel}
@@ -1586,7 +1393,7 @@ export function Sidebar({
                     <button
                       type="button"
                       onClick={() => {
-                        for (const id of selectedIds) handleDelete(id);
+                        for (const id of selectedIds) onDelete(id);
                         selectionAnchorRef.current = null;
                         setSelectedIds(new Set());
                         setBulkDeleteArmed(false);
@@ -1648,8 +1455,7 @@ export function Sidebar({
           >
             {isListFiltering &&
             filteredPinnedItems.length === 0 &&
-            projectVisibility.every((section) => section.visibleItems.length === 0) &&
-            groups.every((group) => group.items.length === 0) &&
+            filteredUnpinnedItems.length === 0 &&
             visibleSnoozedItems.length === 0 &&
             visibleSettledItems.length === 0 &&
             visibleArchivedItems.length === 0 ? (
@@ -1706,285 +1512,16 @@ export function Sidebar({
               </section>
             ) : null}
 
-            {sections.length > 0 || projects.length > 0 ? (
-              <section aria-label="Projects">
-                <div className="sidebar-section-heading sticky top-0 z-10 flex items-center gap-1 px-2 pb-1.5 pt-5">
-                  <SidebarSectionLabel>Projects</SidebarSectionLabel>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={onAttachProject}
-                        aria-label="Attach a project folder"
-                        className="flex size-5 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary"
-                      >
-                        <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Attach a folder</TooltipContent>
-                  </Tooltip>
+            {filteredUnpinnedItems.length > 0 ? (
+              <section aria-label="Threads">
+                <div className="flex flex-col gap-0.5 pt-1">
+                  {filteredUnpinnedItems.map((item) => (
+                    <div key={item.id}>{renderConversationRow(item)}</div>
+                  ))}
                 </div>
-
-                {projectVisibility.map(({ project, projectItems, isCollapsed, visibleItems, hiddenCount }) => {
-                  // Scoped-out and query-missed sections leave no header behind.
-                  if (isListFiltering && projectItems.length === 0) return null;
-                  const isCurrent = project.id === selectedProjectId;
-                  const isProjectPinned = Boolean(project.pinnedAt);
-                  const FolderIcon = isCollapsed ? Folder : FolderOpen;
-
-                  return (
-                    <div key={project.id} className="mt-0.5 flex flex-col first:mt-0">
-                      {renamingProjectId === project.id ? (
-                        <input
-                          autoFocus
-                          value={projectRenameValue}
-                          aria-label="Rename project"
-                          onChange={(event) => setProjectRenameValue(event.target.value)}
-                          onFocus={(event) => event.currentTarget.select()}
-                          onBlur={commitProjectRename}
-                          onKeyDown={(event) => {
-                            event.stopPropagation();
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              commitProjectRename();
-                            } else if (event.key === 'Escape') {
-                              event.preventDefault();
-                              cancelProjectRenameRef.current = true;
-                              setRenamingProjectId(null);
-                            }
-                          }}
-                          className="h-8 w-full rounded-md bg-bg-hover px-2 text-md text-text-primary ring-1 ring-border-strong outline-none"
-                        />
-                      ) : (
-                        <HoverCard
-                          open={activeHoverCardId === `project:${project.id}`}
-                          openDelay={hoverCardOpenDelay}
-                          closeDelay={SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS}
-                          onOpenChange={(open) => {
-                            const cardId = `project:${project.id}`;
-                            if (open) {
-                              setActiveHoverCardId(cardId);
-                              notifySidebarHoverCardOpenChange(true);
-                            } else {
-                              setActiveHoverCardId((current) => (current === cardId ? null : current));
-                              notifySidebarHoverCardOpenChange(false);
-                            }
-                          }}
-                        >
-                          <HoverCardTrigger asChild onFocus={suppressHoverCardOnFocus}>
-                            <div
-                              onContextMenu={(event) => handleProjectContextMenu(event, project)}
-                              className={cn(
-                                // No fill on the current project: the
-                                // selected chat directly beneath it is also
-                                // filled, and the two merged into one
-                                // anonymous slab that read as a single
-                                // selected item.
-                                'group/row relative flex items-center rounded-md transition-colors hover:bg-bg-hover',
-                                isCurrent ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
-                              )}
-                            >
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleProject(project.id)}
-                                    aria-expanded={!isCollapsed}
-                                    title={project.exists ? project.root : `Missing — ${project.root}`}
-                                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-14 text-left"
-                                  >
-                                    <span className="flex size-4 shrink-0 items-center justify-center">
-                                      {/* The folder itself is the disclosure: shut when
-                                          the section is collapsed, open when it is.
-                                          This used to hide the state behind a chevron
-                                          that only appeared on hover, so a collapsed
-                                          section looked identical to an empty one until
-                                          you pointed at it. */}
-                                      <FolderIcon
-                                        className={cn(
-                                          'size-4',
-                                          project.exists ? 'text-text-tertiary' : 'text-warning-text'
-                                        )}
-                                        strokeWidth={1.75}
-                                        aria-hidden
-                                      />
-                                    </span>
-                                    {/* Branch and path moved into the hover card:
-                                        they were hover-only chips here, which is
-                                        exactly the space the row actions want. */}
-                                    <span className="min-w-0 flex-1 truncate text-md">{project.title}</span>
-                                  </button>
-
-                                  <div
-                                    className={cn(
-                                      'pointer-events-none absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-hover/row:delay-75',
-                                      openProjectMenuId === project.id && 'pointer-events-auto opacity-100 group-hover/row:delay-0'
-                                    )}
-                                  >
-                                    <DropdownMenu
-                                      open={openProjectMenuId === project.id}
-                                      onOpenChange={(open) =>
-                                        setOpenProjectMenuId(open ? project.id : null)
-                                      }
-                                    >
-                                      <DropdownMenuTrigger asChild>
-                                        <button
-                                          type="button"
-                                          tabIndex={-1}
-                                          aria-label={`Project options for ${project.title}`}
-                                          onClick={(event) => event.stopPropagation()}
-                                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-bg-active hover:text-text-primary"
-                                        >
-                                          <MoreHorizontal className="size-3.5" strokeWidth={1.75} aria-hidden />
-                                        </button>
-                                      </DropdownMenuTrigger>
-                                      <DropdownMenuContent align="start" className="w-52">
-                                        <DropdownMenuItem
-                                          onSelect={() => onSetProjectPinned(project.id, !isProjectPinned)}
-                                        >
-                                          {isProjectPinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-                                          {isProjectPinned ? 'Unpin project' : 'Pin project'}
-                                        </DropdownMenuItem>
-                                        {onRenameProject ? (
-                                          <DropdownMenuItem onSelect={() => startProjectRename(project)}>
-                                            <Pencil aria-hidden />
-                                            Rename project
-                                          </DropdownMenuItem>
-                                        ) : null}
-                                        <DropdownMenuItem
-                                          disabled={!project.exists}
-                                          onSelect={() => onRevealProject(project.id)}
-                                        >
-                                          <FolderOpen aria-hidden />
-                                          Reveal in file manager
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                          variant="destructive"
-                                          onSelect={() => onDetachProject(project.id)}
-                                        >
-                                          <Unlink aria-hidden />
-                                          Remove project
-                                        </DropdownMenuItem>
-                                      </DropdownMenuContent>
-                                    </DropdownMenu>
-
-                                    <RowIconButton
-                                      icon={<SquarePen className="size-3.5" strokeWidth={1.75} aria-hidden />}
-                                      label={`New chat in ${project.title}`}
-                                      onClick={() => onCreateInProject(project.id)}
-                                    />
-                                  </div>
-                                </div>
-                              </HoverCardTrigger>
-
-                          <SidebarProjectHoverCard
-                            project={project}
-                            chatCount={projectItems.length}
-                            onTogglePin={() => onSetProjectPinned(project.id, !isProjectPinned)}
-                            onReveal={() => onRevealProject(project.id)}
-                            onEdit={
-                              onRenameProject
-                                ? () => {
-                                    // Radix returns focus to the trigger as it
-                                    // closes; arm the input after that or the
-                                    // autoFocus is stolen back.
-                                    setTimeout(() => startProjectRename(project), 0);
-                                  }
-                                : undefined
-                            }
-                          />
-                        </HoverCard>
-                      )}
-
-                      {!isCollapsed ? (
-                        <div className="flex flex-col gap-0.5">
-                          {visibleItems.map((item) =>
-                            // Nested rows keep the relative time: the reference
-                            // frame shows `4h` / `8h` on the chats under both
-                            // Codex and ChatGPT, so dropping it here was the
-                            // one place the list stopped matching.
-                            renderConversationRow(item, { indented: true })
-                          )}
-
-                          {projectItems.length === 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => onCreateInProject(project.id)}
-                              title="Start a chat here"
-                              className="flex h-8 w-full items-center rounded-md pl-8 pr-2 text-left text-sm text-text-faint transition-colors hover:bg-bg-hover hover:text-text-secondary"
-                            >
-                              No chats
-                            </button>
-                          ) : null}
-
-                          {hiddenCount > 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => showAllInProject(project.id)}
-                              className="flex h-8 w-full items-center rounded-md pl-8 pr-2 text-left text-sm text-text-faint transition-colors hover:bg-bg-hover hover:text-text-secondary"
-                            >
-                              Show more
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-
-                {projects.length === 0 ? (
-                  <button
-                    type="button"
-                    onClick={onAttachProject}
-                    className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-text-faint transition-colors hover:bg-bg-hover hover:text-text-secondary"
-                  >
-                    <FolderPlus className="size-4 shrink-0" strokeWidth={1.75} aria-hidden />
-                    Attach a folder
-                  </button>
-                ) : null}
               </section>
             ) : null}
 
-            {ungrouped.length > 0 && scopeProjectId === null ? (
-              <section aria-label="Recents">
-                {/*
-                  One disclosure for all of history. Its own header is the only
-                  sticky element in this section — the date labels inside scroll
-                  away, because five stacked sticky bars stole a third of the
-                  viewport on a long list.
-                */}
-                <button
-                  type="button"
-                  onClick={() => setRecentsOpen((current) => !current)}
-                  disabled={!hasProjectSections}
-                  aria-expanded={recentsExpanded}
-                  className="group sidebar-section-heading sticky top-0 z-10 flex w-full items-center gap-1 px-2 pb-1.5 pt-5 text-left disabled:cursor-default"
-                >
-                  <SidebarSectionLabel>Recents</SidebarSectionLabel>
-                  {hasProjectSections ? (
-                    <ChevronRight
-                      className={cn(
-                        'size-3.5 shrink-0 text-text-faint transition-transform group-hover:text-text-tertiary',
-                        recentsExpanded && 'rotate-90'
-                      )}
-                      strokeWidth={2}
-                      aria-hidden
-                    />
-                  ) : null}
-                </button>
-
-                {recentsExpanded ? (
-                  groups.map((group) => (
-                    <div key={group.key} role="group" aria-label={group.label}>
-                      <div className="px-2 pb-1 pt-3 text-sm text-text-faint">{group.label}</div>
-                      <div className="flex flex-col gap-0.5">
-                        {group.items.map((item) => renderConversationRow(item))}
-                      </div>
-                    </div>
-                  ))
-                ) : selectedUngroupedItem ? (
-                  <div className="flex flex-col gap-0.5">{renderConversationRow(selectedUngroupedItem)}</div>
-                ) : null}
-              </section>
-            ) : null}
 
             {/*
               Snoozed, between the inbox and Settled: out of the way, never
@@ -2162,6 +1699,12 @@ export function Sidebar({
           onCheckForUpdates={onCheckForUpdates}
         />
       </div>
+      <DeleteThreadDialog
+        open={Boolean(deleteConfirmTarget)}
+        threadTitle={deleteConfirmTarget?.title ?? ''}
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+      />
     </aside>
   );
 }

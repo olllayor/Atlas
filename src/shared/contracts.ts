@@ -2720,6 +2720,15 @@ export type RendererApi = {
     showProject: (request: ShowProjectContextMenuRequest) => Promise<ProjectContextMenuAction | null>;
     showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) => Promise<SidebarBackgroundContextMenuAction | null>;
   };
+  images: {
+    /** Writes an image to the clipboard. `dataUrl` must be image data. */
+    copy: (dataUrl: string) => Promise<void>;
+    /**
+     * Fires when the native image menu asks for a copy. The renderer fetches
+     * the bytes (it alone can read `blob:` URLs) and answers via `copy`.
+     */
+    onCopyRequest: (listener: (src: string) => void) => () => void;
+  };
 };
 
 export type ShowChatSelectionMenuRequest = {

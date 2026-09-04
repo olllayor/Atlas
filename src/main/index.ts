@@ -89,6 +89,7 @@ import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
 import { registerContextMenuIpc } from './ipc/contextMenu';
+import { registerImagesIpc } from './ipc/images';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
@@ -841,6 +842,7 @@ app.whenReady().then(async () => {
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
   registerContextMenuIpc();
+  registerImagesIpc();
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
   // Wrapped like every other handler: these are registered here rather than in

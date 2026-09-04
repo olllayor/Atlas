@@ -58,14 +58,8 @@ test('a background command reports the sandbox but expects no output', async () 
   }
 });
 
-test('escalating out of the sandbox needs approval even in full-access', async () => {
-  const needsApproval = bashTool('full-access')?.needsApproval;
-
-  assert.equal(typeof needsApproval, 'function');
-
-  const approvalFor = needsApproval as (input: { dangerouslyDisableSandbox?: boolean }) => Promise<boolean>;
-  assert.equal(await approvalFor({}), false);
-  assert.equal(await approvalFor({ dangerouslyDisableSandbox: true }), mechanism !== 'none');
+test('full-access runs without pausing, including outside the sandbox', async () => {
+  assert.equal(bashTool('full-access')?.needsApproval, false);
   assert.equal(bashTool('ask')?.needsApproval, true);
 });
 

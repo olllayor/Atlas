@@ -34,6 +34,8 @@ import {
   sumAttachmentSize,
 } from '../../shared/attachments';
 import { parseMentions } from '../../shared/mentions';
+import { stripAssistantCitations } from '../../shared/citations';
+import type { AssistantCitation, CitedQuoteEntry } from '../../shared/citations';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
@@ -83,6 +85,16 @@ export type ComposerAttachmentDraft = {
 
 /** Stable identity so consumers do not re-render on every empty read. */
 export const EMPTY_COMPOSER_ATTACHMENTS: ComposerAttachmentDraft[] = [];
+
+/**
+ * Cited quotes staged in the composer tray, per conversation. Objects, not
+ * serialized links — the textarea never holds href bytes, so comment edits
+ * rewrite an entry instead of hunting link bytes in the draft string.
+ */
+export type { CitedQuoteEntry };
+
+/** Immutable empty list so selectors return a stable reference when idle. */
+export const EMPTY_COMPOSER_CITATIONS: CitedQuoteEntry[] = [];
 
 /** One queued follow-up as the composer dock shows it. */
 export type QueuedFollowupEntry = {
@@ -152,6 +164,8 @@ type AppState = {
   composerDraftsByConversation: Record<string, string>;
   /** Staged (not yet sent) composer attachments, per conversation. */
   composerAttachmentsByConversation: Record<string, ComposerAttachmentDraft[]>;
+  /** Staged (not yet sent) cited quotes, per conversation. */
+  composerCitationsByConversation: Record<string, CitedQuoteEntry[]>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
@@ -291,11 +305,26 @@ type AppState = {
     updater: (previous: ComposerAttachmentDraft[]) => ComposerAttachmentDraft[]
   ) => void;
   /**
+   * Stages a cited quote in the conversation's tray. Returns the entry key,
+   * which the comment editor uses to rewrite this exact entry later.
+   */
+  addComposerCitation: (conversationId: string, citation: AssistantCitation) => string;
+  updateComposerCitation: (conversationId: string, key: string, citation: AssistantCitation) => void;
+  removeComposerCitation: (conversationId: string, key: string) => void;
+  setComposerCitations: (
+    conversationId: string,
+    updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]
+  ) => void;
+  /**
    * Clear a thread's composer text and retire the attachments that were
    * actually sent. `sentAttachmentIds` is the snapshot taken when the send
    * began — anything staged afterwards survives.
    */
-  clearComposerDraft: (conversationId: string, sentAttachmentIds?: readonly string[]) => void;
+  clearComposerDraft: (
+    conversationId: string,
+    sentAttachmentIds?: readonly string[],
+    sentCitationKeys?: readonly string[]
+  ) => void;
   selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
   selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: {
@@ -638,6 +667,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedProviderIdByConversation: {},
   composerDraftsByConversation: {},
   composerAttachmentsByConversation: {},
+  composerCitationsByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
   runtimeSequenceByConversation: {},
@@ -976,11 +1006,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
-      const [detail, runtimeState] = await Promise.all([
-        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
-        window.atlasChat.chat.getRuntimeState({ conversationId }).catch(() => null),
-      ]);
-      const activeRuntimeState = runtimeState ?? null;
+      const pageStart = performance.now();
+      const pagePromise = window.atlasChat.conversations
+        .getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
+        .then((res) => ({ res, durationMs: performance.now() - pageStart }));
+
+      const runtimeStart = performance.now();
+      const runtimePromise = window.atlasChat.chat
+        .getRuntimeState({ conversationId })
+        .then((res) => ({ res, durationMs: performance.now() - runtimeStart }))
+        .catch(() => ({ res: null, durationMs: performance.now() - runtimeStart }));
+
+      const [pageResult, runtimeResult] = await Promise.all([pagePromise, runtimePromise]);
+      const detail = pageResult.res;
+      const activeRuntimeState = runtimeResult.res;
+
+      if (import.meta.env.DEV) {
+        console.info(
+          `[perf] Cold load conversation ${conversationId}: getPage=${pageResult.durationMs.toFixed(1)}ms (${detail.messages.length} msgs), getRuntimeState=${runtimeResult.durationMs.toFixed(1)}ms`
+        );
+      }
       set((current) => {
         const needsModel = !current.selectedModelIdByConversation[conversationId];
         const modelId = needsModel
@@ -1913,10 +1958,71 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  clearComposerDraft: (conversationId, sentAttachmentIds) => {
+  addComposerCitation: (conversationId, citation) => {
+    const key = crypto.randomUUID();
+    set((state) => ({
+      composerCitationsByConversation: {
+        ...state.composerCitationsByConversation,
+        [conversationId]: [
+          ...(state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS),
+          { key, citation },
+        ],
+      },
+    }));
+    return key;
+  },
+
+  updateComposerCitation: (conversationId, key, citation) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      if (!previous.some((entry) => entry.key === key)) {
+        return {};
+      }
+
+      return {
+        composerCitationsByConversation: {
+          ...state.composerCitationsByConversation,
+          [conversationId]: previous.map((entry) => (entry.key === key ? { key, citation } : entry)),
+        },
+      };
+    });
+  },
+
+  removeComposerCitation: (conversationId, key) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      const next = previous.filter((entry) => entry.key !== key);
+      if (next.length === previous.length) {
+        return {};
+      }
+
+      const { [conversationId]: _removed, ...rest } = state.composerCitationsByConversation;
+      return {
+        composerCitationsByConversation: next.length ? { ...rest, [conversationId]: next } : rest,
+      };
+    });
+  },
+
+  setComposerCitations: (conversationId, updater) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      const next = updater(previous);
+      if (next === previous) {
+        return {};
+      }
+
+      const { [conversationId]: _removed, ...rest } = state.composerCitationsByConversation;
+      return {
+        composerCitationsByConversation: next.length ? { ...rest, [conversationId]: next } : rest,
+      };
+    });
+  },
+
+  clearComposerDraft: (conversationId, sentAttachmentIds, sentCitationKeys) => {
     set((state) => {
       const { [conversationId]: _text, ...restText } = state.composerDraftsByConversation;
       const { [conversationId]: staged, ...restFiles } = state.composerAttachmentsByConversation;
+      const { [conversationId]: stagedCitations, ...restCitations } = state.composerCitationsByConversation;
       const sent = sentAttachmentIds ? new Set(sentAttachmentIds) : null;
       // Only the files that went out with this send are retired: the send is
       // async, so anything staged while it was in flight must stay put.
@@ -1931,10 +2037,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
+      // Same snapshot rule as files: only the citations that went out retire.
+      // A quote cited while the send was in flight stays staged.
+      const sentKeys = sentCitationKeys ? new Set(sentCitationKeys) : null;
+      const remainingCitations = (stagedCitations ?? []).filter(
+        (entry) => !(sentKeys ? sentKeys.has(entry.key) : true)
+      );
+
       return {
         composerAttachmentsByConversation: remaining.length
           ? { ...restFiles, [conversationId]: remaining }
           : restFiles,
+        composerCitationsByConversation: remainingCitations.length
+          ? { ...restCitations, [conversationId]: remainingCitations }
+          : restCitations,
         composerDraftsByConversation: restText
       };
     });
@@ -2066,7 +2182,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         modelId,
         messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
         enableTools: selectedModel.supportsTools !== false,
-        mentions: parseMentions(trimmed),
+        // Mentions resolve against citation-free text: a literal `@Sites`
+        // inside a quoted citation is assistant speech, not a user opt-in.
+        mentions: parseMentions(stripAssistantCitations(trimmed)),
         temperature: 0.65,
         // Models without a thinking mode ignore this; the adapters gate on the
         // catalog's supportsReasoning before sending anything.
@@ -2311,6 +2429,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _deletedProvider, ...restSelectedProviders } = current.selectedProviderIdByConversation;
       const { [conversationId]: _deletedComposerText, ...restComposerText } = current.composerDraftsByConversation;
       const { [conversationId]: deletedComposerFiles, ...restComposerFiles } = current.composerAttachmentsByConversation;
+      const { [conversationId]: _deletedComposerCitations, ...restComposerCitations } =
+        current.composerCitationsByConversation;
       // Staged files hold object URLs; dropping the map alone would leak them.
       for (const file of deletedComposerFiles ?? []) {
         if (file.url.startsWith('blob:')) {
@@ -2348,6 +2468,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedProviderIdByConversation: restSelectedProviders,
         composerDraftsByConversation: restComposerText,
         composerAttachmentsByConversation: restComposerFiles,
+        composerCitationsByConversation: restComposerCitations,
         runtimeSequenceByConversation: restSequences,
         isLoadingOlderByConversation: restLoadingOlder,
         inactiveConversationIds: current.inactiveConversationIds.filter((id) => id !== conversationId),

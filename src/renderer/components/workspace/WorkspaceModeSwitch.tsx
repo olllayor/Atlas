@@ -3,26 +3,17 @@ import {
   Check,
   ChevronDown,
   FolderPlus,
-  GitBranch,
   PanelBottom,
   PanelRight,
   ShieldAlert,
   ShieldCheck,
   ShieldQuestion,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
 
-import type { GitBranchInfo } from '../../../shared/contracts';
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
-import { notifyError, notify } from '../../lib/notify';
-import {
-  PERMISSION_PRESETS,
-  matchPermissionPreset,
-  type PermissionPreset,
-} from '../../../shared/permissionPresets';
-import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
-import { EXECUTION_TARGETS, WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
+import { WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
+import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,121 +40,20 @@ type AccessMenuProps = {
   permissionMode?: ToolPermissionMode;
   /** Streaming or a tool-less model: the ladder rows grey out, the modes stay live. */
   permissionDisabled?: boolean;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
-  /** Present when the menu can reach the conversation's git at all. */
-  conversationId?: string;
-  /** The conversation's current branch; the section hides without one. */
-  currentBranch?: string | null;
-  /** Fired after a successful checkout, so project/branch chips re-read. */
-  onBranchChanged?: () => void;
+  /** The composer chip is the access door, not the mode door — it skips the
+      mode rows (and the folder row, which belongs to them) entirely. */
+  hideModes?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
-  /** One-click posture: writes both axes at once. Absent without a handler. */
-  onPresetSelect?: (preset: PermissionPreset) => void;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 };
 
 /**
- * The branch picker, living where the context strip's branch chip used to.
- * When the strip collapses to its minimal post-first-message form, this is
- * the surviving way to check out — same IPC, same failure surface, one
- * section in a menu the user already opens for access and execution target.
- */
-function BranchMenuSection({
-  conversationId,
-  currentBranch,
-  onBranchChanged,
-}: {
-  conversationId: string;
-  currentBranch: string | null;
-  onBranchChanged?: () => void;
-}) {
-  const [branches, setBranches] = useState<GitBranchInfo[] | null>(null);
-  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
-
-  // Fetched per open: the menu remounts with its content, so mount == open,
-  // and branch state is exactly the thing that can change between opens.
-  useEffect(() => {
-    let cancelled = false;
-    setBranches(null);
-    void window.atlasChat.git
-      .getBranches(conversationId)
-      .then((list) => {
-        if (!cancelled) setBranches(list);
-      })
-      .catch(() => {
-        // An unreadable repo costs the list, never the menu.
-        if (!cancelled) setBranches([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [conversationId]);
-
-  const switchTo = async (name: string) => {
-    if (switchingTo != null || name === currentBranch) return;
-    setSwitchingTo(name);
-    try {
-      const state = await window.atlasChat.git.switchBranch(conversationId, name);
-      notify({ tone: 'success', title: `Switched to ${state.branch ?? name}` });
-      onBranchChanged?.();
-    } catch (err) {
-      // git refuses a checkout that would discard local changes; that
-      // refusal is the message the user needs.
-      notifyError('Could not switch branch', err);
-    } finally {
-      setSwitchingTo(null);
-    }
-  };
-
-  if (branches == null) {
-    return (
-      <DropdownMenuItem disabled className="px-3 py-2 text-sm text-text-muted">
-        Loading branches…
-      </DropdownMenuItem>
-    );
-  }
-
-  if (branches.length === 0) {
-    return (
-      <DropdownMenuItem disabled className="px-3 py-2 text-sm text-text-muted">
-        No branches found
-      </DropdownMenuItem>
-    );
-  }
-
-  return (
-    <DropdownMenuRadioGroup
-      aria-label="Branch"
-      value={currentBranch ?? ''}
-      onValueChange={(value) => void switchTo(value)}
-    >
-      {branches.map((branch) => (
-        <DropdownMenuRadioItem
-          key={`${branch.remote ? 'remote:' : ''}${branch.name}`}
-          value={branch.name}
-          disabled={switchingTo != null}
-          className="rounded-md py-2 pr-3"
-        >
-          <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
-            {branch.name}
-            {branch.remote ? <span className="text-text-faint"> (remote)</span> : null}
-          </span>
-        </DropdownMenuRadioItem>
-      ))}
-    </DropdownMenuRadioGroup>
-  );
-}
-
-/**
- * The menu both triggers share: what the agent is (mode), then what it may do
- * (access), the way Codex's /approvals folds approval policy and sandbox scope
- * into one list. One definition so the sidebar heading and the composer chip
- * can never drift apart.
+ * The menu the sidebar heading opens: what the agent is (mode), then what it
+ * may do (access), the way Codex's /approvals folds approval policy and
+ * sandbox scope into one list. The composer chip reuses it with `hideModes`,
+ * so the ladder can never drift apart between the two doors.
  *
  * Two selection idioms sit in it — a right check on the mode rows, Radix's left
  * dot on the ladder — because both are already the app's, and the label plus
@@ -174,61 +64,16 @@ function AccessMenuContent({
   ready,
   permissionMode,
   permissionDisabled,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
-  conversationId,
-  currentBranch,
-  onBranchChanged,
+  hideModes,
   onModeChange,
   onPermissionModeChange,
-  onPresetSelect,
-  onExecutionTargetChange,
   onRequestProject,
 }: AccessMenuProps) {
-  const activePreset = permissionMode ? matchPermissionPreset(mode, permissionMode) : null;
-
   return (
     <>
-      {/* Quick postures: one click writes both axes. Sits above the individual
-          controls the way a shortcut sits above the thing it shortcuts — the
-          rows below stay the fine-tuning path, and stay in sync because they
-          read the same props the preset handler writes. */}
-      {permissionMode && onPresetSelect ? (
+      {!hideModes ? (
         <>
-          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
-            Quick presets
-          </DropdownMenuLabel>
-          {PERMISSION_PRESETS.map((preset) => (
-            <DropdownMenuItem
-              key={preset.id}
-              onSelect={() => onPresetSelect(preset)}
-              disabled={permissionDisabled}
-              className="items-start gap-3 rounded-md px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span
-                  className={cn(
-                    'text-sm font-semibold',
-                    preset.toolPermissionMode === 'full-access'
-                      ? 'text-warning-text'
-                      : 'text-text-primary'
-                  )}
-                >
-                  {preset.label}
-                </span>
-                <span className="text-2xs leading-4 text-text-tertiary">{preset.hint}</span>
-              </span>
-              {activePreset?.id === preset.id ? (
-                <Check className="mt-0.5 size-4 shrink-0 text-text-secondary" />
-              ) : null}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
-        </>
-      ) : null}
-
-      {WORKSPACE_MODES.map((entry) => {
+          {WORKSPACE_MODES.map((entry) => {
         const isActive = entry.value === mode;
         // Only the *selected* mode can be unready — the alternative has not
         // been asked to run yet, so flagging it here would be a warning about
@@ -258,11 +103,13 @@ function AccessMenuContent({
           </DropdownMenuItem>
         );
       })}
+        </>
+      ) : null}
 
       {/* Sits with the modes rather than the ladder: a folder is what the
           selected mode is missing, not another rung of access. It appears only
           in the state the rows above are already complaining about. */}
-      {!ready && onRequestProject ? (
+      {!hideModes && !ready && onRequestProject ? (
         <>
           <DropdownMenuSeparator className="my-1 bg-border-default" />
           <DropdownMenuItem
@@ -279,7 +126,7 @@ function AccessMenuContent({
           look live and change nothing, so the whole section stays away. */}
       {permissionMode && onPermissionModeChange ? (
         <>
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
+          {!hideModes ? <DropdownMenuSeparator className="my-1.5 bg-border-subtle" /> : null}
           {/* Visual only — Radix does not associate a label with the group, so
               the group carries its own `aria-label` as well. */}
           <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
@@ -313,59 +160,6 @@ function AccessMenuContent({
           </DropdownMenuRadioGroup>
         </>
       ) : null}
-
-      {executionTarget && onExecutionTargetChange ? (
-        <>
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
-          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
-            Execution target · also in context bar
-          </DropdownMenuLabel>          <DropdownMenuRadioGroup
-            aria-label="Execution target"
-            value={executionTarget}
-            onValueChange={(val) => onExecutionTargetChange(val as ExecutionTarget)}
-          >
-            {EXECUTION_TARGETS.map((entry) => {
-              const isDisabled =
-                (entry.value === 'worktree' && !isGitRepo) ||
-                (entry.value === 'cloud' && !cloudSandboxEnabled);
-
-              let tagline = entry.tagline;
-              if (entry.value === 'worktree' && !isGitRepo) {
-                tagline = 'Requires a git repository attached';
-              } else if (entry.value === 'cloud' && !cloudSandboxEnabled) {
-                tagline = 'Enable in Settings → Beta';
-              }
-
-              return (
-                <DropdownMenuRadioItem
-                  key={entry.value}
-                  value={entry.value}
-                  disabled={isDisabled}
-                  className="items-start rounded-md py-2 pr-3"
-                >
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm font-medium text-text-primary">{entry.label}</span>
-                    <span className="text-2xs leading-4 text-text-tertiary">{tagline}</span>
-                  </span>
-                </DropdownMenuRadioItem>
-              );
-            })}
-          </DropdownMenuRadioGroup>
-        </>
-      ) : null}
-      {conversationId && currentBranch ? (
-        <>
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
-          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
-            Branch
-          </DropdownMenuLabel>
-          <BranchMenuSection
-            conversationId={conversationId}
-            currentBranch={currentBranch}
-            onBranchChanged={onBranchChanged}
-          />
-        </>
-      ) : null}
     </>
   );
 }
@@ -390,14 +184,6 @@ export function WorkspaceModeSwitch({
   permissionMode,
   permissionDisabled,
   onPermissionModeChange,
-  onPresetSelect,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
-  conversationId,
-  currentBranch,
-  onBranchChanged,
-  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
@@ -415,16 +201,6 @@ export function WorkspaceModeSwitch({
   permissionMode?: ToolPermissionMode;
   permissionDisabled?: boolean;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
-  /** One-click posture: writes both axes at once. Absent without a handler. */
-  onPresetSelect?: (preset: PermissionPreset) => void;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
-  /** When present, the menu grows the "Branch" section. */
-  conversationId?: string;
-  currentBranch?: string | null;
-  onBranchChanged?: () => void;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 }) {
@@ -498,16 +274,8 @@ export function WorkspaceModeSwitch({
           ready={ready}
           permissionMode={permissionMode}
           permissionDisabled={permissionDisabled}
-          executionTarget={executionTarget}
-          cloudSandboxEnabled={cloudSandboxEnabled}
-          isGitRepo={isGitRepo}
-          conversationId={conversationId}
-          currentBranch={currentBranch}
-          onBranchChanged={onBranchChanged}
           onModeChange={onChange}
           onPermissionModeChange={onPermissionModeChange}
-          onPresetSelect={onPresetSelect}
-          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>
@@ -516,40 +284,31 @@ export function WorkspaceModeSwitch({
 }
 
 /**
- * The composer's door into the same menu.
+ * The composer's door into the access ladder.
  *
- * Not a duplicate control: `Sidebar` drops the heading trigger when the rail
- * collapses, and this is the surviving way to reach either axis. Codex echoes
- * the access level below its chat input for the same reason — the composer is
- * where the consequence lands.
+ * Access-only by design: the mode lives in the sidebar heading, and the
+ * composer is where the consequence lands, so this chip answers "what may it
+ * do on this send" and nothing else. Codex echoes the approval policy below
+ * its chat input for the same reason.
  */
 export function WorkspaceAccessChip({
   mode,
   ready,
   permissionMode,
   disabled,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
+  permissionDisabled,
   onModeChange,
   onPermissionModeChange,
-  onPresetSelect,
-  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
   ready: boolean;
   permissionMode: ToolPermissionMode;
   disabled?: boolean;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
+  permissionDisabled?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange: (mode: ToolPermissionMode) => void;
-  /** One-click posture: writes both axes at once. Absent without a handler. */
-  onPresetSelect?: (preset: PermissionPreset) => void;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
-  /** When Code is selected but unready, renders a "Choose project folder…" row. */
+  /** Unused here (the mode rows are hidden) — kept so both doors share one prop shape. */
   onRequestProject?: () => void;
 }) {
   const state = describeAccessState({ mode, permissionMode, ready });
@@ -606,13 +365,10 @@ export function WorkspaceAccessChip({
           mode={mode}
           ready={ready}
           permissionMode={permissionMode}
-          executionTarget={executionTarget}
-          cloudSandboxEnabled={cloudSandboxEnabled}
-          isGitRepo={isGitRepo}
+          permissionDisabled={permissionDisabled}
+          hideModes
           onModeChange={onModeChange}
           onPermissionModeChange={onPermissionModeChange}
-          onPresetSelect={onPresetSelect}
-          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>

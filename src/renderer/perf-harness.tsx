@@ -376,6 +376,8 @@ function Harness() {
               queuedCount={0}
               attachments={[]}
               onAttachmentsChange={() => {}}
+              citations={[]}
+              onCitationsChange={() => {}}
               onChange={(text) => {
                 setComposerValue(text);
                 useAppStore.getState().setComposerDraft('perf-conv', text);

@@ -19,6 +19,8 @@
  *   and no effort ladder, so the UI never offers a control that does nothing.
  */
 
+import { realpath } from 'node:fs/promises';
+
 import type { ModelSummary, ProviderId } from '../../../../shared/contracts.js';
 import type { OpenCodeSettings } from '../../../../shared/opencodeSettings.js';
 import { OPENCODE_PROVIDER_ID } from '../../../../shared/opencodeSettings.js';
@@ -30,15 +32,40 @@ import type {
   ProviderStreamResult
 } from '../../core/ProviderAdapter.js';
 import type { OpenCodeAgentClient, OpenCodePermissionReply } from './OpenCodeAgentClient.js';
+import { isOpenCodeNotFound } from './OpenCodeAgentClient.js';
 import { flattenOpenCodeModels, parseOpenCodeModelSlug } from './inventory.js';
 import { OpenCodeEventTranslator } from './openCodeEvents.js';
 import { buildOpenCodePromptParts } from './openCodePrompt.js';
 
+/** Cursor shape version this adapter understands (mirrors the repo stamp). */
+export const OPENCODE_SESSION_CURSOR_VERSION = 1;
+
 /** Where a turn's opencode session id is remembered between runs. */
 export interface OpenCodeSessionStore {
-  get(conversationId: string): { sessionId: string; directory: string } | null;
+  get(conversationId: string): {
+    sessionId: string;
+    directory: string;
+    schemaVersion?: number;
+  } | null;
   set(input: { conversationId: string; sessionId: string; directory: string }): void;
   clear(conversationId: string): void;
+}
+
+/**
+ * Same directory by eye or by filesystem: lexical compare plus realpath, so a
+ * trailing slash or a macOS `/tmp` symlink never reads as a project move.
+ * Realpath failures fall back to lexical — a stat hiccup must not fork a chat.
+ */
+export async function isSameOpenCodeDirectory(left: string, right: string): Promise<boolean> {
+  if (left === right) {
+    return true;
+  }
+  try {
+    const [resolvedLeft, resolvedRight] = await Promise.all([realpath(left), realpath(right)]);
+    return resolvedLeft === resolvedRight;
+  } catch {
+    return left.replace(/\/+$/, '') === right.replace(/\/+$/, '');
+  }
 }
 
 export interface OpenCodeAgentAdapterDeps {
@@ -51,7 +78,7 @@ export interface OpenCodeAgentAdapterDeps {
    * back so the runtime can reap an idle server; it rides on the connection
    * precisely so no caller can take one and forget to return it.
    */
-  readonly connect: (settings: OpenCodeSettings) => Promise<{
+  readonly connect: (settings: OpenCodeSettings, serverPassword?: string | null) => Promise<{
     baseUrl: string;
     owned: boolean;
     release: () => void;
@@ -83,6 +110,21 @@ function abortError(): Error {
   const error = new Error('The OpenCode turn was aborted.');
   error.name = 'AbortError';
   return error;
+}
+
+/** Turn an SSE failure into a turn error users can act on. */
+function describeOpenCodeStreamError(streamError: unknown): Error {
+  const text = streamError instanceof Error ? streamError.message : String(streamError ?? '');
+  if (/401|403|unauthorized|forbidden/i.test(text)) {
+    return new Error(
+      'The OpenCode event stream rejected authentication. Check the saved server password in Settings, then retry the turn.'
+    );
+  }
+  return new Error(
+    text.trim().length > 0
+      ? `The OpenCode event stream failed and no answer arrived (${text.trim().slice(0, 200)}).`
+      : 'The OpenCode event stream failed and no answer arrived.'
+  );
 }
 
 export class OpenCodeAgentAdapter implements ProviderAdapter {
@@ -247,7 +289,7 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
       });
 
       streamAbort.abort();
-      await pump;
+      const streamError = await pump;
 
       if (request.signal.aborted || translator.wasAborted) {
         throw abortError();
@@ -256,6 +298,16 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
       const failure = promptResult.errorText ?? translator.errorText;
       if (failure) {
         throw new Error(failure);
+      }
+
+      const content = translator.assistantText || promptResult.text;
+      const reasoning = translator.assistantReasoning || promptResult.reasoning;
+      // The prompt call is the source of truth, so a dropped SSE connection
+      // with a good answer still succeeds. But a dead stream plus an empty
+      // answer used to return an empty success — surface the stream failure
+      // instead, with keychain guidance when it smells like auth.
+      if (!content && !reasoning && streamError) {
+        throw describeOpenCodeStreamError(streamError);
       }
 
       const tokens = promptResult.tokens ?? {};
@@ -296,11 +348,14 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
   }
 
   private async openClient(directory: string) {
-    const settings = this.deps.readSettings();
-    const connection = await this.deps.connect(settings);
+    // Read the password before connecting: the runtime needs it to set (or
+    // strip) OPENCODE_SERVER_PASSWORD on the child, and the client needs the
+    // same value for Basic auth. Connecting first used to inherit a host
+    // password the client never sent, 401ing our own spawn.
+    const serverPassword = await this.deps.readServerPassword();
+    const connection = await this.deps.connect(this.deps.readSettings(), serverPassword);
 
     try {
-      const serverPassword = await this.deps.readServerPassword();
       const client = this.deps.createClient({
         baseUrl: connection.baseUrl,
         directory,
@@ -315,13 +370,14 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
   }
 
   /**
-   * Resume rules, straight from t3code:
+   * Resume rules:
    *
-   * - a stored session is resumed as-is;
+   * - a stored session in the same directory resumes as-is;
    * - a *confirmed* miss (opencode says 404) silently recreates — any other
    *   failure fails the turn, so a server hiccup never looks like a fresh chat;
-   * - a directory change recreates too, because opencode scopes history by
-   *   the directory a session was created in.
+   * - a directory change forks the stored session there, preserving history —
+   *   a forked 404 falls back to fresh, any other fork failure fails the turn;
+   * - an unknown cursor version is ignored, never resumed into the wrong chat.
    */
   private async resolveSession(input: {
     client: OpenCodeAgentClient;
@@ -329,11 +385,38 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
     directory: string;
   }): Promise<{ sessionId: string; seeded: boolean; ephemeral: boolean }> {
     const stored = input.conversationId ? this.deps.sessions.get(input.conversationId) : null;
+    const usable =
+      stored && (stored.schemaVersion ?? OPENCODE_SESSION_CURSOR_VERSION) === OPENCODE_SESSION_CURSOR_VERSION
+        ? stored
+        : null;
 
-    if (stored && stored.directory === input.directory) {
-      const existing = await input.client.getSession(stored.sessionId);
+    if (usable && (await isSameOpenCodeDirectory(usable.directory, input.directory))) {
+      const existing = await input.client.getSession(usable.sessionId);
       if (existing) {
         return { sessionId: existing.id, seeded: false, ephemeral: false };
+      }
+    } else if (usable) {
+      const existing = await input.client.getSession(usable.sessionId);
+      if (existing) {
+        try {
+          const forked = await input.client.forkSession({
+            sessionId: usable.sessionId,
+            directory: input.directory
+          });
+          if (input.conversationId) {
+            this.deps.sessions.set({
+              conversationId: input.conversationId,
+              sessionId: forked.id,
+              directory: input.directory
+            });
+          }
+          return { sessionId: forked.id, seeded: false, ephemeral: false };
+        } catch (error) {
+          if (!isOpenCodeNotFound(error)) {
+            throw error;
+          }
+          // Forked 404: the source vanished mid-move. Fall through to fresh.
+        }
       }
     }
 
@@ -351,24 +434,26 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
   }
 
   /**
-   * Drain the event stream into the translator. Stream failures are swallowed
-   * on purpose: the prompt call is the source of truth for the turn, and a
-   * dropped SSE connection must not lose an answer opencode already produced.
+   * Drain the event stream into the translator. Returns the first stream
+   * failure (or null) instead of swallowing it: the caller decides — a good
+   * prompt answer wins over a dropped SSE connection, but an empty answer
+   * plus a dead stream must fail loudly rather than return empty success.
    */
   private async pumpEvents(
     client: OpenCodeAgentClient,
     translator: OpenCodeEventTranslator,
     signal: AbortSignal
-  ): Promise<void> {
+  ): Promise<unknown> {
     try {
       for await (const event of client.subscribeEvents(signal)) {
         translator.handle(event);
         if (signal.aborted) {
-          return;
+          return null;
         }
       }
-    } catch {
-      // Deltas are a nicety; the final message still arrives over HTTP.
+    } catch (error) {
+      return error;
     }
+    return null;
   }
 }

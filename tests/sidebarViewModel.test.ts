@@ -9,10 +9,13 @@ import type {
 } from '../src/shared/contracts';
 import {
   buildSidebarConversationItems,
+  filterSidebarItemsByMode,
   formatChangeCount,
   formatConversationChangeStats,
   formatHomeRelativePath,
   formatSettledSectionLabel,
+  groupSidebarConversationItems,
+  isWorkChat,
   resolveModelDisplayLabel,
   resolveSidebarRowVariant,
   sortProjectsByPin,
@@ -82,10 +85,10 @@ function stats(
   return { fileCount, linesAdded, linesRemoved };
 }
 
-function item(id: string, pinnedAt: string | null): SidebarConversationItem {
+function item(id: string, pinnedAt: string | null, projectId: string | null = null): SidebarConversationItem {
   return {
     id,
-    projectId: null,
+    projectId,
     isRunning: false,
     isFailed: false,
     status: 'idle',
@@ -290,4 +293,42 @@ test('Settled header label: collapsed renders count, expanded does not, neither 
   assert.ok(!formatSettledSectionLabel({ expanded: false, count: 0 }).endsWith(' '));
   assert.ok(!formatSettledSectionLabel({ expanded: true, count: 5 }).endsWith(' '));
   assert.ok(!formatSettledSectionLabel({ expanded: false, count: 5 }).endsWith(' '));
+});
+
+test('work chats are folderless chats; code mode shows projects only', () => {
+  const work = item('work', null, null);
+  const project = item('code', null, 'p1');
+
+  assert.equal(isWorkChat(work), true);
+  assert.equal(isWorkChat(project), false);
+
+  assert.deepEqual(
+    filterSidebarItemsByMode([work, project], 'work').map((entry) => entry.id),
+    ['work']
+  );
+  assert.deepEqual(
+    filterSidebarItemsByMode([work, project], 'code').map((entry) => entry.id),
+    ['code']
+  );
+});
+
+test('work inbox groups by rolling recency windows', () => {
+  const now = Date.parse('2026-09-04T12:00:00.000Z');
+  const at = (iso: string) => ({ ...item(iso, null), timestampMs: Date.parse(iso) });
+
+  const groups = groupSidebarConversationItems(
+    [
+      at('2026-09-04T08:00:00.000Z'),
+      at('2026-09-03T08:00:00.000Z'),
+      at('2026-08-30T08:00:00.000Z'),
+      at('2026-08-10T08:00:00.000Z'),
+      at('2026-06-01T08:00:00.000Z'),
+    ],
+    now
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.label),
+    ['Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'June']
+  );
 });

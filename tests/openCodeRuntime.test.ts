@@ -138,6 +138,7 @@ function makeHarness(options: {
   termGraceMs?: number;
   idleShutdownMs?: number;
   isPortFree?: (port: number) => Promise<boolean>;
+  healthCheck?: (baseUrl: string, serverPassword?: string) => Promise<{ healthy: boolean; version: string | null }>;
 } = {}): Harness {
   const children: FakeChild[] = [];
   const runtime = new OpenCodeRuntime({
@@ -145,6 +146,7 @@ function makeHarness(options: {
     ...(options.termGraceMs !== undefined ? { termGraceMs: options.termGraceMs } : {}),
     ...(options.idleShutdownMs !== undefined ? { idleShutdownMs: options.idleShutdownMs } : {}),
     ...(options.isPortFree ? { isPortFree: options.isPortFree } : {}),
+    healthCheck: options.healthCheck ?? (async () => ({ healthy: true, version: '1.18.23' })),
     childFactory: () => {
       const child = new FakeChild();
       children.push(child);
@@ -427,4 +429,95 @@ test('teardown stops waiting out the grace once the child is gone', async () => 
   await harness.runtime.shutdown();
   assert.ok(Date.now() - startedAt < 1_000, 'shutdown returned without waiting out the grace');
   assert.deepEqual(child.kills, ['SIGTERM'], 'no escalation was needed');
+});
+
+test('keychain password reaches the child env and the health gate', async () => {
+  const seen: Array<{ password?: string }> = [];
+  const spawnedEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const children: FakeChild[] = [];
+  const runtime = new OpenCodeRuntime({
+    healthCheck: async (_baseUrl, serverPassword) => {
+      seen.push({ ...(serverPassword ? { password: serverPassword } : {}) });
+      return { healthy: true, version: '1.18.23' };
+    },
+    childFactory: ((command: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      void command;
+      void args;
+      spawnedEnvs.push(opts.env);
+      const child = new FakeChild();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    }) as never
+  });
+
+  const connecting = runtime.connect({ settings: defaultOpenCodeSettings(), serverPassword: 'k3ychain' });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  children[0]!.emitData('stdout', `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40101\n`);
+  const connection = await connecting;
+  assert.equal(connection.baseUrl, 'http://127.0.0.1:40101');
+  assert.equal(spawnedEnvs[0]?.OPENCODE_SERVER_PASSWORD, 'k3ychain');
+  assert.deepEqual(seen[0], { password: 'k3ychain' });
+  connection.release();
+  await runtime.shutdown();
+});
+
+test('empty keychain password strips a host-inherited server password', async () => {
+  const spawnedEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const children: FakeChild[] = [];
+  const runtime = new OpenCodeRuntime({
+    healthCheck: async () => ({ healthy: true, version: '1.18.23' }),
+    childFactory: ((command: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      void command;
+      void args;
+      spawnedEnvs.push(opts.env);
+      const child = new FakeChild();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    }) as never
+  });
+
+  const connecting = runtime.connect({ settings: defaultOpenCodeSettings(), serverPassword: null });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  children[0]!.emitData('stdout', `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40102\n`);
+  await connecting;
+  assert.equal(spawnedEnvs[0]?.OPENCODE_SERVER_PASSWORD, undefined);
+  await runtime.shutdown();
+});
+
+test('health 401 tears the child down instead of handing out a lease', async () => {
+  const children: FakeChild[] = [];
+  const runtime = new OpenCodeRuntime({
+    termGraceMs: 2,
+    healthCheck: async () => {
+      throw new Error('OpenCode server rejected authentication.');
+    },
+    childFactory: (() => {
+      const child = new FakeChild();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    }) as never
+  });
+
+  const connecting = runtime.connect({ settings: defaultOpenCodeSettings(), serverPassword: 'stale' });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  children[0]!.emitData('stdout', `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40103\n`);
+  await assert.rejects(connecting, /rejected authentication/);
+  await runtime.shutdown().catch(() => undefined);
+});
+
+test('spawn env sets the server password from the keychain', () => {
+  const env = resolveOpenCodeSpawnEnvironment(undefined, { PATH: '/usr/bin' }, 'k3ychain')!;
+  assert.equal(env.OPENCODE_SERVER_PASSWORD, 'k3ychain');
+});
+
+test('spawn env strips a host-inherited password when the keychain is empty', () => {
+  const env = resolveOpenCodeSpawnEnvironment(
+    undefined,
+    { PATH: '/usr/bin', OPENCODE_SERVER_PASSWORD: 'host-leak' },
+    null
+  )!;
+  assert.equal(env.OPENCODE_SERVER_PASSWORD, undefined);
 });

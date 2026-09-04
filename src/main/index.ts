@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserWindow, app, ipcMain } from 'electron/main';
+import { BrowserWindow, app, ipcMain, nativeTheme } from 'electron/main';
 import { shell } from 'electron/common';
 
 import { ChatEngine } from './ai/core/ChatEngine';
@@ -22,7 +22,7 @@ import {
   registerAttachmentProtocolHandler,
   registerAttachmentScheme,
 } from './attachments/attachmentProtocol';
-import { createWindow, syncNativeTheme } from './bootstrap/createWindow';
+import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
 import { perfMark, perfNow } from './bootstrap/perfTrace';
 import { createAppDatabase } from './db/client';
@@ -893,7 +893,20 @@ app.whenReady().then(async () => {
   // appearance, so setting it afterwards leaves the first paint mismatched.
   syncNativeTheme(database.settings.getThemeMode());
   perfMark('boot:pre-window-complete');
-  const window = createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
+  const windowChromeState = () => ({
+    themeMode: database.settings.getThemeMode(),
+    designTheme: database.settings.getDesignTheme(),
+    backgroundColor: database.settings.getThemeColor('backgroundColor'),
+    foregroundColor: database.settings.getThemeColor('foregroundColor'),
+    translucentSidebar: database.settings.getTranslucentSidebar(),
+  });
+  const window = createWindow({ ...windowChromeState() });
+  // System mode tracks the OS live; re-resolve the frame when it flips.
+  nativeTheme.on('updated', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      syncWindowChrome(win, windowChromeState());
+    }
+  });
   perfMark('window:created');
   window.webContents.once('did-finish-load', () => {
     perfMark('boot:total (module eval → renderer loaded)');
@@ -917,7 +930,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
+      createWindow({ ...windowChromeState() });
     }
   });
 });

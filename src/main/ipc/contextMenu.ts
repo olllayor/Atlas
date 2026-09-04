@@ -26,8 +26,10 @@ export const MAX_CHAT_SELECTION_CHARS = 4000;
  *    answers through the images IPC that writes the clipboard.
  */
 export function attachContextMenu(window: BrowserWindow): void {
-  window.webContents.on('context-menu', (_event, params) => {
+  window.webContents.on('context-menu', (event, params) => {
     if (params.isEditable) {
+      // Owned menu: suppress Chromium's default or both pop up at once.
+      event.preventDefault();
       const editMenu = Menu.buildFromTemplate([
         { role: 'undo', enabled: params.editFlags.canUndo },
         { role: 'redo', enabled: params.editFlags.canRedo },
@@ -42,13 +44,16 @@ export function attachContextMenu(window: BrowserWindow): void {
       return;
     }
 
-    // Images get a copy item wherever they appear — transcript tiles,
+    // Images get copy + save items wherever they appear — transcript tiles,
     // composer tiles, the lightbox. Link-only right-clicks get the link menu
     // here. Link *plus* selection is owned by the chat-selection IPC menu
     // below (which includes the same two link items), so this branch stays
     // selection-free to avoid double popups. An image that is also a link
-    // keeps its link items below the copy item.
+    // keeps its link items below the image items.
     if (params.mediaType === 'image' && params.srcURL && !params.selectionText) {
+      // Owned menu: suppress Chromium's default (Save image / Copy image / …)
+      // or both pop up at once.
+      event.preventDefault();
       const srcURL = params.srcURL;
       const linkURL = params.linkURL;
       const template: MenuItemConstructorOptions[] = [
@@ -56,6 +61,12 @@ export function attachContextMenu(window: BrowserWindow): void {
           label: 'Copy Image',
           click: () => {
             window.webContents.send(IPC_CHANNELS.imagesCopyRequest, srcURL);
+          },
+        },
+        {
+          label: 'Save Image…',
+          click: () => {
+            window.webContents.send(IPC_CHANNELS.imagesSaveRequest, srcURL);
           },
         },
       ];
@@ -81,6 +92,8 @@ export function attachContextMenu(window: BrowserWindow): void {
     }
 
     if (params.linkURL && !params.selectionText) {
+      // Owned menu: suppress Chromium's default or both pop up at once.
+      event.preventDefault();
       const linkMenu = Menu.buildFromTemplate([
         {
           label: 'Open Link in Browser',

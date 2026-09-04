@@ -93,6 +93,16 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
 }
 
 /**
+ * Clock label for a wake time: "3:28 PM". Used by the snooze confirmation
+ * toast and anywhere else the return time is named rather than counted down.
+ */
+export function formatSnoozeClockLabel(snoozedUntil: string): string | null {
+  const wakeMs = Date.parse(snoozedUntil);
+  if (Number.isNaN(wakeMs)) return null;
+  return snoozeTimeOfDayLabel(new Date(wakeMs));
+}
+
+/**
  * Compact "wakes in" label for snoozed rows: "2h", "18h", "3d". Minutes round
  * up so a snooze never reads "0m" while still hidden.
  */
@@ -109,8 +119,12 @@ export function snoozeWakeLabel(snoozedUntil: string, now: number): string {
 export type SnoozeVisibilityInput = {
   /** Wake time, or null when never snoozed. */
   readonly snoozedUntil: string | null;
-  /** True while the chat holds a pending approval (blocked-on-you work). */
-  readonly needsInput: boolean;
+  /**
+   * True while the chat holds a pending tool approval (blocked-on-you work
+   * that arrived after the snooze was applied). Failed turns do NOT count:
+   * an explicitly parked chat stays parked until its timer, errors included.
+   */
+  readonly hasPendingApproval: boolean;
   /** When the current snooze was applied. */
   readonly snoozedAt?: string | null;
   /** When the latest turn completed, if any. */
@@ -124,7 +138,8 @@ export type SnoozeVisibilityInput = {
  * snoozed. Malformed data never hides a chat.
  *
  * Early raises:
- * - Approvals / user input needed: lifts snooze early.
+ * - A tool approval arriving after the snooze lifts it early: consent cannot
+ *   wait for the timer.
  * - Fresh turn completion: if a turn finishes after the snooze was applied,
  *   fresh output has arrived and the thread raises its hand early.
  */
@@ -133,7 +148,7 @@ export function effectiveSnoozed(input: SnoozeVisibilityInput, now: number): boo
   const wakeAtMs = Date.parse(input.snoozedUntil);
   if (Number.isNaN(wakeAtMs)) return false;
   if (wakeAtMs <= now) return false;
-  if (input.needsInput) return false;
+  if (input.hasPendingApproval) return false;
   if (
     input.snoozedAt != null &&
     input.completedAt != null &&

@@ -206,7 +206,7 @@ export function SidebarSettingsMenu({
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
           <GearIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="truncate text-md font-normal">Settings</span>
+          <span className="truncate text-md font-medium">Settings</span>
         </button>
       ) : null}
 

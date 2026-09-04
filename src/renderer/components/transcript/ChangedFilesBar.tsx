@@ -1,27 +1,27 @@
 /**
- * The end-of-turn "Edited N files" card.
+ * The end-of-turn changed-files card.
  *
- * A turn that edited files closes with a bordered card: a leading glyph tile,
- * `Edited 4 files` over its `+271 −73` totals, `Undo` and `Review` on the
- * right, then one row per file — directory dimmed, filename in full contrast,
- * counts on the right rail. Long turns show the first few files and keep the
- * rest behind `Show N more files`, so a twenty-file turn does not push the
- * reply off the screen.
+ * A turn that edited files closes with a filled card: a collapse chevron,
+ * `N changed files` over its `+A −D` totals, a `Hide/Show files` toggle, a
+ * prev/next file pager, `Undo` and `Open diff` on the right. Files group
+ * under collapsible top-directory rows (`src/renderer  +71 −22`), each
+ * carrying its own totals; every file row expands to its unified diff.
  *
- * Each row still expands to its unified diff: the card is the summary, and the
- * diff is one click under it rather than in another panel.
+ * Open state lives in the transcript UI store, keyed by stable ids — the
+ * transcript is virtualized, so `useState` here would silently re-collapse
+ * the moment the card scrolls out of view.
  *
  * Diff counts use the diff tokens (green/red-salmon), not the semantic
  * error orange — `--diff-del-fg-count` lets a theme pin a dedicated count
  * colour, falling back to the diff body foreground.
  */
 
-import { ChevronDown, ChevronRight, FileDiff, Undo2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, ChevronUp, FileDiff, Folder, Undo2 } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
 
 import type { ChangedFilesSummary, DiffFile } from '../../../shared/toolCellGrammar';
 import { basename, changedFilesToPlainText } from '../../../shared/toolCellGrammar';
-import { stableId, useDisclosure } from '../../stores/useTranscriptUiStore';
+import { stableId, useDisclosure, useTranscriptUiStore } from '../../stores/useTranscriptUiStore';
 import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
@@ -30,46 +30,58 @@ import { Disclosure } from './ToolCell';
 const ADD_COUNT_STYLE = { color: 'var(--diff-add-fg-count, var(--success))' } as const;
 const DEL_COUNT_STYLE = { color: 'var(--diff-del-fg-count, var(--diff-del-fg))' } as const;
 
-/**
- * How many file rows are shown before the card folds the rest away.
- *
- * Three is what fits under the header without the card competing with the
- * reply it belongs to; anything past that is available in one click.
- */
-export const CHANGED_FILES_VISIBLE_ROWS = 3;
+/** First path segment, or `''` for a root-level file (rendered ungrouped). */
+export function topDirectoryOf(path: string): string {
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments.length > 1 ? (segments[0] ?? '') : '';
+}
+
+type FileGroup = {
+  /** Top directory, or `''` for root-level files. */
+  folder: string;
+  files: DiffFile[];
+  added: number;
+  removed: number;
+};
 
 /**
- * Basename plus just enough parent directory to tell two files apart.
- *
- * A turn that edits `src/main/index.ts` and `src/renderer/index.ts`
- * previously rendered two rows both reading `index.ts`, which is worse
- * than useless — the reader cannot tell which diff belongs to which file.
+ * Files already arrive path-sorted; folders keep first-seen order with root
+ * files first, so the list reads top-down like the working tree.
  */
-function disambiguateNames(files: DiffFile[]): string[] {
-  const names = files.map((file) => basename(file.path));
-  const counts = new Map<string, number>();
-  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
-
-  return files.map((file, index) => {
-    const name = names[index];
-    if ((counts.get(name) ?? 0) < 2) return name;
-
-    const segments = file.path.split(/[\\/]/).filter(Boolean);
-    const parent = segments[segments.length - 2];
-    return parent ? `${parent}/${name}` : name;
+export function groupChangedFiles(files: DiffFile[]): FileGroup[] {
+  const groups = new Map<string, FileGroup>();
+  for (const file of files) {
+    const folder = topDirectoryOf(file.path);
+    let group = groups.get(folder);
+    if (!group) {
+      group = { folder, files: [], added: 0, removed: 0 };
+      groups.set(folder, group);
+    }
+    group.files.push(file);
+    group.added += file.added;
+    group.removed += file.removed;
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (!a.folder) return -1;
+    if (!b.folder) return 1;
+    return a.folder.localeCompare(b.folder);
   });
 }
 
 /**
  * The directory the file sits in, trailing separator included, or `''`.
  *
- * It is rendered dimmed in front of the filename rather than dropped: the
- * path is how you tell `db/client.ts` from `renderer/client.ts`, and the
- * contrast split keeps the filename readable at a glance anyway.
+ * Rendered dimmed in front of the filename rather than dropped: the path is
+ * how you tell `db/client.ts` from `renderer/client.ts`, and the contrast
+ * split keeps the filename readable at a glance anyway.
  */
 function directoryOf(path: string): string {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   return cut < 0 ? '' : path.slice(0, cut + 1);
+}
+
+function fileRowId(path: string) {
+  return stableId('changed-file', path);
 }
 
 export function ChangedFilesBar({
@@ -91,21 +103,43 @@ export function ChangedFilesBar({
 
   // Keyed by the file set so the card's open state survives the virtualizer
   // unmounting the row when it scrolls out of view.
-  const barId = useMemo(
-    () => stableId('changed-files', summary.files.map((file) => file.path).join('|')),
+  const barSeed = useMemo(
+    () => summary.files.map((file) => file.path).join('|'),
     [summary.files]
   );
-  const [showAll, toggleShowAll] = useDisclosure(barId, false);
+  const barId = useMemo(() => stableId('changed-files', barSeed), [barSeed]);
+  const [filesOpen, toggleFilesOpen] = useDisclosure(barId, true);
+  const setExpanded = useTranscriptUiStore((state) => state.setExpanded);
   const raw = useRawTranscript();
 
-  const names = useMemo(() => disambiguateNames(summary.files), [summary.files]);
+  const groups = useMemo(() => groupChangedFiles(summary.files), [summary.files]);
   const rawText = useMemo(() => changedFilesToPlainText(summary), [summary]);
   const [undoState, setUndoState] = useState<'idle' | 'running' | 'done'>('idle');
 
-  const hidden = Math.max(0, count - CHANGED_FILES_VISIBLE_ROWS);
-  const visibleFiles = showAll
-    ? summary.files
-    : summary.files.slice(0, CHANGED_FILES_VISIBLE_ROWS);
+  // Render-order path list: the prev/next pager walks it, expanding each
+  // folder and diff as it lands and scrolling the row into view.
+  const flatPaths = useMemo(
+    () => groups.flatMap((group) => group.files.map((file) => file.path)),
+    [groups]
+  );
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+
+  const focusedIndex = focusedPath ? flatPaths.indexOf(focusedPath) : -1;
+
+  const goToFile = (index: number) => {
+    const path = flatPaths[index];
+    if (!path) return;
+    const folder = topDirectoryOf(path);
+    if (folder) setExpanded(stableId('changed-folder', `${barSeed}|${folder}`), true);
+    setExpanded(fileRowId(path), true);
+    setFocusedPath(path);
+    // The diff expands in the same frame; scrolling after paint lands on the
+    // opened row rather than where it was while collapsed.
+    requestAnimationFrame(() => {
+      rowRefs.current.get(path)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  };
 
   const runUndo = async () => {
     if (!onUndo || undoState !== 'idle') return;
@@ -121,10 +155,10 @@ export function ChangedFilesBar({
   };
 
   if (raw) {
-    // The card's whole visual identity — the border, the glyph tile, the
-    // coloured counts — is chrome. In raw mode the header and every patch
-    // body collapse into one selectable block; the actions survive as plain
-    // links because they do things, which is not a rendering choice.
+    // The card's whole visual identity — the fill, the counts, the folders —
+    // is chrome. In raw mode the header and every patch body collapse into
+    // one selectable block; the actions survive as plain links because they
+    // do things, which is not a rendering choice.
     return (
       <div className="mt-4">
         <pre className={cn('app-code-text m-0 leading-[1.55] text-text-secondary', RAW_BLOCK)}>
@@ -158,29 +192,45 @@ export function ChangedFilesBar({
   return (
     // `overflow-hidden` so the last expanded diff cannot square off the
     // card's bottom corners.
-    <div className="mt-4 overflow-hidden rounded-xl border border-border-subtle">
-      <div className="flex items-center gap-3 px-3 py-3">
-        <span
-          aria-hidden
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-bg-surface"
+    <div className="mt-4 overflow-hidden rounded-xl border border-border-subtle bg-bg-surface">
+      <div className="flex h-11 items-center gap-1.5 px-2.5">
+        <button
+          type="button"
+          onClick={toggleFilesOpen}
+          aria-expanded={filesOpen}
+          aria-label={filesOpen ? 'Hide changed files' : 'Show changed files'}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
-          <FileDiff className="h-4 w-4 text-text-secondary" />
+          <ChevronDown
+            aria-hidden
+            className={cn(
+              'size-4 transition-transform duration-fast motion-reduce:transition-none',
+              !filesOpen && '-rotate-90'
+            )}
+          />
+        </button>
+
+        <span className="shrink-0 text-base font-semibold text-text-primary">
+          {count} {count === 1 ? 'file' : 'files'}
+        </span>
+        <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
+          +{summary.added}
+        </span>
+        <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
+          {MINUS}
+          {summary.removed}
         </span>
 
-        <div className="min-w-0 flex-1 leading-tight">
-          <div className="text-base text-text-primary">
-            Edited {count} {count === 1 ? 'file' : 'files'}
-          </div>
-          <div className="mt-0.5 flex items-center gap-2">
-            <span className="app-code-compact tabular-nums" style={ADD_COUNT_STYLE}>
-              +{summary.added}
-            </span>
-            <span className="app-code-compact tabular-nums" style={DEL_COUNT_STYLE}>
-              {MINUS}
-              {summary.removed}
-            </span>
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={toggleFilesOpen}
+          aria-expanded={filesOpen}
+          className="shrink-0 cursor-pointer rounded-md px-1.5 py-1 text-sm text-text-tertiary transition-colors hover:text-text-secondary"
+        >
+          {filesOpen ? 'Hide files' : 'Show files'}
+        </button>
+
+        <span className="min-w-0 flex-1" />
 
         {onUndo ? (
           <button
@@ -188,47 +238,81 @@ export function ChangedFilesBar({
             onClick={() => void runUndo()}
             disabled={undoState !== 'idle'}
             aria-label={`${undoLabel(undoState)} the edits from this turn`}
-            className="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-base text-text-secondary transition-colors hover:text-text-primary disabled:cursor-default disabled:text-text-tertiary"
+            title={`${undoLabel(undoState)} the edits from this turn`}
+            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:text-text-faint"
           >
-            {undoLabel(undoState)}
-            <Undo2 aria-hidden className="h-3.5 w-3.5" />
+            <Undo2 aria-hidden className="size-3.5" />
           </button>
         ) : null}
+
+        <button
+          type="button"
+          onClick={() => goToFile(focusedIndex <= 0 ? 0 : focusedIndex - 1)}
+          disabled={flatPaths.length === 0 || focusedIndex === 0}
+          aria-label="Previous changed file"
+          title="Previous changed file"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <ChevronUp aria-hidden className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => goToFile(focusedIndex + 1)}
+          disabled={focusedIndex >= flatPaths.length - 1}
+          aria-label="Next changed file"
+          title="Next changed file"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <ChevronDown aria-hidden className="size-4" />
+        </button>
 
         {onReview ? (
           <button
             type="button"
             onClick={onReview}
-            className="h-8 shrink-0 cursor-pointer rounded-lg border border-border-subtle px-3 text-base text-text-primary transition-colors hover:bg-bg-hover"
+            className="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border-subtle px-3 text-sm text-text-primary transition-colors hover:bg-bg-hover"
           >
-            Review
+            <FileDiff aria-hidden className="size-3.5" />
+            Open diff
           </button>
         ) : null}
       </div>
 
-      <div className="border-t border-border-subtle px-1 pb-1">
-        {visibleFiles.map((file, index) => (
-          <ChangedFileRow key={file.path} file={file} name={names[index]} />
-        ))}
-
-        {hidden > 0 ? (
-          <button
-            type="button"
-            onClick={toggleShowAll}
-            aria-expanded={showAll}
-            className="flex h-9 w-full cursor-pointer items-center gap-1 rounded-lg px-3 text-left text-base text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-secondary"
-          >
-            {showAll ? 'Show fewer files' : `Show ${hidden} more ${hidden === 1 ? 'file' : 'files'}`}
-            <ChevronDown
-              aria-hidden
-              className={cn(
-                'h-3.5 w-3.5 transition-transform duration-fast motion-reduce:transition-none',
-                showAll && 'rotate-180'
-              )}
-            />
-          </button>
-        ) : null}
-      </div>
+      {filesOpen ? (
+        <div className="border-t border-border-subtle px-1 pb-1">
+          {groups.map((group) =>
+            group.folder ? (
+              <ChangedFolderGroup
+                key={group.folder}
+                group={group}
+                barSeed={barSeed}
+                focusedPath={focusedPath}
+                setRowRef={(path, element) => {
+                  if (element) rowRefs.current.set(path, element);
+                  else rowRefs.current.delete(path);
+                }}
+              />
+            ) : (
+              group.files.map((file) => (
+                <div
+                  key={file.path}
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(file.path, element);
+                    else rowRefs.current.delete(file.path);
+                  }}
+                >
+                  <ChangedFileRow
+                    file={file}
+                    displayDir={directoryOf(file.path)}
+                    displayName={basename(file.path)}
+                    focused={focusedPath === file.path}
+                  />
+                </div>
+              ))
+            )
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -238,13 +322,95 @@ function undoLabel(state: 'idle' | 'running' | 'done') {
   return state === 'done' ? 'Undone' : 'Undo';
 }
 
-function ChangedFileRow({ file, name }: { file: DiffFile; name: string }) {
-  const rowId = useMemo(() => stableId('changed-file', file.path), [file.path]);
-  const [isOpen, toggleOpen] = useDisclosure(rowId, false);
+function ChangedFolderGroup({
+  group,
+  barSeed,
+  focusedPath,
+  setRowRef,
+}: {
+  group: FileGroup;
+  barSeed: string;
+  focusedPath: string | null;
+  setRowRef: (path: string, element: HTMLDivElement | null) => void;
+}) {
+  const folderId = useMemo(
+    () => stableId('changed-folder', `${barSeed}|${group.folder}`),
+    [barSeed, group.folder]
+  );
+  const [isOpen, toggleOpen] = useDisclosure(folderId, true);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={toggleOpen}
+        aria-expanded={isOpen}
+        aria-label={`${group.folder}, ${group.files.length} ${group.files.length === 1 ? 'file' : 'files'}. ${isOpen ? 'Hide' : 'Show'} files`}
+        className="group/folder flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-bg-hover"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            'size-3.5 shrink-0 text-text-tertiary transition-transform duration-fast motion-reduce:transition-none',
+            isOpen && 'rotate-90'
+          )}
+        />
+        <Folder aria-hidden className="size-3.5 shrink-0 text-text-tertiary" strokeWidth={1.75} />
+        <span className="min-w-0 flex-1 truncate text-sm text-text-secondary transition-colors group-hover/folder:text-text-primary">
+          {group.folder}
+        </span>
+        <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
+          +{group.added}
+        </span>
+        <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
+          {MINUS}
+          {group.removed}
+        </span>
+      </button>
+
+      {isOpen
+        ? group.files.map((file) => {
+            // Inside its folder the leading segment is noise: show the path
+            // relative to the folder, directory dimmed, filename full.
+            const remainder = file.path.startsWith(`${group.folder}/`)
+              ? file.path.slice(group.folder.length + 1)
+              : file.path;
+            // Backslash paths never start with `folder/`; fall back to the
+            // full directory rather than a wrong relative one.
+            const relative = remainder === file.path ? directoryOf(file.path) : directoryOf(remainder);
+            return (
+              <div key={file.path} ref={(element) => setRowRef(file.path, element)}>
+                <ChangedFileRow
+                  file={file}
+                  displayDir={relative}
+                  displayName={basename(file.path)}
+                  focused={focusedPath === file.path}
+                  indented
+                />
+              </div>
+            );
+          })
+        : null}
+    </div>
+  );
+}
+
+function ChangedFileRow({
+  file,
+  displayDir,
+  displayName,
+  focused,
+  indented,
+}: {
+  file: DiffFile;
+  /** Directory prefix as rendered (dimmed); relative inside folders. */
+  displayDir: string;
+  displayName: string;
+  focused: boolean;
+  indented?: boolean;
+}) {
+  const [isOpen, toggleOpen] = useDisclosure(fileRowId(file.path), false);
   const title = file.previousPath ? `${file.previousPath} → ${file.path}` : file.path;
-  // `name` already carries a parent segment when two files share a basename,
-  // so the dimmed prefix is trimmed to what it does not already show.
-  const directory = directoryOf(file.path).slice(0, Math.max(0, file.path.length - name.length));
 
   return (
     <div>
@@ -253,11 +419,15 @@ function ChangedFileRow({ file, name }: { file: DiffFile; name: string }) {
         onClick={toggleOpen}
         aria-expanded={isOpen}
         aria-label={`${title}, ${file.added} additions, ${file.removed} deletions. ${isOpen ? 'Hide' : 'Show'} diff`}
-        className="group/file flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left transition-colors hover:bg-bg-hover"
+        className={cn(
+          'group/file flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left transition-colors hover:bg-bg-hover',
+          indented && 'pl-9',
+          focused && 'bg-bg-hover'
+        )}
       >
-        <span className="min-w-0 flex-1 truncate text-base" title={title}>
-          <span className="text-text-tertiary">{directory}</span>
-          <span className="text-text-primary">{name}</span>
+        <span className="min-w-0 flex-1 truncate text-sm" title={title}>
+          <span className="text-text-tertiary">{displayDir}</span>
+          <span className="text-text-primary">{displayName}</span>
         </span>
         <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
           +{file.added}
@@ -269,8 +439,8 @@ function ChangedFileRow({ file, name }: { file: DiffFile; name: string }) {
         <ChevronRight
           aria-hidden
           className={cn(
-            'h-3.5 w-3.5 shrink-0 text-text-tertiary opacity-0 transition-[opacity,transform] duration-fast group-hover/file:opacity-100 group-focus-within/file:opacity-100 motion-reduce:transition-none',
-            isOpen && 'rotate-90 opacity-100'
+            'size-3.5 shrink-0 text-text-tertiary opacity-0 transition-[opacity,transform] duration-fast group-hover/file:opacity-100 group-focus-within/file:opacity-100 motion-reduce:transition-none',
+            (isOpen || focused) && 'rotate-90 opacity-100'
           )}
         />
       </button>

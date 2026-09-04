@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Clock, Folder, Pin } from 'lucide-react';
+import { AlarmClock, Check, Clock, Folder, Pin } from 'lucide-react';
 
 import type { ConversationChangeStats } from '../../shared/contracts';
 import { cn } from '../lib/utils';
@@ -47,6 +47,8 @@ type SidebarConversationRowProps = {
   onSnoozePreset?: (snoozedUntil: string) => void;
   showSnooze?: boolean;
   showTimestamp?: boolean;
+  /** Wake label ("4h") renders in the accent tone on the Snoozed shelf. */
+  timestampAccent?: boolean;
 };
 
 /**
@@ -85,6 +87,7 @@ export function SidebarConversationRow({
   onSnoozePreset,
   showSnooze = false,
   showTimestamp = true,
+  timestampAccent = false,
 }: SidebarConversationRowProps) {
   const needsInput = attentionLevel === 'needsInput' && !isFailed;
   const isUnread = !needsInput && !isFailed && !isRunning && attentionLevel === 'unread' && unreadCount > 0;
@@ -124,7 +127,7 @@ export function SidebarConversationRow({
       <div className="relative flex h-9 min-w-0 flex-1 items-center gap-2 text-left">
         <span
           className={cn(
-            'min-w-0 flex-1 truncate text-xs text-text-secondary transition-colors group-hover/row:text-text-primary',
+            'min-w-0 flex-1 truncate text-xs font-medium text-text-secondary transition-colors group-hover/row:text-text-primary',
             isRunning && 'text-text-primary'
           )}
           title={primaryLabel}
@@ -140,8 +143,41 @@ export function SidebarConversationRow({
               'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-has-[:focus-visible]/sidebar-status-slot:delay-0'
             )}
           >
-            {timestampLabel && showTimestamp ? (
-              <span className="text-3xs tabular-nums text-text-tertiary">
+            {needsInput ? (
+              <span className={cn('text-3xs font-medium', statusClass)} role="status">
+                Approval
+              </span>
+            ) : isFailed ? (
+              <span className={cn('text-3xs font-medium', statusClass)} role="status">
+                Failed
+              </span>
+            ) : isRunning ? (
+              <span className={cn('inline-flex items-center gap-1 text-3xs font-medium', statusClass)}>
+                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong motion-glyph-pulse" aria-hidden />
+                <span role="status">Working</span>
+                {startedMs != null ? (
+                  <span aria-hidden>
+                    <WorkingTimer startedMs={startedMs} />
+                  </span>
+                ) : null}
+              </span>
+            ) : attentionLevel === 'queued' ? (
+              <span className="text-3xs text-text-tertiary">Queued</span>
+            ) : isWoke ? (
+              <span className={cn('text-3xs font-medium', statusClass)} role="status">
+                Woke
+              </span>
+            ) : isUnread ? (
+              <span className={cn('text-3xs font-medium', statusClass)} role="status">
+                Done
+              </span>
+            ) : timestampLabel && showTimestamp ? (
+              <span
+                className={cn(
+                  'text-3xs tabular-nums',
+                  timestampAccent ? 'font-medium text-brand-strong' : 'text-text-tertiary'
+                )}
+              >
                 {timestampLabel}
               </span>
             ) : null}
@@ -158,7 +194,7 @@ export function SidebarConversationRow({
               <RowIconButton
                 icon={
                   settleButtonText === 'Wake' ? (
-                    <Clock className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                    <AlarmClock className="size-3 shrink-0 text-warning" strokeWidth={2} aria-hidden />
                   ) : (
                     <Check className="size-3 shrink-0" strokeWidth={2} aria-hidden />
                   )
@@ -195,7 +231,7 @@ export function SidebarConversationRow({
             <span
               className={cn(
                 'truncate',
-                recede ? 'font-normal text-text-tertiary' : 'font-medium text-text-secondary'
+                recede ? 'font-medium text-text-tertiary' : 'font-semibold text-text-secondary'
               )}
             >
               {projectTitle}
@@ -311,7 +347,7 @@ export function SidebarConversationRow({
         <span
           className={cn(
             'block truncate text-sm leading-snug transition-colors group-hover/row:text-text-primary',
-            recede ? 'font-normal text-text-secondary' : 'font-medium text-text-primary'
+            recede ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'
           )}
           title={primaryLabel}
         >
@@ -330,7 +366,7 @@ export function SidebarConversationRow({
           />
         ) : null}
         {branch ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-3xs">{branch}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-3xs font-medium">{branch}</span>
         ) : (
           <span className="min-w-0 flex-1" />
         )}
@@ -339,8 +375,8 @@ export function SidebarConversationRow({
             className="flex shrink-0 items-center gap-1 font-mono text-3xs"
             title={diff.detail}
           >
-            {diff.added ? <span className="text-success">{diff.added}</span> : null}
-            {diff.removed ? <span className="text-error-text">{diff.removed}</span> : null}
+            {diff.added ? <span className="font-medium text-success">{diff.added}</span> : null}
+            {diff.removed ? <span className="font-medium text-error-text">{diff.removed}</span> : null}
           </span>
         ) : null}
       </div>

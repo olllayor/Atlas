@@ -1,7 +1,7 @@
 /**
  * T3 — Client fold for Subagent Activity and Roster (`docs/plans/agents/03-agents-panel-and-quiet-timeline.md`).
  *
- * A pure function over persisted activities (`WorkLogEntry[]`) folding them into an `AgentPanelModel`.
+ * A pure function over persisted activities (`WorkLogEntry[]`) folding them into an `AgentPanelModel``.
  * Pure TypeScript — zero React or DOM dependencies for complete testability.
  */
 
@@ -29,6 +29,8 @@ export type RuntimeAgent = {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+  toolCount: number;
+  reasoningEffort: string | null;
 };
 
 export type AgentPanelModel = {
@@ -66,6 +68,19 @@ export function isActiveAgentStatus(s: RuntimeTaskStatus): boolean {
 export function isBackgroundTaskActivity(entry: WorkLogEntry): boolean {
   const kind = getWorkLogAgentKind(entry);
   return kind !== 'agent';
+}
+
+/** Format tokens cleanly with k / M suffixes matching the design specs (e.g. 636k, 1.2M). */
+export function formatTokens(total: number): string {
+  if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(1)}M`;
+  if (total >= 10_000) {
+    const roundedK = Math.round(total / 1000);
+    // 999_500+ would round to "1000k" — roll over to megabytes instead.
+    if (roundedK >= 1000) return `${(total / 1_000_000).toFixed(1)}M`;
+    return `${roundedK}k`;
+  }
+  if (total >= 1_000) return `${(total / 1000).toFixed(1)}k`;
+  return total.toLocaleString();
 }
 
 function truncateSummary(text: string, maxLen = 180): string {
@@ -108,7 +123,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     }
 
     const payload = entry.payload ?? {};
-    const agentId = (payload.agentId as string | undefined) ?? (payload.taskId as string | undefined) ?? entry.id;
+    const agentId = (payload.agentId as string | undefined) ?? (payload.taskId as string | undefined) ?? entry.agentId ?? entry.id;
     if (!agentId) continue;
 
     const reportedStatus: RuntimeTaskStatus =
@@ -127,6 +142,22 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     const incomingOutputFile = (payload.outputFile as string | undefined) ?? null;
     const incomingRole = (payload.role as string | undefined) ?? null;
     const incomingModel = (payload.model as string | undefined) ?? null;
+    // Never invent an effort level: the emitter rarely sends one (linkage
+    // carries `effort`, older rows `reasoningEffort`/`priority`), so unknown
+    // stays null and the UI hides the segment instead of printing "high".
+    const incomingReasoningEffort =
+      (payload.effort as string | undefined) ??
+      (payload.reasoningEffort as string | undefined) ??
+      (payload.priority as string | undefined) ??
+      null;
+    const usageToolUses =
+      incomingUsage && typeof incomingUsage.toolUses === 'number' ? incomingUsage.toolUses : 0;
+    const explicitToolCount = Math.max(
+      typeof payload.toolCount === 'number' ? payload.toolCount : 0,
+      typeof payload.toolCallCount === 'number' ? payload.toolCallCount : 0,
+      usageToolUses
+    );
+    const isToolCallEvent = entry.activityType.startsWith('tool.') || entry.toolCallId != null || entry.toolType != null;
     const incomingTitle = entry.title || (payload.title as string | undefined) || `Agent ${agentId}`;
     const parentAgentId = (payload.parentAgentId as string | undefined) ?? null;
     const parentToolCallId =
@@ -160,6 +191,8 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
           startedAt: timestamp,
           completedAt: null,
           updatedAt: timestamp,
+          toolCount: Math.max(explicitToolCount, isToolCallEvent ? 1 : 0),
+          reasoningEffort: incomingReasoningEffort,
         };
         agentMap.set(agentId, agent);
       } else {
@@ -185,6 +218,8 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             startedAt: timestamp,
             completedAt: null,
             updatedAt: timestamp,
+            toolCount: Math.max(existing.toolCount, explicitToolCount),
+            reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
           };
           agentMap.set(agentId, agent);
         } else {
@@ -198,6 +233,8 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
             startedAt: existing.startedAt ? (timestamp < existing.startedAt ? timestamp : existing.startedAt) : timestamp,
             updatedAt: timestamp,
+            toolCount: Math.max(existing.toolCount, explicitToolCount),
+            reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
           };
           agentMap.set(agentId, agent);
         }
@@ -228,6 +265,8 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
         startedAt: timestamp,
         completedAt: isTerminal ? timestamp : null,
         updatedAt: timestamp,
+        toolCount: Math.max(explicitToolCount, isToolCallEvent ? 1 : 0),
+        reasoningEffort: incomingReasoningEffort,
       };
       agentMap.set(agentId, agent);
       continue;
@@ -246,6 +285,10 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
       : existing.completedAt;
 
     const mergedUsage = mergeTaskUsage(existing.usage ?? undefined, incomingUsage) ?? null;
+    const updatedToolCount = Math.max(
+      existing.toolCount + (isToolCallEvent ? 1 : 0),
+      explicitToolCount
+    );
 
     const updatedAgent: RuntimeAgent = {
       ...existing,
@@ -265,13 +308,18 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
         : existing.recentActivity,
       completedAt,
       updatedAt: timestamp,
+      toolCount: updatedToolCount,
+      reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
     };
 
     agentMap.set(agentId, updatedAgent);
   }
 
-  // Convert map to bounded list (max 100 agents)
-  const agents = Array.from(agentMap.values()).slice(0, 100);
+  // Convert map to bounded list (max 100 agents). Insertion order is
+  // first-seen order, so keep the newest rows — dropping the tail would hide
+  // the latest fan-out behind the earliest one.
+  const allAgents = Array.from(agentMap.values());
+  const agents = allAgents.length > 100 ? allAgents.slice(allAgents.length - 100) : allAgents;
 
   const activeAgents = agents.filter((a) => isActiveAgentStatus(a.status));
   const settledAgents = agents.filter((a) => !isActiveAgentStatus(a.status));
@@ -320,10 +368,16 @@ export function summarizeBatch(agents: readonly RuntimeAgent[], nowMs: number) {
     const started = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
     if (!Number.isNaN(started)) {
       const end = agent.completedAt ? Date.parse(agent.completedAt) : nowMs;
-      const span = (Number.isNaN(end) ? nowMs : end) - started;
-      if (span > elapsedMs) elapsedMs = span;
+      const duration = Math.max(0, (Number.isNaN(end) ? nowMs : end) - started);
+      if (duration > elapsedMs) elapsedMs = duration;
     }
   }
 
-  return { total: agents.length, active, settled: agents.length - active, totalTokens, elapsedMs };
+  return {
+    total: agents.length,
+    active,
+    settled: agents.length - active,
+    totalTokens,
+    elapsedMs,
+  };
 }

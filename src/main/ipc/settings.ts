@@ -9,6 +9,7 @@ import {
   OPAQUE_WINDOW_BACKGROUND,
   VIBRANT_WINDOW_BACKGROUND,
   syncNativeTheme,
+  syncWindowChrome,
 } from '../bootstrap/createWindow';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
 import type { KeychainStore } from '../secrets/keychain';
@@ -127,6 +128,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
         settingsRepo.setPluginsBetaEnabled(patch.pluginsBetaEnabled);
       }
 
+      if (typeof patch?.sitesBetaEnabled === 'boolean') {
+        settingsRepo.setSitesBetaEnabled(patch.sitesBetaEnabled);
+      }
+
       if (appearancePatch?.themeMode) {
         settingsRepo.setThemeMode(appearancePatch.themeMode);
         // Keeps the vibrancy material on the same appearance as the page.
@@ -135,6 +140,58 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
 
       if (appearancePatch?.designTheme) {
         settingsRepo.setDesignTheme(appearancePatch.designTheme);
+      }
+
+      if (typeof appearancePatch?.themeId === 'string') {
+        settingsRepo.setThemeId(appearancePatch.themeId);
+      }
+
+      if (appearancePatch && 'themeHalves' in appearancePatch) {
+        settingsRepo.setThemeHalves(appearancePatch.themeHalves ?? null);
+      }
+
+      if (typeof appearancePatch?.glassOpacity === 'number') {
+        settingsRepo.setGlassOpacity(appearancePatch.glassOpacity);
+      }
+
+      if (typeof appearancePatch?.panelAnimationDurationMs === 'number') {
+        settingsRepo.setPanelAnimationDurationMs(appearancePatch.panelAnimationDurationMs);
+      }
+
+      if (typeof appearancePatch?.fontFamilySans === 'string') {
+        settingsRepo.setFontFamilySans(appearancePatch.fontFamilySans);
+      }
+
+      if (typeof appearancePatch?.fontFamilyComposer === 'string') {
+        settingsRepo.setFontFamilyComposer(appearancePatch.fontFamilyComposer);
+      }
+
+      if (typeof appearancePatch?.fontFamilyCode === 'string') {
+        settingsRepo.setFontFamilyCode(appearancePatch.fontFamilyCode);
+      }
+
+      if (typeof appearancePatch?.fontFamilyTerminal === 'string') {
+        settingsRepo.setFontFamilyTerminal(appearancePatch.fontFamilyTerminal);
+      }
+
+      if (typeof appearancePatch?.fontSizeInterface === 'number') {
+        settingsRepo.setFontSizeInterface(appearancePatch.fontSizeInterface);
+      }
+
+      if (typeof appearancePatch?.fontSizePrompt === 'number') {
+        settingsRepo.setFontSizePrompt(appearancePatch.fontSizePrompt);
+      }
+
+      if (typeof appearancePatch?.fontSizeCode === 'number') {
+        settingsRepo.setFontSizeCode(appearancePatch.fontSizeCode);
+      }
+
+      if (typeof appearancePatch?.fontSizeTerminal === 'number') {
+        settingsRepo.setFontSizeTerminal(appearancePatch.fontSizeTerminal);
+      }
+
+      if (typeof appearancePatch?.fontSmoothing === 'boolean') {
+        settingsRepo.setFontSmoothing(appearancePatch.fontSmoothing);
       }
 
       if (typeof appearancePatch?.uiFontSize === 'number') {
@@ -187,6 +244,28 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
               appearancePatch.translucentSidebar ? VIBRANT_WINDOW_BACKGROUND : OPAQUE_WINDOW_BACKGROUND
             );
           }
+        }
+      }
+
+      // Native frame follows the theme: background + overlay controls re-resolve
+      // on mode/design/custom-color changes (system flips arrive via
+      // nativeTheme 'updated' in index.ts).
+      if (
+        appearancePatch?.themeMode ||
+        appearancePatch?.designTheme ||
+        (appearancePatch && 'backgroundColor' in appearancePatch) ||
+        (appearancePatch && 'foregroundColor' in appearancePatch) ||
+        typeof appearancePatch?.translucentSidebar === 'boolean'
+      ) {
+        const chromeState = {
+          themeMode: settingsRepo.getThemeMode(),
+          designTheme: settingsRepo.getDesignTheme(),
+          backgroundColor: settingsRepo.getThemeColor('backgroundColor'),
+          foregroundColor: settingsRepo.getThemeColor('foregroundColor'),
+          translucentSidebar: settingsRepo.getTranslucentSidebar(),
+        };
+        for (const window of BrowserWindow.getAllWindows()) {
+          syncWindowChrome(window, chromeState);
         }
       }
 

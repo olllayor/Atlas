@@ -42,6 +42,12 @@ export interface OpenCodeAgentClient {
   /** Resolves null when opencode no longer knows the session (confirmed miss). */
   getSession(sessionId: string): Promise<{ id: string } | null>;
   createSession(input: { title?: string }): Promise<{ id: string }>;
+  /**
+   * Fork an existing session into a new one carrying its history.
+   * Used when a conversation moves directories: opencode scopes history by
+   * directory, so resuming in place would graft the wrong project history.
+   */
+  forkSession(input: { sessionId: string; directory?: string }): Promise<{ id: string }>;
   /** Used to clean up one-shot sessions; failures are not worth a turn. */
   deleteSession(sessionId: string): Promise<void>;
   prompt(input: OpenCodePromptInput): Promise<OpenCodePromptResult>;
@@ -121,6 +127,18 @@ export function createOpenCodeAgentClient(input: {
       const data = asRecord((response as { data?: unknown } | undefined)?.data);
       if (typeof data.id !== 'string') {
         throw new Error('OpenCode did not return a session id.');
+      }
+      return { id: data.id };
+    },
+
+    async forkSession({ sessionId, directory }) {
+      const response = await client.session.fork({
+        sessionID: sessionId,
+        ...(directory ? { directory } : {})
+      });
+      const data = asRecord((response as { data?: unknown } | undefined)?.data);
+      if (typeof data.id !== 'string') {
+        throw new Error('OpenCode did not return a forked session id.');
       }
       return { id: data.id };
     },

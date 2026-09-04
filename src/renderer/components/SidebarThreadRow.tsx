@@ -30,7 +30,6 @@ export type SidebarThreadRowProps = {
   isRovingTarget: boolean;
   isRenaming: boolean;
   renameValue: string;
-  isPendingDelete: boolean;
   jumpLabel: string | null;
   showJumpHint: boolean;
   modelLabel: string | null;
@@ -50,7 +49,6 @@ export type SidebarThreadRowProps = {
   onCommitRename: () => void;
   onCancelRename: () => void;
   onRenameChange: (value: string) => void;
-  onSetPendingDeleteId: (id: string | null) => void;
   onRegenerateTitle?: (id: string) => void;
   onMarkUnread?: (id: string) => void;
   onMarkRead?: (id: string) => void;
@@ -74,7 +72,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
   isRovingTarget,
   isRenaming,
   renameValue,
-  isPendingDelete,
   jumpLabel,
   showJumpHint,
   modelLabel,
@@ -96,7 +93,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
   onMarkUnread,
   onMarkRead,
   onOpenProjectSettings,
-  onSetPendingDeleteId,
   onSetRovingId,
   onHoverCardOpenChange,
 }: SidebarThreadRowProps) {
@@ -121,35 +117,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
         }}
         className="h-8 w-full rounded-md bg-bg-hover px-2 text-md text-text-primary ring-1 ring-border-strong outline-none"
       />
-    );
-  }
-
-  if (isPendingDelete) {
-    return (
-      <div
-        data-delete-confirm
-        className="flex h-8 w-full items-center gap-1 rounded-md bg-bg-hover px-2"
-      >
-        <span className="min-w-0 flex-1 truncate text-sm text-text-secondary">Delete chat?</span>
-        <button
-          type="button"
-          autoFocus
-          onClick={() => {
-            onSetPendingDeleteId(null);
-            onDelete(item.id);
-          }}
-          className="h-6 shrink-0 rounded-md px-1.5 text-sm text-error transition-colors hover:bg-error-bg hover:text-error-text"
-        >
-          Delete
-        </button>
-        <button
-          type="button"
-          onClick={() => onSetPendingDeleteId(null)}
-          className="h-6 shrink-0 rounded-md px-1.5 text-sm text-text-tertiary transition-colors hover:bg-bg-active hover:text-text-primary"
-        >
-          Cancel
-        </button>
-      </div>
     );
   }
 
@@ -237,7 +204,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
       } else if (result.action === 'fork') {
         onFork?.(item.id);
       } else if (result.action === 'delete') {
-        onSetPendingDeleteId(item.id);
+        onDelete(item.id);
       }
     },
     [
@@ -259,7 +226,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
       onOpenProjectSettings,
       onRegenerateTitle,
       onRestore,
-      onSetPendingDeleteId,
       onSetPinned,
       onSnooze,
       onStartRename,
@@ -297,7 +263,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
             tabIndex={isRovingTarget ? 0 : -1}
             onFocus={() => onSetRovingId(item.id)}
             onClick={() => {
-              onSetPendingDeleteId(null);
               if (isArchived) {
                 onRestore(item.id);
                 return;
@@ -308,7 +273,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
               if (event.target !== event.currentTarget) return;
               if (event.key !== 'Enter' && event.key !== ' ') return;
               event.preventDefault();
-              onSetPendingDeleteId(null);
               if (isArchived) {
                 onRestore(item.id);
                 return;
@@ -321,8 +285,8 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
               variant === 'slim' ? 'h-9 py-0' : 'min-h-12 py-2',
               indentClass,
               isActive
-                ? 'font-medium text-text-primary'
-                : 'text-text-secondary group-hover/row:text-text-primary'
+                ? 'font-semibold text-text-primary'
+                : 'font-medium text-text-secondary group-hover/row:text-text-primary'
             )}
           >
             <SidebarConversationRow
@@ -336,6 +300,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
               primaryLabel={item.primaryLabel}
               secondaryLabel={item.secondaryLabel}
               timestampLabel={showTimestamp ? item.timestampLabel : null}
+              timestampAccent={isSnoozedShelf}
               startedMs={item.isRunning ? item.timestampMs : null}
               jumpLabel={jumpLabel}
               showJumpHint={showJumpHint}

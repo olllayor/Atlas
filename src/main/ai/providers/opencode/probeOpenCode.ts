@@ -19,6 +19,7 @@ import {
 import { describeOpenCodeFailure } from './openCodeErrors.js';
 import {
   createOpenCodeInventoryClient,
+  fetchOpenCodeHealth,
   type OpenCodeInventoryClient
 } from './OpenCodeClient.js';
 import type {
@@ -76,6 +77,11 @@ export interface OpenCodeProbeDeps {
   }) => OpenCodeInventoryClient;
   /** Owned-server lifecycle; required only for spawned mode probes. */
   readonly connectOwnedServer?: () => Promise<{ baseUrl: string }>;
+  /** Health gate; injectable so tests stay offline. */
+  readonly checkHealth?: (
+    baseUrl: string,
+    serverPassword?: string
+  ) => Promise<{ healthy: boolean; version: string | null }>;
 }
 
 interface ProbeInput {
@@ -119,6 +125,8 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
   const deps: OpenCodeProbeDeps = {
     readBinaryVersion: input.deps?.readBinaryVersion ?? makeDefaultBinaryVersionReader(),
     createClient: input.deps?.createClient ?? createOpenCodeInventoryClient,
+    checkHealth:
+      input.deps?.checkHealth ?? ((baseUrl, serverPassword) => fetchOpenCodeHealth(baseUrl, serverPassword)),
     ...(input.deps?.connectOwnedServer ? { connectOwnedServer: input.deps.connectOwnedServer } : {})
   };
 
@@ -163,6 +171,21 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
         throw new Error('OpenCodeRuntime was not wired into the probe for spawned mode.');
       }
       baseUrl = (await deps.connectOwnedServer()).baseUrl;
+    }
+
+    // Health gate before inventory: proves auth + version on the live server.
+    // A spawned runtime already verified this at spawn; rechecking here keeps
+    // the external path (no runtime ownership) under the same gate.
+    const health = await deps.checkHealth!(baseUrl, input.serverPassword);
+    if (!health.healthy || !health.version) {
+      throw new Error('The OpenCode server started but did not report a healthy status.');
+    }
+    if (compareOpenCodeVersions(health.version, MIN_OPENCODE_VERSION) < 0) {
+      return tooOld(health.version);
+    }
+    if (!version) {
+      // Pure-external probes skip the binary check; the server version stands in.
+      version = health.version;
     }
 
     const client = deps.createClient({

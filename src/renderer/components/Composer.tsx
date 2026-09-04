@@ -1088,7 +1088,7 @@ export function Composer({
         the frame. The transcript reserves that space along with the rest of
         the dock, so the gap costs nothing at the top.
       */}
-      <div className="px-5 pb-7 lg:px-6">
+      <div className="px-4 pb-7 lg:px-5">
         <div className="mx-auto max-w-composer">
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}

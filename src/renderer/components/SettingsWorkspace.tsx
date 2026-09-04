@@ -64,6 +64,15 @@ import { ModelSettingsPage } from './providers/ModelSettingsPage';
 import { OpenCodeSettingsSection } from './providers/OpenCodeSettingsSection';
 import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
 import { SlotLabel } from './ui/slot-label';
+import { Undo2 } from 'lucide-react';
+import {
+  DEFAULT_PANEL_ANIMATION_DURATION_MS,
+  MAX_PANEL_ANIMATION_DURATION_MS,
+  MIN_PANEL_ANIMATION_DURATION_MS,
+} from '../../shared/contracts';
+import { PanelAnimationsPreview } from './settings/PanelAnimationsPreview';
+import { SettingsTypographySection } from './settings/SettingsTypographySection';
+import { ThemeAppearanceSection } from './settings/ThemeAppearanceSection';
 import { Switch as UiSwitch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import type { ShortcutPlatform } from '../lib/keybindings';
@@ -349,6 +358,17 @@ function BetaPage({
     });
   };
 
+  const handleToggleSites = (enabled: boolean) => {
+    updatePref({ sitesBetaEnabled: enabled });
+    notify({
+      tone: 'success',
+      title: enabled ? 'Atlas Design enabled' : 'Atlas Design disabled',
+      description: enabled
+        ? 'Atlas Design (Beta) is now accessible in the sidebar.'
+        : 'Atlas Design is hidden.',
+    });
+  };
+
   const handleToggleEnabled = (enabled: boolean) => {
     updatePref({
       chat: {
@@ -466,6 +486,19 @@ function BetaPage({
 
   return (
     <div className="space-y-6">
+      <SettingsGroup title="Atlas Design (Beta)">
+        <SettingsRow
+          title="Enable Atlas Design"
+          description="Visual design workspace and interactive web prototype builder (Claude Design competitor). Off, the destination is hidden."
+        >
+          <UiSwitch
+            checked={settings?.sitesBetaEnabled ?? false}
+            onCheckedChange={handleToggleSites}
+            aria-label="Enable Atlas Design"
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
       <SettingsGroup title="Plugins (Beta)">
         <SettingsRow
           title="Enable plugins"
@@ -749,54 +782,60 @@ function AppearancePage({
 
   return (
     <>
-      <SettingsGroup title="Theme">
-        <SettingsStackedRow
-          title="Theme mode"
-          description="Choose whether Atlas follows your system appearance or stays fixed."
-        >
-          <ThemeModePicker
-            current={themeMode}
-            designTheme={designTheme}
-            onChange={onThemeModeChange}
-          />
-        </SettingsStackedRow>
-        <SettingsStackedRow
-          title="Design theme"
-          description="Choose a design system aesthetic for the interface."
-        >
-          <DesignThemePicker current={designTheme} onChange={onDesignThemeChange} />
-        </SettingsStackedRow>
-        <ThemeSplitPreview designTheme={designTheme} />
+      <SettingsGroup
+        title="Appearance"
+        description="Choose how Atlas looks. Use a built-in theme or make your own."
+      >
+        <ThemeAppearanceSection
+          appearance={appearance}
+          themeMode={themeMode}
+          onThemeModeChange={onThemeModeChange}
+          onAppearancePatch={onAppearancePatch}
+          notify={notify}
+        />
       </SettingsGroup>
 
-      <SettingsGroup title="Custom colors">
-        <SettingsRow title="Accent" description="Highlight color for selection, focus, and links.">
-          <ColorField
-            value={appearance.accentColor}
-            placeholder="Theme default"
-            onCommit={(value) => onAppearancePatch({ accentColor: value })}
-          />
-        </SettingsRow>
-        <SettingsRow title="Background" description="Base background the whole interface sits on.">
-          <ColorField
-            value={appearance.backgroundColor}
-            placeholder="Theme default"
-            onCommit={(value) => onAppearancePatch({ backgroundColor: value })}
-          />
-        </SettingsRow>
-        <SettingsRow title="Foreground" description="Primary text color; secondary shades derive from it.">
-          <ColorField
-            value={appearance.foregroundColor}
-            placeholder="Theme default"
-            onCommit={(value) => onAppearancePatch({ foregroundColor: value })}
-          />
-        </SettingsRow>
-        <SettingsRow title="Contrast" description="Strength of borders, dividers, and secondary text.">
-          <ContrastSlider
-            value={appearance.contrast}
-            onCommit={(value) => onAppearancePatch({ contrast: value })}
-          />
-        </SettingsRow>
+      <SettingsGroup title="Motion">
+        <div className="flex items-start justify-between gap-6 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-md font-normal text-text-primary">Panel animations</span>
+              {(appearance.panelAnimationDurationMs ?? DEFAULT_PANEL_ANIMATION_DURATION_MS) !== DEFAULT_PANEL_ANIMATION_DURATION_MS && (
+                <button
+                  type="button"
+                  aria-label="Reset panel animations"
+                  title="Reset panel animations to default"
+                  onClick={() => onAppearancePatch({ panelAnimationDurationMs: DEFAULT_PANEL_ANIMATION_DURATION_MS })}
+                  className="inline-flex size-4 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
+                >
+                  <Undo2 className="size-3" />
+                </button>
+              )}
+            </div>
+            <div className="mt-0.5 text-sm leading-relaxed text-text-tertiary">
+              Set how fast panels open and close.
+            </div>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <PanelAnimationsPreview durationMs={appearance.panelAnimationDurationMs ?? DEFAULT_PANEL_ANIMATION_DURATION_MS} />
+            <output className="min-w-14 rounded-md bg-[var(--bg-elevated)] border border-[var(--border-subtle)] px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-[var(--text-primary)]">
+              {appearance.panelAnimationDurationMs ?? DEFAULT_PANEL_ANIMATION_DURATION_MS} ms
+            </output>
+            <input
+              type="range"
+              min={MIN_PANEL_ANIMATION_DURATION_MS}
+              max={MAX_PANEL_ANIMATION_DURATION_MS}
+              step={25}
+              value={appearance.panelAnimationDurationMs ?? DEFAULT_PANEL_ANIMATION_DURATION_MS}
+              aria-label="Panel animation duration"
+              onChange={(e) => onAppearancePatch({ panelAnimationDurationMs: Number(e.target.value) })}
+              className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)]"
+            />
+          </div>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title="Preferences">
         <SettingsRow
           title="Translucent sidebar"
           description={
@@ -812,19 +851,6 @@ function AppearancePage({
             disabled={!isMacPlatform}
           />
         </SettingsRow>
-        <SettingsRow title="Share theme" description="Copy the current theme as JSON, or import one from the clipboard.">
-          <div className="flex items-center gap-2">
-            <ActionButton onClick={() => void handleImportTheme()}>
-              <SlotLabel text="Import" />
-            </ActionButton>
-            <ActionButton onClick={() => void handleCopyTheme()}>
-              <SlotLabel text="Copy theme" />
-            </ActionButton>
-          </div>
-        </SettingsRow>
-      </SettingsGroup>
-
-      <SettingsGroup title="Preferences">
         <SettingsRow
           title="Use pointer cursors"
           description="Change the cursor to a pointer when hovering over interactive elements."
@@ -845,35 +871,6 @@ function AppearancePage({
             ariaLabel="Toggle raw transcript"
           />
         </SettingsRow>
-        <SettingsRow title="Reduce motion" description="Reduce animations or match your system setting.">
-          <div
-            role="radiogroup"
-            aria-label="Reduce motion"
-            className="inline-flex rounded-full border border-border-default p-0.5"
-          >
-            {([
-              { value: 'system', label: 'System' },
-              { value: 'on', label: 'On' },
-              { value: 'off', label: 'Off' },
-            ] as const).map((option) => {
-              const isActive = appearance.reduceMotion === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={isActive}
-                  onClick={() => onAppearancePatch({ reduceMotion: option.value })}
-                  className={`h-7 rounded-full px-3 text-2xs font-normal transition ${
-                    isActive ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </SettingsRow>
       </SettingsGroup>
 
       <SettingsGroup title="Shape">
@@ -885,40 +882,10 @@ function AppearancePage({
         </SettingsStackedRow>
       </SettingsGroup>
 
-      <SettingsGroup title="Typography">
-        <SettingsRow title="UI font size" description="Font size for the Atlas user interface.">
-          <NumberStepper
-            value={appearance.uiFontSize}
-            min={UI_FONT_SIZE_MIN}
-            max={UI_FONT_SIZE_MAX}
-            defaultValue={DEFAULT_SETTINGS_APPEARANCE.uiFontSize}
-            onChange={onUiFontSizeChange}
-          />
-        </SettingsRow>
-        <SettingsRow title="Code font size" description="Font size for code blocks, tool payloads, and diffs.">
-          <NumberStepper
-            value={appearance.codeFontSize}
-            min={CODE_FONT_SIZE_MIN}
-            max={CODE_FONT_SIZE_MAX}
-            defaultValue={DEFAULT_SETTINGS_APPEARANCE.codeFontSize}
-            onChange={onCodeFontSizeChange}
-          />
-        </SettingsRow>
-        <SettingsRow title="UI font family" description="Override the Atlas interface typeface.">
-          <FontFamilyField
-            value={appearance.uiFontFamily}
-            placeholder="System font"
-            onCommit={onUiFontFamilyChange}
-          />
-        </SettingsRow>
-        <SettingsRow title="Code font family" description="Override the typeface used for code surfaces.">
-          <FontFamilyField
-            value={appearance.codeFontFamily}
-            placeholder="System monospace"
-            onCommit={onCodeFontFamilyChange}
-          />
-        </SettingsRow>
-      </SettingsGroup>
+      <SettingsTypographySection
+        appearance={appearance}
+        onAppearancePatch={onAppearancePatch}
+      />
     </>
   );
 }
@@ -1135,12 +1102,19 @@ function UsagePage({ usageSummary }: { usageSummary: UsageSummary }) {
  * containers. Groups are separated by whitespace plus a single hairline,
  * headed by a dim 13px-scale label; rows are borderless label + control.
  */
-function SettingsGroup({ title, children }: PropsWithChildren<{ title: string }>) {
+function SettingsGroup({
+  title,
+  description,
+  children,
+}: PropsWithChildren<{ title: string; description?: string }>) {
   return (
     <section className="border-t border-border-subtle pt-6 first:border-t-0 first:pt-0">
-      <div className="mb-1.5 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
+      <div className="mb-1 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
         {title}
       </div>
+      {description ? (
+        <div className="mb-3 text-xs text-[var(--text-secondary)]">{description}</div>
+      ) : null}
       <div>{children}</div>
     </section>
   );
@@ -1364,10 +1338,14 @@ function ColorField({
   value,
   placeholder,
   onCommit,
+  presets,
+  ariaLabel,
 }: {
   value: string | null;
   placeholder: string;
   onCommit: (value: string | null) => void;
+  presets?: readonly string[];
+  ariaLabel?: string;
 }) {
   const [draft, setDraft] = useState(value ?? '');
 
@@ -1394,39 +1372,64 @@ function ColorField({
   };
 
   return (
-    <div className="flex items-center gap-2">
-      <label className="relative size-7 shrink-0 cursor-pointer overflow-hidden rounded-full border border-border-medium">
-        <span className="absolute inset-0" style={{ backgroundColor: value ?? 'transparent' }} />
+    <div className="flex flex-col items-end gap-2">
+      <div className="flex items-center gap-2">
+        <label className="relative size-7 shrink-0 cursor-pointer overflow-hidden rounded-full border border-border-medium">
+          <span className="absolute inset-0" style={{ backgroundColor: value ?? 'transparent' }} />
+          <input
+            type="color"
+            value={value ?? '#808080'}
+            onChange={(event) => onCommit(event.target.value)}
+            aria-label={ariaLabel ?? 'Pick color'}
+            className="absolute inset-0 size-full cursor-pointer opacity-0"
+          />
+        </label>
         <input
-          type="color"
-          value={value ?? '#808080'}
-          onChange={(event) => onCommit(event.target.value)}
-          aria-label="Pick color"
-          className="absolute inset-0 size-full cursor-pointer opacity-0"
+          value={draft}
+          placeholder={placeholder}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.currentTarget.blur();
+            }
+          }}
+          className="h-8 w-32 rounded-md border border-border-default bg-bg-subtle px-2.5 font-mono text-xs uppercase text-text-primary placeholder:normal-case placeholder:text-text-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
         />
-      </label>
-      <input
-        value={draft}
-        placeholder={placeholder}
-        spellCheck={false}
-        autoComplete="off"
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commitDraft}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.currentTarget.blur();
-          }
-        }}
-        className="h-8 w-32 rounded-md border border-border-default bg-bg-subtle px-2.5 font-mono text-xs uppercase text-text-primary placeholder:normal-case placeholder:text-text-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
-      />
-      {value !== null ? (
-        <button
-          type="button"
-          onClick={() => onCommit(null)}
-          className="text-2xs text-text-muted transition hover:text-text-secondary"
-        >
-          Reset
-        </button>
+        {value !== null ? (
+          <button
+            type="button"
+            onClick={() => onCommit(null)}
+            className="text-2xs text-text-muted transition hover:text-text-secondary"
+          >
+            Reset
+          </button>
+        ) : null}
+      </div>
+      {presets && presets.length > 0 ? (
+        <div className="flex items-center gap-1.5" role="group" aria-label={`${ariaLabel ?? 'Color'} presets`}>
+          {presets.map((preset) => {
+            const isActive = value?.toLowerCase() === preset.toLowerCase();
+            return (
+              <button
+                key={preset}
+                type="button"
+                title={preset}
+                aria-label={`Use ${preset}`}
+                aria-pressed={isActive}
+                onClick={() => onCommit(preset)}
+                style={{ backgroundColor: preset }}
+                className={`size-5 rounded-full border transition ${
+                  isActive
+                    ? 'border-border-strong ring-1 ring-[var(--ring)] ring-offset-1 ring-offset-[var(--bg-base)]'
+                    : 'border-border-medium hover:border-border-strong'
+                }`}
+              />
+            );
+          })}
+        </div>
       ) : null}
     </div>
   );
@@ -1438,6 +1441,8 @@ function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: 
   useEffect(() => {
     setDraft(value);
   }, [value]);
+
+  const progress = Math.min(100, Math.max(0, ((draft - CONTRAST_MIN) / (CONTRAST_MAX - CONTRAST_MIN)) * 100));
 
   return (
     <div className="flex w-56 items-center gap-3">
@@ -1454,12 +1459,18 @@ function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: 
             onCommit(draft);
           }
         }}
-        className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-bg-active accent-[var(--accent)]"
+        style={{ '--settings-slider-progress': `${progress}%` } as CSSProperties}
+        className="settings-range h-1 flex-1 cursor-pointer appearance-none rounded-full bg-bg-active accent-[var(--accent)]"
       />
       <span className="w-7 shrink-0 text-right text-sm tabular-nums text-text-secondary">{draft}</span>
     </div>
   );
 }
+
+/* Preset swatches mirror the shipped themes so one click lands on a known-good value. */
+const ACCENT_PRESETS = ['#2563eb', '#0969da', '#f54e00', '#83c3ff', '#ffffff', '#16181d'] as const;
+const BACKGROUND_PRESETS = ['#07080b', '#181818', '#26251e', '#1f2228', '#f2f1ed', '#ffffff'] as const;
+const FOREGROUND_PRESETS = ['#ffffff', '#cbd5e1', '#26251e', '#000000', '#16181d'] as const;
 
 /**
  * `designTheme` gates the Light segment: a theme with no light palette (see

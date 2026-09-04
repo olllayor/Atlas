@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import type {
   SiteDetail,
   SiteExportFormat,
+  SiteFileInput,
   SitePreviewTarget,
   SiteReviewChecklist,
   SiteSummary,
@@ -17,7 +18,44 @@ function getErrorMessage(error: unknown) {
   return String(error);
 }
 
+export type SiteCanvasPrefs = {
+  viewMode: 'canvas' | 'split' | 'code';
+  viewport: 'desktop' | 'tablet' | 'mobile';
+  zoom: number;
+  backdrop: 'dots' | 'grid' | 'blank';
+  inspectMode: boolean;
+};
+
+const DEFAULT_CANVAS_PREFS: SiteCanvasPrefs = {
+  viewMode: 'canvas',
+  viewport: 'desktop',
+  zoom: 100,
+  backdrop: 'dots',
+  inspectMode: false,
+};
+
+const CANVAS_PREFS_KEY = 'atlas:sites:canvas-prefs';
+
+function loadStoredCanvasPrefs(): Record<string, SiteCanvasPrefs> {
+  try {
+    const raw = localStorage.getItem(CANVAS_PREFS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredCanvasPrefs(prefs: Record<string, SiteCanvasPrefs>): void {
+  try {
+    localStorage.setItem(CANVAS_PREFS_KEY, JSON.stringify(prefs));
+  } catch {}
+}
+
 type SitesState = {
+  canvasPrefs: Record<string, SiteCanvasPrefs>;
+  getCanvasPrefs: (siteId: string | null) => SiteCanvasPrefs;
+  updateCanvasPrefs: (siteId: string, prefs: Partial<SiteCanvasPrefs>) => void;
+
   sites: SiteSummary[];
   detail: SiteDetail | null;
   selectedSiteId: string | null;
@@ -35,7 +73,7 @@ type SitesState = {
   loadSites: () => Promise<void>;
   selectSite: (siteId: string | null) => Promise<void>;
   refreshDetail: (siteId?: string) => Promise<void>;
-  createSite: (title: string, sourceConversationId?: string | null) => Promise<void>;
+  createSite: (title: string, sourceConversationId?: string | null, files?: SiteFileInput[]) => Promise<void>;
   renameSite: (siteId: string, title: string) => Promise<void>;
   deleteSite: (siteId: string) => Promise<void>;
   selectFile: (path: string | null) => Promise<void>;
@@ -98,6 +136,24 @@ export const useSitesStore = create<SitesState>((set, get) => {
     isLoading: false,
     isBusy: false,
     error: null,
+    canvasPrefs: loadStoredCanvasPrefs(),
+
+    getCanvasPrefs: (siteId) => {
+      if (!siteId) return DEFAULT_CANVAS_PREFS;
+      const allPrefs = get().canvasPrefs;
+      return { ...DEFAULT_CANVAS_PREFS, ...(allPrefs[siteId] ?? {}) };
+    },
+
+    updateCanvasPrefs: (siteId, updated) => {
+      if (!siteId) return;
+      const current = get().getCanvasPrefs(siteId);
+      const next = { ...current, ...updated };
+      set((state) => {
+        const nextMap = { ...state.canvasPrefs, [siteId]: next };
+        saveStoredCanvasPrefs(nextMap);
+        return { canvasPrefs: nextMap };
+      });
+    },
 
     loadSites: async () => {
       set({ isLoading: true, error: null });
@@ -146,9 +202,9 @@ export const useSitesStore = create<SitesState>((set, get) => {
       }
     },
 
-    createSite: async (title, sourceConversationId) => {
+    createSite: async (title, sourceConversationId, files) => {
       const detail = await withBusy(() =>
-        window.atlasChat.sites.create({ title, sourceConversationId: sourceConversationId ?? null })
+        window.atlasChat.sites.create({ title, sourceConversationId: sourceConversationId ?? null, files })
       );
       if (!detail) return;
       await get().loadSites();

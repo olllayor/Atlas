@@ -40,6 +40,8 @@ function memoryStore(seed?: { conversationId: string; sessionId: string; directo
 
 type FakeClientOptions = {
   events?: unknown[];
+  /** Throw after yielding events, like a dead SSE connection. */
+  eventsError?: unknown;
   sessions?: Set<string>;
   getSessionError?: unknown;
   promptResult?: Partial<OpenCodePromptResult>;
@@ -53,6 +55,7 @@ type FakeClientOptions = {
 function fakeClient(options: FakeClientOptions = {}) {
   const calls = {
     created: 0,
+    forked: [] as Array<{ sessionId: string; directory?: string }>,
     deleted: [] as string[],
     aborted: [] as string[],
     prompts: [] as OpenCodePromptInput[],
@@ -61,6 +64,7 @@ function fakeClient(options: FakeClientOptions = {}) {
   const sessions = options.sessions ?? new Set<string>();
   let abortResolve: (() => void) | null = null;
   let permissionResolve: (() => void) | null = null;
+  let forkCount = 0;
 
   const client: OpenCodeAgentClient = {
     async listProviders() {
@@ -75,6 +79,13 @@ function fakeClient(options: FakeClientOptions = {}) {
     async createSession() {
       calls.created += 1;
       const id = `ses_new_${calls.created}`;
+      sessions.add(id);
+      return { id };
+    },
+    async forkSession({ sessionId, directory }) {
+      calls.forked.push({ sessionId, ...(directory ? { directory } : {}) });
+      forkCount += 1;
+      const id = `ses_fork_${forkCount}`;
       sessions.add(id);
       return { id };
     },
@@ -116,6 +127,9 @@ function fakeClient(options: FakeClientOptions = {}) {
           for (const event of options.events ?? []) {
             if (signal.aborted) return;
             yield event;
+          }
+          if (options.eventsError !== undefined) {
+            throw options.eventsError;
           }
           // Idle forever until the adapter closes the stream, like a real SSE
           // connection would.
@@ -252,15 +266,60 @@ test('a confirmed miss recreates the session, seeds history, and re-points the c
   assert.equal(parts[1]!.text, 'ship it');
 });
 
-test('a moved project starts a fresh session instead of resuming another directory', async () => {
+test('a moved project forks the stored session instead of starting fresh', async () => {
   const { client, calls } = fakeClient({ sessions: new Set(['ses_known']) });
   const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/old' });
   const { adapter } = buildAdapter({ client, store });
 
   await adapter.streamChat(streamRequest().request);
 
+  assert.equal(calls.created, 0);
+  assert.deepEqual(calls.forked, [{ sessionId: 'ses_known', directory: '/proj' }]);
+  assert.equal(calls.prompts[0]!.sessionId, 'ses_fork_1');
+  // Forked history travels, so no reseed prefix.
+  assert.deepEqual(calls.prompts[0]!.parts, [{ type: 'text', text: 'ship it' }]);
+  assert.equal(store.get('conv_1')!.sessionId, 'ses_fork_1');
+  assert.equal(store.get('conv_1')!.directory, '/proj');
+});
+
+test('a forked 404 falls back to a fresh seeded session', async () => {
+  const { client, calls } = fakeClient({ sessions: new Set(['ses_known']) });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/old' });
+  const forkError = Object.assign(new Error('NotFoundError'), { status: 404 });
+  const failingFork = {
+    ...client,
+    async forkSession() {
+      throw forkError;
+    }
+  } as OpenCodeAgentClient;
+  const { adapter } = buildAdapter({ client: failingFork, store });
+
+  await adapter.streamChat(streamRequest().request);
+
   assert.equal(calls.created, 1);
   assert.equal(store.get('conv_1')!.directory, '/proj');
+});
+
+test('a stale cursor version is ignored, never resumed', async () => {
+  const { client, calls } = fakeClient({ sessions: new Set(['ses_known']) });
+  const rows = new Map<string, { sessionId: string; directory: string; schemaVersion?: number }>();
+  rows.set('conv_1', { sessionId: 'ses_known', directory: '/proj', schemaVersion: 999 });
+  const store: OpenCodeSessionStore & { rows: typeof rows } = {
+    rows,
+    get: (conversationId) => rows.get(conversationId) ?? null,
+    set: ({ conversationId, sessionId, directory }) => {
+      rows.set(conversationId, { sessionId, directory });
+    },
+    clear: (conversationId) => {
+      rows.delete(conversationId);
+    }
+  };
+  const { adapter } = buildAdapter({ client, store });
+
+  await adapter.streamChat(streamRequest().request);
+
+  assert.equal(calls.created, 1);
+  assert.equal(calls.prompts[0]!.sessionId, 'ses_new_1');
 });
 
 test('a server hiccup fails the turn rather than silently forgetting the session', async () => {
@@ -508,4 +567,41 @@ test('an attachment already encoded as a data URL is passed through unchanged', 
   });
 
   assert.equal(parts[0]!.url, url);
+});
+
+test('a dead stream with a good prompt answer still succeeds', async () => {
+  const { client } = fakeClient({
+    sessions: new Set(['ses_known']),
+    eventsError: new Error('socket hang up'),
+    promptResult: { text: 'answered over HTTP', reasoning: '' }
+  });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  const result = await adapter.streamChat(streamRequest().request);
+  assert.equal(result.content, 'answered over HTTP');
+});
+
+test('a dead stream plus an empty answer fails instead of returning empty success', async () => {
+  const { client } = fakeClient({
+    sessions: new Set(['ses_known']),
+    eventsError: new Error('socket hang up'),
+    promptResult: { text: '', reasoning: '' }
+  });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  await assert.rejects(adapter.streamChat(streamRequest().request), /event stream failed/);
+});
+
+test('a 401 stream failure names the saved password', async () => {
+  const { client } = fakeClient({
+    sessions: new Set(['ses_known']),
+    eventsError: new Error('Request failed with status code 401'),
+    promptResult: { text: '', reasoning: '' }
+  });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  await assert.rejects(adapter.streamChat(streamRequest().request), /rejected authentication/);
 });

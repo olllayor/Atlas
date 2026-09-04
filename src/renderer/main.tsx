@@ -5,6 +5,7 @@ import App from './App';
 import { initPostHog, syncTelemetryStatus } from './lib/posthog';
 import { isMacPlatform } from './lib/platform';
 import { stampCachedTranslucentSidebar } from './lib/translucentSidebar';
+import { stampCachedTheme } from './lib/earlyThemeStamp';
 import './styles.css';
 import 'slot-text/style.css';
 import './themes/xai.css';
@@ -24,8 +25,9 @@ if (typeof requestIdleCallback === 'function') {
   setTimeout(() => void initPostHog(), 2000);
 }
 
-// Before the first paint, not in an effect: the sidebar renders opaque until
-// this attribute lands, and a late stamp reads as a flash on every launch.
+// Before the first paint, not in an effect: theme attributes and sidebar
+// translucency must be present on <html> from frame zero to prevent flashing.
+stampCachedTheme();
 stampCachedTranslucentSidebar(isMacPlatform);
 
 console.info(`[perf] renderer:main.tsx evaluated at +${Math.round(performance.now())}ms (since renderer nav start)`);

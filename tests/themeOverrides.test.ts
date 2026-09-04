@@ -5,6 +5,7 @@ import { normalizeThemeColor } from '../src/shared/contracts';
 import {
   buildThemeOverrides,
   contrastFactor,
+  contrastVars,
   exportTheme,
   parseThemeImport
 } from '../src/renderer/lib/themeOverrides';
@@ -25,6 +26,17 @@ test('contrastFactor maps the slider to 0.6–1.4 with a neutral midpoint', () =
   assert.equal(contrastFactor(0), 0.6);
   assert.equal(contrastFactor(100), 1.4);
   assert.equal(contrastFactor(Number.NaN), 1);
+});
+
+test('contrastVars splits the slider into base, boost, and border boost', () => {
+  // Neutral: authored values pass through untouched.
+  assert.deepEqual(contrastVars(50), { base: '100%', boost: '0%', borderBoost: '0%' });
+  // Low end fades derivations out, never pushes.
+  assert.deepEqual(contrastVars(0), { base: '0%', boost: '0%', borderBoost: '0%' });
+  // High end keeps the base and pushes text toward the target; borders at quarter rate.
+  assert.deepEqual(contrastVars(100), { base: '100%', boost: '100%', borderBoost: '25%' });
+  assert.deepEqual(contrastVars(75), { base: '100%', boost: '50%', borderBoost: '12.5%' });
+  assert.deepEqual(contrastVars(Number.NaN), { base: '100%', boost: '0%', borderBoost: '0%' });
 });
 
 test('no overrides at defaults: neutral contrast and no colors emit nothing', () => {
@@ -139,7 +151,7 @@ test('a dark background override keeps the authored dark satellite palettes', ()
   assert.equal(overrides['--toast-text'], undefined);
 });
 
-test('contrast alone rescales the ladder around the authored foreground', () => {
+test('contrast alone emits live twin formulas around the authored foreground', () => {
   const overrides = buildThemeOverrides({
     accentColor: null,
     backgroundColor: null,
@@ -148,10 +160,15 @@ test('contrast alone rescales the ladder around the authored foreground', () => 
   });
 
   assert.equal(overrides['--bg-base'], undefined);
+  // Text answers base + target boost; borders answer base + gentler fg boost.
   assert.ok(overrides['--text-secondary']?.includes('var(--text-primary)'));
-  // 78% × 1.4 = 109.2 clamps to the 100% ceiling.
-  assert.ok(overrides['--text-secondary']?.includes('100%'));
-  assert.ok(overrides['--border-strong']?.includes('30.8%'));
+  assert.ok(overrides['--text-secondary']?.includes('var(--contrast-base)'));
+  assert.ok(overrides['--text-secondary']?.includes('var(--contrast-target)'));
+  assert.ok(overrides['--text-secondary']?.includes('var(--contrast-boost)'));
+  assert.ok(overrides['--border-strong']?.includes('var(--contrast-border-boost)'));
+  // No baked percentages survive: theme switches re-resolve without a rebuild.
+  assert.ok(!overrides['--text-secondary']?.includes('109.2%'));
+  assert.ok(!overrides['--border-strong']?.includes('30.8%'));
 });
 
 test('foreground override sets primary text and inverse', () => {

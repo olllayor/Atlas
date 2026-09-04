@@ -85,6 +85,14 @@ export function describeOpenCodeFailure(
     };
   }
 
+  if (AUTH_HINTS.some((hint) => lower.includes(hint))) {
+    return {
+      installed: true,
+      message:
+        'The local OpenCode server rejected authentication. The spawned server password and the stored keychain password disagree — clear the saved password in Settings and retry, then restart Atlas if it persists.'
+    };
+  }
+
   if (lower.includes('quarantine')) {
     return {
       installed: true,

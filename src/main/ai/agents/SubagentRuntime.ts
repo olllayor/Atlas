@@ -276,6 +276,12 @@ export class SubagentRuntime {
     if ((event as any).payload && typeof (event as any).payload === 'object') {
       (event as any).payload.agentId = state.agentId;
       (event as any).payload.parentToolCallId = state.parentToolCallId;
+      // The fold routes on payload.agentKind: without this stamp the row
+      // classifies as background and the Agents panel never sees the child's
+      // tool activity (toolCount stays 0, lastTool/recent-activity stay empty).
+      if ((event as any).payload.agentKind == null) {
+        (event as any).payload.agentKind = state.agentKind;
+      }
       if (state.parentAgentId) {
         (event as any).payload.parentAgentId = state.parentAgentId;
       }
@@ -326,6 +332,9 @@ export class SubagentRuntime {
         ...(event as any),
         agentId: state.agentId,
         parentToolCallId: state.parentToolCallId,
+        // Covers payload-less child events (e.g. bare chunk frames): the fold
+        // routes on payload.agentKind, so every child row must carry it.
+        agentKind: (event as any).payload?.agentKind ?? state.agentKind,
         ...(state.parentAgentId ? { parentAgentId: state.parentAgentId } : {}),
       },
     };

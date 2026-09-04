@@ -65,6 +65,61 @@ function buildAuthHeaders(serverPassword?: string): Record<string, string> | und
   return { Authorization: `Basic ${encoded}` };
 }
 
+/** Shape of `GET /global/health` on success. */
+export interface OpenCodeHealth {
+  readonly healthy: boolean;
+  readonly version: string | null;
+}
+
+export class OpenCodeHealthError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number
+  ) {
+    super(message);
+    this.name = 'OpenCodeHealthError';
+  }
+}
+
+/**
+ * Authed `/global/health` gate (t3code parity: no inventory or session work
+ * starts before this passes). Uses plain fetch so the runtime can call it
+ * before any SDK client exists. `fetchFn` seam keeps tests off the network.
+ */
+export async function fetchOpenCodeHealth(
+  baseUrl: string,
+  serverPassword?: string,
+  fetchFn: typeof fetch = fetch
+): Promise<OpenCodeHealth> {
+  const url = `${baseUrl.replace(/\/+$/, '')}/global/health`;
+  const headers = buildAuthHeaders(serverPassword);
+  let response: Response;
+  try {
+    response = await fetchFn(url, ...(headers ? [{ headers } as const] : []));
+  } catch (error) {
+    throw new OpenCodeHealthError(
+      error instanceof Error ? error.message : String(error ?? 'fetch failed')
+    );
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new OpenCodeHealthError('OpenCode server rejected authentication.', response.status);
+  }
+  if (!response.ok) {
+    throw new OpenCodeHealthError(`OpenCode health check failed (status=${response.status}).`, response.status);
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new OpenCodeHealthError('OpenCode health check returned an unreadable response.');
+  }
+  const record = (payload ?? {}) as { healthy?: unknown; version?: unknown };
+  return {
+    healthy: record.healthy === true,
+    version: typeof record.version === 'string' ? record.version : null
+  };
+}
+
 /**
  * Build the raw SDK client. Everything Atlas talks to opencode through — the
  * catalog, the probe, and the streaming adapter — starts here, so auth and

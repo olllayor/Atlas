@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { WorkLogEntry } from '../src/shared/contracts';
 import {
   foldAgents,
+  formatTokens,
   isActiveAgentStatus,
   isBackgroundTaskActivity,
   isTerminalAgentStatus,
@@ -269,4 +270,70 @@ test('an all-idle batch reports no live work', () => {
   const batch = summarizeBatch(foldAgents(rows).agents, Date.now());
   assert.equal(batch.active, 0);
   assert.equal(batch.settled, 1);
+});
+
+test('formatTokens rolls 1000k over to megabytes', () => {
+  assert.equal(formatTokens(999_999), '1.0M');
+  assert.equal(formatTokens(636_000), '636k');
+  assert.equal(formatTokens(168_200), '168k');
+  assert.equal(formatTokens(1_500), '1.5k');
+});
+
+test('reasoningEffort stays null when the emitter sends none', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.started',
+      payload: { agentKind: 'agent', agentId: 'agent-1', status: 'running', title: 'No effort' },
+    }),
+  ];
+  const agent = foldAgents(rows).agents[0];
+  assert.equal(agent.reasoningEffort, null);
+});
+
+test('reasoningEffort reads the linkage effort field', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.started',
+      payload: { agentKind: 'agent', agentId: 'agent-1', status: 'running', effort: 'low' },
+    }),
+  ];
+  assert.equal(foldAgents(rows).agents[0].reasoningEffort, 'low');
+});
+
+test('stamped child tool rows count toward toolCount', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      id: 'task:call-a:0',
+      activityType: 'task.started',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', status: 'running', title: 'Worker' },
+    }),
+    makeEntry({
+      id: 'tool:child-1',
+      activityType: 'tool.completed',
+      toolCallId: 'child-1',
+      agentId: 'call-a:0',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', toolName: 'read' },
+    }),
+  ];
+  const agent = foldAgents(rows).agents[0];
+  assert.equal(agent.toolCount, 1);
+});
+
+test('roster cap keeps the newest agents', () => {
+  const rows: WorkLogEntry[] = [];
+  for (let i = 0; i < 105; i++) {
+    rows.push(
+      makeEntry({
+        id: `task:agent-${i}`,
+        activityType: 'task.started',
+        payload: { agentKind: 'agent', agentId: `agent-${i}`, status: 'running', title: `Agent ${i}` },
+      })
+    );
+  }
+  const { agents } = foldAgents(rows);
+  assert.equal(agents.length, 100);
+  assert.equal(agents[0].id, 'agent-5');
+  assert.equal(agents[99].id, 'agent-104');
 });

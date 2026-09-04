@@ -1,12 +1,24 @@
+import { CodeEditorPane } from "./CodeEditorPane";
 import {
+  Crosshair2Icon,
+  ChatBubbleIcon,
+  MagicWandIcon,
+  CodeIcon,
+  ColumnsIcon,
+  CopyIcon,
+  DesktopIcon,
   DotsHorizontalIcon,
   ExternalLinkIcon,
+  EyeOpenIcon,
+  GridIcon,
+  MobileIcon,
   PlusIcon,
   ReloadIcon,
   TrashIcon,
-} from '@radix-ui/react-icons';
-import { useEffect, useMemo, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+  ViewHorizontalIcon,
+} from "@radix-ui/react-icons";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import type {
   SiteDetail,
@@ -15,10 +27,12 @@ import type {
   SiteSummary,
   SiteVersionSummary,
   SiteViolation,
-} from '../../../shared/sites';
-import { SITE_ENTRY_FILE } from '../../../shared/sites';
-import { notify } from '../../lib/notify';
-import { useSitesStore } from '../../stores/useSitesStore';
+} from "../../../shared/sites";
+import { SITE_ENTRY_FILE } from "../../../shared/sites";
+import { DESIGN_TEMPLATES, type DesignTemplate } from "../../../shared/designTemplates";
+import { notify } from "../../lib/notify";
+import { useSitesStore } from "../../stores/useSitesStore";
+import { useAppStore } from "../../stores/useAppStore";
 import {
   Dialog,
   DialogContent,
@@ -26,21 +40,24 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '../ui/dialog';
+} from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import { RailBackButton, RailSectionLabel } from '../railPrimitives';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+} from "../ui/dropdown-menu";
+import { RailBackButton, RailSectionLabel } from "../railPrimitives";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-type RightPanelTab = 'preview' | 'review' | 'versions';
+type RightPanelTab = "preview" | "review" | "versions";
+type ViewMode = "canvas" | "split" | "code";
+type ViewportMode = "desktop" | "tablet" | "mobile";
+type BackdropMode = "dots" | "grid" | "blank";
 
 const LABEL_CLASS =
-  'text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint';
+  "text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,48 +66,48 @@ function formatBytes(bytes: number) {
 }
 
 function formatTimestamp(value: string | null) {
-  if (!value) return '—';
+  if (!value) return "—";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  draft: 'Draft',
-  published: 'Published',
-  unpublished: 'Unpublished',
-  deleted: 'Deleted',
+  draft: "Draft",
+  published: "Published",
+  unpublished: "Unpublished",
+  deleted: "Deleted",
 };
 
 const VERSION_STATE_LABEL: Record<string, string> = {
-  draft: 'Draft',
-  building: 'Building…',
-  build_failed: 'Build failed',
-  preview_ready: 'Preview ready',
-  published: 'Published',
-  archived: 'Archived',
+  draft: "Draft",
+  building: "Building…",
+  build_failed: "Build failed",
+  preview_ready: "Preview ready",
+  published: "Published",
+  archived: "Archived",
 };
 
 /** Rejects traversal, absolute paths and anything that would collide. */
 function validateFilePath(raw: string, existing: string[]): string | null {
   const path = raw.trim();
   if (!path) {
-    return 'Enter a file path.';
+    return "Enter a file path.";
   }
 
-  if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
-    return 'Use a path relative to the site root.';
+  if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) {
+    return "Use a path relative to the site root.";
   }
 
-  if (path.split('/').some((segment) => segment === '..' || segment === '.')) {
-    return 'Path segments cannot be “.” or “..”.';
+  if (path.split("/").some((segment) => segment === ".." || segment === ".")) {
+    return "Path segments cannot be “.” or “..”.";
   }
 
   if (/[\\:*?"<>|]/.test(path)) {
-    return 'That path contains characters the site bundler cannot store.';
+    return "That path contains characters the site bundler cannot store.";
   }
 
   if (existing.includes(path)) {
-    return 'A file with that path already exists.';
+    return "A file with that path already exists.";
   }
 
   return null;
@@ -101,20 +118,20 @@ function ToolbarButton({
   disabled,
   onClick,
   title,
-  tone = 'default',
+  tone = "default",
 }: {
   children: ReactNode;
   disabled?: boolean;
   onClick: () => void;
   title?: string;
-  tone?: 'default' | 'primary' | 'danger';
+  tone?: "default" | "primary" | "danger";
 }) {
   const toneClass =
-    tone === 'primary'
-      ? 'border-border-strong text-text-primary hover:bg-bg-hover'
-      : tone === 'danger'
-        ? 'border-border-subtle text-error hover:border-error-border hover:bg-error-bg'
-        : 'border-border-subtle text-text-secondary hover:border-border-default hover:text-text-primary';
+    tone === "primary"
+      ? "border-border-strong text-text-primary hover:bg-bg-hover"
+      : tone === "danger"
+        ? "border-border-subtle text-error hover:border-error-border hover:bg-error-bg"
+        : "border-border-subtle text-text-secondary hover:border-border-default hover:text-text-primary";
 
   const button = (
     <button
@@ -133,8 +150,6 @@ function ToolbarButton({
 
   return (
     <Tooltip>
-      {/* `span` wrapper: a disabled button fires no pointer events, and the
-          explanation is most needed precisely when the button is disabled. */}
       <TooltipTrigger asChild>
         <span className="inline-flex">{button}</span>
       </TooltipTrigger>
@@ -144,18 +159,18 @@ function ToolbarButton({
 }
 
 function ViolationRow({ violation }: { violation: SiteViolation }) {
-  const isError = violation.severity === 'error';
+  const isError = violation.severity === "error";
   return (
     <li className="border-t border-border-subtle py-2 first:border-t-0">
       <div className="flex items-baseline gap-2">
         <span
           className={`shrink-0 text-3xs uppercase tracking-[var(--tracking-label)] ${
-            isError ? 'text-error' : 'text-warning-text'
+            isError ? "text-error" : "text-warning-text"
           }`}
         >
-          {isError ? 'Error' : 'Warning'}
+          {isError ? "Error" : "Warning"}
         </span>
-        <span className="font-mono text-2xs text-text-tertiary">{violation.path ?? '(site)'}</span>
+        <span className="font-mono text-2xs text-text-tertiary">{violation.path ?? "(site)"}</span>
       </div>
       <div className="mt-1 text-xs leading-5 text-text-secondary">{violation.message}</div>
     </li>
@@ -178,19 +193,24 @@ function SiteListPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between px-3 pb-1.5 pt-5">
-        <RailSectionLabel>Sites</RailSectionLabel>
+        <div className="flex items-center gap-2">
+          <RailSectionLabel>Design</RailSectionLabel>
+          <span className="rounded border border-border-subtle px-1.5 py-0.5 text-3xs font-medium text-text-tertiary">
+            Beta
+          </span>
+        </div>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
               onClick={onCreate}
-              aria-label="New site"
+              aria-label="New design"
               className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
             >
               <PlusIcon className="h-4 w-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>New site</TooltipContent>
+          <TooltipContent>New design</TooltipContent>
         </Tooltip>
       </div>
 
@@ -199,7 +219,7 @@ function SiteListPanel({
           <div className="px-2 py-3 text-sm text-text-faint">Loading…</div>
         ) : sites.length === 0 ? (
           <div className="px-2 py-3 text-sm leading-5 text-text-faint">
-            No sites yet. Create one here, or ask the assistant to build a site in chat.
+            No designs yet. Create one here, or ask the assistant to generate a design in chat.
           </div>
         ) : (
           sites.map((site) => (
@@ -209,8 +229,8 @@ function SiteListPanel({
               onClick={() => onSelect(site.id)}
               className={`flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors ${
                 site.id === selectedSiteId
-                  ? 'bg-bg-active font-medium text-text-primary'
-                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                  ? "bg-bg-active font-medium text-text-primary"
+                  : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
               }`}
             >
               <span className="w-full truncate text-md">{site.title}</span>
@@ -239,8 +259,8 @@ function FileTreePanel({
   onCreate: () => void;
 }) {
   return (
-    <div className="flex min-h-0 w-[212px] shrink-0 flex-col border-r border-border-subtle">
-      <div className="flex items-center justify-between px-3 py-2">
+    <div className="flex min-h-0 w-[200px] shrink-0 flex-col border-r border-border-subtle bg-bg-surface">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle">
         <span className={LABEL_CLASS}>Files</span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -248,16 +268,16 @@ function FileTreePanel({
               type="button"
               onClick={onCreate}
               aria-label="New file"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
             >
-              <PlusIcon className="h-4 w-4" />
+              <PlusIcon className="h-3.5 w-3.5" />
             </button>
           </TooltipTrigger>
           <TooltipContent>New file</TooltipContent>
         </Tooltip>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3 scroll-container">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-2 scroll-container">
         {files.length === 0 ? (
           <div className="px-2 py-3 text-xs text-text-faint">No files.</div>
         ) : (
@@ -265,18 +285,18 @@ function FileTreePanel({
             <div
               key={file.path}
               className={`group flex items-center gap-1 rounded-md px-2 py-1 transition ${
-                file.path === selectedFilePath ? 'bg-bg-hover' : 'hover:bg-bg-hover'
+                file.path === selectedFilePath ? "bg-bg-hover" : "hover:bg-bg-hover"
               }`}
             >
               <button
                 type="button"
                 onClick={() => onSelect(file.path)}
-                className="min-w-0 flex-1 py-1 text-left"
+                className="min-w-0 flex-1 py-0.5 text-left"
                 title={`${file.path} · ${formatBytes(file.byteSize)}`}
               >
                 <span
                   className={`block truncate font-mono text-2xs ${
-                    file.path === selectedFilePath ? 'text-text-primary' : 'text-text-secondary'
+                    file.path === selectedFilePath ? "text-text-primary font-medium" : "text-text-secondary"
                   }`}
                 >
                   {file.path}
@@ -288,9 +308,9 @@ function FileTreePanel({
                     type="button"
                     onClick={() => onDelete(file.path)}
                     aria-label={`Delete ${file.path}`}
-                    className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error group-focus-within:flex group-hover:flex"
+                    className="hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error group-focus-within:flex group-hover:flex"
                   >
-                    <TrashIcon className="h-3.5 w-3.5" />
+                    <TrashIcon className="h-3 w-3" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>Delete {file.path}</TooltipContent>
@@ -311,17 +331,17 @@ function ReviewPanel({
 }: {
   review: SiteReviewChecklist | null;
   acknowledgedWarnings: string[];
-  onToggleWarning: (code: SiteViolation['code']) => void;
+  onToggleWarning: (code: SiteViolation["code"]) => void;
   detail: SiteDetail;
 }) {
   const warningCodes = useMemo(() => {
-    const codes = new Set<SiteViolation['code']>();
+    const codes = new Set<SiteViolation["code"]>();
     for (const warning of review?.validation.warnings ?? []) codes.add(warning.code);
     return [...codes];
   }, [review]);
 
   if (!review) {
-    return <div className="p-4 text-xs text-text-faint">Build the site to run the review checklist.</div>;
+    return <div className="p-4 text-xs text-text-faint">Build the design to run the review checklist.</div>;
   }
 
   const outstanding = warningCodes.filter((code) => !acknowledgedWarnings.includes(code));
@@ -336,7 +356,7 @@ function ReviewPanel({
 
       <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
         <dt className="text-text-tertiary">Entry file</dt>
-        <dd className={review.hasEntryFile ? 'text-text-secondary' : 'text-error'}>
+        <dd className={review.hasEntryFile ? "text-text-secondary" : "text-error"}>
           {review.hasEntryFile ? SITE_ENTRY_FILE : `Missing ${SITE_ENTRY_FILE}`}
         </dd>
         <dt className="text-text-tertiary">Files</dt>
@@ -344,10 +364,10 @@ function ReviewPanel({
         <dt className="text-text-tertiary">Size</dt>
         <dd className="text-text-secondary">{formatBytes(review.totalBytes)}</dd>
         <dt className="text-text-tertiary">External hosts</dt>
-        <dd className="text-text-secondary">{review.externalHosts.length || 'None'}</dd>
+        <dd className="text-text-secondary">{review.externalHosts.length || "None"}</dd>
         <dt className="text-text-tertiary">Draft state</dt>
         <dd className="text-text-secondary">
-          {VERSION_STATE_LABEL[detail.draft?.state ?? ''] ?? detail.draft?.state ?? '—'}
+          {VERSION_STATE_LABEL[detail.draft?.state ?? ""] ?? detail.draft?.state ?? "—"}
         </dd>
       </dl>
 
@@ -379,7 +399,7 @@ function ReviewPanel({
                   onChange={() => onToggleWarning(code)}
                   className="h-3.5 w-3.5 rounded-sm accent-[var(--accent)]"
                 />
-                <span>I accept the “{code.replace(/_/g, ' ')}” warnings.</span>
+                <span>I accept the “{code.replace(/_/g, " ")}” warnings.</span>
               </label>
             ))}
           </div>
@@ -427,13 +447,13 @@ function VersionsPanel({
                 <div className="min-w-0">
                   <div className="text-sm text-text-primary">
                     v{version.versionNo}
-                    {version.label ? ` · ${version.label}` : ''}
-                    {version.isDraft ? ' · working draft' : ''}
-                    {isCurrent ? ' · live' : ''}
+                    {version.label ? ` · ${version.label}` : ""}
+                    {version.isDraft ? " · working draft" : ""}
+                    {isCurrent ? " · live" : ""}
                   </div>
                   <div className="mt-0.5 text-2xs text-text-faint">
-                    {VERSION_STATE_LABEL[version.state] ?? version.state} · {version.fileCount} files ·{' '}
-                    {formatBytes(version.totalBytes)} ·{' '}
+                    {VERSION_STATE_LABEL[version.state] ?? version.state} · {version.fileCount} files ·{" "}
+                    {formatBytes(version.totalBytes)} ·{" "}
                     {formatTimestamp(version.publishedAt ?? version.updatedAt)}
                   </div>
                 </div>
@@ -461,14 +481,13 @@ function VersionsPanel({
   );
 }
 
-/** Escape/backdrop/focus-trap for free, unlike `window.confirm`. */
 function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
-  tone = 'default',
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  tone = "default",
   onConfirm,
   onCancel,
 }: {
@@ -477,7 +496,7 @@ function ConfirmDialog({
   description: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
-  tone?: 'default' | 'danger';
+  tone?: "default" | "danger";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -485,7 +504,7 @@ function ConfirmDialog({
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
       <DialogContent className="sm:max-w-[440px]" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle className={tone === 'danger' ? 'text-error' : undefined}>{title}</DialogTitle>
+          <DialogTitle className={tone === "danger" ? "text-error" : undefined}>{title}</DialogTitle>
           <DialogDescription asChild>
             <div className="text-sm leading-5 text-text-tertiary">{description}</div>
           </DialogDescription>
@@ -503,9 +522,9 @@ function ConfirmDialog({
             autoFocus
             onClick={onConfirm}
             className={`inline-flex h-9 items-center justify-center rounded-md px-4 text-xs transition ${
-              tone === 'danger'
-                ? 'border border-error-border bg-error-bg text-error-text hover:brightness-125'
-                : 'bg-bg-button text-text-inverse hover:bg-bg-button-hover'
+              tone === "danger"
+                ? "border border-error-border bg-error-bg text-error-text hover:brightness-125"
+                : "bg-bg-button text-text-inverse hover:bg-bg-button-hover"
             }`}
           >
             {confirmLabel}
@@ -516,7 +535,6 @@ function ConfirmDialog({
   );
 }
 
-/** The styled replacement for `window.prompt`. */
 function PromptDialog({
   open,
   title,
@@ -524,7 +542,7 @@ function PromptDialog({
   label,
   initialValue,
   placeholder,
-  confirmLabel = 'Create',
+  confirmLabel = "Create",
   validate,
   onSubmit,
   onCancel,
@@ -540,12 +558,12 @@ function PromptDialog({
   onSubmit: (value: string) => void;
   onCancel: () => void;
 }) {
-  const [value, setValue] = useState(initialValue ?? '');
+  const [value, setValue] = useState(initialValue ?? "");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setValue(initialValue ?? '');
+      setValue(initialValue ?? "");
       setError(null);
     }
   }, [initialValue, open]);
@@ -616,12 +634,589 @@ function PromptDialog({
   );
 }
 
-type PendingSwitch =
-  | { kind: 'site'; siteId: string }
-  | { kind: 'file'; path: string }
-  | { kind: 'new-file'; path: string };
+function NewDesignDialog({
+  open,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (title: string, template: DesignTemplate) => void;
+}) {
+  const [title, setTitle] = useState("Analytics Dashboard");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("dashboard");
+  const [error, setError] = useState<string | null>(null);
 
-export function SitesWorkspace({ onBack }: { onBack: () => void }) {
+  useEffect(() => {
+    if (open) {
+      setTitle("Analytics Dashboard");
+      setSelectedTemplateId("dashboard");
+      setError(null);
+    }
+  }, [open]);
+
+  const selectedTemplate =
+    DESIGN_TEMPLATES.find((t) => t.id === selectedTemplateId) ?? DESIGN_TEMPLATES[0];
+
+  const submit = () => {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setError("Please give your design a title.");
+      return;
+    }
+    onSubmit(trimmed, selectedTemplate);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
+      <DialogContent className="sm:max-w-[560px]">
+        <DialogHeader>
+          <div className="flex items-center gap-2">
+            <DialogTitle>New Design</DialogTitle>
+            <span className="rounded border border-border-subtle px-1.5 py-0.5 text-3xs font-medium text-text-tertiary">
+              Beta
+            </span>
+          </div>
+          <DialogDescription>
+            Choose a starter design system template or begin from scratch.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+          className="space-y-4 pt-1"
+        >
+          <div>
+            <label htmlFor="design-title-input" className="block text-xs font-medium text-text-secondary">
+              Design Title
+            </label>
+            <input
+              id="design-title-input"
+              value={title}
+              autoFocus
+              spellCheck={false}
+              placeholder="e.g. Analytics Dashboard"
+              onChange={(event) => {
+                setTitle(event.target.value);
+                setError(null);
+              }}
+              className="mt-1.5 h-9 w-full rounded-md border border-border-default bg-bg-subtle px-3 text-sm text-text-primary outline-none transition placeholder:text-text-muted focus:border-border-strong"
+            />
+            {error ? (
+              <p role="alert" className="mt-1 text-xs text-error">
+                {error}
+              </p>
+            ) : null}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-2">
+              Starter Template
+            </label>
+            <div className="grid grid-cols-2 gap-2.5">
+              {DESIGN_TEMPLATES.map((tmpl) => {
+                const isSelected = tmpl.id === selectedTemplateId;
+                return (
+                  <button
+                    key={tmpl.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTemplateId(tmpl.id);
+                      if (
+                        title === "Analytics Dashboard" ||
+                        title === "Marketing Hero" ||
+                        title === "Glassmorphic Player" ||
+                        title === "Blank Canvas"
+                      ) {
+                        setTitle(tmpl.name);
+                      }
+                    }}
+                    className={`flex flex-col text-left p-3 rounded-lg border transition ${
+                      isSelected
+                        ? "border-border-strong bg-bg-hover shadow-xs ring-1 ring-border-strong"
+                        : "border-border-subtle bg-bg-surface hover:border-border-default hover:bg-bg-hover"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1">
+                      <span className="text-xs font-medium text-text-primary">{tmpl.name}</span>
+                      <span className="text-3xs font-mono uppercase px-1.5 py-0.5 rounded border border-border-subtle text-text-tertiary">
+                        {tmpl.category}
+                      </span>
+                    </div>
+                    <p className="text-2xs text-text-tertiary line-clamp-2 leading-relaxed">
+                      {tmpl.description}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <DialogFooter className="pt-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="h-8 rounded-md px-3 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="h-8 rounded-md bg-bg-button text-text-inverse px-4 text-xs font-medium transition hover:bg-bg-button-hover"
+            >
+              Create Design
+            </button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CanvasToolbar({
+  viewMode,
+  setViewMode,
+  viewport,
+  setViewport,
+  zoom,
+  setZoom,
+  backdrop,
+  setBackdrop,
+  inspectMode,
+  setInspectMode,
+  onRefresh,
+  onFitZoom,
+  onOpenWindow,
+  isRefreshing,
+}: {
+  viewMode: ViewMode;
+  setViewMode: (m: ViewMode) => void;
+  viewport: ViewportMode;
+  setViewport: (v: ViewportMode) => void;
+  zoom: number;
+  setZoom: (updater: (prev: number) => number) => void;
+  backdrop: BackdropMode;
+  setBackdrop: (b: BackdropMode) => void;
+  inspectMode: boolean;
+  setInspectMode: (im: boolean) => void;
+  onRefresh: () => void;
+  onFitZoom: () => void;
+  onOpenWindow?: () => void;
+  isRefreshing?: boolean;
+}) {
+  return (
+    <div className="flex h-10 shrink-0 items-center justify-between border-b border-border-subtle bg-bg-surface px-3">
+      {/* View Mode Switcher */}
+      <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 rounded-md border border-border-subtle bg-bg-base p-0.5">
+          <button
+            type="button"
+            onClick={() => setViewMode("canvas")}
+            className={`flex h-6 items-center gap-1 rounded px-2 text-2xs font-medium transition ${
+              viewMode === "canvas"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <EyeOpenIcon className="h-3.5 w-3.5" />
+            <span>Canvas</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("split")}
+            className={`flex h-6 items-center gap-1 rounded px-2 text-2xs font-medium transition ${
+              viewMode === "split"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <ColumnsIcon className="h-3.5 w-3.5" />
+            <span>Split</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("code")}
+            className={`flex h-6 items-center gap-1 rounded px-2 text-2xs font-medium transition ${
+              viewMode === "code"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <CodeIcon className="h-3.5 w-3.5" />
+            <span>Code</span>
+          </button>
+        </div>
+
+        {/* Device Viewports */}
+        <div className="flex items-center gap-1 rounded-md border border-border-subtle bg-bg-base p-0.5 ml-2">
+          <button
+            type="button"
+            onClick={() => setViewport("desktop")}
+            title="Desktop Viewport (100%)"
+            className={`flex h-6 items-center gap-1.5 rounded px-2 text-2xs font-medium transition ${
+              viewport === "desktop"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <DesktopIcon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Desktop</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewport("tablet")}
+            title="iPad Tablet (768 × 1024)"
+            className={`flex h-6 items-center gap-1.5 rounded px-2 text-2xs font-medium transition ${
+              viewport === "tablet"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <ViewHorizontalIcon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Tablet</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewport("mobile")}
+            title="Mobile iPhone (390 × 844)"
+            className={`flex h-6 items-center gap-1.5 rounded px-2 text-2xs font-medium transition ${
+              viewport === "mobile"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <MobileIcon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Mobile</span>
+          </button>
+        </div>
+
+        {/* Inspect Mode Toggle */}
+        <button
+          type="button"
+          onClick={() => setInspectMode(!inspectMode)}
+          title="Element Inspector: click nodes in preview to ask Atlas or locate in code"
+          className={`flex h-6 items-center gap-1.5 rounded px-2 text-2xs font-medium ml-2 transition border ${
+            inspectMode
+              ? "bg-accent/15 text-accent border-accent/30 shadow-xs"
+              : "border-border-subtle bg-bg-base text-text-tertiary hover:text-text-secondary hover:bg-bg-hover"
+          }`}
+        >
+          <Crosshair2Icon className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Inspect</span>
+        </button>
+      </div>
+
+      {/* Right Canvas Tools */}
+      <div className="flex items-center gap-2">
+        {/* Zoom */}
+        <div className="flex items-center gap-1 rounded-md border border-border-subtle bg-bg-base px-1 py-0.5 text-2xs text-text-tertiary">
+          <button
+            type="button"
+            onClick={() => setZoom((z) => Math.max(40, z - 10))}
+            title="Zoom out"
+            className="flex h-5 w-5 items-center justify-center rounded hover:bg-bg-hover hover:text-text-primary"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={onFitZoom}
+            title="Fit artboard to screen"
+            className="px-1 text-3xs font-medium hover:text-text-primary"
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom(() => 100)}
+            title="Reset zoom (100%)"
+            className="px-1 text-3xs font-mono hover:text-text-primary"
+          >
+            {zoom}%
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom((z) => Math.min(200, z + 10))}
+            title="Zoom in"
+            className="flex h-5 w-5 items-center justify-center rounded hover:bg-bg-hover hover:text-text-primary"
+          >
+            +
+          </button>
+        </div>
+
+        {/* Backdrop Grid */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              title="Canvas background pattern"
+              className="flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
+            >
+              <GridIcon className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[130px]">
+            <DropdownMenuItem onSelect={() => setBackdrop("dots")}>
+              Dots Pattern
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setBackdrop("grid")}>
+              Grid Lines
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setBackdrop("blank")}>
+              Plain Base
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Standalone Window Popout */}
+        {onOpenWindow && (
+          <button
+            type="button"
+            onClick={onOpenWindow}
+            title="Open preview in dedicated window"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
+          >
+            <ExternalLinkIcon className="h-3.5 w-3.5" />
+          </button>
+        )}
+
+        {/* Refresh */}
+        <button
+          type="button"
+          onClick={onRefresh}
+          title="Reload preview"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
+        >
+          <ReloadIcon className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export type SelectedElementInfo = {
+  tagName: string;
+  className: string;
+  id: string | null;
+  selector: string;
+  text: string;
+  outerHTML: string;
+};
+
+function DesignCanvas({
+  title,
+  previewTarget,
+  previewNonce,
+  viewport,
+  zoom,
+  backdrop,
+  inspectMode,
+  selectedElement,
+  onClearSelectedElement,
+  onAskAtlas,
+  onJumpToCode,
+  onCopyMarkup,
+}: {
+  title: string;
+  previewTarget: { versionId: string; url: string } | null;
+  previewNonce: number;
+  viewport: ViewportMode;
+  zoom: number;
+  backdrop: BackdropMode;
+  inspectMode: boolean;
+  selectedElement: SelectedElementInfo | null;
+  onClearSelectedElement: () => void;
+  onAskAtlas: (el: SelectedElementInfo) => void;
+  onJumpToCode: (el: SelectedElementInfo) => void;
+  onCopyMarkup: (el: SelectedElementInfo) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Soft reload preview via postMessage without unmounting iframe DOM node
+  useEffect(() => {
+    if (!iframeRef.current) return;
+    try {
+      iframeRef.current.contentWindow?.postMessage("atlas:reload", "*");
+    } catch {}
+  }, [previewNonce]);
+
+  // Synchronize inspect mode with preview bridge
+  useEffect(() => {
+    if (!iframeRef.current) return;
+    try {
+      iframeRef.current.contentWindow?.postMessage(
+        { type: "atlas:toggle_inspect", enabled: inspectMode },
+        "*"
+      );
+    } catch {}
+  }, [inspectMode]);
+
+  const getBackdropStyle = (): CSSProperties => {
+    if (backdrop === "dots") {
+      return {
+        backgroundImage: "radial-gradient(var(--border-subtle) 1.2px, transparent 1.2px)",
+        backgroundSize: "20px 20px",
+      };
+    }
+    if (backdrop === "grid") {
+      return {
+        backgroundImage:
+          "linear-gradient(var(--border-subtle) 1px, transparent 1px), linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px)",
+        backgroundSize: "24px 24px",
+      };
+    }
+    return {};
+  };
+
+  // Exact natural dimensions for device viewports
+  const naturalWidth = viewport === "mobile" ? 392 : viewport === "tablet" ? 770 : 1200;
+  const naturalHeight = viewport === "mobile" ? 884 : viewport === "tablet" ? 1064 : 800;
+  const scale = zoom / 100;
+  const isDesktopFluid = viewport === "desktop" && zoom === 100;
+
+  return (
+    <div
+      className="relative flex-1 min-h-0 w-full overflow-auto flex items-center justify-center p-6 bg-bg-base"
+      style={getBackdropStyle()}
+    >
+      {previewTarget ? (
+        <div
+          className="relative transition-all duration-150 ease-out"
+          style={{
+            width: isDesktopFluid ? "100%" : `${naturalWidth * scale}px`,
+            height: isDesktopFluid ? "100%" : `${naturalHeight * scale}px`,
+            maxWidth: isDesktopFluid ? "1440px" : undefined,
+            margin: "auto",
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              width: isDesktopFluid ? "100%" : `${naturalWidth}px`,
+              height: isDesktopFluid ? "100%" : `${naturalHeight}px`,
+              transform: isDesktopFluid ? undefined : `scale(${scale})`,
+              transformOrigin: "top left",
+              transition: "transform 150ms ease",
+            }}
+            className="flex flex-col h-full w-full"
+          >
+            {/* Device Frame Header for Tablet & Mobile */}
+            {viewport !== "desktop" && (
+              <div className="w-full flex items-center justify-between px-4 py-2.5 bg-bg-surface border border-border-default rounded-t-2xl text-2xs text-text-tertiary font-mono shrink-0 select-none">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-border-strong" />
+                  <span>
+                    {viewport === "mobile"
+                      ? "390 × 844 · Mobile Viewport"
+                      : "768 × 1024 · iPad Tablet"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-success" />
+                  <span className="text-3xs text-success font-sans font-medium uppercase">Active</span>
+                </div>
+              </div>
+            )}
+
+            {/* Exact Viewport Canvas Box */}
+            {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
+            <div
+              className={`w-full overflow-hidden bg-white ${
+                viewport === "desktop"
+                  ? "h-full rounded-xl border border-border-subtle shadow-lg"
+                  : viewport === "tablet"
+                    ? "h-[1024px] w-[768px] rounded-b-2xl border-x border-b border-border-default shadow-2xl"
+                    : "h-[844px] w-[390px] rounded-b-3xl border-x border-b border-border-default shadow-2xl"
+              }`}
+            >
+              {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
+              <iframe
+                className="w-full h-full border-0 bg-white"
+                ref={iframeRef}
+                key={previewTarget.versionId}
+                src={previewTarget.url}
+                title={`${title} preview`}
+                sandbox="allow-scripts allow-same-origin allow-forms"
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-xs text-text-faint">
+          No preview target active.
+        </div>
+      )}
+
+      {/* Floating Element Inspector Action Bar */}
+      {selectedElement && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 rounded-2xl bg-bg-surface/95 backdrop-blur-xl border border-border-default shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-accent/10 text-accent border border-accent/20 shrink-0">
+              &lt;{selectedElement.tagName}
+              {selectedElement.className ? `.${selectedElement.className.split(" ")[0]}` : ""}&gt;
+            </span>
+            <span className="text-xs text-text-muted max-w-[220px] truncate hidden sm:inline">
+              {selectedElement.text || selectedElement.selector}
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-border-subtle shrink-0" />
+
+          <button
+            type="button"
+            onClick={() => onAskAtlas(selectedElement)}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-accent text-accent-foreground font-medium text-xs hover:opacity-90 transition shrink-0 shadow-xs"
+          >
+            <MagicWandIcon className="w-3.5 h-3.5" />
+            <span>Ask Atlas to Edit</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onJumpToCode(selectedElement)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-border-subtle bg-bg-base hover:bg-bg-hover text-xs text-text-secondary hover:text-text-primary transition shrink-0"
+          >
+            <CodeIcon className="w-3.5 h-3.5" />
+            <span>Code</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onCopyMarkup(selectedElement)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-border-subtle bg-bg-base hover:bg-bg-hover text-xs text-text-secondary hover:text-text-primary transition shrink-0"
+          >
+            <CopyIcon className="w-3.5 h-3.5" />
+            <span>Copy</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onClearSelectedElement}
+            className="text-text-muted hover:text-text-primary text-xs p-1 ml-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type PendingSwitch =
+  | { kind: "site"; siteId: string }
+  | { kind: "file"; path: string }
+  | { kind: "new-file"; path: string };
+
+export function SitesWorkspace({
+  onBack,
+  onAskAtlas,
+}: {
+  onBack: () => void;
+  onAskAtlas?: (prompt: string) => void;
+}) {
   const {
     acknowledgedWarnings,
     build,
@@ -656,9 +1251,110 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
     sites,
     toggleWarningAcknowledged,
     unpublish,
+    getCanvasPrefs,
+    updateCanvasPrefs,
   } = useSitesStore();
 
-  const [rightTab, setRightTab] = useState<RightPanelTab>('preview');
+  const canvasPrefs = getCanvasPrefs(selectedSiteId);
+  const viewMode = canvasPrefs.viewMode;
+  const viewport = canvasPrefs.viewport;
+  const zoom = canvasPrefs.zoom;
+  const backdrop = canvasPrefs.backdrop;
+  const inspectMode = canvasPrefs.inspectMode;
+
+  const setViewMode = (mode: ViewMode) => {
+    if (selectedSiteId) updateCanvasPrefs(selectedSiteId, { viewMode: mode });
+  };
+  const setViewport = (vp: ViewportMode) => {
+    if (selectedSiteId) updateCanvasPrefs(selectedSiteId, { viewport: vp });
+  };
+  const setZoom = (updater: number | ((prev: number) => number)) => {
+    if (!selectedSiteId) return;
+    const nextZoom = typeof updater === "function" ? updater(zoom) : updater;
+    updateCanvasPrefs(selectedSiteId, { zoom: Math.max(40, Math.min(200, nextZoom)) });
+  };
+  const setBackdrop = (bd: BackdropMode) => {
+    if (selectedSiteId) updateCanvasPrefs(selectedSiteId, { backdrop: bd });
+  };
+  const setInspectMode = (im: boolean) => {
+    if (selectedSiteId) updateCanvasPrefs(selectedSiteId, { inspectMode: im });
+  };
+
+  const [selectedElement, setSelectedElement] = useState<SelectedElementInfo | null>(null);
+
+  // Element inspector message listener from iframe preview bridge
+  useEffect(() => {
+    const handleWindowMessage = (event: MessageEvent) => {
+      if (event.data && typeof event.data === "object" && event.data.type === "atlas:element_selected") {
+        setSelectedElement(event.data.payload);
+      }
+    };
+    window.addEventListener("message", handleWindowMessage);
+    return () => window.removeEventListener("message", handleWindowMessage);
+  }, []);
+
+  // Global Cmd+S handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        if (fileDirty && !isBusy) {
+          e.preventDefault();
+          void saveFile();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fileDirty, isBusy, saveFile]);
+
+  // Fit to window handler
+  const handleFitZoom = () => {
+    const naturalWidth = viewport === "mobile" ? 392 : viewport === "tablet" ? 770 : 1200;
+    const naturalHeight = viewport === "mobile" ? 884 : viewport === "tablet" ? 1064 : 800;
+    const availW = Math.max(320, window.innerWidth - 380);
+    const availH = Math.max(300, window.innerHeight - 200);
+    const fitRatio = Math.min(availW / naturalWidth, availH / naturalHeight);
+    const fitPercent = Math.max(40, Math.min(100, Math.round(fitRatio * 100)));
+    setZoom(fitPercent);
+  };
+
+  const handleAskAtlas = (element: SelectedElementInfo) => {
+    const siteTitle = detail?.site.title || "the design";
+    const prompt = `@sites in "${siteTitle}", please modify the <${element.tagName}> element (${element.selector}):\n\n\`\`\`html\n${element.outerHTML}\n\`\`\`\n`;
+    try {
+      void navigator.clipboard.writeText(prompt);
+      notify({ tone: "success", title: "Prompt copied to clipboard", description: "Ready in chat with @sites" });
+    } catch {}
+
+    if (detail?.site.sourceConversationId) {
+      void useAppStore.getState().loadConversation(detail.site.sourceConversationId);
+    }
+    if (onAskAtlas) {
+      onAskAtlas(prompt);
+    } else {
+      onBack();
+    }
+  };
+
+  const handleJumpToCode = (_element: SelectedElementInfo) => {
+    if (viewMode === "canvas") {
+      setViewMode("split");
+    }
+    if (selectedFilePath !== "index.html") {
+      void selectFile("index.html");
+    }
+  };
+
+  const handleCopyMarkup = async (element: SelectedElementInfo) => {
+    try {
+      await navigator.clipboard.writeText(element.outerHTML);
+      notify({ tone: "success", title: "HTML copied", description: `<${element.tagName}> markup copied` });
+    } catch {}
+  };
+
+
+  const [rightTab, setRightTab] = useState<RightPanelTab>("review");
+
   const [creatingSite, setCreatingSite] = useState(false);
   const [creatingFile, setCreatingFile] = useState(false);
   const [pendingSiteDelete, setPendingSiteDelete] = useState(false);
@@ -678,21 +1374,19 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
   const existingPaths = detail?.files.map((file) => file.path) ?? [];
 
   const applySwitch = (target: PendingSwitch) => {
-    if (target.kind === 'site') {
+    if (target.kind === "site") {
       void selectSite(target.siteId);
       return;
     }
 
-    if (target.kind === 'file') {
+    if (target.kind === "file") {
       void selectFile(target.path);
       return;
     }
 
-    // A brand-new file exists only as an unsaved buffer until it is saved.
     createDraftFile(target.path);
   };
 
-  /** Never lose typed-but-unsaved editor content to a stray click. */
   const requestSwitch = (target: PendingSwitch) => {
     if (fileDirty) {
       setPendingSwitch(target);
@@ -702,74 +1396,143 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
     applySwitch(target);
   };
 
-  const handleExport = async (format: 'folder' | 'zip') => {
+  const handleExport = async (format: "folder" | "zip") => {
     const destination = await exportSite(format);
     if (destination) {
-      notify({ tone: 'success', title: 'Site exported', description: destination });
+      notify({ tone: "success", title: "Design exported", description: destination });
     }
+  };
+
+  const handleCopyCode = async () => {
+    if (!fileContents) return;
+    try {
+      await navigator.clipboard.writeText(fileContents);
+      notify({
+        tone: "success",
+        title: "Code copied",
+        description: `${selectedFilePath ?? "File"} copied to clipboard`,
+      });
+    } catch {
+      notify({ tone: "error", title: "Copy failed", description: "Could not access clipboard" });
+    }
+  };
+
+  const handleCreateDesign = async (title: string, template: DesignTemplate) => {
+    setCreatingSite(false);
+    await createSite(title, null, template.files);
+    notify({
+      tone: "success",
+      title: "Design created",
+      description: `Created "${title}" with ${template.name}`,
+    });
   };
 
   return (
     <div className="app-shell flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      {/*
-        Same rail contract as the chat shell and Settings: `--bg-panel`, no
-        right border (the colour change is the boundary), no rule under the
-        drag strip. This one used to paint `--bg-base` behind a hairline, so
-        Sites was the one place the sidebar changed colour under you.
-      */}
+      {/* Sidebar Rail */}
       <aside className="sidebar-surface flex w-sidebar-width shrink-0 flex-col">
         <div
           className="h-titlebar-height shrink-0"
-          style={{ WebkitAppRegion: 'drag' } as CSSProperties}
+          style={{ WebkitAppRegion: "drag" } as CSSProperties}
         />
-        {/* Padded to the same gutter as the list below it, as in Settings. */}
         <div className="px-3">
           <RailBackButton label="Back to chat" onClick={onBack} />
         </div>
         <SiteListPanel
           sites={sites}
           selectedSiteId={selectedSiteId}
-          onSelect={(siteId) => requestSwitch({ kind: 'site', siteId })}
+          onSelect={(siteId) => requestSwitch({ kind: "site", siteId })}
           onCreate={() => setCreatingSite(true)}
           isLoading={isLoading}
         />
       </aside>
 
-      {/* Paints its own opaque background: under the translucent sidebar the
-          shell is punched transparent, and chat and Settings re-paint their
-          content columns — this one must too, or the whole Sites workspace
-          turns into glass with the desktop showing through it. */}
+      {/* Main Studio Column */}
       <main className="flex min-w-0 flex-1 flex-col bg-bg-base">
         <header
-          // Borderless, like the chat and Settings headers: the reference
-          // header floats over the content background (spec §1).
-          className="titlebar-overlay-safe flex h-titlebar-height shrink-0 items-center justify-between gap-3 px-4"
-          style={{ WebkitAppRegion: 'drag' } as CSSProperties}
+          className="titlebar-overlay-safe flex h-titlebar-height shrink-0 items-center justify-between gap-3 px-4 border-b border-border-subtle"
+          style={{ WebkitAppRegion: "drag" } as CSSProperties}
         >
-          <div className="min-w-0" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
-            <div className="truncate text-base text-text-primary">{detail?.site.title ?? 'Sites'}</div>
-            {detail ? (
-              <div className="text-2xs text-text-faint">
-                {STATUS_LABEL[detail.site.status] ?? detail.site.status}
-                {detail.current ? ` · live v${detail.current.versionNo}` : ''}
-                {detail.draft ? ` · draft ${VERSION_STATE_LABEL[detail.draft.state] ?? detail.draft.state}` : ''}
+          {/* Left Title & Status */}
+          <div className="min-w-0 flex items-center gap-3" style={{ WebkitAppRegion: "no-drag" } as CSSProperties}>
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="truncate text-sm font-medium text-text-primary">
+                  {detail?.site.title ?? "Atlas Design"}
+                </div>
+                <span className="rounded border border-border-subtle px-1.5 py-0.5 text-3xs font-medium text-text-tertiary">
+                  Beta
+                </span>
               </div>
-            ) : null}
+              {detail ? (
+                <div className="text-3xs text-text-faint">
+                  {STATUS_LABEL[detail.site.status] ?? detail.site.status}
+                  {detail.current ? ` · live v${detail.current.versionNo}` : ""}
+                  {detail.draft ? ` · draft ${VERSION_STATE_LABEL[detail.draft.state] ?? detail.draft.state}` : ""}
+                </div>
+              ) : null}
+            </div>
           </div>
 
+          {/* Center View Mode Switcher */}
+          {detail ? (
+            <div
+              className="flex items-center rounded-md border border-border-subtle bg-bg-surface p-0.5"
+              style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
+            >
+              <button
+                type="button"
+                onClick={() => setViewMode("canvas")}
+                className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition ${
+                  viewMode === "canvas"
+                    ? "bg-bg-hover text-text-primary shadow-xs"
+                    : "text-text-tertiary hover:text-text-secondary"
+                }`}
+              >
+                <EyeOpenIcon className="h-3.5 w-3.5" />
+                <span>Canvas</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("split")}
+                className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition ${
+                  viewMode === "split"
+                    ? "bg-bg-hover text-text-primary shadow-xs"
+                    : "text-text-tertiary hover:text-text-secondary"
+                }`}
+              >
+                <ColumnsIcon className="h-3.5 w-3.5" />
+                <span>Split</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("code")}
+                className={`flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition ${
+                  viewMode === "code"
+                    ? "bg-bg-hover text-text-primary shadow-xs"
+                    : "text-text-tertiary hover:text-text-secondary"
+                }`}
+              >
+                <CodeIcon className="h-3.5 w-3.5" />
+                <span>Code</span>
+              </button>
+            </div>
+          ) : null}
+
+          {/* Right Action Tools */}
           {detail ? (
             <div
               className="flex shrink-0 items-center gap-1.5"
-              style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+              style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
             >
-              <ToolbarButton onClick={() => void build()} disabled={isBusy} title="Validate the draft">
+              <ToolbarButton onClick={() => void build()} disabled={isBusy} title="Validate the design draft">
                 <ReloadIcon className="h-3.5 w-3.5" />
                 Build
               </ToolbarButton>
               <ToolbarButton
                 onClick={() => void openPreviewWindow()}
                 disabled={isBusy}
-                title="Open the draft in a preview window"
+                title="Open the design in a standalone window"
               >
                 <ExternalLinkIcon className="h-3.5 w-3.5" />
                 Preview
@@ -778,7 +1541,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
                 onClick={() => void publish()}
                 disabled={isBusy || !canPublish}
                 tone="primary"
-                title={canPublish ? 'Publish this draft' : 'Resolve the review checklist first'}
+                title={canPublish ? "Publish this design version" : "Resolve the review checklist first"}
               >
                 Publish
               </ToolbarButton>
@@ -800,15 +1563,15 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
                 </Tooltip>
                 <DropdownMenuContent align="end" className="min-w-[200px] rounded-md">
                   <DropdownMenuItem disabled={isBusy} onSelect={() => void openInBrowser()}>
-                    Open in browser
+                    Open in default browser
                   </DropdownMenuItem>
-                  <DropdownMenuItem disabled={isBusy} onSelect={() => void handleExport('folder')}>
+                  <DropdownMenuItem disabled={isBusy} onSelect={() => void handleExport("folder")}>
                     Export to folder…
                   </DropdownMenuItem>
-                  <DropdownMenuItem disabled={isBusy} onSelect={() => void handleExport('zip')}>
+                  <DropdownMenuItem disabled={isBusy} onSelect={() => void handleExport("zip")}>
                     Export as .zip…
                   </DropdownMenuItem>
-                  {detail.site.status === 'published' ? (
+                  {detail.site.status === "published" ? (
                     <DropdownMenuItem disabled={isBusy} onSelect={() => void unpublish()}>
                       Unpublish
                     </DropdownMenuItem>
@@ -820,7 +1583,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
                     onSelect={() => setPendingSiteDelete(true)}
                   >
                     <TrashIcon className="h-3.5 w-3.5" />
-                    Delete site…
+                    Delete design…
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -844,109 +1607,167 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
           </div>
         ) : null}
 
+        {/* Studio Content Area */}
         {!detail ? (
-          <div className="flex flex-1 items-center justify-center px-6 text-center">
-            <div className="max-w-[420px]">
-              <div className="text-md text-text-primary">No site selected</div>
-              <p className="mt-2 text-sm leading-6 text-text-tertiary">
-                Sites are multi-file static artifacts with version history. Create one here, or ask the assistant
-                in chat — it has site tools and can build, validate, and preview a site for you.
-              </p>
+          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+            <div className="max-w-[460px] space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-bg-surface border border-border-subtle mx-auto grid place-items-center text-xl text-text-primary shadow-sm">
+                ✦
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-text-primary">Atlas Design Studio</h2>
+                <p className="mt-1.5 text-xs leading-relaxed text-text-tertiary">
+                  Create responsive interfaces, inspect mobile and tablet viewports, and iterate live with AI design tools.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setCreatingSite(true)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-bg-button text-text-inverse px-4 py-2 text-xs font-medium transition hover:bg-bg-button-hover shadow-sm"
+                >
+                  <PlusIcon className="h-4 w-4" />
+                  Create New Design
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : viewMode === "canvas" ? (
+          /* Full Canvas View */
+          <div className="flex flex-1 min-h-0 flex-col">
+            <CanvasToolbar
+              viewMode={viewMode}
+              setViewMode={setViewMode}
+              viewport={viewport}
+              setViewport={setViewport}
+              zoom={zoom}
+              setZoom={setZoom}
+              backdrop={backdrop}
+              setBackdrop={setBackdrop}
+              inspectMode={inspectMode}
+              setInspectMode={setInspectMode}
+              onRefresh={() => void refreshPreview()}
+              onFitZoom={handleFitZoom}
+              onOpenWindow={() => void openPreviewWindow()}
+              isRefreshing={isBusy}
+            />
+            <DesignCanvas
+              title={detail.site.title}
+              previewTarget={previewTarget}
+              previewNonce={previewNonce}
+              viewport={viewport}
+              zoom={zoom}
+              backdrop={backdrop}
+              inspectMode={inspectMode}
+              selectedElement={selectedElement}
+              onClearSelectedElement={() => setSelectedElement(null)}
+              onAskAtlas={handleAskAtlas}
+              onJumpToCode={handleJumpToCode}
+              onCopyMarkup={(el) => void handleCopyMarkup(el)}
+            />
+          </div>
+        ) : viewMode === "split" ? (
+          /* Side-by-Side Split View (Code on Left, Canvas on Right) */
+          <div className="flex flex-1 min-h-0">
+            {/* Left: File Tree + CodeEditorPane */}
+            <div className="flex w-1/2 min-w-[340px] max-w-[640px] border-r border-border-subtle">
+              <FileTreePanel
+                files={detail.files}
+                selectedFilePath={selectedFilePath}
+                onSelect={(path) => requestSwitch({ kind: "file", path })}
+                onDelete={(path) => setPendingFileDelete(path)}
+                onCreate={() => setCreatingFile(true)}
+              />
+
+              <div className="flex-1 min-w-0">
+                <CodeEditorPane
+                  filePath={selectedFilePath}
+                  contents={fileContents}
+                  dirty={fileDirty}
+                  isBusy={isBusy}
+                  onContentsChange={setFileContents}
+                  onSave={saveFile}
+                />
+              </div>
+            </div>
+
+            {/* Right: Live Responsive Canvas */}
+            <div className="flex flex-1 min-h-0 flex-col">
+              <CanvasToolbar
+                viewMode={viewMode}
+                setViewMode={setViewMode}
+                viewport={viewport}
+                setViewport={setViewport}
+                zoom={zoom}
+                setZoom={setZoom}
+                backdrop={backdrop}
+                setBackdrop={setBackdrop}
+                inspectMode={inspectMode}
+                setInspectMode={setInspectMode}
+                onRefresh={() => void refreshPreview()}
+                onFitZoom={handleFitZoom}
+                onOpenWindow={() => void openPreviewWindow()}
+                isRefreshing={isBusy}
+              />
+              <DesignCanvas
+                title={detail.site.title}
+                previewTarget={previewTarget}
+                previewNonce={previewNonce}
+                viewport={viewport}
+                zoom={zoom}
+                backdrop={backdrop}
+                inspectMode={inspectMode}
+                selectedElement={selectedElement}
+                onClearSelectedElement={() => setSelectedElement(null)}
+                onAskAtlas={handleAskAtlas}
+                onJumpToCode={handleJumpToCode}
+                onCopyMarkup={(el) => void handleCopyMarkup(el)}
+              />
             </div>
           </div>
         ) : (
+          /* Full Code View with Review / Versions Tabs */
           <div className="flex min-h-0 flex-1">
             <FileTreePanel
               files={detail.files}
               selectedFilePath={selectedFilePath}
-              onSelect={(path) => requestSwitch({ kind: 'file', path })}
+              onSelect={(path) => requestSwitch({ kind: "file", path })}
               onDelete={(path) => setPendingFileDelete(path)}
               onCreate={() => setCreatingFile(true)}
             />
 
-            <section className="flex min-w-0 flex-1 flex-col border-r border-border-subtle">
-              <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle px-3">
-                <span className="truncate font-mono text-2xs text-text-tertiary">
-                  {selectedFilePath ?? 'No file open'}
-                  {fileDirty ? ' •' : ''}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void saveFile()}
-                  disabled={!fileDirty || isBusy}
-                  className="rounded-md px-1.5 text-xs text-text-tertiary transition hover:text-text-primary disabled:opacity-40"
-                >
-                  Save
-                </button>
-              </div>
+            <div className="flex-1 min-w-0 border-r border-border-subtle">
+              <CodeEditorPane
+                filePath={selectedFilePath}
+                contents={fileContents}
+                dirty={fileDirty}
+                isBusy={isBusy}
+                onContentsChange={setFileContents}
+                onSave={saveFile}
+                autoFocus
+              />
+            </div>
 
-              {selectedFilePath == null ? (
-                <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-text-faint">
-                  Select a file to edit it.
-                </div>
-              ) : (
-                <textarea
-                  value={fileContents ?? ''}
-                  onChange={(event) => setFileContents(event.target.value)}
-                  spellCheck={false}
-                  aria-label={`Contents of ${selectedFilePath}`}
-                  className="min-h-0 flex-1 resize-none bg-bg-base p-3 font-mono text-xs leading-5 text-text-primary outline-none scroll-container"
-                />
-              )}
-            </section>
-
-            <section className="flex min-w-0 flex-1 flex-col">
-              <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle px-2">
-                {(['preview', 'review', 'versions'] as const).map((tab) => (
+            <section className="flex w-[320px] shrink-0 flex-col">
+              <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle px-2 bg-bg-surface">
+                {(["review", "versions"] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
-                    aria-current={rightTab === tab ? 'page' : undefined}
+                    aria-current={rightTab === tab ? "page" : undefined}
                     onClick={() => setRightTab(tab)}
                     className={`h-7 rounded-md px-2.5 text-xs capitalize transition ${
                       rightTab === tab
-                        ? 'bg-bg-hover text-text-primary'
-                        : 'text-text-faint hover:text-text-secondary'
+                        ? "bg-bg-hover text-text-primary"
+                        : "text-text-faint hover:text-text-secondary"
                     }`}
                   >
                     {tab}
                   </button>
                 ))}
-                {rightTab === 'preview' ? (
-                  <button
-                    type="button"
-                    onClick={() => void refreshPreview()}
-                    className="ml-auto h-7 rounded-md px-2 text-xs text-text-faint transition hover:text-text-primary"
-                  >
-                    Reload
-                  </button>
-                ) : null}
               </div>
 
-              {rightTab === 'preview' ? (
-                previewTarget ? (
-                  <iframe
-                    // Remount on every refresh so edits show without a manual reload.
-                    key={`${previewTarget.versionId}-${previewNonce}`}
-                    src={previewTarget.url}
-                    title={`${detail.site.title} preview`}
-                    // The real boundary is the origin: atlas-site://<siteId> is
-                    // never the app's origin, so allow-same-origin only grants
-                    // the frame access to itself — which its own `default-src
-                    // 'self'` CSP requires to load its stylesheets and scripts.
-                    // Popups stay denied so the frame cannot reach shell.openExternal.
-                    sandbox="allow-scripts allow-same-origin allow-forms"
-                    /* White is correct here: this iframe renders the user's own
-                       site, so it must not inherit app chrome colours.
-                       design-tokens-allow: user-content surface, not app chrome */
-                    className="min-h-0 flex-1 border-0 bg-white"
-                  />
-                ) : (
-                  <div className="flex flex-1 items-center justify-center text-xs text-text-faint">
-                    No preview available.
-                  </div>
-                )
-              ) : rightTab === 'review' ? (
+              {rightTab === "review" ? (
                 <ReviewPanel
                   review={review}
                   acknowledgedWarnings={acknowledgedWarnings}
@@ -960,7 +1781,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
                   onRollback={(version) => void rollback(version.id)}
                   onResetDraft={(version) => setPendingResetDraft(version)}
                   onPreviewVersion={(version) => {
-                    setRightTab('preview');
+                    setViewMode("canvas");
                     void refreshPreview(version.id);
                   }}
                 />
@@ -970,32 +1791,24 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
         )}
       </main>
 
-      <PromptDialog
+      <NewDesignDialog
         open={creatingSite}
-        title="New site"
-        label="Title"
-        initialValue="New site"
-        placeholder="Landing page"
-        validate={(value) => (value.trim() ? null : 'Give the site a title.')}
         onCancel={() => setCreatingSite(false)}
-        onSubmit={(title) => {
-          setCreatingSite(false);
-          void createSite(title);
-        }}
+        onSubmit={(title, template) => void handleCreateDesign(title, template)}
       />
 
       <PromptDialog
         open={creatingFile}
         title="New file"
-        description="Paths are relative to the site root. The file lands on disk once you save it."
+        description="Paths are relative to the design root. The file lands on disk once you save it."
         label="Path"
-        initialValue="page.html"
+        initialValue="component.html"
         placeholder="assets/styles.css"
         validate={(value) => validateFilePath(value, existingPaths)}
         onCancel={() => setCreatingFile(false)}
         onSubmit={(path) => {
           setCreatingFile(false);
-          requestSwitch({ kind: 'new-file', path });
+          requestSwitch({ kind: "new-file", path });
         }}
       />
 
@@ -1043,7 +1856,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
 
       <ConfirmDialog
         open={pendingSiteDelete}
-        title="Delete this site?"
+        title="Delete this design?"
         description={
           <>
             <span className="block truncate font-medium text-text-secondary" title={detail?.site.title}>
@@ -1054,7 +1867,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
             </span>
           </>
         }
-        confirmLabel="Delete site"
+        confirmLabel="Delete design"
         tone="danger"
         onCancel={() => setPendingSiteDelete(false)}
         onConfirm={() => {
@@ -1068,7 +1881,7 @@ export function SitesWorkspace({ onBack }: { onBack: () => void }) {
       <ConfirmDialog
         open={pendingResetDraft != null}
         title="Replace the working draft?"
-        description={`The draft is overwritten with v${pendingResetDraft?.versionNo ?? ''}. Unsaved draft work is lost.`}
+        description={`The draft is overwritten with v${pendingResetDraft?.versionNo ?? ""}. Unsaved draft work is lost.`}
         confirmLabel="Replace draft"
         tone="danger"
         onCancel={() => setPendingResetDraft(null)}

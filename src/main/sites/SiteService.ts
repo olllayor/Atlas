@@ -228,6 +228,11 @@ export class SiteService {
     const blockingReasons = validation.errors.map((error) =>
       error.path ? `${error.path}: ${error.message}` : error.message
     );
+    if (validation.warnings.length > 0) {
+      blockingReasons.push(
+        `${validation.warnings.length} warning(s) require acknowledgement before publish.`
+      );
+    }
 
     return {
       siteId,
@@ -237,7 +242,7 @@ export class SiteService {
       fileCount: validation.fileCount,
       totalBytes: validation.totalBytes,
       externalHosts,
-      canPublish: validation.ok,
+      canPublish: validation.ok && validation.warnings.length === 0,
       blockingReasons,
     };
   }

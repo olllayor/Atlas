@@ -3,7 +3,8 @@ import type { ChatMessage } from '../../shared/contracts.js';
 /**
  * Pure geometry + derivation helpers for the transcript timeline minimap.
  * Pattern ported from t3code's `MessagesTimeline.logic.ts`; the constants are
- * re-tuned to Atlas's content column, which is `clamp(680px, 102vw, 860px)`.
+ * re-tuned to Atlas's single chat column (`--content-max: 48rem`, 768px —
+ * the same rail the composer sits on).
  *
  * Everything here is DOM-free so it can unit-test in plain Node.
  */
@@ -13,13 +14,11 @@ export const MINIMAP_ITEM_SPACING = 8;
 export const MINIMAP_MIN_ITEMS = 2;
 export const MINIMAP_MAX_HEIGHT_CSS = 'calc(100vh - 18rem)';
 /**
- * Mirror of the CSS `--content-max: clamp(680px, 102vw, 860px)` token. Kept
+ * Mirror of the CSS `--content-max: 48rem` token. Kept
  * in one place with a comment pointing at styles.css — if the token moves,
  * this must move with it or the gutter math lies.
  */
-export const CONTENT_MIN_WIDTH = 680;
-export const CONTENT_MAX_WIDTH = 860;
-export const CONTENT_PREFERRED_RATIO = 1.02;
+export const CONTENT_MAX_WIDTH = 768;
 /** Side gutter at which the rail stays permanently visible (no hover reveal). */
 export const MINIMAP_PERSISTENT_GUTTER = 48;
 export const MINIMAP_HIT_STRIP_LEFT = 12;
@@ -42,10 +41,10 @@ export interface VirtualRange {
   readonly endIndex: number;
 }
 
-/** The preferred content width for a viewport, mirroring the clamp() above. */
+/** The preferred content width for a viewport, mirroring max-w-3xl behavior. */
 export function resolveContentWidth(viewportWidth: number): number {
-  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return CONTENT_MIN_WIDTH;
-  return Math.min(CONTENT_MAX_WIDTH, Math.max(CONTENT_MIN_WIDTH, viewportWidth * CONTENT_PREFERRED_RATIO));
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return CONTENT_MAX_WIDTH;
+  return Math.min(CONTENT_MAX_WIDTH, viewportWidth);
 }
 
 export function resolveMinimapHeightStyle(itemCount: number): string {

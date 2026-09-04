@@ -14,6 +14,7 @@ import {
 } from '../src/renderer/components/sidebarViewModel';
 import {
   effectiveSnoozed,
+  formatSnoozeClockLabel,
   resolveSnoozePresets,
   isTimerWoken,
   snoozeWakeLabel,
@@ -67,6 +68,13 @@ test('settled chats move to the shelf newest-parked first, pins stay put', () =>
 });
 
 test('snoozed shelf holds future wakes soonest-first, approvals and past wakes stay', () => {
+  const approval = {
+    approvalId: 'ap',
+    requestId: 'rq',
+    toolName: 'bash',
+    verb: 'Approve command',
+    subject: 'pnpm test',
+  };
   const { snoozed, rest } = splitSnoozedSidebarItems(
     [
       item({ id: 'active' }),
@@ -74,14 +82,15 @@ test('snoozed shelf holds future wakes soonest-first, approvals and past wakes s
       item({ id: 'sooner', snoozedUntil: future(3600_000) }),
       item({ id: 'woken', snoozedUntil: past(1000) }),
       item({ id: 'broken', snoozedUntil: 'not-a-date' }),
-      item({ id: 'approval', snoozedUntil: future(3600_000), attention: 'needsInput' }),
+      item({ id: 'approval', snoozedUntil: future(3600_000), attention: 'needsInput', pendingApproval: approval }),
+      item({ id: 'failed', snoozedUntil: future(3600_000), attention: 'needsInput', isFailed: true }),
     ],
     NOW
   );
 
   assert.deepEqual(
     snoozed.map((entry) => entry.id),
-    ['sooner', 'later']
+    ['sooner', 'failed', 'later']
   );
   assert.deepEqual(
     rest.map((entry) => entry.id),
@@ -173,13 +182,21 @@ test('wake labels stay compact and never read 0m while hidden', () => {
   assert.equal(snoozeWakeLabel(new Date(NOW - 1000).toISOString(), NOW), 'now');
 });
 
+test('snooze clock label names the wake time for the confirmation toast', () => {
+  const clock = formatSnoozeClockLabel(future(3600_000));
+  assert.ok(clock && clock.includes(':'));
+  assert.equal(formatSnoozeClockLabel('not-a-date'), null);
+});
 test('snooze visibility needs a future wake and no pending approval', () => {
   const wake = future(3600_000);
-  assert.equal(effectiveSnoozed({ snoozedUntil: wake, needsInput: false }, NOW), true);
-  assert.equal(effectiveSnoozed({ snoozedUntil: wake, needsInput: true }, NOW), false);
-  assert.equal(effectiveSnoozed({ snoozedUntil: past(1000), needsInput: false }, NOW), false);
-  assert.equal(effectiveSnoozed({ snoozedUntil: 'not-a-date', needsInput: false }, NOW), false);
-  assert.equal(effectiveSnoozed({ snoozedUntil: null, needsInput: false }, NOW), false);
+  assert.equal(effectiveSnoozed({ snoozedUntil: wake, hasPendingApproval: false }, NOW), true);
+  assert.equal(
+    effectiveSnoozed({ snoozedUntil: wake, hasPendingApproval: true }, NOW),
+    false
+  );
+  assert.equal(effectiveSnoozed({ snoozedUntil: past(1000), hasPendingApproval: false }, NOW), false);
+  assert.equal(effectiveSnoozed({ snoozedUntil: 'not-a-date', hasPendingApproval: false }, NOW), false);
+  assert.equal(effectiveSnoozed({ snoozedUntil: null, hasPendingApproval: false }, NOW), false);
 });
 
 test('snoozed thread completion lifts snooze early', () => {
@@ -190,7 +207,7 @@ test('snoozed thread completion lifts snooze early', () => {
   // Completed before snooze: stays snoozed
   assert.equal(
     effectiveSnoozed(
-      { snoozedUntil: future(3600_000), needsInput: false, snoozedAt: snoozeTime, completedAt: beforeSnooze },
+      { snoozedUntil: future(3600_000), hasPendingApproval: false, snoozedAt: snoozeTime, completedAt: beforeSnooze },
       NOW
     ),
     true
@@ -199,7 +216,7 @@ test('snoozed thread completion lifts snooze early', () => {
   // Completed after snooze: raises early (effectiveSnoozed === false)
   assert.equal(
     effectiveSnoozed(
-      { snoozedUntil: future(3600_000), needsInput: false, snoozedAt: snoozeTime, completedAt: completeTime },
+      { snoozedUntil: future(3600_000), hasPendingApproval: false, snoozedAt: snoozeTime, completedAt: completeTime },
       NOW
     ),
     false

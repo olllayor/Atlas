@@ -81,7 +81,10 @@ export function SideChatPane() {
       className="relative flex w-[38%] min-w-[300px] max-w-[560px] shrink-0 flex-col border-l border-border-subtle bg-bg-base"
       style={
         composerDock.height > 0
-          ? ({ '--composer-dock-height': `${composerDock.height}px` } as React.CSSProperties)
+          ? ({
+              '--composer-dock-height': `${composerDock.height}px`,
+              '--composer-height': `${composerDock.height}px`,
+            } as React.CSSProperties)
           : undefined
       }
     >

@@ -135,7 +135,7 @@ export class OpenCodeController {
         ...(serverPassword ? { serverPassword } : {}),
         deps: {
           connectOwnedServer: async () => {
-            const connection = await this.getRuntime().connect({ settings });
+            const connection = await this.getRuntime().connect({ settings, serverPassword });
             lease = connection;
             return { baseUrl: connection.baseUrl };
           }
@@ -179,7 +179,7 @@ export class OpenCodeController {
     this.adapter ??= new OpenCodeAgentAdapter({
       readSettings: () => this.getSettings(),
       readServerPassword: () => this.readServerPassword(),
-      connect: (settings) => this.getRuntime().connect({ settings }),
+      connect: (settings, serverPassword) => this.getRuntime().connect({ settings, serverPassword }),
       createClient: createOpenCodeAgentClient,
       sessions: this.deps.sessions,
       defaultDirectory: () => this.directory()

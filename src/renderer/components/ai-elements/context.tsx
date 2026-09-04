@@ -1,5 +1,6 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
+import { Minimize2, Zap } from "lucide-react";
 import type { ComponentProps, HTMLAttributes } from "react";
 import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
@@ -192,15 +193,12 @@ export const Context = ({
   onCompactionThresholdChange,
   onCompactNow,
   children,
-  openDelay = 120,
-  closeDelay = 80,
+  openDelay = 150,
+  closeDelay = 250,
   ...props
 }: ContextProps) => {
   const costCatalog = useCostCatalog();
 
-  // Warmed on idle rather than on first hover: the catalog is off the boot
-  // critical path either way, and by the time anyone opens the card the price
-  // is already there instead of popping in a frame late.
   useEffect(() => {
     if (typeof requestIdleCallback !== "function") {
       const timer = setTimeout(loadCostCatalog, 2000);
@@ -268,7 +266,7 @@ export const ContextTrigger = ({
           usedTokens
         )} of ${formatTokenCount(maxTokens)} used`}
         className={cn(
-          "group relative inline-flex size-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-bg-hover hover:text-[var(--text-primary)]",
+          "group relative inline-flex size-7 shrink-0 items-center justify-center rounded-full text-text-secondary transition hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring cursor-pointer",
           className
         )}
         {...props}
@@ -313,9 +311,9 @@ export const ContextContent = ({ className, ...props }: ContextContentProps) => 
   <HoverCardContent
     side="top"
     align="end"
-    sideOffset={12}
+    sideOffset={8}
     className={cn(
-      "w-[280px] border border-[var(--border-strong)] bg-bg-overlay p-0 text-text-primary shadow-elevated",
+      "w-[304px] rounded-xl border border-border-subtle dropdown-glass p-3.5 text-text-primary shadow-elevated outline-none space-y-3",
       className
     )}
     {...props}
@@ -329,21 +327,29 @@ export const ContextContentHeader = ({
   children,
   ...props
 }: ContextContentHeaderProps) => {
-  const { remainingLabel, usedTokens, maxTokens } = useContextData();
+  const { remainingLabel, usedTokens, maxTokens, tone } = useContextData();
 
   return (
-    <div className={cn("px-3.5 pt-3", className)} {...props}>
+    <div className={cn("space-y-1.5", className)} {...props}>
       {children ?? (
-        <div className="space-y-1.5">
-          <div className="text-2xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">Context Window</div>
-          <div className="text-sm font-medium leading-none tracking-tight">
-            <span className="tabular-nums font-semibold text-[var(--text-primary)]">{remainingLabel}% left</span>
-            <span className="px-1.5 text-[var(--text-muted)]">•</span>
-            <span className="text-sm font-medium text-[var(--text-primary)]">
-              {formatTokenCount(usedTokens)} of {formatTokenCount(maxTokens)} used
+        <>
+          <div className="flex items-center justify-between text-2xs">
+            <span className="font-semibold uppercase tracking-wider text-text-tertiary">Context Window</span>
+            <span className="font-mono tabular-nums text-text-muted">
+              {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}
             </span>
           </div>
-        </div>
+          <div className="flex items-baseline gap-1.5 text-sm font-semibold tracking-tight text-text-primary">
+            <span className={cn(
+              tone === "critical" ? "text-error" : tone === "warning" ? "text-warning" : "text-accent"
+            )}>
+              {remainingLabel}% left
+            </span>
+            <span className="text-xs font-normal text-text-tertiary">
+              ({formatTokenCount(Math.max(0, maxTokens - usedTokens))} free)
+            </span>
+          </div>
+        </>
       )}
     </div>
   );
@@ -360,14 +366,12 @@ export const ContextContentBody = ({
   const { breakdown } = data;
 
   return (
-    <div className={cn("px-3.5 pt-2.5 text-sm leading-[1.4] text-[var(--text-secondary)]", className)} {...props}>
+    <div className={cn("space-y-3 text-sm text-text-secondary", className)} {...props}>
       {children ??
         (breakdown ? (
           <>
             <ContextThresholdBar />
-            <div className="mt-2.5">
-              <ContextBreakdownRows breakdown={breakdown} />
-            </div>
+            <ContextBreakdownRows breakdown={breakdown} />
           </>
         ) : null)}
     </div>
@@ -375,8 +379,7 @@ export const ContextContentBody = ({
 };
 
 /**
- * Single blue usage bar with draggable threshold marker.
- * The threshold is the conversation-token budget after reserved output, system and tools excluded.
+ * Capacity bar with threshold tick marker, integrated threshold range slider, and compact button.
  */
 function ContextThresholdBar() {
   const {
@@ -386,13 +389,16 @@ function ContextThresholdBar() {
     compactionThresholdTokens,
     onCompactionThresholdChange,
     onCompactNow,
+    tone,
+    remainingPercentage,
   } = useContextData();
 
-  const hasThreshold = typeof compactionThresholdPercent === 'number' && compactionThresholdTokens != null && maxTokens > 0;
+  const [isCompacting, setIsCompacting] = useState(false);
+
+  const hasThreshold = typeof compactionThresholdPercent === "number" && compactionThresholdTokens != null && maxTokens > 0;
   const thresholdPercent = hasThreshold ? (compactionThresholdPercent as number) : 85;
   const thresholdTokens = hasThreshold ? (compactionThresholdTokens as number) : null;
 
-  // Slider local draft so dragging updates marker immediately without spamming IPC.
   const [draftPercent, setDraftPercent] = useState<number>(thresholdPercent);
   const isDraggingRef = useRef(false);
   const committedRef = useRef<number>(thresholdPercent);
@@ -410,9 +416,6 @@ function ContextThresholdBar() {
       if (!Number.isFinite(next)) return;
       const clamped = Math.min(COMPACTION_THRESHOLD_MAX, Math.max(COMPACTION_THRESHOLD_MIN, Math.round(next)));
       setDraftPercent(clamped);
-      // Live preview for keyboard; pointer commits on change as well but debounced by parent.
-      // We commit on every change for keyboard accessibility; parent should debounce persistence.
-      // For pointer, this still updates marker immediately.
     },
     []
   );
@@ -434,128 +437,156 @@ function ContextThresholdBar() {
 
   const handleKeyUp = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Home" || e.key === "End") {
         handleCommit();
       }
     },
     [handleCommit]
   );
 
-  // Percent for bar fill and marker. Conversation threshold vs window scale.
+  const handleCompact = useCallback(async () => {
+    if (!onCompactNow || isCompacting) return;
+    setIsCompacting(true);
+    try {
+      await Promise.resolve(onCompactNow());
+    } finally {
+      setTimeout(() => setIsCompacting(false), 500);
+    }
+  }, [onCompactNow, isCompacting]);
+
   const usedPercent = Math.min(100, Math.max(0, (usedTokens / Math.max(1, maxTokens)) * 100));
-  // Marker position: thresholdTokens / maxTokens (conversation budget on window scale). Fallback to percent of window.
-  const markerPercent = hasThreshold && thresholdTokens != null ? Math.min(100, Math.max(0, (thresholdTokens / Math.max(1, maxTokens)) * 100)) : (draftPercent / 100) * 100;
-  // Draft marker mirrors the pending percent value while dragging: need to convert draft percent to token space for preview?
-  // For preview while dragging, compute draftThresholdTokens = available * draftRatio. Approximate by scaling marker linearly with draft percent.
-  // Simpler: marker follows draftPercent proportionally when dragging without recomputed tokens (approx). For committed state, use real tokens.
-  const displayMarkerPercent = isDraggingRef.current ? (draftPercent / 100) * (markerPercent / Math.max(1, thresholdPercent)) * 100 : markerPercent;
-  // Actually simpler: if dragging, compute marker as draftPercent/100 * 100 but scaled to available ratio? Keep linear to avoid jump.
-  // Use draftMarker = (draftPercent / thresholdPercent) * markerPercent while dragging.
+  const markerPercent = hasThreshold && thresholdTokens != null
+    ? Math.min(100, Math.max(0, (thresholdTokens / Math.max(1, maxTokens)) * 100))
+    : (draftPercent / 100) * 100;
+
   const effectiveMarker = (() => {
     if (!isDraggingRef.current) return markerPercent;
     if (!hasThreshold || thresholdPercent === 0) return (draftPercent / 100) * 100;
     return Math.min(100, Math.max(0, (draftPercent / thresholdPercent) * markerPercent));
   })();
 
+  const sliderProgress = ((draftPercent - COMPACTION_THRESHOLD_MIN) / (COMPACTION_THRESHOLD_MAX - COMPACTION_THRESHOLD_MIN)) * 100;
+
   return (
     <div className="space-y-2.5">
-      {/* Blue usage bar with threshold marker */}
-      <div className="relative h-2 w-full overflow-hidden rounded-full bg-bg-subtle" aria-hidden="true">
-        <div className="absolute inset-y-0 left-0 rounded-full bg-[var(--accent)] transition-all duration-200" style={{ width: `${usedPercent}%` }} />
-        {hasThreshold ? (
+      {/* Visual Window Usage Bar with Threshold Tick Marker */}
+      <div className="space-y-1.5">
+        <div className="relative h-2 w-full overflow-hidden rounded-full bg-bg-subtle/80 border border-border-subtle/40" aria-hidden="true">
           <div
-            className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-[var(--text-primary)] shadow-[0_0_0_2px_var(--bg-overlay)]"
-            style={{ left: `${effectiveMarker}%` }}
-            title={`Threshold ${thresholdPercent}%`}
+            className={cn(
+              "absolute inset-y-0 left-0 rounded-full transition-all duration-300",
+              tone === "critical" ? "bg-error" : tone === "warning" ? "bg-warning" : "bg-accent"
+            )}
+            style={{ width: `${Math.max(usedPercent > 0 ? 1 : 0, usedPercent)}%` }}
           />
-        ) : null}
+          {hasThreshold ? (
+            <div
+              className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-text-primary/80 shadow-[0_0_0_1.5px_var(--bg-overlay)] z-1"
+              style={{ left: `${effectiveMarker}%` }}
+              title={`Threshold: ${thresholdPercent}% (${thresholdTokens != null ? formatTokenCount(thresholdTokens) : ""})`}
+            />
+          ) : null}
+        </div>
+        <div className="flex items-center justify-between text-2xs text-text-tertiary">
+          <span className="tabular-nums">
+            {usedPercent < 1 && usedPercent > 0 ? "<1%" : `${Math.round(usedPercent)}%`} used
+          </span>
+          <span className="tabular-nums text-text-secondary font-medium">
+            {thresholdTokens != null ? `Threshold: ${formatTokenCount(thresholdTokens)}` : `Threshold: ${thresholdPercent}%`}
+          </span>
+        </div>
       </div>
 
-      {/* Range input overlays bar for a11y; visually separate but controls same value */}
+      {/* Threshold Slider (cleanly styled with .settings-range, no invisible tracks or floating thumbs) */}
       {onCompactionThresholdChange ? (
-        <div className="relative">
-          <input
-            type="range"
-            min={COMPACTION_THRESHOLD_MIN}
-            max={COMPACTION_THRESHOLD_MAX}
-            step={1}
-            value={draftPercent}
-            onChange={handleChange}
-            onPointerDown={handlePointerDown}
-            onPointerUp={handlePointerUp}
-            onTouchEnd={handleCommit}
-            onMouseUp={handleCommit}
-            onBlur={handleCommit}
-            onKeyUp={handleKeyUp}
-            aria-label="Automatic compaction threshold"
-            aria-valuetext={`${draftPercent} percent, compact at ${thresholdTokens != null ? formatTokenCount(thresholdTokens) : '—'}`}
-            className="h-1.5 w-full cursor-pointer appearance-none bg-transparent accent-[var(--accent)]"
-          />
+        <div className="space-y-1.5 rounded-lg border border-border-subtle/60 bg-bg-subtle/40 p-2.5">
+          <div className="flex items-center justify-between text-2xs">
+            <span className="font-medium text-text-secondary">Auto-compaction threshold</span>
+            <span className="font-mono tabular-nums font-medium text-text-primary">
+              {draftPercent}% {thresholdTokens != null ? `(${formatTokenCount(thresholdTokens)})` : ""}
+            </span>
+          </div>
+          <div className="relative flex items-center pt-0.5">
+            <input
+              type="range"
+              min={COMPACTION_THRESHOLD_MIN}
+              max={COMPACTION_THRESHOLD_MAX}
+              step={1}
+              value={draftPercent}
+              onChange={handleChange}
+              onPointerDown={handlePointerDown}
+              onPointerUp={handlePointerUp}
+              onTouchEnd={handleCommit}
+              onMouseUp={handleCommit}
+              onBlur={handleCommit}
+              onKeyUp={handleKeyUp}
+              aria-label="Automatic compaction threshold"
+              aria-valuetext={`${draftPercent} percent, compact at ${thresholdTokens != null ? formatTokenCount(thresholdTokens) : "—"}`}
+              className="settings-range h-1.5 w-full cursor-pointer rounded-full"
+              style={{
+                "--settings-slider-progress": `${Math.max(0, Math.min(100, sliderProgress))}%`
+              } as React.CSSProperties}
+            />
+          </div>
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between text-2xs">
-        <span className="tabular-nums text-text-tertiary">
-          {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}
-        </span>
-        <span className="tabular-nums text-text-secondary">
-          {thresholdTokens != null ? `Compact at ${formatTokenCount(thresholdTokens)}` : `Compact at ${thresholdPercent}%`}
-        </span>
-      </div>
-
+      {/* Compact Now Action */}
       {onCompactNow ? (
         <button
           type="button"
-          onClick={onCompactNow}
-          className="inline-flex h-7 w-full items-center justify-center rounded-md border border-border-default bg-bg-base px-2.5 text-xs font-medium text-text-primary transition hover:bg-bg-hover"
+          onClick={handleCompact}
+          disabled={usedTokens <= 0 || isCompacting}
+          className="inline-flex h-7.5 w-full items-center justify-center gap-1.5 rounded-lg border border-border-default bg-bg-surface px-3 text-xs font-medium text-text-primary shadow-2xs transition hover:bg-bg-hover hover:border-border-medium active:scale-[0.99] disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
         >
-          Compact Now
+          <Minimize2 className={cn("size-3.5 text-text-secondary transition-transform", isCompacting && "animate-spin")} />
+          <span>{isCompacting ? "Compacting conversation…" : "Compact Now"}</span>
         </button>
       ) : null}
-
-      <div className="flex items-center justify-between pt-0.5 text-2xs">
-        <span className="text-text-tertiary">Automatic Compaction</span>
-        <span className="text-[var(--accent)]" aria-hidden="true">
-          ✓
-        </span>
-        <span className="sr-only">enabled</span>
-      </div>
     </div>
   );
 }
 
 function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }) {
-  const rows: Array<{ label: string; tokens: number }> = [
-    { label: "Conversation", tokens: breakdown.historyTokens },
-    { label: "Older turns (summarised)", tokens: breakdown.summaryTokens },
-    { label: "Not yet sent", tokens: breakdown.pendingTokens },
-  ].filter((row) => row.tokens > 0);
-
   const floorTokens = breakdown.systemTokens + breakdown.toolTokens;
 
-  return (
-    <div className="flex flex-col gap-1">
-      <ContextCompositionBar breakdown={breakdown} />
-      {rows.map((row) => (
-        <div className="flex items-center justify-between gap-3 text-2xs" key={row.label}>
-          <span className="text-text-tertiary">{row.label}</span>
-          <span className="tabular-nums text-text-secondary">{formatTokenCount(row.tokens)}</span>
-        </div>
-      ))}
+  const rows: Array<{ label: string; tokens: number; color: string; isPerTurn?: boolean }> = [
+    { label: "Conversation", tokens: breakdown.historyTokens, color: "var(--accent)" },
+    { label: "Older turns (summarised)", tokens: breakdown.summaryTokens, color: "var(--warning)" },
+    { label: "System instructions & tools", tokens: floorTokens, color: "var(--text-tertiary)", isPerTurn: true },
+    { label: "Not yet sent", tokens: breakdown.pendingTokens, color: "color-mix(in oklab, var(--accent) 55%, transparent)" },
+  ].filter((row) => row.tokens > 0);
 
-      {floorTokens > 0 ? (
-        <div className="flex items-center justify-between gap-3 text-2xs">
-          <span className="text-text-faint">
-            {breakdown.toolTokens > 0 ? "Instructions and tools" : "Instructions"}, sent every turn
-          </span>
-          <span className="tabular-nums text-text-faint">+{formatTokenCount(floorTokens)}</span>
-        </div>
-      ) : null}
+  return (
+    <div className="space-y-2 pt-1">
+      <div className="flex items-center justify-between text-3xs font-semibold uppercase tracking-wider text-text-tertiary">
+        <span>Turn Composition</span>
+        <span className="font-normal normal-case text-text-muted">Breakdown</span>
+      </div>
+
+      <ContextCompositionBar breakdown={breakdown} />
+
+      <div className="space-y-1.5 pt-1">
+        {rows.map((row) => (
+          <div className="flex items-center justify-between gap-3 text-2xs" key={row.label}>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: row.color }} />
+              <span className="truncate text-text-secondary">{row.label}</span>
+              {row.isPerTurn ? (
+                <span className="text-3xs text-text-tertiary shrink-0">(per turn)</span>
+              ) : null}
+            </div>
+            <span className="tabular-nums font-mono shrink-0 font-medium text-text-primary">
+              {row.isPerTurn ? `+${formatTokenCount(row.tokens)}` : formatTokenCount(row.tokens)}
+            </span>
+          </div>
+        ))}
+      </div>
 
       {breakdown.droppedTurnCount > 0 ? (
-        <div className="pt-1 text-2xs leading-4 text-text-tertiary">
+        <div className="pt-1 text-2xs leading-relaxed text-text-tertiary">
           {breakdown.droppedTurnCount} older {breakdown.droppedTurnCount === 1 ? "turn" : "turns"} compressed to fit; the{" "}
-          {breakdown.keptTurnCount} most recent are sent in full.
+          {breakdown.keptTurnCount} most recent are preserved.
         </div>
       ) : null}
     </div>
@@ -564,11 +595,10 @@ function ContextBreakdownRows({ breakdown }: { breakdown: ContextUsageSnapshot }
 
 function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot }) {
   const segments = [
-    { label: "Instructions", tokens: breakdown.systemTokens, color: "var(--text-tertiary)" },
-    { label: "Tools", tokens: breakdown.toolTokens, color: "color-mix(in oklab, var(--text-tertiary) 55%, transparent)" },
-    { label: "Summarised turns", tokens: breakdown.summaryTokens, color: "var(--warning)" },
-    { label: "Recent turns", tokens: breakdown.historyTokens, color: "var(--accent)" },
-    { label: "Not yet sent", tokens: breakdown.pendingTokens, color: "color-mix(in oklab, var(--accent) 55%, transparent)" },
+    { label: "Conversation", tokens: breakdown.historyTokens, color: "var(--accent)" },
+    { label: "Older turns", tokens: breakdown.summaryTokens, color: "var(--warning)" },
+    { label: "Instructions & tools", tokens: breakdown.systemTokens + breakdown.toolTokens, color: "var(--text-tertiary)" },
+    { label: "Pending", tokens: breakdown.pendingTokens, color: "color-mix(in oklab, var(--accent) 55%, transparent)" },
   ].filter((segment) => segment.tokens > 0);
 
   const total = segments.reduce((sum, segment) => sum + segment.tokens, 0);
@@ -577,13 +607,13 @@ function ContextCompositionBar({ breakdown }: { breakdown: ContextUsageSnapshot 
   }
 
   return (
-    <div aria-hidden="true" className="flex h-1.5 w-full gap-px overflow-hidden rounded-full bg-bg-subtle">
+    <div aria-hidden="true" className="flex h-1.5 w-full gap-0.5 overflow-hidden rounded-full bg-bg-subtle/80 border border-border-subtle/40">
       {segments.map((segment) => (
         <div
           key={segment.label}
-          className="h-full first:rounded-l-full last:rounded-r-full"
-          style={{ width: `${(segment.tokens / total) * 100}%`, background: segment.color }}
-          title={`~${segment.label}`}
+          className="h-full first:rounded-l-full last:rounded-r-full transition-all duration-300"
+          style={{ width: `${(segment.tokens / total) * 100}%`, backgroundColor: segment.color }}
+          title={`${segment.label}: ${formatTokenCount(segment.tokens)}`}
         />
       ))}
     </div>
@@ -606,21 +636,25 @@ export const ContextContentFooter = ({
   const cache = breakdown?.cache ?? null;
 
   return (
-    <div className={cn("px-3.5 pb-3 pt-2 text-2xs leading-[1.35] text-[var(--text-muted)]", className)} {...props}>
+    <div className={cn("rounded-lg border border-border-subtle/50 bg-bg-subtle/30 p-2.5 text-2xs text-text-secondary space-y-1.5", className)} {...props}>
       {children ?? (
-        <span>
+        <>
           {cache && cache.hitRate != null ? (
-            <>
-              {formatCacheHitRate(cache.hitRate)} prompt cache hit across {cache.reportedTurns} {cache.reportedTurns === 1 ? "turn" : "turns"}.
-              <br />
-            </>
+            <div className="flex items-center gap-1.5 font-medium text-text-primary">
+              <Zap className="size-3 text-accent shrink-0" />
+              <span>
+                <strong className="font-semibold">{formatCacheHitRate(cache.hitRate)}</strong> prompt cache hit across {cache.reportedTurns} {cache.reportedTurns === 1 ? "turn" : "turns"}
+              </span>
+            </div>
           ) : null}
-          {breakdown?.overflow
-            ? "Over the window. The oldest turns are being summarised to fit."
-            : formattedCost
-              ? `Last turn cost about ${formattedCost}.`
-              : "Older turns are summarised automatically as the window fills."}
-        </span>
+          <p className="text-text-tertiary leading-relaxed">
+            {breakdown?.overflow
+              ? "Over window limit. Older turns are automatically compressed to fit."
+              : formattedCost
+                ? `Last turn cost ~${formattedCost}. Older turns summarise as window fills.`
+                : "Older turns are summarised automatically as the window fills."}
+          </p>
+        </>
       )}
     </div>
   );
@@ -634,8 +668,6 @@ type UsageRowProps = HTMLAttributes<HTMLDivElement> & {
 
 function UsageRow({ className, children, label, tokens, usageKey, ...props }: UsageRowProps) {
   const { modelId } = useContextData();
-  // Subscribed for the re-render, not the value: `getCost` reads the catalog
-  // itself once it has landed.
   useCostCatalog();
   const usage = tokens != null ? { [usageKey]: tokens } : undefined;
   const formattedCost = formatUsd(getCost(modelId, usage));

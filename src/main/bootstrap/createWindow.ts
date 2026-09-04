@@ -8,8 +8,14 @@ import {
 } from 'electron/main';
 import { shell } from 'electron/common';
 
-import type { ThemeMode } from '../../shared/contracts';
+import type { DesignTheme, ThemeColorOverride, ThemeMode } from '../../shared/contracts';
 import { installWebviewHardening } from '../browser/webviewSecurity';
+import {
+  chromeStateSignature as chromeSignature,
+  resolveChromeBackground,
+  resolveChromeSymbolColor,
+  type WindowChromeState,
+} from './windowChrome';
 import { getAppIconPath } from './iconPath';
 import { perfMark } from './perfTrace';
 import { attachContextMenu } from '../ipc/contextMenu';
@@ -51,6 +57,50 @@ export const VIBRANT_WINDOW_BACKGROUND = '#00000000';
  */
 export function syncNativeTheme(mode: ThemeMode) {
   nativeTheme.themeSource = mode;
+}
+
+export type { WindowChromeState };
+export { chromeStateSignature } from './windowChrome';
+
+/*
+ * Keeps the native frame on the same palette as the page. The page background
+ * covers everything after first paint, but the window background shows during
+ * startup/resize, and the overlay controls sit outside the page entirely.
+ * Vibrancy owns the background while active, so leave it transparent there.
+ *
+ * Deduped per window by state signature (t3code's lastDesktopTheme guard):
+ * settings IPC fires on every appearance patch, and most patches change no
+ * color. A failure resets the guard so the next change retries instead of
+ * latching a stale frame.
+ */
+const lastChromeSignature = new WeakMap<BrowserWindow, string>();
+
+export function syncWindowChrome(window: BrowserWindow, state: WindowChromeState) {
+  const systemDark = nativeTheme.shouldUseDarkColors;
+  const signature = chromeSignature(state, systemDark);
+  if (lastChromeSignature.get(window) === signature) return;
+  const vibrant = state.translucentSidebar && process.platform === 'darwin';
+  const background = vibrant ? VIBRANT_WINDOW_BACKGROUND : resolveChromeBackground(state, systemDark);
+  try {
+    window.setBackgroundColor(background);
+  } catch {
+    // Headless/test windows may not support it; page theme still applies.
+    // Guard stays unset so the next change retries.
+    return;
+  }
+  if (process.platform !== 'darwin') {
+    try {
+      window.setTitleBarOverlay({
+        color: background,
+        symbolColor: resolveChromeSymbolColor(state, systemDark),
+        height: TITLEBAR_HEIGHT,
+      });
+    } catch {
+      // Older Electron or test doubles; overlay stays at creation value.
+      return;
+    }
+  }
+  lastChromeSignature.set(window, signature);
 }
 
 function titleBarOptions() {
@@ -138,9 +188,19 @@ export function attachRendererRecovery(
 export type CreateWindowOptions = {
   /** macOS-only: sidebar vibrancy so the desktop shows through translucent panels. */
   translucentSidebar?: boolean;
+  themeMode?: ThemeMode;
+  designTheme?: DesignTheme;
+  backgroundColor?: ThemeColorOverride;
+  foregroundColor?: ThemeColorOverride;
 };
 
-export function createWindow({ translucentSidebar = false }: CreateWindowOptions = {}) {
+export function createWindow({
+  translucentSidebar = false,
+  themeMode = 'dark',
+  designTheme = 'codex',
+  backgroundColor = null,
+  foregroundColor = null,
+}: CreateWindowOptions = {}) {
   const icon = getAppIconPath();
   // Vibrancy only reads through where the page paints transparent pixels, so
   // the window background must be transparent too. Everything except the
@@ -197,6 +257,15 @@ export function createWindow({ translucentSidebar = false }: CreateWindowOptions
 
   attachRendererRecovery(window);
   attachContextMenu(window);
+  // Paint the native frame (background + overlay controls) in the active theme
+  // from the first frame, not just after the first settings change.
+  syncWindowChrome(window, {
+    themeMode,
+    designTheme,
+    backgroundColor,
+    foregroundColor,
+    translucentSidebar,
+  });
 
   window.webContents.on('will-navigate', (event: Event, url: string) => {
     const isLocalFile = url.startsWith('file://');

@@ -8,7 +8,7 @@
  * this conversation cannot open, each with the reason it cannot.
  */
 
-import { Plus, X } from 'lucide-react';
+import { PanelRightClose, Plus, X } from 'lucide-react';
 
 import { cn } from '../../lib/utils';
 import {
@@ -164,7 +164,7 @@ export function SurfaceTabStrip({
             aria-label="Hide right panel"
             className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
           >
-            <X className="size-4" aria-hidden />
+            <PanelRightClose className="size-4" aria-hidden />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom">Hide panel</TooltipContent>

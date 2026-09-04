@@ -1,4 +1,19 @@
 import {
+  DEFAULT_PANEL_ANIMATION_DURATION_MS,
+  MAX_PANEL_ANIMATION_DURATION_MS,
+  MIN_PANEL_ANIMATION_DURATION_MS,
+  DEFAULT_INTERFACE_FONT_SIZE,
+  MAX_INTERFACE_FONT_SIZE,
+  MIN_INTERFACE_FONT_SIZE,
+  DEFAULT_PROMPT_FONT_SIZE,
+  MAX_PROMPT_FONT_SIZE,
+  MIN_PROMPT_FONT_SIZE,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  DEFAULT_CODE_FONT_SIZE,
+  MAX_CODE_FONT_SIZE,
+  MIN_CODE_FONT_SIZE,
   CODE_FONT_SIZE_DEFAULT,
   CODE_FONT_SIZE_MAX,
   CODE_FONT_SIZE_MIN,
@@ -7,6 +22,10 @@ import {
   CONTRAST_MIN,
   DEFAULT_BORDER_RADIUS,
   DEFAULT_SETTINGS_APPEARANCE,
+  GLASS_OPACITY_DEFAULT,
+  GLASS_OPACITY_MAX,
+  GLASS_OPACITY_MIN,
+  type ThemeHalvesPreference,
   UI_FONT_SIZE_DEFAULT,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
@@ -253,6 +272,19 @@ export class SettingsRepo {
 
   setPluginsBetaEnabled(value: boolean) {
     this.setJsonSetting('plugins.betaEnabled', value);
+  }
+
+  /**
+   * Whether Sites is switched on at all. Beta, default-off: off hides every
+   * entry point (sidebar, deep-link, view) without touching stored sites, so
+   * turning it back on restores exactly what was there.
+   */
+  getSitesBetaEnabled(): boolean {
+    return Boolean(this.getJsonSetting('sites.betaEnabled', false));
+  }
+
+  setSitesBetaEnabled(value: boolean) {
+    this.setJsonSetting('sites.betaEnabled', value);
   }
 
   /**
@@ -524,6 +556,163 @@ export class SettingsRepo {
 
   setDesignTheme(value: DesignTheme) {
     this.setJsonSetting('designTheme', value);
+  }
+
+  getThemeId(): string {
+    const value = this.getJsonSetting<string>('appearance.themeId', DEFAULT_SETTINGS_APPEARANCE.themeId);
+    return typeof value === 'string' && value.trim() ? value : DEFAULT_SETTINGS_APPEARANCE.themeId;
+  }
+
+  setThemeId(value: string) {
+    this.setJsonSetting('appearance.themeId', value);
+  }
+
+  getThemeHalves(): ThemeHalvesPreference {
+    return this.getJsonSetting<ThemeHalvesPreference>('appearance.themeHalves', null);
+  }
+
+  setThemeHalves(value: ThemeHalvesPreference) {
+    this.setJsonSetting('appearance.themeHalves', value);
+  }
+
+  getGlassOpacity(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.glassOpacity', GLASS_OPACITY_DEFAULT),
+      GLASS_OPACITY_MIN,
+      GLASS_OPACITY_MAX,
+      GLASS_OPACITY_DEFAULT
+    );
+  }
+
+  setGlassOpacity(value: number) {
+    this.setJsonSetting(
+      'appearance.glassOpacity',
+      this.clampNumber(value, GLASS_OPACITY_MIN, GLASS_OPACITY_MAX, GLASS_OPACITY_DEFAULT)
+    );
+  }
+
+  getPanelAnimationDurationMs(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.panelAnimationDurationMs', DEFAULT_PANEL_ANIMATION_DURATION_MS),
+      MIN_PANEL_ANIMATION_DURATION_MS,
+      MAX_PANEL_ANIMATION_DURATION_MS,
+      DEFAULT_PANEL_ANIMATION_DURATION_MS
+    );
+  }
+
+  setPanelAnimationDurationMs(value: number) {
+    this.setJsonSetting(
+      'appearance.panelAnimationDurationMs',
+      this.clampNumber(value, MIN_PANEL_ANIMATION_DURATION_MS, MAX_PANEL_ANIMATION_DURATION_MS, DEFAULT_PANEL_ANIMATION_DURATION_MS)
+    );
+  }
+
+  getFontFamilySans(): string {
+    const val = this.getJsonSetting<string>('appearance.fontFamilySans', '');
+    return typeof val === 'string' ? val : '';
+  }
+
+  setFontFamilySans(value: string) {
+    this.setJsonSetting('appearance.fontFamilySans', typeof value === 'string' ? value.trim() : '');
+  }
+
+  getFontFamilyComposer(): string {
+    const val = this.getJsonSetting<string>('appearance.fontFamilyComposer', '');
+    return typeof val === 'string' ? val : '';
+  }
+
+  setFontFamilyComposer(value: string) {
+    this.setJsonSetting('appearance.fontFamilyComposer', typeof value === 'string' ? value.trim() : '');
+  }
+
+  getFontFamilyCode(): string {
+    const val = this.getJsonSetting<string>('appearance.fontFamilyCode', '');
+    return typeof val === 'string' ? val : '';
+  }
+
+  setFontFamilyCode(value: string) {
+    this.setJsonSetting('appearance.fontFamilyCode', typeof value === 'string' ? value.trim() : '');
+  }
+
+  getFontFamilyTerminal(): string {
+    const val = this.getJsonSetting<string>('appearance.fontFamilyTerminal', '');
+    return typeof val === 'string' ? val : '';
+  }
+
+  setFontFamilyTerminal(value: string) {
+    this.setJsonSetting('appearance.fontFamilyTerminal', typeof value === 'string' ? value.trim() : '');
+  }
+
+  getFontSizeInterface(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.fontSizeInterface', DEFAULT_INTERFACE_FONT_SIZE),
+      MIN_INTERFACE_FONT_SIZE,
+      MAX_INTERFACE_FONT_SIZE,
+      DEFAULT_INTERFACE_FONT_SIZE
+    );
+  }
+
+  setFontSizeInterface(value: number) {
+    this.setJsonSetting(
+      'appearance.fontSizeInterface',
+      this.clampNumber(value, MIN_INTERFACE_FONT_SIZE, MAX_INTERFACE_FONT_SIZE, DEFAULT_INTERFACE_FONT_SIZE)
+    );
+  }
+
+  getFontSizePrompt(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.fontSizePrompt', DEFAULT_PROMPT_FONT_SIZE),
+      MIN_PROMPT_FONT_SIZE,
+      MAX_PROMPT_FONT_SIZE,
+      DEFAULT_PROMPT_FONT_SIZE
+    );
+  }
+
+  setFontSizePrompt(value: number) {
+    this.setJsonSetting(
+      'appearance.fontSizePrompt',
+      this.clampNumber(value, MIN_PROMPT_FONT_SIZE, MAX_PROMPT_FONT_SIZE, DEFAULT_PROMPT_FONT_SIZE)
+    );
+  }
+
+  getFontSizeCode(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.fontSizeCode', DEFAULT_CODE_FONT_SIZE),
+      MIN_CODE_FONT_SIZE,
+      MAX_CODE_FONT_SIZE,
+      DEFAULT_CODE_FONT_SIZE
+    );
+  }
+
+  setFontSizeCode(value: number) {
+    this.setJsonSetting(
+      'appearance.fontSizeCode',
+      this.clampNumber(value, MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE, DEFAULT_CODE_FONT_SIZE)
+    );
+  }
+
+  getFontSizeTerminal(): number {
+    return this.clampNumber(
+      this.getJsonSetting<number>('appearance.fontSizeTerminal', DEFAULT_TERMINAL_FONT_SIZE),
+      MIN_TERMINAL_FONT_SIZE,
+      MAX_TERMINAL_FONT_SIZE,
+      DEFAULT_TERMINAL_FONT_SIZE
+    );
+  }
+
+  setFontSizeTerminal(value: number) {
+    this.setJsonSetting(
+      'appearance.fontSizeTerminal',
+      this.clampNumber(value, MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_FONT_SIZE)
+    );
+  }
+
+  getFontSmoothing(): boolean {
+    return Boolean(this.getJsonSetting<boolean>('appearance.fontSmoothing', true));
+  }
+
+  setFontSmoothing(value: boolean) {
+    this.setJsonSetting('appearance.fontSmoothing', Boolean(value));
   }
 
   getUiFontSize() {

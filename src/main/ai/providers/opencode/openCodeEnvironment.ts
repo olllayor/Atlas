@@ -53,18 +53,38 @@ export function isLocalPortFree(port: number): Promise<boolean> {
  * - Caller explicitly passed `OPENCODE_CONFIG_CONTENT: ''` ⇒ treat as
  *   "force-clear" (user intent to run config-less); we return the merged env
  *   WITHOUT the key rather than writing an empty value (the t3 bug shape).
- * - No key anywhere ⇒ return undefined so the child inherits our environment
- *   naturally (user's config wins).
+ * - No key anywhere and no password decision ⇒ return undefined so the child
+ *   inherits our environment naturally (user's config wins).
  * - Key present with a value ⇒ pass a full merged copy, caller overrides applied.
+ *
+ * Password rule (Atlas keychain is source of truth):
+ * - `serverPassword` value ⇒ set `OPENCODE_SERVER_PASSWORD` so the child
+ *   demands exactly what our client will send.
+ * - `serverPassword` null/'' ⇒ strip the key so a host-inherited password can
+ *   never make our own spawned server 401 our own client.
+ * - `serverPassword` undefined ⇒ legacy, touch nothing (tests callers).
  */
 export function resolveOpenCodeSpawnEnvironment(
   overrides: NodeJS.ProcessEnv | undefined,
-  inherited: NodeJS.ProcessEnv = process.env
+  inherited: NodeJS.ProcessEnv = process.env,
+  serverPassword?: string | null
 ): NodeJS.ProcessEnv | undefined {
   const merged = { ...inherited, ...overrides };
 
   if (overrides && 'OPENCODE_CONFIG_CONTENT' in overrides && overrides.OPENCODE_CONFIG_CONTENT === '') {
     delete merged.OPENCODE_CONFIG_CONTENT;
+    if (serverPassword === undefined) {
+      return merged;
+    }
+  }
+
+  if (serverPassword !== undefined) {
+    const trimmed = serverPassword?.trim() ?? '';
+    if (trimmed.length > 0) {
+      merged.OPENCODE_SERVER_PASSWORD = trimmed;
+    } else {
+      delete merged.OPENCODE_SERVER_PASSWORD;
+    }
     return merged;
   }
 

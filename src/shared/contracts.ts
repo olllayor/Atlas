@@ -1159,6 +1159,26 @@ export function normalizeThemeColor(value: unknown): ThemeColorOverride {
   return trimmed;
 }
 
+export const MIN_PANEL_ANIMATION_DURATION_MS = 0;
+export const MAX_PANEL_ANIMATION_DURATION_MS = 400;
+export const DEFAULT_PANEL_ANIMATION_DURATION_MS = 50;
+
+export const MIN_INTERFACE_FONT_SIZE = 12;
+export const MAX_INTERFACE_FONT_SIZE = 20;
+export const DEFAULT_INTERFACE_FONT_SIZE = 16;
+
+export const MIN_PROMPT_FONT_SIZE = 12;
+export const MAX_PROMPT_FONT_SIZE = 20;
+export const DEFAULT_PROMPT_FONT_SIZE = 14;
+
+export const MIN_CODE_FONT_SIZE = 10;
+export const MAX_CODE_FONT_SIZE = 18;
+export const DEFAULT_CODE_FONT_SIZE = 13;
+
+export const MIN_TERMINAL_FONT_SIZE = 8;
+export const MAX_TERMINAL_FONT_SIZE = 20;
+export const DEFAULT_TERMINAL_FONT_SIZE = 12;
+
 export const UI_FONT_SIZE_MIN = 13;
 export const UI_FONT_SIZE_MAX = 18;
 export const UI_FONT_SIZE_DEFAULT = 15;
@@ -1169,11 +1189,33 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
+export const GLASS_OPACITY_MIN = 0;
+export const GLASS_OPACITY_MAX = 100;
+export const GLASS_OPACITY_DEFAULT = 100;
+
+export type ThemeHalvesPreference = {
+  light?: string | null;
+  dark?: string | null;
+} | null;
+
 export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy' | 'beta';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
   designTheme: DesignTheme;
+  themeId: string;
+  themeHalves: ThemeHalvesPreference;
+  glassOpacity: number;
+  panelAnimationDurationMs: number;
+  fontFamilySans: string;
+  fontFamilyComposer: string;
+  fontFamilyCode: string;
+  fontFamilyTerminal: string;
+  fontSizeInterface: number;
+  fontSizePrompt: number;
+  fontSizeCode: number;
+  fontSizeTerminal: number;
+  fontSmoothing: boolean;
   uiFontSize: number;
   codeFontSize: number;
   uiFontFamily: FontFamilyOverride;
@@ -1200,7 +1242,20 @@ export type SettingsAppearanceSummary = {
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   themeMode: 'dark',
-  designTheme: 'codex',
+  designTheme: 'default',
+  themeId: 'default',
+  themeHalves: null,
+  glassOpacity: GLASS_OPACITY_DEFAULT,
+  panelAnimationDurationMs: DEFAULT_PANEL_ANIMATION_DURATION_MS,
+  fontFamilySans: '',
+  fontFamilyComposer: '',
+  fontFamilyCode: '',
+  fontFamilyTerminal: '',
+  fontSizeInterface: DEFAULT_INTERFACE_FONT_SIZE,
+  fontSizePrompt: DEFAULT_PROMPT_FONT_SIZE,
+  fontSizeCode: DEFAULT_CODE_FONT_SIZE,
+  fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
+  fontSmoothing: true,
   uiFontSize: UI_FONT_SIZE_DEFAULT,
   codeFontSize: CODE_FONT_SIZE_DEFAULT,
   uiFontFamily: null,
@@ -1259,6 +1314,8 @@ export type SettingsSummary = {
   showFreeOnlyByDefault: boolean;
   /** The plugin system is a beta feature and ships switched off. */
   pluginsBetaEnabled: boolean;
+  /** Sites is a beta feature and ships switched off; off means invisible. */
+  sitesBetaEnabled: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
   modelCatalogCount: number;
@@ -2263,9 +2320,23 @@ export type DiagnosticsSnapshot = {
 export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
   pluginsBetaEnabled?: boolean;
+  sitesBetaEnabled?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
     designTheme?: DesignTheme;
+    themeId?: string;
+    themeHalves?: ThemeHalvesPreference;
+    glassOpacity?: number;
+    panelAnimationDurationMs?: number;
+    fontFamilySans?: string;
+    fontFamilyComposer?: string;
+    fontFamilyCode?: string;
+    fontFamilyTerminal?: string;
+    fontSizeInterface?: number;
+    fontSizePrompt?: number;
+    fontSizeCode?: number;
+    fontSizeTerminal?: number;
+    fontSmoothing?: boolean;
     uiFontSize?: number;
     codeFontSize?: number;
     uiFontFamily?: FontFamilyOverride;
@@ -2354,6 +2425,19 @@ export type AtlasDeepLink =
   | { kind: 'settings'; section?: string }
   | { kind: 'plugins' }
   | { kind: 'sites' };
+
+export type SaveImageRequest = {
+  /** Image `data:` URL — the renderer reads every source, main only decodes. */
+  dataUrl: string;
+  /** Suggested file name for the save dialog. */
+  filename: string;
+};
+
+export type SaveImageResult = {
+  saved: boolean;
+  /** Absolute path written, when the user picked one. */
+  path?: string;
+};
 
 export type RendererApi = {
   settings: {
@@ -2728,6 +2812,13 @@ export type RendererApi = {
      * the bytes (it alone can read `blob:` URLs) and answers via `copy`.
      */
     onCopyRequest: (listener: (src: string) => void) => () => void;
+    /** Writes image bytes to a user-chosen file. Returns whether it saved. */
+    save: (request: SaveImageRequest) => Promise<SaveImageResult>;
+    /**
+     * Fires when the native image menu asks for a save. The renderer fetches
+     * the bytes (it alone can read `blob:` URLs) and answers via `save`.
+     */
+    onSaveRequest: (listener: (src: string) => void) => () => void;
   };
 };
 

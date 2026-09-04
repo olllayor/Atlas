@@ -4,7 +4,6 @@ import test from 'node:test';
 import type { ChatMessage } from '../src/shared/contracts.js';
 import {
   CONTENT_MAX_WIDTH,
-  CONTENT_MIN_WIDTH,
   MINIMAP_MIN_ITEMS,
   deriveMinimapItems,
   isRowInView,
@@ -39,9 +38,9 @@ function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   };
 }
 
-test('resolveContentWidth mirrors the CSS clamp(680px, 102vw, 860px)', () => {
-  assert.equal(resolveContentWidth(500), CONTENT_MIN_WIDTH);
-  assert.equal(resolveContentWidth(700), Math.round(700 * 1.02));
+test('resolveContentWidth mirrors the single 48rem chat column', () => {
+  assert.equal(resolveContentWidth(500), 500);
+  assert.equal(resolveContentWidth(700), 700);
   assert.equal(resolveContentWidth(4000), CONTENT_MAX_WIDTH);
 });
 
@@ -71,17 +70,17 @@ test('resolveMinimapIndexFromPointer maps pointer progress onto tick indices', (
 });
 
 test('gutter math: persistent gutter needs 48px of side space; hit strip is capped', () => {
-  // Wide window: content capped at 860 → gutter (1440-860)/2 = 290.
+  // Wide window: content capped at 768 → gutter (1440-768)/2 = 336.
   assert.equal(resolveMinimapHasPersistentGutter(1440), true);
   assert.equal(resolveMinimapHitStripWidth(1440), 40);
 
-  // Narrow window: content floors at 680 → no usable gutter.
+  // Narrow window: content fills the pane → no usable gutter.
   assert.equal(resolveMinimapHasPersistentGutter(760), false);
   assert.equal(resolveMinimapHitStripWidth(760), 0);
 
-  // 900px: content caps at 860, leaving a 20px gutter → a thin strip only.
-  assert.equal(resolveMinimapHasPersistentGutter(900), false);
-  assert.equal(resolveMinimapHitStripWidth(900), 8);
+  // 900px: content caps at 768, leaving a 66px gutter → full strip.
+  assert.equal(resolveMinimapHasPersistentGutter(900), true);
+  assert.equal(resolveMinimapHitStripWidth(900), 40);
 });
 
 test('isRowInView adds one row of slack on both sides of the virtual window', () => {

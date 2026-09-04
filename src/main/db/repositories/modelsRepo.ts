@@ -298,7 +298,10 @@ export class ModelsRepo {
       // Archive the provider's rows up front, then let the upsert below clear
       // the flag for everything still in the catalog. Comparing sync
       // timestamps instead would miss models written in the same millisecond.
-      if (options.pruneProviderId && items.length > 0) {
+      // Empty success prunes everything: the provider authoritatively serves
+      // nothing. Failures never reach here — ModelRegistry skips the upsert
+      // on error, so last-known rows survive outages.
+      if (options.pruneProviderId) {
         archiveStatement.run({ providerId: options.pruneProviderId });
       }
 

@@ -22,6 +22,31 @@ export function contrastFactor(contrast: number): number {
   return 0.6 + (clamped / 100) * 0.8;
 }
 
+/*
+ * Contrast as CSS variables (t3code method): the slider stamps three numbers
+ * and every derivation reacts live — theme switches included, with no rebuild.
+ * 50 is neutral (base 100%, no boost). Below fades derivations toward
+ * transparent; above pushes text toward --contrast-target (white in dark mode,
+ * black in light, flipped in CSS per data-theme) and borders toward the
+ * foreground at a quarter rate. Border boost stays gentle: hairlines go muddy
+ * long before text does.
+ */
+export function contrastVars(contrast: number): { base: string; boost: string; borderBoost: string } {
+  const clamped = Math.min(100, Math.max(0, Number.isFinite(contrast) ? contrast : CONTRAST_DEFAULT));
+  const base = Math.min(clamped, 50) * 2;
+  const boost = Math.max(clamped - 50, 0) * 2;
+  const round = (value: number) => `${Math.round(value * 10) / 10}%`;
+  return { base: round(base), boost: round(boost), borderBoost: round(boost / 4) };
+}
+
+/** Stamps the three contrast numbers App.tsx owns; the target flips in CSS. */
+export function applyAppearanceContrast(root: HTMLElement, contrast: number): void {
+  const vars = contrastVars(contrast);
+  root.style.setProperty('--contrast-base', vars.base);
+  root.style.setProperty('--contrast-boost', vars.boost);
+  root.style.setProperty('--contrast-border-boost', vars.borderBoost);
+}
+
 function relativeLuminance(hex: string): number {
   const channel = (raw: string) => {
     const value = parseInt(raw, 16) / 255;
@@ -74,10 +99,10 @@ export function buildThemeOverrides(input: ThemeOverrideInput): Record<string, s
   // The tint/opacity ladder re-derives whenever a color that feeds it changes
   // OR the user moved the contrast slider away from neutral.
   if (fg) {
-    applyForegroundLadder(overrides, fg, factor);
+    applyForegroundLadder(overrides, fg);
   } else if (factor !== 1) {
     // Contrast alone: scale the ladder around the theme's authored foreground.
-    applyForegroundLadder(overrides, 'var(--text-primary)', factor);
+    applyForegroundLadder(overrides, 'var(--text-primary)');
   }
 
   if (accent) {
@@ -102,24 +127,39 @@ export function buildThemeOverrides(input: ThemeOverrideInput): Record<string, s
   return overrides;
 }
 
-function applyForegroundLadder(overrides: Record<string, string>, source: string, factor: number) {
-  overrides['--text-secondary'] = `color-mix(in srgb, ${source} ${pct(78, factor)}, transparent)`;
-  overrides['--text-tertiary'] = `color-mix(in srgb, ${source} ${pct(50, factor)}, transparent)`;
+function applyForegroundLadder(overrides: Record<string, string>, source: string) {
+  /*
+   * Twin formulas, not baked opacities: each token blends its authored alpha
+   * first, then answers the stamped contrast numbers live. Neutral (base 100%,
+   * boost 0%) resolves to exactly the authored value, so theme switches need
+   * no rebuild. Text pushes toward --contrast-target past neutral; borders
+   * push toward the foreground at the gentler border-boost rate; elevation
+   * only fades, never inverts.
+   */
+  const text = (alpha: number) =>
+    `color-mix(in oklab, color-mix(in srgb, ${source} ${alpha}%, transparent) var(--contrast-base), var(--contrast-target) var(--contrast-boost))`;
+  const border = (alpha: number) =>
+    `color-mix(in srgb, color-mix(in srgb, ${source} ${alpha}%, transparent) var(--contrast-base), ${source} var(--contrast-border-boost))`;
+  const elevation = (alpha: number) =>
+    `color-mix(in oklab, color-mix(in oklab, ${source} ${alpha}%, transparent) var(--contrast-base), transparent)`;
+
+  overrides['--text-secondary'] = text(78);
+  overrides['--text-tertiary'] = text(50);
   overrides['--text-muted'] = overrides['--text-tertiary'];
-  overrides['--text-faint'] = `color-mix(in srgb, ${source} ${pct(40, factor)}, transparent)`;
+  overrides['--text-faint'] = text(40);
 
-  overrides['--bg-surface'] = `color-mix(in oklab, ${source} ${pct(5, factor)}, transparent)`;
+  overrides['--bg-surface'] = elevation(5);
   overrides['--bg-subtle'] = overrides['--bg-surface'];
-  overrides['--bg-ghost'] = `color-mix(in oklab, ${source} ${pct(4, factor)}, transparent)`;
-  overrides['--bg-hover'] = `color-mix(in oklab, ${source} ${pct(8, factor)}, transparent)`;
+  overrides['--bg-ghost'] = elevation(4);
+  overrides['--bg-hover'] = elevation(8);
   overrides['--bg-elevated'] = overrides['--bg-hover'];
-  overrides['--bg-active'] = `color-mix(in oklab, ${source} ${pct(12, factor)}, transparent)`;
-  overrides['--bg-code'] = `color-mix(in srgb, ${source} ${pct(10, factor)}, transparent)`;
+  overrides['--bg-active'] = elevation(12);
+  overrides['--bg-code'] = `color-mix(in srgb, color-mix(in srgb, ${source} 10%, transparent) var(--contrast-base), transparent)`;
 
-  overrides['--border-subtle'] = `color-mix(in srgb, ${source} ${pct(5.5, factor)}, transparent)`;
-  overrides['--border-default'] = `color-mix(in srgb, ${source} ${pct(8.2, factor)}, transparent)`;
-  overrides['--border-medium'] = `color-mix(in srgb, ${source} ${pct(12, factor)}, transparent)`;
-  overrides['--border-strong'] = `color-mix(in srgb, ${source} ${pct(22, factor)}, transparent)`;
+  overrides['--border-subtle'] = border(5.5);
+  overrides['--border-default'] = border(8.2);
+  overrides['--border-medium'] = border(12);
+  overrides['--border-strong'] = border(22);
 }
 
 /*

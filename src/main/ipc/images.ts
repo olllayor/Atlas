@@ -1,6 +1,10 @@
-import { ipcMain } from 'electron/main';
+import { writeFile } from 'node:fs/promises';
+import { basename } from 'node:path';
+
+import { BrowserWindow, dialog, ipcMain } from 'electron/main';
 import { clipboard, nativeImage } from 'electron/common';
 
+import type { SaveImageRequest, SaveImageResult } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
@@ -40,4 +44,59 @@ export function registerImagesIpc() {
       clipboard.writeImage(image);
     })
   );
+
+  ipcMain.handle(
+    IPC_CHANNELS.imagesSave,
+    withUserFacingErrors(IPC_CHANNELS.imagesSave, async (event, request: unknown): Promise<SaveImageResult> => {
+      assertTrustedSender(event);
+
+      const dataUrl = (request as Partial<SaveImageRequest> | null)?.dataUrl;
+      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+        throw new Error('That is not an image Atlas can save.');
+      }
+
+      if (dataUrl.length > MAX_IMAGE_DATA_URL_LENGTH) {
+        throw new Error('That image is too large to save.');
+      }
+
+      const comma = dataUrl.indexOf(',');
+      if (comma === -1) {
+        throw new Error('That image could not be read.');
+      }
+
+      // The dialog owns the destination: the suggested name is a leaf only,
+      // so a hostile renderer cannot steer the write anywhere.
+      const suggested = sanitizeImageFilename((request as Partial<SaveImageRequest> | null)?.filename);
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePath } = window
+        ? await dialog.showSaveDialog(window, {
+            title: 'Save image',
+            defaultPath: suggested,
+            filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'] }],
+          })
+        : await dialog.showSaveDialog({
+            title: 'Save image',
+            defaultPath: suggested,
+            filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'] }],
+          });
+
+      if (canceled || !filePath) {
+        return { saved: false };
+      }
+
+      await writeFile(filePath, Buffer.from(dataUrl.slice(comma + 1), 'base64'));
+      return { saved: true, path: filePath };
+    })
+  );
+}
+
+/**
+ * The suggestion is a dialog seed, not a path: strip directories, illegal
+ * characters and runaway length so only a leaf name reaches the dialog.
+ */
+function sanitizeImageFilename(filename: unknown): string {
+  const fallback = 'image.png';
+  if (typeof filename !== 'string') return fallback;
+  const leaf = basename(filename).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '').slice(0, 100);
+  return leaf || fallback;
 }

@@ -557,12 +557,14 @@ ON terminal_history (conversation_id, started_at);
 -- Resume cursor for the OpenCode provider: which opencode session backs this
 -- conversation, and the directory it was created against. opencode scopes its
 -- own history per session and per directory, so a conversation that moves to
--- another project must start a fresh session rather than resume into the wrong
--- history (deep-integration plan T5).
+-- another project forks the stored session there rather than resuming into the
+-- wrong history. schema_version lets future cursor shapes invalidate old rows
+-- instead of grafting history onto the wrong chat.
 CREATE TABLE IF NOT EXISTS opencode_sessions (
   conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL,
   directory TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
 );
 `;
@@ -602,6 +604,20 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!columns.includes('response_messages_json')) {
     database.exec('ALTER TABLE messages ADD COLUMN response_messages_json TEXT');
+  }
+
+  const opencodeSessionColumns = database
+    .prepare<
+      [],
+      {
+        name: string;
+      }
+    >('PRAGMA table_info(opencode_sessions)')
+    .all()
+    .map((column) => column.name);
+
+  if (opencodeSessionColumns.length > 0 && !opencodeSessionColumns.includes('schema_version')) {
+    database.exec('ALTER TABLE opencode_sessions ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1');
   }
 
   const toolExecutionColumns = database

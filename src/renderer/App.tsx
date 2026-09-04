@@ -15,6 +15,7 @@ import {
   designThemeSupportsLight,
   resolveAppliedThemeMode,
 } from '../shared/contracts';
+import { applyThemePalette, resolveEffectiveTheme } from './lib/themePalette';
 import type { AppUpdateSnapshot, AtlasDeepLink, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
@@ -105,9 +106,19 @@ import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetry
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { notify, notifyError } from './lib/notify';
 import { copyImageSrc } from './lib/copyImage';
+import { saveImageSrc } from './lib/saveImage';
 import { isMacPlatform } from './lib/platform';
-import { buildThemeOverrides } from './lib/themeOverrides';
+import { applyAppearanceContrast, buildThemeOverrides } from './lib/themeOverrides';
+import { syncBrowserChromeTheme } from './lib/browserChrome';
 import { stampTranslucentSidebar } from './lib/translucentSidebar';
+import { applyAppearanceFontVariables } from "./lib/appearanceFonts";
+import {
+  persistCachedTheme,
+  persistCachedFonts,
+  THEME_MODE_STORAGE_KEY,
+  DESIGN_THEME_STORAGE_KEY,
+  THEME_ID_STORAGE_KEY,
+} from './lib/earlyThemeStamp';
 import { runViewTransition } from './lib/viewTransitions';
 import { cn } from './lib/utils';
 import {
@@ -747,6 +758,24 @@ export default function App() {
     },
     [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setConversationToolPermissionMode, showRightPanel]
   );
+  /**
+   * Mode-gated creation: a new chat from the Code sidebar stays inside the
+   * open project (mode `code`, not the global default), so it never lands in
+   * the Work list as an unfiled chat. Code with no project at all still
+   * creates first, then asks for a folder — cancelling leaves the gate, never
+   * a silent unfiled Code chat.
+   */
+  const handleCreateConversation = useCallback(() => {
+    if (workspaceMode === 'code' && activeProject) {
+      void createConversationInProject(activeProject.id);
+      return;
+    }
+    void createConversation().then((created) => {
+      if (workspaceMode === 'code' && created && !created.projectId) {
+        void requestProjectForConversation(created.id, 'mode-switch');
+      }
+    });
+  }, [activeProject, createConversation, createConversationInProject, requestProjectForConversation, workspaceMode]);
   const handleExecutionTargetChange = useCallback(
     (target: ExecutionTarget) => {
       if (!selectedConversationId) return;
@@ -1112,6 +1141,7 @@ export default function App() {
           live.openPlugins();
           break;
         case 'sites':
+          if (!(live.settings?.sitesBetaEnabled ?? false)) break;
           live.openSites();
           break;
       }
@@ -1137,6 +1167,14 @@ export default function App() {
   useEffect(() => {
     const off = window.atlasChat.images?.onCopyRequest?.((src) => {
       void copyImageSrc(src);
+    });
+    return off;
+  }, []);
+  // Native image menu, save half: same fetch, answered through images.save,
+  // which shows the save dialog in the main process.
+  useEffect(() => {
+    const off = window.atlasChat.images?.onSaveRequest?.((src) => {
+      void saveImageSrc(src);
     });
     return off;
   }, []);
@@ -1615,29 +1653,49 @@ export default function App() {
     }
   }, [activeView, hasCredential]);
 
+  const lastAppliedThemeSignatureRef = useRef<string>('');
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
-      // Clamped against the design theme: a theme with no light palette
-      // must not get `color-scheme: light`, which turns native controls
-      // white while every app surface stays dark. All shipped themes carry
-      // both palettes; the clamp remains for any future dark-only one.
       const resolved = resolveAppliedThemeMode(themeMode, appearance.designTheme, mediaQuery.matches);
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.style.colorScheme = resolved;
+      const effectiveThemeId = resolveEffectiveTheme(appearance.themeId, resolved, appearance.themeHalves);
+      const translucent = appearance.translucentSidebar && isMacLike;
+      const signature = `${themeMode}|${appearance.designTheme}|${effectiveThemeId}|${resolved}|${translucent}|${appearance.glassOpacity ?? 100}`;
+      if (lastAppliedThemeSignatureRef.current === signature) return;
+      lastAppliedThemeSignatureRef.current = signature;
+
+      persistCachedTheme(themeMode, appearance.designTheme, effectiveThemeId);
+      const root = document.documentElement;
+      root.classList.add('no-transitions');
+      root.dataset.designTheme = appearance.designTheme;
+      root.dataset.theme = resolved;
+      root.classList.toggle('dark', resolved === 'dark');
+      root.style.colorScheme = resolved;
+      applyThemePalette(effectiveThemeId, resolved);
+      if (typeof appearance.glassOpacity === 'number') {
+        root.style.setProperty('--glass-opacity', `${appearance.glassOpacity}%`);
+      }
+      void root.offsetHeight;
+      requestAnimationFrame(() => root.classList.remove('no-transitions'));
+      syncBrowserChromeTheme({ translucent });
     };
 
     applyTheme();
     mediaQuery.addEventListener('change', applyTheme);
 
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === THEME_MODE_STORAGE_KEY || event.key === DESIGN_THEME_STORAGE_KEY || event.key === THEME_ID_STORAGE_KEY) {
+        lastAppliedThemeSignatureRef.current = '';
+        applyTheme();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
     return () => {
       mediaQuery.removeEventListener('change', applyTheme);
+      window.removeEventListener('storage', handleStorage);
     };
-  }, [themeMode, appearance.designTheme]);
-
-  useEffect(() => {
-    document.documentElement.dataset.designTheme = appearance.designTheme;
-  }, [appearance.designTheme]);
+  }, [themeMode, appearance.designTheme, appearance.themeId, appearance.themeHalves, appearance.glassOpacity, appearance.translucentSidebar, isMacLike]);
 
   useEffect(() => {
     document.documentElement.dataset.borderRadius = appearance.borderRadius;
@@ -1645,6 +1703,9 @@ export default function App() {
 
   // Color overrides ride on top of the design theme as inline custom
   // properties; removing an override falls straight back to the theme value.
+  // Contrast numbers stamp alongside (the ladder answers them live), and the
+  // ladder gate tells the per-surface twins in styles.css when a derivation
+  // exists — neutral ships render exactly as authored.
   const appliedOverrideKeysRef = useRef<string[]>([]);
   useEffect(() => {
     const root = document.documentElement;
@@ -1661,6 +1722,11 @@ export default function App() {
     }
 
     appliedOverrideKeysRef.current = Object.keys(overrides);
+    applyAppearanceContrast(root, appearance.contrast);
+    root.dataset.contrastLadder = '--text-secondary' in overrides ? 'on' : 'off';
+    // Read-back after the stamp above: getComputedStyle forces a sync
+    // recalculation, so the frame follows the page in the same task.
+    syncBrowserChromeTheme({ translucent: appearance.translucentSidebar && isMacLike });
   }, [appearance]);
 
   // Vibrancy is a macOS window material. Off macOS the window stays opaque, so
@@ -1689,12 +1755,35 @@ export default function App() {
   }, [appearance.reduceMotion]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty('--ui-font-size', `${appearance.uiFontSize}px`);
-    root.style.setProperty('--code-font-size', `${appearance.codeFontSize}px`);
-    root.style.setProperty('--font-ui-family', buildFontFamilyValue(appearance.uiFontFamily, '--font-ui-system'));
-    root.style.setProperty('--font-code-mono', buildFontFamilyValue(appearance.codeFontFamily, '--font-mono-system'));
-  }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
+    applyAppearanceFontVariables(document.documentElement, appearance);
+    persistCachedFonts({
+      panelAnimationDurationMs: appearance.panelAnimationDurationMs,
+      fontFamilySans: appearance.fontFamilySans,
+      fontFamilyComposer: appearance.fontFamilyComposer,
+      fontFamilyCode: appearance.fontFamilyCode,
+      fontFamilyTerminal: appearance.fontFamilyTerminal,
+      fontSizeInterface: appearance.fontSizeInterface,
+      fontSizePrompt: appearance.fontSizePrompt,
+      fontSizeCode: appearance.fontSizeCode,
+      fontSizeTerminal: appearance.fontSizeTerminal,
+      fontSmoothing: appearance.fontSmoothing,
+    });
+  }, [
+    appearance.panelAnimationDurationMs,
+    appearance.fontFamilySans,
+    appearance.fontFamilyComposer,
+    appearance.fontFamilyCode,
+    appearance.fontFamilyTerminal,
+    appearance.fontSizeInterface,
+    appearance.fontSizePrompt,
+    appearance.fontSizeCode,
+    appearance.fontSizeTerminal,
+    appearance.fontSmoothing,
+    appearance.codeFontFamily,
+    appearance.codeFontSize,
+    appearance.uiFontFamily,
+    appearance.uiFontSize,
+  ]);
 
   /*
     The activity log is rewritten on every stream flush (a text delta folds
@@ -1833,7 +1922,7 @@ export default function App() {
   const content =
     activeView === 'landing' ? (
       <XAILandingPage onBackToApp={() => closeLanding()} />
-    ) : activeView === 'sites' ? (
+    ) : activeView === 'sites' && (settings?.sitesBetaEnabled ?? false) ? (
       <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
     ) : activeView === 'settings' ? (
       <SettingsWorkspaceRoute
@@ -1958,7 +2047,7 @@ export default function App() {
           showConversationJumpHints={showConversationJumpHints}
           conversationJumpLabelById={conversationJumpLabelById}
           onSelect={(id) => void loadConversation(id)}
-          onCreate={() => void createConversation()}
+          onCreate={handleCreateConversation}
           onDelete={(id) => void deleteConversation(id)}
           onRename={(id, title) => void renameConversation(id, title)}
           onRegenerateTitle={(id) => void regenerateConversationTitle(id)}
@@ -1982,8 +2071,12 @@ export default function App() {
           onSetProjectPinned={(projectId, pinned) => void setProjectPinned(projectId, pinned)}
           onOpenLanding={() => openLanding()}
           workspaceMode={workspaceMode}
-          onOpenSites={() => runViewTransition(() => openSites())}
+          onOpenSites={() => {
+            if (!(settings?.sitesBetaEnabled ?? false)) return;
+            runViewTransition(() => openSites());
+          }}
           onOpenPlugins={() => runViewTransition(() => openPlugins())}
+          showSites={settings?.sitesBetaEnabled ?? false}
           showPlugins={settings?.pluginsBetaEnabled ?? false}
           onOpenSearch={() => {
             setModelPickerOpen(false);
@@ -2108,8 +2201,20 @@ export default function App() {
                 </Tooltip>
               </div>
               {activeConversationTitle ? (
-                <h2 className="truncate text-md font-medium text-text-primary">
-                  {activeConversationTitle}
+                <h2 className="flex min-w-0 items-center gap-1.5 truncate text-md">
+                  {activeProject ? (
+                    <>
+                      <span className="shrink-0 truncate font-normal text-text-tertiary">
+                        {activeProject.title}
+                      </span>
+                      <span aria-hidden className="shrink-0 font-normal text-text-faint">
+                        /
+                      </span>
+                    </>
+                  ) : null}
+                  <span className="truncate font-medium text-text-primary">
+                    {activeConversationTitle}
+                  </span>
                 </h2>
               ) : null}
               {isActiveDraftStreaming ? (
@@ -2177,7 +2282,10 @@ export default function App() {
             // rather than briefly reserving 0px and jumping.
             style={
               composerDock.height > 0
-                ? ({ '--composer-dock-height': `${composerDock.height}px` } as React.CSSProperties)
+                ? ({
+                    '--composer-dock-height': `${composerDock.height}px`,
+                    '--composer-height': `${composerDock.height}px`,
+                  } as React.CSSProperties)
                 : undefined
             }
           >

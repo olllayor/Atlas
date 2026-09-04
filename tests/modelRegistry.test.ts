@@ -275,3 +275,57 @@ test('ModelRegistry refresh returns available catalogs when another provider ref
     ['glm-4.5-flash']
   );
 });
+
+test('failed refresh keeps last-known models; empty success archives them', async (t) => {
+  const { tempDir, raw, modelsRepo, settingsRepo, configureProvider } = createDatabase();
+  const keychain = createKeychain({});
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  configureProvider('opencode');
+
+  let mode: 'ok' | 'fail' | 'empty' = 'ok';
+  const providers: ProviderRegistry = new Map([
+    [
+      'opencode',
+      {
+        providerId: 'opencode',
+        capabilities: {
+          requiresApiKeyForCatalog: false,
+          returnsCompleteCatalog: true,
+          catalogRequiresNetwork: true,
+          authenticatesItself: true
+        },
+        async validateCredential() {},
+        async listModels() {
+          if (mode === 'fail') throw new Error('fetch failed');
+          if (mode === 'empty') return [];
+          return [createModel('anthropic/claude-opus-4-7', 'opencode')];
+        },
+        async streamChat() {
+          throw new Error('not implemented');
+        }
+      }
+    ]
+  ]);
+
+  const registry = new ModelRegistry(modelsRepo, settingsRepo, keychain as never, providers);
+
+  await registry.refresh();
+  assert.deepEqual(registry.list().map((model) => model.id), ['anthropic/claude-opus-4-7']);
+
+  mode = 'fail';
+  await registry.refresh();
+  assert.deepEqual(
+    registry.list().map((model) => model.id),
+    ['anthropic/claude-opus-4-7'],
+    'outage keeps last-known rows'
+  );
+
+  mode = 'empty';
+  await registry.refresh();
+  assert.deepEqual(registry.list(), [], 'authoritative empty clears the picker');
+});

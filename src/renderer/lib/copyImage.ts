@@ -10,7 +10,9 @@ import { notify } from './notify';
  */
 export async function copyImageSrc(src: string): Promise<boolean> {
   try {
-    const dataUrl = src.startsWith('data:') ? src : await fetchToDataUrl(src);
+    const { dataUrl } = src.startsWith('data:')
+      ? { dataUrl: src }
+      : await fetchImageAsDataUrl(src);
     await window.atlasChat.images.copy(dataUrl);
     notify({ tone: 'success', title: 'Image copied' });
     return true;
@@ -22,6 +24,13 @@ export async function copyImageSrc(src: string): Promise<boolean> {
     });
     return false;
   }
+}
+
+/** Fetched image bytes plus the MIME type the server claimed. */
+export async function fetchImageAsDataUrl(src: string): Promise<{ dataUrl: string; mimeType: string }> {
+  const dataUrl = await fetchToDataUrl(src);
+  const mimeType = dataUrl.slice('data:'.length, dataUrl.indexOf(';'));
+  return { dataUrl, mimeType };
 }
 
 async function fetchToDataUrl(src: string): Promise<string> {

@@ -8,7 +8,7 @@ import type {
 import { deriveAttentionState, type AttentionLevel } from '../lib/attention';
 import { liveJobCountFor, type ConversationJobSummary } from '../lib/jobActivity';
 import { effectiveSnoozed } from '../lib/snooze';
-import type { DraftSummary } from '../stores/draftSummaries';
+import type { DraftSummary, PendingApprovalSummary } from '../stores/draftSummaries';
 
 export type SidebarConversationItem = {
   id: string;
@@ -52,6 +52,8 @@ export type SidebarConversationItem = {
    * nothing truthful to render, but "changed nothing" is a fact, and zeros say
    * it. Callers branch on `fileCount === 0`, never on the field being absent.
    */
+  /** When blocked on tool approval, surfaces tool and intent snippet for quick triage. */
+  pendingApproval?: PendingApprovalSummary | null;
   changeStats: ConversationChangeStats;
   /** When the chat was pinned, or null. Orders the Pinned section. */
   pinnedAt: string | null;
@@ -453,16 +455,17 @@ function resolveGroup(timestampMs: number | null, now: number) {
     return { key: 'yesterday', label: 'Yesterday' };
   }
 
+  // Rolling windows, not calendar buckets: "This week" meant different things
+  // on Monday vs Sunday. Previous 7 / 30 days always answers "how old".
   if (timestampMs >= todayStart - 6 * DAY_MS) {
-    return { key: 'week', label: 'This week' };
+    return { key: 'week', label: 'Previous 7 days' };
+  }
+
+  if (timestampMs >= todayStart - 29 * DAY_MS) {
+    return { key: 'month', label: 'Previous 30 days' };
   }
 
   const nowDate = new Date(now);
-  const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
-  if (timestampMs >= monthStart) {
-    return { key: 'month', label: 'This month' };
-  }
-
   const then = new Date(timestampMs);
   const year = then.getFullYear();
   const month = then.getMonth();
@@ -583,6 +586,7 @@ export function buildSidebarConversationItems({
       // The contract promises zeros rather than null, but the sidebar also
       // renders summaries that were cached before the column existed; falling
       // back here keeps that one row from reading `undefined files`.
+      pendingApproval: draft?.pendingApproval ?? null,
       changeStats: conversation.changeStats ?? NO_CHANGE_STATS,
       pinnedAt: conversation.pinnedAt ?? null,
       // Same pre-column tolerance as changeStats: cached summaries predate
@@ -641,8 +645,10 @@ export function splitSettledSidebarItems(items: SidebarConversationItem[]) {
 /**
  * Lift snoozed chats out of the list into the Snoozed shelf, soonest wake
  * first: "what comes back next" is the shelf's question. Only chats whose
- * wake still lies in the future and that demand nothing count — an approval
- * lifts the snooze early, and an elapsed wake simply stops classifying.
+ * wake still lies in the future and that hold no pending approval count — a
+ * tool approval arriving after the snooze lifts it early, and an elapsed wake
+ * simply stops classifying. Failed turns stay parked: snoozing one is an
+ * explicit "deal with this later".
  */
 export function splitSnoozedSidebarItems(items: SidebarConversationItem[], now: number) {
   const snoozed: SidebarConversationItem[] = [];
@@ -652,7 +658,7 @@ export function splitSnoozedSidebarItems(items: SidebarConversationItem[], now: 
     const hidden = effectiveSnoozed(
       {
         snoozedUntil: item.snoozedUntil,
-        needsInput: item.attention === 'needsInput',
+        hasPendingApproval: item.pendingApproval != null,
         snoozedAt: item.snoozedAt,
         completedAt: item.completedAt,
       },
@@ -777,4 +783,27 @@ export function splitSidebarItemsByProject(
   }
 
   return { sections: [...sections.values()], ungrouped };
+}
+
+/**
+ * Work chats are folderless chats (`projectId == null`). They live only in
+ * Work mode; Code mode is project chats only. Filtered by folder presence,
+ * not by the `workspaceMode` field: a Work-mode chat with a folder attached
+ * for read-only context still has a folder, so it sorts with projects.
+ */
+export function isWorkChat(item: Pick<SidebarConversationItem, 'projectId'>) {
+  return item.projectId == null;
+}
+
+/**
+ * Mode gate for the whole sidebar. Work shows folderless chats, Code shows
+ * project chats. Applied to every shelf (inbox, pinned, snoozed, settled,
+ * archived) so a hidden chat never leaks back through a shelf.
+ */
+export function filterSidebarItemsByMode<T extends Pick<SidebarConversationItem, 'projectId'>>(
+  items: readonly T[],
+  mode: WorkspaceMode
+): T[] {
+  const wantWork = mode !== 'code';
+  return items.filter((item) => isWorkChat(item) === wantWork);
 }

@@ -18,14 +18,17 @@ import { openCodeServerMode } from '../../../../shared/opencodeSettings.js';
 import {
   OPENCODE_DEFAULT_HOSTNAME,
   OPENCODE_SERVER_STARTUP_TIMEOUT_MS,
+  compareOpenCodeVersions,
   parseOpenCodeServerUrlFromOutput,
   summarizeProcessFailure
 } from './openCodeParsers.js';
+import { fetchOpenCodeHealth } from './OpenCodeClient.js';
 import {
   findFreeLocalPort,
   isLocalPortFree,
   resolveOpenCodeSpawnEnvironment
 } from './openCodeEnvironment.js';
+import { MIN_OPENCODE_VERSION } from './probeOpenCode.js';
 
 export class OpenCodeRuntimeError extends Error {
   constructor(
@@ -79,12 +82,14 @@ export interface OpenCodeRuntimeOptions {
   idleShutdownMs?: number;
   /** Seam for the port-race check; tests answer without touching sockets. */
   isPortFree?: (port: number) => Promise<boolean>;
+  /** Seam for the post-spawn health gate; tests answer without HTTP. */
+  healthCheck?: (baseUrl: string, serverPassword?: string) => Promise<{ healthy: boolean; version: string | null }>;
 }
 
 /** One extra spawn is enough for a lost port race; more would mask real faults. */
 const PORT_RACE_RETRIES = 1;
 
-const DEFAULT_IDLE_SHUTDOWN_MS = 10 * 60_000;
+const DEFAULT_IDLE_SHUTDOWN_MS = 30_000;
 const DEFAULT_TERM_GRACE_MS = 1_000;
 
 interface RunningServer {
@@ -102,12 +107,19 @@ export class OpenCodeRuntime {
   private references = 0;
   private unexpectedExitHandler: (() => void) | null = null;
   private unexpectedExitEmitted = false;
+  /** Version proven by `/global/health` for the live child; cleared on exit. */
+  private healthyVersion: string | null = null;
+  private healthyPassword: string | null = null;
 
   private readonly childFactory: ChildFactory;
   private readonly spawnTimeoutMs: number;
   private readonly termGraceMs: number;
   private readonly idleShutdownMs: number;
   private readonly isPortFree: (port: number) => Promise<boolean>;
+  private readonly healthCheck: (
+    baseUrl: string,
+    serverPassword?: string
+  ) => Promise<{ healthy: boolean; version: string | null }>;
 
   constructor(options: OpenCodeRuntimeOptions = {}) {
     this.childFactory =
@@ -116,6 +128,7 @@ export class OpenCodeRuntime {
     this.termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS;
     this.idleShutdownMs = options.idleShutdownMs ?? DEFAULT_IDLE_SHUTDOWN_MS;
     this.isPortFree = options.isPortFree ?? isLocalPortFree;
+    this.healthCheck = options.healthCheck ?? fetchOpenCodeHealth;
   }
 
   /** Fired at most once per spawned server when an owned server dies unexpectedly. */
@@ -145,6 +158,12 @@ export class OpenCodeRuntime {
   async connect(input: {
     settings: OpenCodeSettings;
     env?: NodeJS.ProcessEnv;
+    /**
+     * Keychain-held password. Value ⇒ child demands it and client sends it.
+     * Null/'' ⇒ strip any host-inherited password so our own spawn can never
+     * 401 our own client. Undefined ⇒ legacy, touch nothing.
+     */
+    serverPassword?: string | null;
   }): Promise<OpenCodeServerConnection> {
     if (openCodeServerMode(input.settings) === 'external') {
       return { baseUrl: input.settings.serverUrl.trim(), owned: false, release: () => undefined };
@@ -207,6 +226,8 @@ export class OpenCodeRuntime {
     this.pendingChild = null;
     const current = this.server;
     this.server = null;
+    this.healthyVersion = null;
+    this.healthyPassword = null;
 
     try {
       if (starting && starting !== current?.child) {
@@ -247,6 +268,7 @@ export class OpenCodeRuntime {
   private async startOwnedServer(input: {
     settings: OpenCodeSettings;
     env?: NodeJS.ProcessEnv;
+    serverPassword?: string | null;
   }): Promise<RunningServer> {
     for (let attempt = 0; ; attempt += 1) {
       const port = await findFreeLocalPort();
@@ -270,12 +292,17 @@ export class OpenCodeRuntime {
     input: {
       settings: OpenCodeSettings;
       env?: NodeJS.ProcessEnv;
+      serverPassword?: string | null;
     },
     port: number
   ): Promise<RunningServer> {
     const command = input.settings.binaryPath.trim() || 'opencode';
     const args = ['serve', `--hostname=${OPENCODE_DEFAULT_HOSTNAME}`, `--port=${port}`];
-    const env = resolveOpenCodeSpawnEnvironment(input.env);
+    const env = resolveOpenCodeSpawnEnvironment(input.env, process.env, input.serverPassword);
+    const effectivePassword =
+      typeof input.serverPassword === 'string' && input.serverPassword.trim().length > 0
+        ? input.serverPassword.trim()
+        : undefined;
 
     const child = this.childFactory(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -312,11 +339,24 @@ export class OpenCodeRuntime {
       throw shutDownDuringStartup();
     }
 
+    // Health gate (t3code parity): the listening line is not enough — prove
+    // the server answers with our password and a supported version before any
+    // caller gets a lease. A 401 here means child and client disagree, which
+    // used to surface later as a confusing turn failure.
+    try {
+      await this.verifyOwnedHealth(baseUrl, effectivePassword);
+    } catch (error) {
+      await this.teardown(child);
+      throw error;
+    }
+
     this.server = { child, baseUrl };
 
     child.once('exit', () => {
       if (this.server?.child === child) {
         this.server = null;
+        this.healthyVersion = null;
+        this.healthyPassword = null;
         this.cancelIdleShutdown();
         // One-shot guard (t3code pattern): crash-watcher vs event pumps racing
         // on teardown must not double-report the death.
@@ -328,6 +368,43 @@ export class OpenCodeRuntime {
     });
 
     return this.server;
+  }
+
+  /**
+   * Prove the freshly spawned child answers authed `/global/health` with a
+   * supported version. Cached for the process lifetime when the password is
+   * unchanged; a password change re-verifies so a stale cache can never mask
+   * a 401.
+   */
+  private async verifyOwnedHealth(baseUrl: string, serverPassword?: string): Promise<void> {
+    const passwordKey = serverPassword ?? '';
+    if (this.healthyVersion !== null && this.healthyPassword === passwordKey) {
+      return;
+    }
+    let health: { healthy: boolean; version: string | null };
+    try {
+      health = await this.healthCheck(baseUrl, serverPassword);
+    } catch (error) {
+      throw new OpenCodeRuntimeError(
+        'startOpenCodeServerProcess',
+        error instanceof Error ? error.message : String(error ?? 'Health check failed.'),
+        error
+      );
+    }
+    if (!health.healthy || !health.version) {
+      throw new OpenCodeRuntimeError(
+        'startOpenCodeServerProcess',
+        'The OpenCode server started but did not report a healthy status.'
+      );
+    }
+    if (compareOpenCodeVersions(health.version, MIN_OPENCODE_VERSION) < 0) {
+      throw new OpenCodeRuntimeError(
+        'startOpenCodeServerProcess',
+        `OpenCode v${health.version} is too old. Upgrade to v${MIN_OPENCODE_VERSION} or newer.`
+      );
+    }
+    this.healthyVersion = health.version;
+    this.healthyPassword = passwordKey;
   }
 
   /**

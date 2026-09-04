@@ -65,6 +65,7 @@ function fakeInventory(connected: string[], modelCount = 0): OpenCodeInventoryCl
 }
 
 const VERSION_OK = { version: '1.18.23', executableMissing: false };
+const HEALTH_OK = async () => ({ healthy: true as const, version: '1.18.23' });
 
 test('probe reports missing binary via ENOENT', async () => {
   const result = await probeOpenCode({
@@ -102,6 +103,7 @@ test('happy spawned probe: ready, authenticated, counts providers/models, passes
     deps: {
       readBinaryVersion: async () => VERSION_OK,
       connectOwnedServer: async () => ({ baseUrl: 'http://127.0.0.1:40011' }),
+      checkHealth: HEALTH_OK,
       createClient: (call) => {
         createCalls.push({ baseUrl: call.baseUrl, ...(call.serverPassword ? { serverPassword: call.serverPassword } : {}) });
         return fakeInventory(['anthropic', 'openai/gateway'], 12);
@@ -125,6 +127,7 @@ test('spawned probe without connected upstreams warns toward `opencode auth logi
     deps: {
       readBinaryVersion: async () => VERSION_OK,
       connectOwnedServer: async () => ({ baseUrl: 'http://127.0.0.1:40012' }),
+      checkHealth: HEALTH_OK,
       createClient: () => fakeInventory([], 0)
     }
   });
@@ -142,6 +145,9 @@ test('pure-external probe can skip the local binary gate and maps 401s', async (
     deps: {
       readBinaryVersion: async () => {
         throw new Error('must not run the binary at all');
+      },
+      checkHealth: async () => {
+        throw new Error('Request failed with status code 401 Unauthorized');
       },
       createClient: () => {
         throw new Error('Request failed with status code 401 Unauthorized');
@@ -161,6 +167,9 @@ test('external probe failure of transport kind names the configured URL', async 
     skipBinaryVersionCheck: true,
     deps: {
       readBinaryVersion: async () => ({ version: null, executableMissing: false }),
+      checkHealth: async () => {
+        throw new Error('request to https://oc.corp failed: ECONNREFUSED');
+      },
       createClient: () => {
         throw new Error('request to https://oc.corp failed: ECONNREFUSED');
       }
@@ -194,13 +203,14 @@ test('a pure-external probe can skip the CLI check and still report the server',
         versionReads += 1;
         return { version: null, executableMissing: true };
       },
+      checkHealth: HEALTH_OK,
       createClient: () => fakeInventory(['anthropic'], 4)
     }
   });
 
   assert.equal(versionReads, 0, 'the local binary was never consulted');
   assert.equal(result.status, 'ready');
-  assert.equal(result.version, null, 'no version was checked, so none is claimed');
+  assert.equal(result.version, '1.18.23', 'skipped binary gate still reports the live server version');
   assert.equal(result.baseUrlUsed, 'http://oc.example.io');
 });
 
@@ -231,17 +241,53 @@ test('an unreachable external server is reported against its URL either way', as
       settings: { ...defaultOpenCodeSettings(), serverUrl: 'http://oc.example.io' },
       directory: '/proj',
       skipBinaryVersionCheck,
-      deps: {
-        readBinaryVersion: async () => VERSION_OK,
-        createClient: () => ({
-          async listProviders() {
-            throw new Error('fetch failed');
-          }
-        })
-      }
+    deps: {
+      readBinaryVersion: async () => VERSION_OK,
+      checkHealth: HEALTH_OK,
+      createClient: () => ({
+        async listProviders() {
+          throw new Error('fetch failed');
+        }
+      })
+    }
     });
 
     assert.equal(result.status, 'error');
     assert.match(result.message!, /Couldn't reach the configured OpenCode server at http:\/\/oc\.example\.io/);
   }
+});
+
+test('owned health 401 names the keychain mismatch, not the network', async () => {
+  const result = await probeOpenCode({
+    settings: defaultOpenCodeSettings(),
+    directory: '/proj',
+    serverPassword: 'stale-keychain-value',
+    deps: {
+      readBinaryVersion: async () => VERSION_OK,
+      connectOwnedServer: async () => ({ baseUrl: 'http://127.0.0.1:40013' }),
+      checkHealth: async () => {
+        throw new Error('OpenCode server rejected authentication.');
+      },
+      createClient: () => fakeInventory(['anthropic'], 1)
+    }
+  });
+
+  assert.equal(result.status, 'error');
+  assert.match(result.message!, /rejected authentication/);
+});
+
+test('health version below the floor fails even when the binary is new', async () => {
+  const result = await probeOpenCode({
+    settings: defaultOpenCodeSettings(),
+    directory: '/proj',
+    deps: {
+      readBinaryVersion: async () => VERSION_OK,
+      connectOwnedServer: async () => ({ baseUrl: 'http://127.0.0.1:40014' }),
+      checkHealth: async () => ({ healthy: true, version: '1.13.9' }),
+      createClient: () => fakeInventory(['anthropic'], 1)
+    }
+  });
+
+  assert.equal(result.status, 'error');
+  assert.match(result.message!, new RegExp(`Upgrade to v${MIN_OPENCODE_VERSION}`));
 });

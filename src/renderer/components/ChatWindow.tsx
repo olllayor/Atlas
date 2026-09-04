@@ -56,7 +56,7 @@ import { isPlanToolPart } from '../../shared/planTool';
 import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
 import type { AssistantSegment } from './transcript/assistantSegments';
 import { ActivityBlock } from './transcript/ActivityBlock';
-import { CHANGED_FILES_VISIBLE_ROWS, ChangedFilesBar } from './transcript/ChangedFilesBar';
+import { ChangedFilesBar, topDirectoryOf } from './transcript/ChangedFilesBar';
 import { PlanCell } from './transcript/PlanCell';
 import { ToolCellList } from './transcript/ToolCell';
 import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
@@ -147,29 +147,24 @@ const HISTORY_FOLD_KEEP = 12;
 /**
  * Column geometry.
  *
- * The transcript and the composer share one axis but not one measure: both
- * are centred full-bleed rows with the padding *outside* the max width
- * (`px-5 lg:px-6`), and the composer caps itself narrower (`max-w-composer`,
- * 48rem — the t3code composer form's `max-w-3xl`) than the transcript's
- * `content-max`. Panels opening and closing re-centre both automatically —
- * `mx-auto` is the whole mechanism. Putting the padding inside (as this
- * file used to, `px-6 lg:px-7 xl:px-8`) narrowed the message column ~32px
- * per side relative to the composer slab, and the mismatch grew at every
- * breakpoint; keep padding outside whatever the caps become.
+ * Transcript and composer share one axis and one measure: both are centred
+ * full-bleed rows with the padding *outside* the max width (`px-4 lg:px-5`)
+ * and both cap at `max-w-composer` (48rem — t3code's `max-w-3xl` for timeline
+ * rows and composer form alike). Panels opening and closing re-centre both
+ * automatically — `mx-auto` is the whole mechanism. Putting the padding
+ * inside narrowed the message column ~32px per side relative to the slab;
+ * running two caps narrowed nothing but still left a ~46px-per-side overhang
+ * where bubbles stuck out past the input. Keep padding outside the shared cap.
  */
-const COLUMN_PADDING = 'px-5 lg:px-6';
+const COLUMN_PADDING = 'px-4 lg:px-5';
 
 /**
  * The single text measure — the transcript column.
  *
- * Assistant content and user bubbles share one right rail at `content-max`
- * (860px at its widest). This used to cap at `76ch` inside that column, so
- * on a wide window the text stopped ~170px short of the composer slab below
- * it and left a dead vertical strip down the right of every conversation.
- * The composer has since taken its own narrower cap (`--composer-max`), so
- * the rail intentionally overhangs the slab by a few dozen pixels per side —
- * a centred column inside a slightly wider centred column reads as one
- * object, not as a misalignment.
+ * Assistant content spans it full width; user bubbles right-align inside it
+ * at 80% (t3code's `max-w-[80%]`). One right rail for both sides, and the
+ * same rail the composer slab sits on — a centred column inside a wider one
+ * read as misalignment, so there is only one column now.
  */
 const MEASURE = 'w-full';
 
@@ -255,7 +250,7 @@ function AttachmentRow({
   return (
     <Attachments
       variant="inline"
-      className={align === 'end' ? 'mb-2 ml-auto max-w-[min(56%,560px)] justify-end' : 'mb-2 max-w-full'}
+      className={align === 'end' ? 'mb-2 ml-auto max-w-[80%] justify-end' : 'mb-2 max-w-full'}
     >
       {attachments.map((attachment) => {
         // An image in the transcript is shown, not named. The chip stays for
@@ -349,7 +344,7 @@ function CopyAction({ text, label }: { text: string; label: string }) {
 
 function AssistantTextFallback({ content }: { content: string }) {
   if (!content.trim()) {
-    return <div className="text-sm font-medium text-text-muted">Assistant response</div>;
+    return null;
   }
 
   return (
@@ -646,6 +641,7 @@ function SpawnBatchRow({
         <SpawnAgentCta
           agents={agents}
           spawnCallCount={spawnedToolCallIds.length}
+          parts={parts}
           onOpenAgentsPanel={onOpenAgentsPanel ?? (() => {})}
         />
       )}
@@ -764,10 +760,12 @@ const MessageRow = memo(function MessageRow({
         <div className={cn(MEASURE, 'flex min-w-0 flex-col items-end')}>
           <AttachmentRow attachments={fileParts} align="end" />
           {userText ? (
-            // Right-aligned bubble on a subtle elevated tint — no border,
-            // no avatar, no name, no timestamp (reference-visual-spec §5).
-            // Radius ~22px: a single-line message reads as a pill.
-            <div className="max-w-full rounded-2xl bg-bg-surface px-5 py-3">
+            // Right-aligned bubble, capped at 80% like t3code — a full-width
+            // bubble shares the assistant's right rail instead of the
+            // composer's, which reads as the column jumping sides per turn.
+            // No border, no avatar, no name, no timestamp. Radius ~22px: a
+            // single-line message reads as a pill.
+            <div className="max-w-[80%] rounded-2xl bg-bg-surface px-4 py-3">
               <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">
                 <CitedText text={userText} onNavigate={onNavigateCitation} />
               </p>
@@ -996,9 +994,9 @@ const ROW_HEIGHT = {
   toolCell: 24,
   /** Reasoning collapses to a single activity row. */
   reasoning: 28,
-  /** The "Edited N files" card's header and its top margin. */
-  changedFilesHeader: 76,
-  /** One file row inside that card, and the "Show N more files" row. */
+  /** The changed-files card's single-line header and its top margin. */
+  changedFilesHeader: 60,
+  /** One folder row or one file row inside that card. */
   changedFilesRow: 36,
   visual: 320,
   file: 28,
@@ -1069,20 +1067,25 @@ function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
   const diffCells = cells.filter((cell) => cell.detail.type === 'diff');
   const hasChangedFilesBar = message.status === 'complete' && diffCells.length > 0;
   /*
-   * How many rows the card shows without being expanded. The card lists its
-   * files inline now, so the estimate has to count them; over-counting a
-   * twenty-file turn would leave a hole the size of seventeen rows.
+   * How many rows the card shows unexpanded: every file plus one row per
+   * folder group (root files have none). Folders start expanded and the
+   * measurement pass corrects the estimate once the user collapses any, so
+   * over-counting a collapsed card only ever costs a small gap, never a
+   * clipped diff.
    */
-  const changedFileRows = hasChangedFilesBar
-    ? Math.min(
-        CHANGED_FILES_VISIBLE_ROWS,
-        new Set(
-          diffCells.flatMap((cell) =>
-            cell.detail.type === 'diff' ? cell.detail.files.map((file) => file.path) : []
-          )
-        ).size
-      )
-    : 0;
+  const changedPaths =
+    hasChangedFilesBar && !raw
+      ? [
+          ...new Set(
+            diffCells.flatMap((cell) =>
+              cell.detail.type === 'diff' ? cell.detail.files.map((file) => file.path) : []
+            )
+          ),
+        ]
+      : [];
+  const changedFileRows =
+    changedPaths.length +
+    new Set(changedPaths.map((path) => topDirectoryOf(path)).filter(Boolean)).size;
   // `buildToolCells` drops plan parts, and however many of them a turn made
   // they collapse into one row — so they are counted once, not N times.
   const hasPlan = toolParts.some(isPlanToolPart);
@@ -1835,12 +1838,53 @@ export function ChatWindow({
   const scrolledUpRef = useRef(false);
   scrolledUpRef.current = isScrolledUp;
 
+  /**
+   * Selection guard. While the reader holds a live text selection inside the
+   * transcript, auto-stick stands down: pinning to the bottom on every stream
+   * flush would rip the selection (and the cite/quote menu behind it) away
+   * mid-drag. Detaching is one-way — the view stays where it was left until
+   * the reader scrolls or takes the Latest pill, same as reading history.
+   */
+  const hasBlockingSelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+    const node = scrollNode;
+    if (!node) {
+      return false;
+    }
+    const anchor = selection.anchorNode;
+    const focus = selection.focusNode;
+    return Boolean(
+      (anchor && node.contains(anchor)) || (focus && node.contains(focus))
+    );
+  }, [scrollNode]);
+
   useEffect(() => {
-    if (!draft?.requestId || scrolledUpRef.current) {
+    const onSelectionChange = () => {
+      if (hasBlockingSelection()) {
+        stopScroll();
+      }
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [hasBlockingSelection, stopScroll]);
+
+  // A staged cite comment means the quote menu did its job — the transcript
+  // must not move under the editor.
+  useEffect(() => {
+    if (pendingCite) {
+      stopScroll();
+    }
+  }, [pendingCite, stopScroll]);
+
+  useEffect(() => {
+    if (!draft?.requestId || scrolledUpRef.current || hasBlockingSelection()) {
       return;
     }
     void scrollToBottom({ animation: 'instant', wait: false });
-  }, [draft?.requestId, scrollToBottom]);
+  }, [draft?.requestId, scrollToBottom, hasBlockingSelection]);
 
   // ---------------------------------------------------------------------
   // Jump-to-latest / unread
@@ -2248,32 +2292,36 @@ export function ChatWindow({
         onContextMenu={handleContextMenu}
         // Must match CITE_VIEWPORT_ATTR in lib/citeSelection.
         data-cite-viewport="true"
+        // Anchor root for disclosure toggles (see `Disclosure` in
+        // transcript/ToolCell): the nearest scroller that owns the reading
+        // position.
+        data-transcript-scroller="true"
         className="scrollbar-auto-hide relative min-h-0 flex-1 overflow-y-auto focus-visible:[outline-offset:-2px]"
       >
         <div
           ref={contentRef}
           className={cn(
             /*
-              The bottom pad is exactly the composer's height, published by
+              The bottom pad is the composer's height, published by
               `App.tsx` as `--composer-dock-height` (the fallback covers the
-              frame before the dock is measured).
+              frame before the dock is measured), plus the fade band plus a
+              24px breathing gap.
 
-              Exactly, not plus a margin: the composer floats over this
-              scroller, so the pad is only there to stop the last message
-              being stranded underneath it. The fade band above the dock is
-              part of that pad: docked, the newest line rests at the *top* of
-              the ramp, so live text is never dimmed and the gradient shows
-              only background (invisible); scrolled up, content slides under
-              the band and dissolves instead of hard-clipping at the slab
-              edge. Keep the two in sync — the band is `3.5rem`
+              The composer floats over this scroller, so the pad is what stops
+              the last message being stranded underneath it. The fade band
+              above the dock is part of that pad: docked, the newest line
+              rests *above* the ramp, so live text is never dimmed and the
+              gradient shows only background (invisible); scrolled up, content
+              slides under the band and dissolves instead of hard-clipping at
+              the slab edge. Keep the two in sync — the band is `4rem`
               (`.scroll-edge-fade-bottom`).
             */
-            'flex w-full flex-col pt-8 pb-[calc(var(--composer-dock-height,7rem)+3.5rem)]',
+            'flex w-full flex-col pt-8 pb-[calc(var(--composer-dock-height,7rem)+4rem+24px)]',
             COLUMN_PADDING,
             emptyKind && 'min-h-full justify-center'
           )}
         >
-          <div className="mx-auto flex w-full max-w-content-max flex-1 flex-col">{body}</div>
+          <div className="mx-auto flex w-full max-w-composer flex-1 flex-col">{body}</div>
         </div>
       </div>
 
@@ -2294,29 +2342,36 @@ export function ChatWindow({
         floating composer slab — dsh's composer-seat ramp. Always on, not
         scroll-conditional: detached, mid-transcript content slides under the
         slab and would otherwise hard-clip at its top edge (the cut lands
-        mid-glyph, inset from the content edges, because the slab is narrower
-        than the transcript column); docked, the band overlaps only the tail
-        of the newest message, where a soft dissolve reads as depth rather
+        mid-glyph, inset from the content edges, because the slab shares the
+        transcript column); docked, the band overlaps only background above
+        the newest message, where a soft dissolve reads as depth rather
         than as loss. A state-dependent seam flickers on every scroll-state
-        flip; a constant one is furniture.
+        flip; a constant one is furniture. Rides `bottom` with a transition so
+        composer growth (multiline, attachments, tray) carries it smoothly.
       */}
       <div
         aria-hidden
-        className="scroll-edge-fade-bottom pointer-events-none absolute inset-x-0 bottom-[var(--composer-dock-height,7rem)] z-[5]"
+        className="scroll-edge-fade-bottom pointer-events-none absolute inset-x-0 bottom-[var(--composer-dock-height,7rem)] z-[5] transition-[bottom] duration-150 ease-out motion-reduce:transition-none"
       />
 
       {/*
-        Always mounted so it can animate, and hysteretic (show past 120px,
-        hide inside 40px) so it cannot strobe while the transcript settles.
+        Centred jump pill: horizontal centre of the transcript, 16px above the
+        composer dock, riding `bottom` with the same transition as the fade so
+        composer growth carries both as one object. Always mounted so it can
+        animate, and hysteretic (show past 120px, hide inside 40px) so it
+        cannot strobe while the transcript settles.
       */}
       <button
         type="button"
-        onClick={() => void scrollToBottom({ animation: 'smooth' })}
+        onClick={() => {
+          const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+          void scrollToBottom({ animation: reduce ? 'instant' : 'smooth' });
+        }}
         tabIndex={isDetached ? 0 : -1}
         aria-hidden={!isDetached}
         className={cn(
           // Rides above the floating composer rather than behind it.
-          'absolute bottom-[calc(var(--composer-dock-height,7rem)+0.75rem)] right-4 z-10 inline-flex h-7 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-overlay px-2.5 text-2xs text-text-secondary shadow-elevated transition-[opacity,transform] duration-150 ease-out hover:text-text-primary motion-reduce:transition-none',
+          'absolute bottom-[calc(var(--composer-dock-height,7rem)+16px)] left-1/2 z-10 inline-flex h-7 -translate-x-1/2 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-overlay px-2.5 text-2xs text-text-secondary shadow-elevated transition-[bottom,opacity,translate,transform] duration-150 ease-out hover:text-text-primary motion-reduce:transition-none',
           isDetached ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0'
         )}
       >

@@ -51,6 +51,7 @@ import {
 import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
 import { notify, notifyError } from '../lib/notify';
 import { hasPendingApprovalInParts } from '../lib/attention';
+import { formatSnoozeClockLabel } from '../lib/snooze';
 import {
   applyMetaEvent,
   applyNoticeEvent,
@@ -1147,13 +1148,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createConversation: async () => {
     /*
-      "New chat" means new chat *here*. The project comes from the conversation
-      on screen, not from the main process's remembered id — that only moves on
-      an explicit workspace change, so opening a chat in another folder and
-      hitting the shortcut filed the new chat under the previous folder.
+      "New chat" means new chat *here*. The project and mode come from the
+      conversation on screen, not from the main process's remembered id — that
+      only moves on an explicit workspace change, so opening a chat in another
+      folder and hitting the shortcut filed the new chat under the previous
+      folder.
 
       Reading an unfiled chat states `null`, which is equally deliberate: it
       keeps the next chat unfiled instead of adopting the last project used.
+      Mode rides along for the same reason: a Code project chat spawns the next
+      Code project chat, never an unfiled Work chat that would vanish from the
+      Code sidebar.
     */
     const { conversations, selectedConversationId, activeView } = get();
     const active = activeView === 'chat' && selectedConversationId
@@ -1161,7 +1166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       : null;
 
     const created = await window.atlasChat.conversations.create(
-      active ? { projectId: active.projectId } : undefined
+      active ? { projectId: active.projectId, workspaceMode: active.workspaceMode } : undefined
     );
 
     await get().refreshConversationList();
@@ -1629,6 +1634,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           entry.id === conversationId ? updated : entry
         ),
       }));
+      // The row vanishes into the (usually collapsed) Snoozed shelf, so the
+      // outcome happens off-screen: confirm it with the wake time, plus Undo.
+      if (snoozedUntil !== null) {
+        const clock = formatSnoozeClockLabel(snoozedUntil);
+        notify({
+          tone: 'success',
+          title: clock ? `Snoozed until ${clock}` : 'Chat snoozed',
+          actionLabel: 'Undo',
+          onAction: () => {
+            void get().setConversationSnoozed(conversationId, null);
+          },
+        });
+      }
     } catch (error) {
       set({ conversations: previous });
       notifyError(snoozedUntil === null ? 'Could not wake the chat' : 'Could not snooze the chat', error);

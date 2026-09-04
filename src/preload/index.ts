@@ -6,6 +6,8 @@ import type {
   ConversationContextMenuAction,
   ProjectContextMenuAction,
   RendererApi,
+  SaveImageRequest,
+  SaveImageResult,
   ShowChatSelectionMenuRequest,
   ShowConversationContextMenuRequest,
   ShowProjectContextMenuRequest,
@@ -387,6 +389,14 @@ const api: RendererApi = {
       ipcRenderer.on(IPC_CHANNELS.imagesCopyRequest, handler);
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.imagesCopyRequest, handler);
+      };
+    },
+    save: (request: SaveImageRequest) => ipcRenderer.invoke(IPC_CHANNELS.imagesSave, request) as Promise<SaveImageResult>,
+    onSaveRequest: (listener: (src: string) => void) => {
+      const handler = (_event: unknown, src: string) => listener(src);
+      ipcRenderer.on(IPC_CHANNELS.imagesSaveRequest, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.imagesSaveRequest, handler);
       };
     }
   }

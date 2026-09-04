@@ -168,3 +168,90 @@ test('a probe returns its lease, so repeated tests cannot pin the server', async
   // the lease must come back either way.
   assert.equal(leases.returned, 3, 'every lease came back');
 });
+
+test('acp mode registers the ACP adapter instead of the SDK one', async () => {
+  const { controller, registry, changes } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    integrationMode: 'acp'
+  });
+
+  await controller.syncRegistry();
+
+  const registered = registry.get('opencode');
+  assert.ok(registered);
+  assert.equal(registered.providerId, 'opencode');
+  assert.equal(registered.constructor.name, 'OpenCodeAcpAdapter');
+  assert.equal(changes.length, 1);
+});
+
+test('switching modes swaps the registry entry and announces again', async () => {
+  const { controller, registry, changes } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    integrationMode: 'server'
+  });
+
+  await controller.syncRegistry();
+  const first = registry.get('opencode');
+  assert.equal(first?.constructor.name, 'OpenCodeAgentAdapter');
+
+  await controller.updateSettings({ integrationMode: 'acp' });
+  const second = registry.get('opencode');
+  assert.equal(second?.constructor.name, 'OpenCodeAcpAdapter');
+  assert.notEqual(first, second);
+  assert.equal(changes.length, 2);
+
+  // Same mode again: no re-announce.
+  await controller.syncRegistry();
+  assert.equal(changes.length, 2);
+});
+
+test('a dead ACP child evicts its client so the next turn respawns', async () => {
+  const { controller } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    integrationMode: 'acp'
+  });
+  const withExit = controller as unknown as {
+    getAcpClient(directory: string): { started: boolean };
+  };
+
+  const first = withExit.getAcpClient('/proj');
+  const second = withExit.getAcpClient('/proj');
+  assert.equal(first, second, 'live clients are reused');
+
+  // The seam fake has no exit hook; eviction is covered by the default branch.
+  // Here the contract is reuse-while-live plus binary-path retirement.
+  await controller.updateSettings({ binaryPath: '/other/opencode' });
+  const third = withExit.getAcpClient('/proj');
+  assert.notEqual(third, first, 'binary change retires cached clients');
+  await controller.shutdown();
+});
+
+test('onExit evicts the dead ACP client so the next use respawns', async () => {
+  const { controller } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    integrationMode: 'acp'
+  });
+  const exits: Array<() => void> = [];
+  const control = controller as unknown as {
+    deps: { createAcpClient?: unknown };
+    getAcpClient(directory: string): object;
+  };
+  let builds = 0;
+  control.deps.createAcpClient = (_directory: string, options: { onExit: () => void }) => {
+    builds += 1;
+    exits.push(options.onExit);
+    return { started: false, hasInflight: () => false, shutdown: async () => undefined };
+  };
+
+  const first = control.getAcpClient('/proj');
+  assert.equal(control.getAcpClient('/proj'), first);
+  exits[0]!();
+  const second = control.getAcpClient('/proj');
+  assert.notEqual(second, first, 'evicted clients are rebuilt');
+  assert.equal(builds, 2);
+  await controller.shutdown();
+});

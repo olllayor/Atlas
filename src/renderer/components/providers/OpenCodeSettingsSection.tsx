@@ -28,11 +28,9 @@ const DOT_CLASS: Record<Tone, string> = {
 };
 
 const MODES: Array<{ id: OpenCodeIntegrationMode; label: string; hint: string }> = [
-  { id: 'server', label: 'SDK server', hint: 'Atlas runs opencode serve and drives it over the SDK.' }
+  { id: 'server', label: 'SDK server', hint: 'Atlas runs opencode serve and drives it over the SDK.' },
+  { id: 'acp', label: 'ACP', hint: 'Atlas drives opencode acp over stdio. Newer path, same models.' }
 ];
-// ACP transport is schema-reserved (`integrationMode: 'acp'`) but has no client
-// behind it yet. Keep it out of the UI until the stdio driver lands, so nobody
-// can persist a mode the main process ignores.
 
 /** Did this write move any field the probe's answer depended on? */
 function changesConfiguration(
@@ -263,7 +261,8 @@ export function OpenCodeSettingsSection() {
             />
           </div>
 
-          <>
+          {mode === 'server' ? (
+            <>
               <div className="flex items-start justify-between gap-6 py-2">
                 <div className="min-w-0">
                   <div className="text-md font-normal text-text-primary">Server URL</div>
@@ -313,6 +312,11 @@ export function OpenCodeSettingsSection() {
                 </div>
               </div>
             </>
+          ) : (
+            <p className="py-2 text-sm leading-relaxed text-text-tertiary">
+              ACP needs no server: Atlas spawns <code>opencode acp</code> per project and signs in with your CLI login.
+            </p>
+          )}
 
           <p className="pt-2 text-xs text-text-tertiary">
             OpenCode signs in on its own: run <code>opencode auth login</code>. It runs its own tools during a turn.

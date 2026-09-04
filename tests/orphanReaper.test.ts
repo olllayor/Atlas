@@ -48,3 +48,13 @@ test('reapOrphanedOpenCodeServers invokes killer for all detected orphans', asyn
   assert.deepEqual(reaped, [5001, 5002]);
   assert.deepEqual(killed, [5001, 5002]);
 });
+
+test('parseOrphanedOpenCodePids also catches opencode acp orphans', () => {
+  const samplePs = `
+ 1234     1 /opt/homebrew/bin/opencode acp --cwd /proj
+ 1235   500 /opt/homebrew/bin/opencode acp --cwd /proj
+ 1236     1 /usr/bin/python3 -m http.server
+  `;
+
+  assert.deepEqual(parseOrphanedOpenCodePids(samplePs), [1234]);
+});

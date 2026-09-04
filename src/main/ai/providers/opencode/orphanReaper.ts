@@ -1,13 +1,14 @@
 /**
- * Finds and kills orphaned `opencode serve` child processes.
+ * Finds and kills orphaned `opencode serve` and `opencode acp` child processes.
  *
  * When Atlas crashes or is restarted during development (`electron-vite dev`),
  * child processes spawned with `detached: true` are reparented to launchd/init
  * (PID 1). Because they are in their own process group, the OS does not send
  * SIGHUP or SIGTERM on parent death.
  *
- * This reaper runs on boot and kills any `opencode serve` process whose parent
- * PID is 1, stopping orphaned servers from accumulating and exhausting swap.
+ * This reaper runs on boot and kills any `opencode serve` or `opencode acp`
+ * process whose parent PID is 1, stopping orphaned servers and agents from
+ * accumulating and exhausting swap.
  */
 
 import { execFile } from 'node:child_process';
@@ -23,7 +24,7 @@ function resolvePs(): string | null {
   return resolvedPs;
 }
 
-const OPENCODE_SERVE_PATTERN = /\bopencode\d*(\.exe)?\s+serve\b/i;
+const OPENCODE_SERVE_PATTERN = /\bopencode\d*(\.exe)?\s+(serve|acp)\b/i;
 
 /**
  * Pure parser for `ps -A -o pid=,ppid=,args=`.

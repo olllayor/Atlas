@@ -314,6 +314,134 @@ test('ClaudeAgentAdapter: tool approval intercept and resolution', async () => {
   assert.equal(resolvedApprovalId, requestedApprovalId);
 });
 
+test('ClaudeAgentAdapter: context-less calls run scratch sessions with tools disabled', async () => {
+  let capturedOptions: Record<string, unknown> = {};
+  let canUseToolCb: any;
+
+  const fakeQuery = ((params: { options: Record<string, unknown> & { canUseTool: any } }): Query => {
+    capturedOptions = params.options;
+    canUseToolCb = params.options.canUseTool;
+
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      const decision = await canUseToolCb('Bash', { command: 'ls' }, {
+        signal: new AbortController().signal,
+        toolUseID: 'call-1'
+      });
+      assert.equal(decision.behavior, 'deny');
+      yield {
+        type: 'result',
+        subtype: 'success',
+        duration_ms: 10,
+        duration_api_ms: 5,
+        is_error: false,
+        num_turns: 1,
+        result: 'title',
+        stop_reason: 'end_turn',
+        total_cost_usd: 0,
+        session_id: 'scratch-1',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      } as unknown as SDKMessage;
+    }
+
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const sessions = memoryStore();
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions,
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  let approvals = 0;
+  const result = await adapter.streamChat({
+    apiKey: '',
+    modelId: 'sonnet',
+    messages: USER_MESSAGES,
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    onToolApprovalRequested: () => {
+      approvals += 1;
+    }
+  });
+
+  assert.equal(capturedOptions.persistSession, false);
+  assert.deepEqual(capturedOptions.allowedTools, []);
+  assert.equal(approvals, 0);
+  assert.equal(sessions.get('conv-1'), null);
+  assert.equal(result.content, '');
+});
+
+test('ClaudeAgentAdapter: read-only maps to plan permission mode', async () => {
+  let capturedOptions: Record<string, unknown> = {};
+
+  const fakeQuery = ((params: { options: Record<string, unknown> }): Query => {
+    capturedOptions = params.options;
+
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        duration_ms: 10,
+        duration_api_ms: 5,
+        is_error: false,
+        num_turns: 1,
+        result: 'ok',
+        stop_reason: 'end_turn',
+        total_cost_usd: 0,
+        session_id: 's-1',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      } as unknown as SDKMessage;
+    }
+
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions: memoryStore(),
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  await adapter.streamChat({
+    apiKey: '',
+    modelId: 'sonnet',
+    messages: USER_MESSAGES,
+    signal: new AbortController().signal,
+    toolPermissionMode: 'read-only',
+    agentContext: { conversationId: 'conv-ro', workspaceRoot: '/tmp/workspace' },
+    onChunk: () => {}
+  });
+
+  assert.equal(capturedOptions.permissionMode, 'plan');
+});
+
 test('ClaudeAgentAdapter: tool approval deny returns decline message', async () => {
   let canUseToolCb: any;
 
@@ -381,4 +509,177 @@ test('ClaudeAgentAdapter: tool approval deny returns decline message', async () 
       });
     }
   });
+});
+
+test('ClaudeAgentAdapter: fails turn and clears session on authentication_failed assistant event (t3code PR #8869, PR #9468)', async () => {
+  const fakeQuery = (() => {
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: 'assistant',
+        error: 'authentication_failed',
+        message: {
+          id: 'msg-err',
+          content: [{ type: 'text', text: 'Please run /login' }]
+        }
+      } as unknown as SDKMessage;
+
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        session_id: 'session-auth-fail'
+      } as unknown as SDKMessage;
+    }
+
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const sessions = memoryStore();
+  sessions.set({ conversationId: 'conv-auth-fail', sessionId: 'stale-session', directory: '/tmp/workspace' });
+
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions,
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  await assert.rejects(
+    async () => {
+      await adapter.streamChat({
+        apiKey: '',
+        modelId: 'sonnet',
+        messages: USER_MESSAGES,
+        signal: new AbortController().signal,
+        agentContext: {
+          conversationId: 'conv-auth-fail',
+          workspaceRoot: '/tmp/workspace'
+        },
+        onChunk: () => {}
+      });
+    },
+    (err: Error) => {
+      assert.match(err.message, /claude auth login/i);
+      return true;
+    }
+  );
+
+  // Session must be cleared so the user can re-authenticate and start fresh
+  assert.equal(sessions.get('conv-auth-fail'), null);
+});
+
+test('ClaudeAgentAdapter: clears session when resuming a missing conversation ID (t3code PR #9344)', async () => {
+  const fakeQuery = (() => {
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      throw new Error('Conversation session not found');
+    }
+
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const sessions = memoryStore();
+  sessions.set({ conversationId: 'conv-missing-session', sessionId: 'deleted-session-123', directory: '/tmp/workspace' });
+
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions,
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  await assert.rejects(
+    async () => {
+      await adapter.streamChat({
+        apiKey: '',
+        modelId: 'sonnet',
+        messages: USER_MESSAGES,
+        signal: new AbortController().signal,
+        agentContext: {
+          conversationId: 'conv-missing-session',
+          workspaceRoot: '/tmp/workspace'
+        },
+        onChunk: () => {}
+      });
+    },
+    /not found/i
+  );
+
+  assert.equal(sessions.get('conv-missing-session'), null);
+});
+
+test('ClaudeAgentAdapter: normalizes fable model alias to claude-fable-5-1 (t3code PR #9078)', async () => {
+  let capturedModel: string | undefined;
+
+  const fakeQuery = ((params: { options: { model?: string } }) => {
+    capturedModel = params.options.model;
+
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: 'sess-fable',
+        usage: { input_tokens: 1, output_tokens: 1 }
+      } as unknown as SDKMessage;
+    }
+
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions: memoryStore(),
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  await adapter.streamChat({
+    apiKey: '',
+    modelId: 'fable',
+    messages: USER_MESSAGES,
+    signal: new AbortController().signal,
+    agentContext: {
+      conversationId: 'conv-fable',
+      workspaceRoot: '/tmp/workspace'
+    },
+    onChunk: () => {}
+  });
+
+  assert.equal(capturedModel, 'claude-fable-5-1');
 });

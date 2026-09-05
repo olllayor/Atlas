@@ -16,7 +16,9 @@ import {
   formatSettledSectionLabel,
   groupSidebarConversationItems,
   isWorkChat,
+  parseScopeProjectId,
   resolveModelDisplayLabel,
+  resolveScopeProjectId,
   resolveSidebarRowVariant,
   sortProjectsByPin,
   splitPinnedSidebarItems,
@@ -331,4 +333,26 @@ test('work inbox groups by rolling recency windows', () => {
     groups.map((group) => group.label),
     ['Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'June']
   );
+});
+
+test('parseScopeProjectId accepts bare ids and rejects everything else', () => {
+  assert.equal(parseScopeProjectId('proj-1'), 'proj-1');
+  assert.equal(parseScopeProjectId(null), null);
+  assert.equal(parseScopeProjectId(''), null);
+  assert.equal(parseScopeProjectId(undefined), null);
+  assert.equal(parseScopeProjectId(42), null);
+  assert.equal(parseScopeProjectId({}), null);
+});
+
+test('resolveScopeProjectId keeps the scope until the project list has loaded', () => {
+  // Projects arrive after mount: clearing while the list is still empty would
+  // drop the restored scope every launch.
+  assert.equal(resolveScopeProjectId('proj-1', [], false), 'proj-1');
+  assert.equal(resolveScopeProjectId(null, [], false), null);
+});
+
+test('resolveScopeProjectId falls back to all projects when the project is gone', () => {
+  assert.equal(resolveScopeProjectId('proj-1', ['proj-1', 'proj-2'], true), 'proj-1');
+  assert.equal(resolveScopeProjectId('proj-gone', ['proj-1', 'proj-2'], true), null);
+  assert.equal(resolveScopeProjectId(null, ['proj-1'], true), null);
 });

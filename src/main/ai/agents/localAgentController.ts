@@ -699,7 +699,8 @@ export class LocalAgentController {
         launchArgs: settings.launchArgs,
         env: settings.env,
         customModels: settings.customModels,
-        cwd: this.defaultDirectory()
+        cwd: this.defaultDirectory(),
+        detectionDeps: this.deps.detectionDeps
       });
       return {
         agentId,

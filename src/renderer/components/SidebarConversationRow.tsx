@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { AlarmClock, Check, Clock, Folder, Pin } from 'lucide-react';
+import { AlarmClock, Check, Clock, Pin } from 'lucide-react';
 
 import type { ConversationChangeStats } from '../../shared/contracts';
 import { cn } from '../lib/utils';
+import { ProjectIcon } from './ProjectIcon';
 import type { AttentionLevel } from '../lib/attention';
 import type { SnoozePreset } from '../lib/snooze';
 import { RowIconButton } from './RowIconButton';
@@ -31,6 +32,8 @@ type SidebarConversationRowProps = {
   jumpLabel?: string | null;
   showJumpHint?: boolean;
   projectTitle?: string | null;
+  /** Project root: names the icon when the title is blank. */
+  projectRoot?: string | null;
   /** Nested rows hide the project name: the section header already says it. */
   hideProjectName?: boolean;
   branch?: string | null;
@@ -73,6 +76,7 @@ export function SidebarConversationRow({
   jumpLabel,
   showJumpHint = false,
   projectTitle = null,
+  projectRoot = null,
   hideProjectName = false,
   branch = null,
   changeStats = null,
@@ -227,7 +231,7 @@ export function SidebarConversationRow({
       <div className="flex h-6 items-center gap-1.5 text-sm">
         {projectTitle && !hideProjectName ? (
           <span className="flex min-w-0 items-center gap-1.5">
-            <Folder className="size-3.5 shrink-0 text-text-tertiary" strokeWidth={1.75} aria-hidden />
+            <ProjectIcon title={projectTitle} root={projectRoot ?? ''} className="size-3.5" />
             <span
               className={cn(
                 'truncate',

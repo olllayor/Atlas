@@ -322,7 +322,22 @@ function parseModelOptions(
     }
     for (const model of option.options) {
       const record = asRecord(model);
-      if (typeof record.value === 'string') {
+      if (Array.isArray(record.options)) {
+        for (const nested of record.options) {
+          const nestedRecord = asRecord(nested);
+          if (typeof nestedRecord.value === 'string') {
+            models.push({
+              value: nestedRecord.value,
+              name:
+                typeof nestedRecord.name === 'string'
+                  ? nestedRecord.name
+                  : typeof nestedRecord.label === 'string'
+                    ? nestedRecord.label
+                    : nestedRecord.value
+            });
+          }
+        }
+      } else if (typeof record.value === 'string') {
         models.push({
           value: record.value,
           name:

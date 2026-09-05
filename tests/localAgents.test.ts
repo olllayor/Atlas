@@ -23,6 +23,9 @@ test('local agent settings default an empty blob and strip unknown keys', () => 
   assert.deepEqual(parsed.settings, defaultLocalAgentSettings());
   assert.deepEqual(Object.keys(parsed.settings).sort(), [
     'acpCommand',
+    'antigravityAuthMethod',
+    'antigravityGcpLocation',
+    'antigravityGcpProject',
     'binaryPath',
     'color',
     'customModels',

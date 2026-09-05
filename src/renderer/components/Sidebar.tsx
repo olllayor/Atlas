@@ -24,6 +24,7 @@ import type {
 import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { usePersistentFlag } from '../hooks/useResizablePanel';
 import { useNow } from '../hooks/useNow';
+import { useIsFullScreen } from '../hooks/useIsFullScreen';
 import { cn } from '../lib/utils';
 import { isTimerWoken, resolveSnoozePresets, snoozeWakeLabel } from '../lib/snooze';
 import { RailSectionLabel } from './railPrimitives';
@@ -363,6 +364,9 @@ export function Sidebar({
    * enters, so the number has to be on the prop before that happens.
    */
   const hoverCardOpenDelay = useSidebarHoverCardDelay();
+
+  /** Drives the traffic-light drag strip: reserved windowed, gone fullscreen. */
+  const isFullScreen = useIsFullScreen();
 
   /**
    * Mode gate first: Work shows folderless chats, Code shows project chats.
@@ -988,9 +992,12 @@ export function Sidebar({
 
   {/*
     Hairline right divider on the rail: the seam used to read as dead space
-    (list px-3 + reserved scrollbar gutter + resize hit-area + transcript
+    (list padding + reserved scrollbar gutter + resize hit-area + transcript
     column pad stacking into ~30px of bare panel grey). The border gives the
-    eye an intentional edge; paddings stay.
+    eye an intentional edge; the list carries no right pad at all, so rows
+    end flush against the 6px scrollbar gutter — that gutter is the whole
+    remaining gap, and it cannot go lower without content shifting when the
+    list becomes scrollable.
   */}
   return (
     <aside
@@ -1006,9 +1013,18 @@ export function Sidebar({
         (x:16, ~70px wide), so on the 56px collapsed rail they cover the whole
         row and then some; nothing interactive may sit in it. The collapse
         toggle lives in the header row *below* this strip for that reason.
+
+        Fullscreen hides the traffic lights and the menu bar, so the strip
+        would be 52px of bare panel above the wordmark. It shrinks to 12px
+        there rather than vanishing: at zero the wordmark sat against the top
+        edge, and 12px lands its row on the breadcrumb's line in the main
+        titlebar, which keeps its full height because it carries content.
       */}
       <div
-        className="h-titlebar-height shrink-0"
+        className={cn(
+          'shrink-0',
+          isFullScreen ? 'h-titlebar-height-fullscreen' : 'h-titlebar-height'
+        )}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       />
 
@@ -1353,7 +1369,7 @@ export function Sidebar({
               const scrolled = event.currentTarget.scrollTop > 2;
               setIsScrolled(scrolled);
             }}
-            className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto px-3 pb-2"
+            className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto pl-3 pr-0 pb-2"
             style={
               isScrolled && translucent
                 ? ({

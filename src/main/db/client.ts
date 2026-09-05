@@ -19,6 +19,7 @@ import { FileChangesRepo } from './repositories/fileChangesRepo';
 import { WorkspaceCheckpointsRepo } from './repositories/workspaceCheckpointsRepo';
 import { TerminalHistoryRepo } from './repositories/terminalHistoryRepo';
 import { PluginAuditRepo } from './repositories/pluginAuditRepo';
+import { LocalAgentSessionsRepo } from './repositories/localAgentSessionsRepo';
 import { OpenCodeSessionsRepo } from './repositories/opencodeSessionsRepo';
 import { applySchema } from './schema';
 
@@ -42,6 +43,7 @@ export type AppDatabase = {
   sites: SitesRepo;
   pluginAudit: PluginAuditRepo;
   opencodeSessions: OpenCodeSessionsRepo;
+  localAgentSessions: LocalAgentSessionsRepo;
 };
 
 /**
@@ -104,6 +106,7 @@ export function createAppDatabase(
     visuals: new VisualsRepo(raw),
     pluginAudit: new PluginAuditRepo(raw),
     opencodeSessions: new OpenCodeSessionsRepo(raw),
+    localAgentSessions: new LocalAgentSessionsRepo(raw),
     sites: new SitesRepo(raw),
   };
 }

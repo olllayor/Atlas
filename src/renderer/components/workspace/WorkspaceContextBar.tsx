@@ -34,6 +34,7 @@ import { PluginToolsChip } from './PluginToolsChip';
 import { JobsChip } from './JobsChip';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -96,7 +97,7 @@ const ContextChip = forwardRef<
  * mode switch stays in the title bar because it describes the conversation,
  * not the turn.
  *
- * It shares the composer's centred column (`max-w-composer`, the 48rem
+ * It shares the composer's centred column (`max-w-composer`, the 60rem
  * composer measure, plus the 6px
  * scrollbar rail) so the chips line up with the slab below them.
  */
@@ -115,6 +116,7 @@ export function WorkspaceContextBar({
   onSelect,
   onDetach,
   onReveal,
+  onToggleAutoPull,
   onRevealTarget,
   onOpenSettings,
   onExecutionTargetChange,
@@ -146,6 +148,8 @@ export function WorkspaceContextBar({
   onSelect: (projectId: string) => void;
   onDetach: () => void;
   onReveal: (projectId: string) => void;
+  /** Toggles the background pull of the project's default branch. */
+  onToggleAutoPull?: (projectId: string, autoPull: boolean) => void;
   /** Reveals the conversation's project or worktree root, resolved safely in main. */
   onRevealTarget?: (target: 'project' | 'worktree') => void;
   /** Opens Settings → Beta so cloud can be enabled. */
@@ -216,6 +220,7 @@ export function WorkspaceContextBar({
                   onSelect={onSelect}
                   onDetach={onDetach}
                   onReveal={onReveal}
+                  onToggleAutoPull={onToggleAutoPull}
                   onOpenEnvironment={() => setEnvironmentOpen(true)}
                   onInstructionsChanged={onProjectContextChanged}
                 />
@@ -722,6 +727,7 @@ function ProjectMenu({
   onSelect,
   onDetach,
   onReveal,
+  onToggleAutoPull,
   onOpenEnvironment,
   onInstructionsChanged,
 }: {
@@ -739,6 +745,7 @@ function ProjectMenu({
   onSelect: (projectId: string) => void;
   onDetach: () => void;
   onReveal: (projectId: string) => void;
+  onToggleAutoPull?: (projectId: string, autoPull: boolean) => void;
   onOpenEnvironment: () => void;
   onInstructionsChanged?: () => void;
 }) {
@@ -898,6 +905,21 @@ function ProjectMenu({
               <FolderOpen className="size-4 shrink-0" strokeWidth={1.75} />
               Reveal in file manager
             </DropdownMenuItem>
+            {/*
+              Folder-level sync preference, beside the other folder verbs. Only
+              for real git checkouts: pulling a non-repo is meaningless, and a
+              missing folder has nothing to pull.
+            */}
+            {onToggleAutoPull ? (
+              <DropdownMenuCheckboxItem
+                checked={project.autoPull}
+                disabled={!project.exists || !project.isGitRepository}
+                onCheckedChange={(checked) => onToggleAutoPull(project.id, checked === true)}
+                className="flex cursor-pointer items-center gap-2 px-2.5 py-2 pl-8 text-sm"
+              >
+                Pull default branch in background
+              </DropdownMenuCheckboxItem>
+            ) : null}
             <DropdownMenuItem
               onSelect={onDetach}
               className="flex cursor-pointer items-center gap-2 px-2.5 py-2 text-sm"

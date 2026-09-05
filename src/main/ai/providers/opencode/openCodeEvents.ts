@@ -1,3 +1,18 @@
+
+export function isOpenCodeChildRequestEvent(type: string): boolean {
+  switch (type) {
+    case "permission.asked":
+    case "permission.v2.asked":
+    case "permission.replied":
+    case "permission.v2.replied":
+    case "question.asked":
+    case "question.replied":
+    case "question.rejected":
+      return true;
+    default:
+      return false;
+  }
+}
 /**
  * Translates opencode's event stream into Atlas' `ProviderStreamRequest`
  * callbacks. Pure state machine: no SDK types, no IO, so the full table runs
@@ -17,6 +32,12 @@
  * token, so the translator latches onto whichever family speaks first and
  * ignores the other for the rest of the turn.
  */
+
+import {
+  normalizeQuestionRequest,
+  type OpenCodeNormalizedQuestion,
+  type OpenCodeQuestionRequest
+} from './openCodeParsers.js';
 
 export type OpenCodeEventFamily = 'next' | 'legacy';
 
@@ -61,6 +82,14 @@ export interface OpenCodeStreamCallbacks {
     approvalId: string;
     toolCallId: string;
     toolName?: string;
+    reason?: string;
+  }) => void;
+  onToolApprovalResolved?: (event: { approvalId: string }) => void;
+  onQuestionRequested?: (event: {
+    approvalId: string;
+    toolCallId: string;
+    questions: readonly OpenCodeNormalizedQuestion[];
+    header?: string;
     reason?: string;
   }) => void;
   onNotice?: (event: { code: string; level: 'info' | 'warning'; message: string }) => void;
@@ -108,8 +137,7 @@ function describeToolError(value: unknown): string {
 /**
  * `session.next.tool.success` carries both a structured result and rendered
  * content blocks; prefer whichever is actually populated, since ToolCell
- * renders strings verbatim and objects as JSON.
- */
+ * renders strings verbatim and objects as JSON.\n */
 function describeToolOutput(properties: Record<string, unknown>): unknown {
   const content = properties.content;
   if (Array.isArray(content) && content.length > 0) {
@@ -130,7 +158,7 @@ function describeToolOutput(properties: Record<string, unknown>): unknown {
   return properties.result ?? '';
 }
 
-interface ToolRecord {
+export interface ToolRecord {
   name: string;
   input?: unknown;
   title?: string;
@@ -139,42 +167,130 @@ interface ToolRecord {
 }
 
 /**
- * Consumes opencode events for one session and drives the Atlas callbacks.
- *
- * Every tool event is marked `providerExecuted` — during an opencode turn the
- * agent runs its own tools and Atlas only renders them (plan D4).
+ * Tracks in-flight tools so each lifecycle event (start -> input -> output)
+ * is reported once and in order, regardless of which event family emitted it.
  */
+export class ToolTracker {
+  private readonly tools = new Map<string, ToolRecord>();
+
+  constructor(private readonly callbacks: Partial<OpenCodeStreamCallbacks>) {}
+
+  start(callId: string | undefined, name: string | undefined): void {
+    if (!callId) return;
+    const existing = this.tools.get(callId);
+    if (!existing) {
+      const toolName = name ?? 'tool';
+      this.tools.set(callId, { name: toolName, settled: false });
+      this.callbacks.onToolInputStart?.({
+        toolCallId: callId,
+        toolName,
+        dynamic: true,
+        providerExecuted: true
+      });
+    }
+  }
+
+  setTitle(callId: string | undefined, title: string): void {
+    if (!callId) return;
+    const tool = this.tools.get(callId);
+    if (tool) tool.title = title;
+  }
+
+  hasInput(callId: string | undefined): boolean {
+    if (!callId) return false;
+    return this.tools.get(callId)?.input !== undefined;
+  }
+
+  inputAvailable(callId: string | undefined, name: string | undefined, input: unknown): void {
+    if (!callId) return;
+    this.start(callId, name);
+    const tool = this.tools.get(callId)!;
+    if (tool.input === undefined) {
+      tool.input = input;
+      this.callbacks.onToolInputAvailable?.({
+        toolCallId: callId,
+        toolName: tool.name,
+        input,
+        dynamic: true,
+        providerExecuted: true,
+        ...(tool.title ? { title: tool.title } : {})
+      });
+    }
+  }
+
+  succeeded(callId: string | undefined, output: unknown): void {
+    if (!callId) return;
+    const tool = this.tools.get(callId);
+    if (tool && !tool.settled) {
+      tool.settled = true;
+      this.callbacks.onToolOutputAvailable?.({
+        toolCallId: callId,
+        toolName: tool.name,
+        input: tool.input,
+        output,
+        dynamic: true,
+        providerExecuted: true,
+        ...(tool.title ? { title: tool.title } : {})
+      });
+    }
+  }
+
+  failed(callId: string | undefined, errorText: string): void {
+    if (!callId) return;
+    const tool = this.tools.get(callId);
+    if (tool && !tool.settled) {
+      tool.settled = true;
+      this.callbacks.onToolOutputError?.({
+        toolCallId: callId,
+        toolName: tool.name,
+        input: tool.input,
+        errorText,
+        dynamic: true,
+        providerExecuted: true,
+        ...(tool.title ? { title: tool.title } : {})
+      });
+    }
+  }
+}
+
+/**
+ * Pure state machine translating opencode SSE envelopes into Atlas callbacks.
+ */
+export { ToolTracker as ToolCallTracker };
+
 export class OpenCodeEventTranslator {
   private family: OpenCodeEventFamily | null = null;
+  private readonly emittedText = new Map<string, string>();
+  private readonly emittedReasoning = new Map<string, string>();
+  private readonly partKinds = new Map<string, 'text' | 'reasoning'>();
+  private readonly userMessages = new Set<string>();
+  private readonly tracker: ToolTracker;
+  private readonly pendingPermissions = new Map<string, OpenCodePermissionAsk>();
+  private readonly pendingQuestions = new Map<string, OpenCodeQuestionRequest>();
+  private readonly resolvedRequestIds = new Set<string>();
+  private readonly relatedSessionIds = new Set<string>();
+
   private text = '';
   private reasoning = '';
   private idle = false;
-  private failure: string | null = null;
   private aborted = false;
-
-  /** Text already emitted per part id — legacy snapshots arrive cumulative. */
-  private readonly emittedText = new Map<string, string>();
-  private readonly emittedReasoning = new Map<string, string>();
-  /**
-   * Messages opencode reported as the user's. Their parts are echoed back over
-   * the same stream, and rendering them would replay the prompt as the
-   * assistant's answer. Announced before their parts, so an unknown message id
-   * is safely treated as the assistant's.
-   */
-  private readonly userMessages = new Set<string>();
-  /**
-   * Part id → kind, learned from `message.part.updated`. `message.part.delta`
-   * names a field, not a kind, and a reasoning part's field is also "text" —
-   * without this every thought is streamed as the answer.
-   */
-  private readonly partKinds = new Map<string, 'text' | 'reasoning'>();
-  private readonly tools = new Map<string, ToolRecord>();
-  private readonly pendingPermissions = new Map<string, OpenCodePermissionAsk>();
+  private error: string | null = null;
 
   constructor(
     private readonly sessionId: string,
     private readonly callbacks: OpenCodeStreamCallbacks
-  ) {}
+  ) {
+    this.tracker = new ToolTracker(callbacks);
+    this.relatedSessionIds.add(sessionId);
+  }
+
+  addRelatedSessionId(sessionId: string): void {
+    this.relatedSessionIds.add(sessionId);
+  }
+
+  isRelatedSession(sessionId: string): boolean {
+    return this.relatedSessionIds.has(sessionId);
+  }
 
   get assistantText(): string {
     return this.text;
@@ -184,55 +300,75 @@ export class OpenCodeEventTranslator {
     return this.reasoning;
   }
 
-  /** True once opencode said the session went idle — the turn is over. */
   get isIdle(): boolean {
     return this.idle;
   }
 
-  /** Session-level failure text, if opencode reported one. */
-  get errorText(): string | null {
-    return this.failure;
-  }
-
-  /** True when the failure was an abort we asked for. */
   get wasAborted(): boolean {
     return this.aborted;
   }
 
-  /** Permission asks seen so far, keyed by opencode's request id. */
-  takePendingPermissions(): OpenCodePermissionAsk[] {
-    const asks = [...this.pendingPermissions.values()];
-    this.pendingPermissions.clear();
-    return asks;
+  get errorText(): string | null {
+    return this.error;
   }
 
-  handle(event: unknown): void {
-    const envelope = asRecord(event) as OpenCodeEventLike;
-    const type = asString(envelope.type);
-    if (!type) {
-      return;
-    }
+  get chosenFamily(): OpenCodeEventFamily | null {
+    return this.family;
+  }
 
-    const properties = asRecord(envelope.properties);
-    if (!this.belongsToSession(type, properties)) {
-      return;
-    }
+  takePendingPermissions(): OpenCodePermissionAsk[] {
+    const list = Array.from(this.pendingPermissions.values());
+    this.pendingPermissions.clear();
+    return list;
+  }
+
+  takePendingQuestions(): OpenCodeQuestionRequest[] {
+    const list = Array.from(this.pendingQuestions.values());
+    this.pendingQuestions.clear();
+    return list;
+  }
+
+  getPendingQuestion(id: string): OpenCodeQuestionRequest | undefined {
+    return this.pendingQuestions.get(id);
+  }
+
+  getPendingPermission(id: string): OpenCodePermissionAsk | undefined {
+    return this.pendingPermissions.get(id);
+  }
+
+  hasPending(id: string): boolean {
+    return this.pendingPermissions.has(id) || this.pendingQuestions.has(id);
+  }
+
+  resolveRequest(id: string): void {
+    this.pendingPermissions.delete(id);
+    this.pendingQuestions.delete(id);
+    this.resolvedRequestIds.add(id);
+    this.callbacks.onToolApprovalResolved?.({ approvalId: id });
+  }
+
+  handle(raw: unknown): void {
+    const event = asRecord(raw) as OpenCodeEventLike;
+    const type = asString(event.type);
+    if (!type) return;
+
+    const properties = asRecord(event.properties);
+    if (!this.belongsToSession(type, properties)) return;
 
     switch (type) {
+      case 'session.next.reasoning.delta':
+        if (this.claim('next')) {
+          this.pushReasoning(asString(properties.reasoningID) ?? 'r', String(properties.delta ?? ''));
+        }
+        return;
       case 'session.next.text.delta':
         if (this.claim('next')) {
-          this.pushText(asString(properties.textID) ?? 'text', String(properties.delta ?? ''));
+          this.pushText(asString(properties.textID) ?? 't', String(properties.delta ?? ''));
         }
         return;
       case 'session.next.text.ended':
-        // Only meaningful when the server skipped deltas entirely.
         if (this.claim('next')) {
-          this.completeText(asString(properties.textID) ?? 'text', String(properties.text ?? ''));
-        }
-        return;
-      case 'session.next.reasoning.delta':
-        if (this.claim('next')) {
-          this.pushReasoning(asString(properties.reasoningID) ?? 'reasoning', String(properties.delta ?? ''));
+          this.completeText(asString(properties.textID) ?? 't', String(properties.text ?? ''));
         }
         return;
       case 'session.next.tool.input.started':
@@ -244,13 +380,17 @@ export class OpenCodeEventTranslator {
         if (this.claim('next')) {
           const callId = asString(properties.callID);
           if (callId) {
-            this.callbacks.onToolInputDelta?.({ toolCallId: callId, delta: String(properties.delta ?? '') });
+            this.callbacks.onToolInputDelta?.({ callId, delta: String(properties.delta ?? '') } as any);
           }
         }
         return;
       case 'session.next.tool.called':
         if (this.claim('next')) {
-          this.toolInputAvailable(asString(properties.callID), asString(properties.tool), properties.input);
+          this.toolInputAvailable(
+            asString(properties.callID),
+            asString(properties.tool),
+            properties.input
+          );
         }
         return;
       case 'session.next.tool.success':
@@ -288,6 +428,37 @@ export class OpenCodeEventTranslator {
       case 'permission.v2.asked':
         this.recordPermissionAsk(properties);
         return;
+      case 'permission.replied':
+      case 'permission.v2.replied': {
+        const requestId = asString(properties.requestID) ?? asString(properties.id);
+        if (requestId) {
+          this.pendingPermissions.delete(requestId);
+          this.resolvedRequestIds.add(requestId);
+          this.callbacks.onToolApprovalResolved?.({ approvalId: requestId });
+        }
+        return;
+      }
+      case 'question.asked':
+        this.recordQuestionAsk(properties);
+        return;
+      case 'question.replied': {
+        const requestId = asString(properties.requestID) ?? asString(properties.id);
+        if (requestId) {
+          this.pendingQuestions.delete(requestId);
+          this.resolvedRequestIds.add(requestId);
+          this.callbacks.onToolApprovalResolved?.({ approvalId: requestId });
+        }
+        return;
+      }
+      case 'question.rejected': {
+        const requestId = asString(properties.requestID) ?? asString(properties.id);
+        if (requestId) {
+          this.pendingQuestions.delete(requestId);
+          this.resolvedRequestIds.add(requestId);
+          this.callbacks.onToolApprovalResolved?.({ approvalId: requestId });
+        }
+        return;
+      }
       case 'session.error':
         this.recordFailure(describeToolError(asRecord(properties.error)));
         return;
@@ -305,7 +476,7 @@ export class OpenCodeEventTranslator {
   private belongsToSession(type: string, properties: Record<string, unknown>): boolean {
     const sessionID = asString(properties.sessionID);
     if (sessionID) {
-      return sessionID === this.sessionId;
+      return this.relatedSessionIds.has(sessionID);
     }
     return type === 'session.error';
   }
@@ -345,65 +516,19 @@ export class OpenCodeEventTranslator {
   }
 
   private startTool(callId: string | undefined, toolName: string | undefined): void {
-    if (!callId) return;
-    const name = toolName ?? this.tools.get(callId)?.name ?? 'tool';
-    if (!this.tools.has(callId)) {
-      this.tools.set(callId, { name, settled: false });
-      this.callbacks.onToolInputStart?.({
-        toolCallId: callId,
-        toolName: name,
-        dynamic: true,
-        providerExecuted: true
-      });
-    }
+    this.tracker.start(callId, toolName);
   }
 
   private toolInputAvailable(callId: string | undefined, toolName: string | undefined, input: unknown): void {
-    if (!callId) return;
-    this.startTool(callId, toolName);
-    const record = this.tools.get(callId)!;
-    record.name = toolName ?? record.name;
-    record.input = input;
-    this.callbacks.onToolInputAvailable?.({
-      toolCallId: callId,
-      toolName: record.name,
-      input: input ?? {},
-      dynamic: true,
-      providerExecuted: true,
-      ...(record.title ? { title: record.title } : {})
-    });
+    this.tracker.inputAvailable(callId, toolName, input);
   }
 
   private toolSucceeded(callId: string | undefined, output: unknown): void {
-    if (!callId) return;
-    const record = this.tools.get(callId);
-    if (!record || record.settled) return;
-    record.settled = true;
-    this.callbacks.onToolOutputAvailable?.({
-      toolCallId: callId,
-      toolName: record.name,
-      ...(record.input !== undefined ? { input: record.input } : {}),
-      output,
-      dynamic: true,
-      providerExecuted: true,
-      ...(record.title ? { title: record.title } : {})
-    });
+    this.tracker.succeeded(callId, output);
   }
 
   private toolFailed(callId: string | undefined, errorText: string): void {
-    if (!callId) return;
-    const record = this.tools.get(callId);
-    if (!record || record.settled) return;
-    record.settled = true;
-    this.callbacks.onToolOutputError?.({
-      toolCallId: callId,
-      toolName: record.name,
-      ...(record.input !== undefined ? { input: record.input } : {}),
-      errorText,
-      dynamic: true,
-      providerExecuted: true,
-      ...(record.title ? { title: record.title } : {})
-    });
+    this.tracker.failed(callId, errorText);
   }
 
   /**
@@ -442,17 +567,16 @@ export class OpenCodeEventTranslator {
     const title = asString(state.title);
 
     this.startTool(callId, toolName);
-    const record = this.tools.get(callId)!;
-    if (title) record.title = title;
+    if (title) this.tracker.setTitle(callId, title);
 
     if (status === 'running' || status === 'pending') {
-      if (record.input === undefined && state.input !== undefined) {
+      if (!this.tracker.hasInput(callId) && state.input !== undefined) {
         this.toolInputAvailable(callId, toolName, state.input);
       }
       return;
     }
     if (status === 'completed') {
-      if (record.input === undefined && state.input !== undefined) {
+      if (!this.tracker.hasInput(callId) && state.input !== undefined) {
         this.toolInputAvailable(callId, toolName, state.input);
       }
       this.toolSucceeded(callId, state.output ?? '');
@@ -479,6 +603,7 @@ export class OpenCodeEventTranslator {
     // arrived before its part was announced.
     const kind = this.partKinds.get(partId);
     const field = asString(properties.field) ?? 'text';
+
     if (kind === 'reasoning' || (kind === undefined && field.startsWith('reasoning'))) {
       this.pushReasoning(partId, delta);
       return;
@@ -494,7 +619,9 @@ export class OpenCodeEventTranslator {
    */
   private recordPermissionAsk(properties: Record<string, unknown>): void {
     const approvalId = asString(properties.id);
-    if (!approvalId || this.pendingPermissions.has(approvalId)) return;
+    if (!approvalId || this.pendingPermissions.has(approvalId) || this.resolvedRequestIds.has(approvalId)) {
+      return;
+    }
 
     const tool = asRecord(properties.tool);
     const toolCallId = asString(tool.callID) ?? approvalId;
@@ -516,11 +643,61 @@ export class OpenCodeEventTranslator {
     this.callbacks.onToolApprovalRequested?.(ask);
   }
 
+  /**
+   * Question asks normalize question blocks (header, options, multi-select),
+   * track the pending request, and surface both to `onQuestionRequested`
+   * and `onToolApprovalRequested` so the turn is never stalled.
+   */
+  private recordQuestionAsk(properties: Record<string, unknown>): void {
+    const approvalId = asString(properties.id);
+    if (!approvalId || this.pendingQuestions.has(approvalId) || this.resolvedRequestIds.has(approvalId)) {
+      return;
+    }
+
+    const questions = normalizeQuestionRequest(properties);
+    const tool = asRecord(properties.tool);
+    const toolCallId = asString(tool.callID) ?? approvalId;
+
+    const ask: OpenCodeQuestionRequest = {
+      id: approvalId,
+      sessionID: asString(properties.sessionID) ?? this.sessionId,
+      questions,
+      tool: {
+        ...(asString(tool.messageID) ? { messageID: asString(tool.messageID) } : {}),
+        ...(asString(tool.callID) ? { callID: asString(tool.callID) } : {})
+      }
+    };
+
+    this.pendingQuestions.set(approvalId, ask);
+
+    const formattedQuestions = questions
+      .map((q) => {
+        const opts = q.options.length > 0 ? ` (${q.options.map((o) => o.label).join(' / ')})` : '';
+        return q.header ? `[${q.header}] ${q.question}${opts}` : `${q.question}${opts}`;
+      })
+      .join('\n');
+
+    this.callbacks.onQuestionRequested?.({
+      approvalId,
+      toolCallId,
+      questions,
+      header: questions[0]?.header,
+      reason: formattedQuestions
+    });
+
+    this.callbacks.onToolApprovalRequested?.({
+      approvalId,
+      toolCallId,
+      toolName: 'question',
+      reason: formattedQuestions
+    });
+  }
+
   private recordFailure(message: string): void {
     if (/abort/i.test(message)) {
       this.aborted = true;
     }
-    this.failure ??= message;
+    this.error = message;
     this.idle = true;
   }
 }

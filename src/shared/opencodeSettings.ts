@@ -18,31 +18,14 @@ import type { OpenCodeSettingsSchema } from './opencodeSettingsSchema';
  *     instead of talking to a user-managed server.
  * - `enabled` defaults to **false**: the binding stays dormant until the user
  *   opts in from Settings (mirrors t3code's opt-in gating rationale).
+ *
+ * One transport, like t3code: Atlas drives `opencode serve` over the official
+ * SDK. The ACP client stack serves the other local agents, which have no
+ * server to connect to.
  */
 
 /** Provider id used everywhere (registry keys, models rows, keychain account prefix). */
 export const OPENCODE_PROVIDER_ID = 'opencode';
-
-/**
- * How Atlas talks to OpenCode. Both options are surfaced to the user in
- * Settings behind the same Beta toggle (plan decision D7):
- *
- * - `'server'` — deep SDK/server integration (default): Atlas spawns or
- *   connects to `opencode serve`, drives sessions over the official
- *   `@opencode-ai/sdk` HTTP surface. Pre-connect inventory, BYO remote server.
- * - `'acp'`    — Agent Client Protocol: Atlas launches `opencode acp`
- *   (JSON-RPC over stdio). Same runtime an ACP-registry ecosystem would drive;
- *   opens the door to other registry agents reusing one client stack.
- */
-export const OPENCODE_INTEGRATION_MODES = ['server', 'acp'] as const;
-export type OpenCodeIntegrationMode = (typeof OPENCODE_INTEGRATION_MODES)[number];
-
-export function isOpenCodeIntegrationMode(value: unknown): value is OpenCodeIntegrationMode {
-  return (
-    typeof value === 'string' &&
-    (OPENCODE_INTEGRATION_MODES as readonly string[]).includes(value)
-  );
-}
 
 export type OpenCodeSettings = z.output<typeof OpenCodeSettingsSchema>;
 

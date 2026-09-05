@@ -10,6 +10,9 @@ export const IPC_CHANNELS = {
   settingsOpenCodeUpdate: 'settings:opencode:update',
   settingsOpenCodeSetPassword: 'settings:opencode:setPassword',
   settingsOpenCodeProbe: 'settings:opencode:probe',
+  localAgentsList: 'localAgents:list',
+  localAgentsUpdate: 'localAgents:update',
+  localAgentsProbe: 'localAgents:probe',
   modelsList: 'models:list',
   modelsRefresh: 'models:refresh',
   modelsChanged: 'models:changed',
@@ -55,6 +58,7 @@ export const IPC_CHANNELS = {
   projectsDelete: 'projects:delete',
   projectsReveal: 'projects:reveal',
   projectsSetPinned: 'projects:setPinned',
+  projectsSetAutoPull: 'projects:setAutoPull',
   projectsListIdes: 'projects:listIdes',
   projectsOpenInIde: 'projects:openInIde',
   workspaceContext: 'workspace:context',
@@ -165,6 +169,8 @@ export const IPC_CHANNELS = {
   sitesPreviewTarget: 'sites:previewTarget',
   sitesOpenPreviewWindow: 'sites:openPreviewWindow',
   sitesExport: 'sites:export',
+  sitesExportToWorkspace: 'sites:exportToWorkspace',
+  sitesAnalyzeWorkspace: 'sites:analyzeWorkspace',
   sitesOpenInBrowser: 'sites:openInBrowser',
   subagentsList: 'subagents:list',
   subagentsFollowup: 'subagents:followup',
@@ -185,5 +191,7 @@ export const IPC_CHANNELS = {
   contextMenuShowChatSelection: 'context-menu:show-chat-selection',
   contextMenuShowConversation: 'context-menu:show-conversation',
   contextMenuShowProject: 'context-menu:show-project',
-  contextMenuShowSidebarBackground: 'context-menu:show-sidebar-background'
+  contextMenuShowSidebarBackground: 'context-menu:show-sidebar-background',
+  windowGetFullScreen: 'window:getFullScreen',
+  windowFullScreenChanged: 'window:fullScreenChanged'
 } as const;

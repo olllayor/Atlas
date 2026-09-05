@@ -248,7 +248,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
             'group/row relative flex items-center rounded-md transition-colors duration-150',
             variant === 'slim'
               ? '[content-visibility:auto] [contain-intrinsic-size:auto_36px]'
-              : '[content-visibility:auto] [contain-intrinsic-size:auto_80px]',
+              : '[content-visibility:auto] [contain-intrinsic-size:auto_92px]',
             isActive
               ? 'bg-bg-active text-text-primary'
               : isSelected
@@ -281,8 +281,8 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
             }}
             onDoubleClick={isArchived || !onStartRename ? undefined : () => onStartRename(item)}
             className={cn(
-              'relative flex min-w-0 flex-1 items-center rounded-md px-2.5 text-left cursor-pointer select-none',
-              variant === 'slim' ? 'h-9 py-0' : 'min-h-12 py-2',
+              'relative flex min-w-0 flex-1 items-center rounded-md px-3 text-left cursor-pointer select-none',
+              variant === 'slim' ? 'h-9 py-0' : 'min-h-14 py-2.5',
               indentClass,
               isActive
                 ? 'font-semibold text-text-primary'

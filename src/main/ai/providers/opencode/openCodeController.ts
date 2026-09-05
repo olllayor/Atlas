@@ -2,6 +2,10 @@
  * Owns the OpenCode integration's lifecycle: settings in, adapter registered,
  * server torn down on quit.
  *
+ * One transport, like t3code's: Atlas spawns (or connects to) `opencode serve`
+ * and drives it over the official SDK. The ACP client stack lives on for the
+ * other local agents, which have no server to talk to.
+ *
  * The gating rule is t3code's, verbatim in spirit: while the feature is
  * disabled the adapter is absent from the registry and *nothing probes* — no
  * spawn, no HTTP, no cost. Enabling constructs the runtime lazily, on the
@@ -20,8 +24,6 @@ import type { KeychainStore } from '../../../secrets/keychain.js';
 import { OPENCODE_SERVER_PASSWORD_ACCOUNT } from '../../../secrets/keychain.js';
 import type { ProviderRegistry } from '../../core/providerRegistry.js';
 import { OpenCodeAgentAdapter } from './OpenCodeAgentAdapter.js';
-import { OpenCodeAcpAdapter, probeOpenCodeAcp } from './OpenCodeAcpAdapter.js';
-import { AcpClient } from '../../acp/acpClient.js';
 import { createOpenCodeAgentClient } from './OpenCodeAgentClient.js';
 import { OpenCodeRuntime } from './OpenCodeRuntime.js';
 import { reapOrphanedOpenCodeServers } from './orphanReaper.js';
@@ -40,16 +42,11 @@ export interface OpenCodeControllerDeps {
   readonly onServerExited?: () => void;
   /** Seam for tests: build a runtime that never spawns a real process. */
   readonly createRuntime?: () => OpenCodeRuntime;
-  /** Seam for tests: build ACP clients that never spawn a real process. */
-  readonly createAcpClient?: (directory: string, options: { onExit: () => void }) => AcpClient;
 }
 
 export class OpenCodeController {
   private runtime: OpenCodeRuntime | null = null;
   private adapter: OpenCodeAgentAdapter | null = null;
-  private acpAdapter: OpenCodeAcpAdapter | null = null;
-  private acpClients = new Map<string, { client: AcpClient; idleTimer: NodeJS.Timeout | null }>();
-  private acpBinaryPath: string | null = null;
   /** Last parse failure already logged; keeps a per-call read from spamming. */
   private lastSettingsParseError: string | null = null;
 
@@ -105,10 +102,9 @@ export class OpenCodeController {
   }
 
   /**
-   * Register or unregister the adapter to match `enabled`, using the SDK or
-   * ACP adapter per `integrationMode`. Idempotent, so it can be called on
-   * boot and after every settings write. A mode switch swaps the registry
-   * entry; the idle runtime is left alone until its own shutdown.
+   * Register or unregister the adapter to match `enabled`. Idempotent, so it
+   * can be called on boot and after every settings write; the idle runtime is
+   * left alone until its own shutdown.
    */
   async syncRegistry(): Promise<void> {
     const settings = this.getSettings();
@@ -123,19 +119,16 @@ export class OpenCodeController {
       return;
     }
 
-    const wanted = settings.integrationMode === 'acp' ? this.getAcpAdapter() : this.getAdapter();
+    const wanted = this.getAdapter();
     if (registered !== wanted) {
       this.deps.registry.set(OPENCODE_PROVIDER_ID, wanted);
       await this.deps.onRegistryChanged?.();
     }
   }
 
-  /** Settings' "Test connection": the probe matching the active mode. */
+  /** Settings' "Test connection". */
   async probe(): Promise<OpenCodeProbeResult> {
     const settings = this.getSettings();
-    if (settings.integrationMode === 'acp') {
-      return probeOpenCodeAcp({ settings, directory: this.directory() });
-    }
     const serverPassword = await this.readServerPassword();
     // A probe is a consumer like any turn: without returning its lease, ten
     // presses of "Test connection" pinned the server past every idle reap.
@@ -164,22 +157,14 @@ export class OpenCodeController {
     const runtime = this.runtime;
     this.runtime = null;
     this.adapter = null;
-    this.acpAdapter = null;
-    const acpEntries = [...this.acpClients.values()];
-    this.acpClients.clear();
-    this.acpBinaryPath = null;
-    for (const entry of acpEntries) {
-      if (entry.idleTimer) {
-        clearTimeout(entry.idleTimer);
-      }
-    }
     await runtime?.shutdown();
-    await Promise.all(
-      acpEntries.map((entry) => entry.client.shutdown().catch(() => undefined))
-    );
   }
 
-  /** Forget a conversation's opencode session — used when the chat is deleted. */
+  /**
+   * Forget a conversation's opencode session — used when the chat is deleted.
+   * opencode keeps the transcript on its side; dropping the cursor is all
+   * Atlas owns here.
+   */
   forgetConversation(conversationId: string): void {
     this.deps.sessions.clear(conversationId);
   }
@@ -212,91 +197,7 @@ export class OpenCodeController {
     return this.adapter;
   }
 
-  private getAcpAdapter(): OpenCodeAcpAdapter {
-    this.acpAdapter ??= new OpenCodeAcpAdapter({
-      readSettings: () => this.getSettings(),
-      getClient: (directory) => this.getAcpClient(directory),
-      sessions: this.deps.sessions,
-      defaultDirectory: () => this.directory()
-    });
-    return this.acpAdapter;
-  }
-
-  /**
-   * One ACP process per directory, reused across turns. A binary-path change
-   * retires every client so the next turn spawns from the new location. A
-   * dead child evicts its client on exit, so one crash never poisons the
-   * directory until restart. Idle clients reap after 30s without use, deferred
-   * while a turn is in flight — the owned-server rhythm in miniature.
-   */
-  private getAcpClient(directory: string): AcpClient {
-    const binaryPath = this.getSettings().binaryPath.trim();
-    if (this.acpBinaryPath !== null && this.acpBinaryPath !== binaryPath) {
-      const stale = [...this.acpClients.values()];
-      this.acpClients.clear();
-      for (const entry of stale) {
-        if (entry.idleTimer) {
-          clearTimeout(entry.idleTimer);
-        }
       }
-      void Promise.all(stale.map((entry) => entry.client.shutdown().catch(() => undefined)));
-    }
-    this.acpBinaryPath = binaryPath;
-    let entry = this.acpClients.get(directory);
-    if (!entry) {
-      const onExit = () => {
-        const current = this.acpClients.get(directory);
-        if (current?.client === fresh.client) {
-          if (current.idleTimer) {
-            clearTimeout(current.idleTimer);
-          }
-          this.acpClients.delete(directory);
-        }
-      };
-      const fresh: { client: AcpClient; idleTimer: NodeJS.Timeout | null } = {
-        client:
-          this.deps.createAcpClient?.(directory, { onExit }) ??
-          new AcpClient({
-            cwd: directory,
-            binaryPath: binaryPath || undefined,
-            onExit
-          }),
-        idleTimer: null
-      };
-      this.acpClients.set(directory, fresh);
-      entry = fresh;
-    }
-    if (entry.idleTimer) {
-      clearTimeout(entry.idleTimer);
-      entry.idleTimer = null;
-    }
-    const idleTimer = setTimeout(() => {
-      const current = this.acpClients.get(directory);
-      if (!current || current.client !== entry.client) {
-        return;
-      }
-      if (typeof current.client.hasInflight === 'function' && current.client.hasInflight()) {
-        // Turn still running: rearm instead of killing mid-turn.
-        current.idleTimer = setTimeout(() => this.reapAcpClient(directory, entry.client), 30_000);
-        current.idleTimer.unref?.();
-        return;
-      }
-      void this.reapAcpClient(directory, entry.client);
-    }, 30_000);
-    idleTimer.unref?.();
-    entry.idleTimer = idleTimer;
-    return entry.client;
-  }
-
-  private async reapAcpClient(directory: string, client: AcpClient): Promise<void> {
-    const current = this.acpClients.get(directory);
-    if (!current || current.client !== client) {
-      return;
-    }
-    this.acpClients.delete(directory);
-    await client.shutdown().catch(() => undefined);
-  }
-}
 
 /**
  * Boot-time wiring: register the adapter if the feature is already on. The

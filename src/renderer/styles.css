@@ -34,9 +34,9 @@
   --bg-overlay: #1a1e29;
   /* Opaque composer slab; themes without an opinion inherit the overlay. */
   --bg-composer: var(--bg-overlay);
-  /* The slab is borderless by default — dark themes separate it from the page
-     by tone alone. A light theme cannot: white on white needs the hairline. */
-  --border-composer: transparent;
+  --border-composer: var(--border-default);
+  --bg-message: var(--bg-surface);
+  --text-message: var(--text-primary);
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -173,6 +173,16 @@
   --tool-web: #f472b6;
   --tool-generic: #94a3b8;
 
+  /* Accent a user can pin to a local agent, so its rows are recognisable at a
+     glance. Hue only — never a surface or type colour — which is why these sit
+     outside the light/dark contract and hold in every theme. */
+  --agent-accent-blue: #60a5fa;
+  --agent-accent-green: #4ade80;
+  --agent-accent-orange: #fb923c;
+  --agent-accent-red: #f87171;
+  --agent-accent-purple: #c084fc;
+  --agent-accent-teal: #2dd4bf;
+
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);
   --toast-border: rgba(82, 110, 167, 0.42);
@@ -243,14 +253,15 @@
   /* Layout */
   --content-max: 48rem; /* 768px — single chat measure, mirrors t3code max-w-3xl */
   /*
-   * Transcript and composer share one centred column (`max-w-composer`,
-   * 48rem — t3code caps both its timeline rows and its composer form at
-   * `max-w-3xl`). Two caps produced a ~46px-per-side overhang where user
-   * bubbles stuck out past the input slab; one cap keeps a single right rail.
+   * Transcript and composer share one centred column (`max-w-composer`).
+   * Two caps produced a ~46px-per-side overhang where user bubbles stuck out
+   * past the input slab; one cap keeps a single right rail. Widened past
+   * t3code's 48rem `max-w-3xl` because at typical window widths that left
+   * ~400px of dead panel on each side of the column.
    * Container-relative (`min(100%, …)` at usage) so sidebar/workbench width
    * cannot push it off axis — never `vw`.
    */
-  --composer-max: 48rem; /* 768px */
+  --composer-max: 55rem; /* 960px */
   --sidebar-width: 17.75rem; /* 284px at default font size */
   /* 56px: the rail is 4-5 36px buttons in `px-2`, nothing else — 72px left
      a 20px empty column on either side of them. */
@@ -267,6 +278,12 @@
 
   /* Shared titlebar height used by both the sidebar header and the main panel. */
   --titlebar-height: 3.25rem; /* 52px at default font size */
+  /*
+   * Fullscreen has no traffic lights to clear, so the sidebar's strip shrinks
+   * to breathing room only. 12px puts the wordmark row's centre on the same
+   * line as the breadcrumb in the 52px main titlebar beside it.
+   */
+  --titlebar-height-fullscreen: 0.75rem; /* 12px */
 
   /*
    * Border radius.
@@ -339,7 +356,10 @@ html[data-theme-id]:not([data-theme-id=""]) {
   --bg-surface: var(--app-theme-surface);
   --bg-elevated: var(--app-theme-surface-raised);
   --bg-overlay: var(--app-theme-surface-overlay);
-  --bg-composer: var(--app-theme-surface);
+  --bg-composer: var(--app-theme-surface-raised, var(--app-theme-surface));
+  --border-composer: var(--app-theme-border);
+  --bg-message: var(--app-theme-message-surface, var(--app-theme-surface-raised));
+  --text-message: var(--app-theme-message-foreground, var(--app-theme-text));
   --bg-code: var(--app-theme-code-background);
   --bg-subtle: var(--app-theme-muted);
   --bg-ghost: var(--app-theme-secondary);
@@ -348,10 +368,10 @@ html[data-theme-id]:not([data-theme-id=""]) {
   --bg-button: var(--app-theme-message-action);
   --bg-button-hover: var(--app-theme-message-action-hover);
 
-  --border-subtle: var(--app-theme-border);
+  --border-subtle: color-mix(in oklab, var(--app-theme-border) 55%, transparent);
   --border-default: var(--app-theme-border);
-  --border-medium: var(--app-theme-border);
-  --border-strong: var(--app-theme-sidebar-border);
+  --border-medium: color-mix(in oklab, var(--app-theme-border) 80%, var(--app-theme-text));
+  --border-strong: var(--app-theme-sidebar-border, var(--app-theme-border));
 
   --text-primary: var(--app-theme-text);
   --text-secondary: var(--app-theme-secondary-foreground);
@@ -484,6 +504,9 @@ html[data-border-radius='none'][data-design-theme] {
   --color-border-default: var(--border-default);
   --color-border-medium: var(--border-medium);
   --color-border-strong: var(--border-strong);
+  --color-border-composer: var(--border-composer);
+  --color-bg-message: var(--bg-message);
+  --color-text-message: var(--text-message);
 
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
@@ -530,6 +553,14 @@ html[data-border-radius='none'][data-design-theme] {
   --color-diff-del-gutter-bg: var(--diff-del-gutter-bg);
   --color-diff-gutter-fg: var(--diff-gutter-fg);
 
+  /* Local agent accents. */
+  --color-agent-blue: var(--agent-accent-blue);
+  --color-agent-green: var(--agent-accent-green);
+  --color-agent-orange: var(--agent-accent-orange);
+  --color-agent-red: var(--agent-accent-red);
+  --color-agent-purple: var(--agent-accent-purple);
+  --color-agent-teal: var(--agent-accent-teal);
+
   /* Per-tool accents. */
   --color-tool-read: var(--tool-read);
   --color-tool-search: var(--tool-search);
@@ -566,6 +597,8 @@ html[data-border-radius='none'][data-design-theme] {
   --spacing-sidebar-width: var(--sidebar-width);
   --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
   --spacing-titlebar-height: var(--titlebar-height);
+  /* `h-titlebar-height-fullscreen` for the sidebar's collapsed drag strip. */
+  --spacing-titlebar-height-fullscreen: var(--titlebar-height-fullscreen);
   /* `max-h-composer-max-height` for the composer textarea. */
   --spacing-composer-max-height: var(--composer-max-height);
 
@@ -706,6 +739,11 @@ select {
    the composer from the page by tone. */
 .composer-slab {
   border: 1px solid var(--border-composer);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-slab:focus-within {
+  border-color: var(--border-strong, var(--border-default));
 }
 
 /* Text fields always match :focus-visible, which would draw a ring inside

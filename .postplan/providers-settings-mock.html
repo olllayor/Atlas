@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Providers settings — mock variants</title>
+<style>
+  :root{
+    --bg-base:#07080b;
+    --bg-panel:#0b0d12;
+    --bg-surface:#101319;
+    --bg-elevated:#151922;
+    --bg-hover:rgba(255,255,255,0.06);
+    --bg-subtle:rgba(255,255,255,0.03);
+    --border-subtle:rgba(255,255,255,0.06);
+    --border-default:rgba(255,255,255,0.12);
+    --border-medium:rgba(255,255,255,0.16);
+    --text-primary:#ffffff;
+    --text-secondary:#cbd5e1;
+    --text-tertiary:#94a3b8;
+    --text-muted:#7d8b9e;
+    --text-faint:#6b7a90;
+    --accent:#5b9dff;
+    --accent-surface:rgba(91,157,255,0.12);
+    --success:#34d399;
+    --success-bg:rgba(52,211,153,0.15);
+    --warn:#f2c14e;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:#000;
+    color:var(--text-primary);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+    font-size:14px;
+    line-height:1.5;
+    padding:32px 20px 80px;
+  }
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-size:20px;font-weight:600;margin:0 0 6px;}
+  .intro{color:var(--text-tertiary);font-size:13px;max-width:720px;margin:0 0 36px;}
+  .intro code{background:var(--bg-elevated);padding:1px 5px;border-radius:4px;font-size:12px;}
+  h2.variant-title{font-size:13px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-muted);margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  .badge{background:var(--accent-surface);color:var(--accent);border-radius:4px;padding:2px 7px;font-size:11px;letter-spacing:0;text-transform:none;}
+  .notes{margin:14px 0 48px;padding:14px 16px;background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:8px;}
+  .notes p{margin:0 0 6px;color:var(--text-secondary);font-size:12.5px;}
+  .notes p:last-child{margin-bottom:0;}
+  .notes b{color:var(--text-primary);}
+
+  /* ---- shared settings shell ---- */
+  .shell{
+    display:flex;
+    border:1px solid var(--border-default);
+    border-radius:10px;
+    overflow:hidden;
+    background:var(--bg-panel);
+    min-height:520px;
+  }
+  .settings-nav{
+    width:190px;
+    flex-shrink:0;
+    background:var(--bg-panel);
+    border-right:1px solid var(--border-subtle);
+    padding:16px 10px;
+  }
+  .settings-nav .crumb{font-size:11px;color:var(--text-faint);padding:0 8px 10px;}
+  .settings-nav a{
+    display:flex;align-items:center;gap:8px;
+    padding:7px 8px;border-radius:6px;color:var(--text-tertiary);font-size:13px;text-decoration:none;
+  }
+  .settings-nav a.active{background:var(--bg-hover);color:var(--text-primary);}
+  .settings-nav a svg{opacity:0.7;width:14px;height:14px;}
+
+  .settings-main{flex:1;min-width:0;padding:22px 26px;}
+  .settings-main > .heading{font-size:17px;font-weight:600;margin:0 0 3px;}
+  .settings-main > .subheading{font-size:12.5px;color:var(--text-muted);margin:0 0 20px;}
+
+  /* provider rail + detail, generic */
+  .prov-shell{display:flex;border:1px solid var(--border-default);border-radius:8px;min-height:420px;overflow:hidden;}
+  .prov-rail{width:220px;flex-shrink:0;background:var(--bg-subtle);border-right:1px solid var(--border-default);padding:8px;}
+  .prov-rail .group-label{font-size:10.5px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-faint);padding:8px 8px 4px;}
+  .prov-item{
+    display:flex;align-items:center;gap:8px;width:100%;
+    padding:7px 8px;border-radius:6px;color:var(--text-secondary);font-size:12.5px;
+    cursor:pointer;border:none;background:none;text-align:left;
+  }
+  .prov-item .icon{
+    width:20px;height:20px;border-radius:5px;background:var(--bg-elevated);
+    display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--text-tertiary);flex-shrink:0;
+  }
+  .prov-item .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .prov-item .dot{width:6px;height:6px;border-radius:50%;background:var(--text-faint);flex-shrink:0;}
+  .prov-item .dot.ready{background:var(--success);}
+  .prov-item.muted{color:var(--text-faint);}
+  .prov-item.muted .icon{opacity:0.5;}
+
+  .prov-detail{flex:1;min-width:0;padding:20px 24px;}
+  .det-header{display:flex;align-items:center;gap:10px;margin-bottom:4px;}
+  .det-header .icon-lg{width:30px;height:30px;border-radius:7px;background:var(--bg-elevated);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text-tertiary);}
+  .det-header h3{font-size:15px;font-weight:600;margin:0;}
+  .det-header .ver{font-size:11px;color:var(--text-faint);font-weight:400;margin-left:2px;}
+  .det-status{font-size:12px;color:var(--text-muted);margin:2px 0 18px 40px;}
+  .det-status.ok{color:var(--success);}
+  .switch{
+    width:32px;height:18px;border-radius:999px;background:var(--border-medium);position:relative;flex-shrink:0;cursor:pointer;
+  }
+  .switch.on{background:var(--accent);}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s;}
+  .switch.on::after{left:16px;}
+
+  .field-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--border-subtle);}
+  .field-row:last-child{border-bottom:none;}
+  .field-row .f-label{font-size:12.5px;color:var(--text-secondary);}
+  .field-row .f-hint{font-size:11px;color:var(--text-faint);margin-top:2px;}
+  .field-row input[type=text]{
+    background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;
+    color:var(--text-primary);font-size:12px;padding:6px 9px;width:230px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .field-row input[type=text]::placeholder{color:var(--text-faint);}
+  .section-label{font-size:10.5px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-faint);margin:22px 0 4px;}
+  .section-label:first-of-type{margin-top:18px;}
+  .swatches{display:flex;gap:7px;margin:8px 0 4px;}
+  .swatch{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;}
+  .swatch.sel{border-color:#fff;}
+
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--border-subtle);margin-bottom:16px;}
+  .tabs label{font-size:12.5px;color:var(--text-tertiary);padding:8px 4px;cursor:pointer;border-bottom:2px solid transparent;margin-right:18px;}
+  .placeholder-box{
+    border:1px dashed var(--border-default);border-radius:8px;padding:22px;text-align:center;
+    color:var(--text-muted);font-size:12.5px;margin-top:8px;
+  }
+  .add-var-btn{font-size:12px;color:var(--text-tertiary);background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:5px;margin-top:6px;}
+  .model-count{font-size:11px;color:var(--text-faint);background:var(--bg-elevated);padding:1px 6px;border-radius:8px;margin-left:6px;}
+
+  /* radio-hack tabs, scoped per block via unique names */
+  input.tabctl, input.railctl{position:absolute;opacity:0;pointer-events:none;}
+  .panel{display:none;}
+
+  /* Variant A tab wiring (OpenCode config/models) */
+  #a-tab-config:checked ~ .oc-tabs label[for=a-tab-config],
+  #a-tab-models:checked ~ .oc-tabs label[for=a-tab-models]{color:var(--text-primary);border-bottom-color:var(--accent);}
+  #a-tab-config:checked ~ .oc-panels #a-panel-config{display:block;}
+  #a-tab-models:checked ~ .oc-panels #a-panel-models{display:block;}
+
+  /* Variant A rail wiring */
+  #a-sel-opencode:checked ~ .a-rail label[for=a-sel-opencode],
+  #a-sel-codex:checked ~ .a-rail label[for=a-sel-codex],
+  #a-sel-deepseek:checked ~ .a-rail label[for=a-sel-deepseek]{background:var(--bg-hover);color:var(--text-primary);}
+  #a-sel-opencode:checked ~ .a-content #a-content-opencode,
+  #a-sel-codex:checked ~ .a-content #a-content-codex,
+  #a-sel-deepseek:checked ~ .a-content #a-content-deepseek{display:block;}
+
+  /* Variant B rail wiring */
+  #b-sel-opencode:checked ~ .b-rail label[for=b-sel-opencode],
+  #b-sel-codex:checked ~ .b-rail label[for=b-sel-codex],
+  #b-sel-deepseek:checked ~ .b-rail label[for=b-sel-deepseek]{background:var(--bg-hover);color:var(--text-primary);}
+  #b-sel-opencode:checked ~ .b-content #b-content-opencode,
+  #b-sel-codex:checked ~ .b-content #b-content-codex,
+  #b-sel-deepseek:checked ~ .b-content #b-content-deepseek{display:block;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Settings → Providers, two directions</h1>
+  <p class="intro">
+    Both variants replace the current <code>Model settings</code> page. Same data underneath —
+    your custom OpenAI/Anthropic-compatible endpoints (base URL, key, models) plus OpenCode as a
+    locally-spawned agent. Codex CLI is shown greyed out: card exists in the list so the shape is
+    right, but it is not wired to anything yet. Click rail items and tabs, everything below is live CSS,
+    no screenshots.
+  </p>
+
+  <!-- ============ VARIANT A ============ -->
+  <h2 class="variant-title">Variant A — grouped rail, tabbed detail <span class="badge">closer to T3</span></h2>
+  <div class="shell">
+    <nav class="settings-nav">
+      <div class="crumb">Settings</div>
+      <a href="#">General</a>
+      <a href="#" class="active">Providers</a>
+      <a href="#">Appearance</a>
+      <a href="#">Keybindings</a>
+    </nav>
+    <div class="settings-main">
+      <div class="heading">Providers</div>
+      <div class="subheading">Local agents and API endpoints Atlas can use for chat.</div>
+
+      <input type="radio" class="railctl" name="a-sel" id="a-sel-opencode" checked>
+      <input type="radio" class="railctl" name="a-sel" id="a-sel-codex">
+      <input type="radio" class="railctl" name="a-sel" id="a-sel-deepseek">
+
+      <div class="prov-shell">
+        <div class="prov-rail a-rail">
+          <div class="group-label">Local agents</div>
+          <label class="prov-item" for="a-sel-opencode" style="cursor:pointer;">
+            <span class="icon">OC</span><span class="label">OpenCode</span><span class="dot ready"></span>
+          </label>
+          <label class="prov-item muted" for="a-sel-codex" style="cursor:pointer;">
+            <span class="icon">CX</span><span class="label">Codex CLI</span><span class="dot"></span>
+          </label>
+
+          <div class="group-label" style="margin-top:10px;">Custom endpoints</div>
+          <label class="prov-item" for="a-sel-deepseek" style="cursor:pointer;">
+            <span class="icon">DS</span><span class="label">DeepSeek</span><span class="dot ready"></span>
+          </label>
+          <button class="prov-item" style="color:var(--text-tertiary);margin-top:2px;">
+            <span class="icon" style="background:none;">+</span><span class="label">Add endpoint</span>
+          </button>
+        </div>
+
+        <div class="a-content" style="flex:1;min-width:0;">
+          <div class="panel" id="a-content-opencode">
+            <div class="prov-detail" style="padding:20px 24px;">
+              <div class="det-header">
+                <span class="icon-lg">OC</span>
+                <h3>OpenCode <span class="ver">v1.18.27</span></h3>
+                <span style="flex:1;"></span>
+                <div class="switch on"></div>
+              </div>
+              <div class="det-status ok">Authenticated · opencode account</div>
+
+              <input type="radio" class="tabctl" name="a-tab" id="a-tab-config" checked>
+              <input type="radio" class="tabctl" name="a-tab" id="a-tab-models">
+              <div class="tabs oc-tabs">
+                <label for="a-tab-config">Configuration</label>
+                <label for="a-tab-models">Models <span class="model-count">14</span></label>
+              </div>
+
+              <div class="oc-panels">
+                <div class="panel" id="a-panel-config" style="display:block;">
+                  <div class="field-row">
+                    <div><div class="f-label">Display name</div></div>
+                    <input type="text" value="OpenCode">
+                  </div>
+                  <div class="swatches">
+                    <div class="swatch sel" style="background:#5b9dff;"></div>
+                    <div class="swatch" style="background:#34d399;"></div>
+                    <div class="swatch" style="background:#f2c14e;"></div>
+                    <div class="swatch" style="background:#fb7185;"></div>
+                    <div class="swatch" style="background:#c084fc;"></div>
+                  </div>
+
+                  <div class="section-label">Runtime</div>
+                  <div class="field-row">
+                    <div><div class="f-label">Binary path</div><div class="f-hint">Path to the opencode binary.</div></div>
+                    <input type="text" value="opencode">
+                  </div>
+                  <div class="field-row">
+                    <div><div class="f-label">Launch arguments</div></div>
+                    <input type="text" placeholder="--flag value">
+                  </div>
+
+                  <div class="section-label">Environment</div>
+                  <button class="add-var-btn">+ Add variable</button>
+                </div>
+                <div class="panel" id="a-panel-models">
+                  <div class="placeholder-box" style="text-align:left;padding:0;border:none;">
+                    <div class="field-row"><div class="f-label">claude-sonnet-5</div><span class="f-hint">200k ctx</span></div>
+                    <div class="field-row"><div class="f-label">gpt-5.4-mini</div><span class="f-hint">128k ctx</span></div>
+                    <div class="field-row"><div class="f-label">gemini-3-pro</div><span class="f-hint">1M ctx</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" id="a-content-codex">
+            <div class="prov-detail">
+              <div class="det-header">
+                <span class="icon-lg" style="opacity:0.5;">CX</span>
+                <h3 style="color:var(--text-tertiary);">Codex CLI</h3>
+                <span style="flex:1;"></span>
+                <div class="switch"></div>
+              </div>
+              <div class="det-status">Not available yet</div>
+              <div class="placeholder-box">
+                Codex CLI integration is on the roadmap. This card reserves its spot in the list —
+                nothing to configure until it ships.
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" id="a-content-deepseek">
+            <div class="prov-detail">
+              <div class="det-header">
+                <span class="icon-lg">DS</span>
+                <h3>DeepSeek</h3>
+                <span style="flex:1;"></span>
+                <div class="switch on"></div>
+              </div>
+              <div class="det-status ok">Configured · key saved</div>
+              <div class="field-row">
+                <div><div class="f-label">Base URL</div></div>
+                <input type="text" value="https://api.deepseek.com/v1">
+              </div>
+              <div class="field-row">
+                <div><div class="f-label">API key</div></div>
+                <input type="text" value="Saved · hidden in keychain">
+              </div>
+              <div class="section-label">Models <span class="model-count">3</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <p><b>Rail</b> groups by kind (local agent vs custom endpoint) instead of one flat list — the two have different configuration shapes, so grouping tells you that before you click.</p>
+    <p><b>Tabs</b> only appear on providers that actually have two distinct concerns (config vs a real model list, like OpenCode). Custom endpoints stay single-scroll like today, since their model list is short and editable inline.</p>
+    <p><b>Disabled/unavailable</b> providers (Codex CLI) sit in the list greyed out with a one-line explanation instead of being hidden — so people from the T3 screenshot don't wonder where it went.</p>
+    <p>No per-machine tabs (M2 / mac mini in the T3 screenshot) — Atlas settings are already per-device, that concept doesn't map here.</p>
+  </div>
+
+  <!-- ============ VARIANT B ============ -->
+  <h2 class="variant-title">Variant B — flat rail, single scroll <span class="badge">closer to today's page</span></h2>
+  <div class="shell">
+    <nav class="settings-nav">
+      <div class="crumb">Settings</div>
+      <a href="#">General</a>
+      <a href="#" class="active">Providers</a>
+      <a href="#">Appearance</a>
+      <a href="#">Keybindings</a>
+    </nav>
+    <div class="settings-main">
+      <div class="heading">Providers</div>
+      <div class="subheading">Local agents and API endpoints Atlas can use for chat.</div>
+
+      <input type="radio" class="railctl" name="b-sel" id="b-sel-opencode" checked>
+      <input type="radio" class="railctl" name="b-sel" id="b-sel-codex">
+      <input type="radio" class="railctl" name="b-sel" id="b-sel-deepseek">
+
+      <div class="prov-shell">
+        <div class="prov-rail b-rail">
+          <label class="prov-item" for="b-sel-opencode" style="cursor:pointer;">
+            <span class="icon">OC</span><span class="label">OpenCode</span><span class="dot ready"></span>
+          </label>
+          <label class="prov-item" for="b-sel-deepseek" style="cursor:pointer;">
+            <span class="icon">DS</span><span class="label">DeepSeek</span><span class="dot ready"></span>
+          </label>
+          <label class="prov-item muted" for="b-sel-codex" style="cursor:pointer;">
+            <span class="icon">CX</span><span class="label">Codex CLI · soon</span><span class="dot"></span>
+          </label>
+          <button class="prov-item" style="color:var(--text-tertiary);margin-top:2px;">
+            <span class="icon" style="background:none;">+</span><span class="label">Add endpoint</span>
+          </button>
+        </div>
+
+        <div class="b-content" style="flex:1;min-width:0;">
+          <div class="panel" id="b-content-opencode">
+            <div class="prov-detail">
+              <div class="det-header">
+                <span class="icon-lg">OC</span>
+                <h3>OpenCode <span class="ver">v1.18.27</span></h3>
+                <span style="flex:1;"></span>
+                <div class="switch on"></div>
+              </div>
+              <div class="det-status ok">Authenticated · opencode account</div>
+
+              <div class="field-row">
+                <div><div class="f-label">Display name</div></div>
+                <input type="text" value="OpenCode">
+              </div>
+              <div class="swatches">
+                <div class="swatch sel" style="background:#5b9dff;"></div>
+                <div class="swatch" style="background:#34d399;"></div>
+                <div class="swatch" style="background:#f2c14e;"></div>
+                <div class="swatch" style="background:#fb7185;"></div>
+              </div>
+
+              <div class="section-label">Runtime</div>
+              <div class="field-row">
+                <div><div class="f-label">Binary path</div></div>
+                <input type="text" value="opencode">
+              </div>
+              <div class="field-row">
+                <div><div class="f-label">Launch arguments</div></div>
+                <input type="text" placeholder="--flag value">
+              </div>
+
+              <div class="section-label">Environment</div>
+              <button class="add-var-btn">+ Add variable</button>
+
+              <div class="section-label">Models <span class="model-count">14</span></div>
+              <div class="field-row"><div class="f-label">claude-sonnet-5</div><span class="f-hint">200k ctx</span></div>
+              <div class="field-row"><div class="f-label">gpt-5.4-mini</div><span class="f-hint">128k ctx</span></div>
+              <div class="field-row"><div class="f-label">gemini-3-pro</div><span class="f-hint">1M ctx · +11 more</span></div>
+            </div>
+          </div>
+
+          <div class="panel" id="b-content-codex">
+            <div class="prov-detail">
+              <div class="det-header">
+                <span class="icon-lg" style="opacity:0.5;">CX</span>
+                <h3 style="color:var(--text-tertiary);">Codex CLI</h3>
+                <span style="flex:1;"></span>
+                <div class="switch"></div>
+              </div>
+              <div class="det-status">Not available yet</div>
+              <div class="placeholder-box">Codex CLI integration is on the roadmap.</div>
+            </div>
+          </div>
+
+          <div class="panel" id="b-content-deepseek">
+            <div class="prov-detail">
+              <div class="det-header">
+                <span class="icon-lg">DS</span>
+                <h3>DeepSeek</h3>
+                <span style="flex:1;"></span>
+                <div class="switch on"></div>
+              </div>
+              <div class="det-status ok">Configured · key saved</div>
+              <div class="field-row">
+                <div><div class="f-label">Base URL</div></div>
+                <input type="text" value="https://api.deepseek.com/v1">
+              </div>
+              <div class="field-row">
+                <div><div class="f-label">API key</div></div>
+                <input type="text" value="Saved · hidden in keychain">
+              </div>
+              <div class="section-label">Models <span class="model-count">3</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <p><b>One flat list</b>, sorted by ready-state (green dot first) rather than grouped by kind — fewer section headers to parse when you mostly just want to click your one active provider.</p>
+    <p><b>No tabs</b> anywhere. Configuration and models stack in one scroll, same pattern the current custom-provider page already uses — OpenCode just gets Runtime and Environment sections added above its model list.</p>
+    <p>Trade-off vs A: OpenCode's panel gets long once a model list and env vars are both present. A puts a lid on that with tabs; B keeps everything one glance away but longer.</p>
+  </div>
+
+</div>
+</body>
+</html>

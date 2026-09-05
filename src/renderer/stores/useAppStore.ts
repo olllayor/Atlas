@@ -254,6 +254,7 @@ type AppState = {
   detachProject: (projectId: string) => Promise<void>;
   renameProject: (projectId: string, title: string) => Promise<void>;
   setProjectPinned: (projectId: string, pinned: boolean) => Promise<void>;
+  setProjectAutoPull: (projectId: string, autoPull: boolean) => Promise<void>;
   setConversationPinned: (conversationId: string, pinned: boolean) => Promise<void>;
   /** Hides the chat from the sidebar without destroying it. Reversible. */
   setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
@@ -633,6 +634,12 @@ function resolveConversationIdForRequest(
 let attachProjectInFlight: Promise<WorkspaceProject | null> | null = null;
 /** Module-level once-guard: the goalsEvent push is bound for the app's lifetime. */
 let goalEventsBound = false;
+
+let updatePreferencesSeq = 0;
+
+export const resetUpdatePreferencesSeqForTesting = () => {
+  updatePreferencesSeq = 0;
+};
 
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
@@ -1430,6 +1437,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setProjectAutoPull: async (projectId, autoPull) => {
+    const previous = get().projects;
+
+    // Optimistic like the pin toggle: the checkbox answers the click, and the
+    // round trip reconciles. A failure rolls back with a toast.
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === projectId ? { ...project, autoPull } : project
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.projects.setAutoPull(projectId, autoPull);
+      set((state) => ({
+        projects: state.projects.map((project) => (project.id === projectId ? updated : project)),
+      }));
+    } catch (error) {
+      set({ projects: previous });
+      notifyError(
+        autoPull ? 'Could not enable automatic pull' : 'Could not disable automatic pull',
+        error
+      );
+    }
+  },
+
   setConversationPinned: async (conversationId, pinned) => {
     const previous = get().conversations;
 
@@ -1845,7 +1877,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updatePreferences: async (patch) => {
+    const seq = ++updatePreferencesSeq;
     const settings = await window.atlasChat.settings.updatePreferences(patch);
+    if (seq !== updatePreferencesSeq) {
+      return;
+    }
     if (typeof patch.showFreeOnlyByDefault !== 'boolean') {
       set({ settings });
       return;

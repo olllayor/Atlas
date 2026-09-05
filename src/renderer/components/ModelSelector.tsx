@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 
 import type { ReasoningEffort } from '../../shared/chatParameters';
 import { REASONING_EFFORTS, clampReasoningEffort, resolveReasoningEffortMenu } from '../../shared/chatParameters';
@@ -187,12 +188,13 @@ export function ModelSelector({
                 {chipDisplayLabel}
               </span>
               {/*
-                Dim and shrink-proof: the effort is a qualifier on the name, not
-                part of it, and it must not be the thing that gets truncated
-                away when the name is long.
+                A subtle, compact pill distinguishes reasoning effort from the
+                model name so it is immediately readable at a glance.
               */}
               {effortLabel ? (
-                <span className="shrink-0 text-text-tertiary">{effortLabel}</span>
+                <span className="shrink-0 rounded-full border border-border-subtle bg-bg-subtle px-1.5 py-0.5 text-2xs font-medium text-text-secondary leading-none">
+                  {effortLabel}
+                </span>
               ) : null}
             </button>
           </DropdownMenuTrigger>
@@ -235,7 +237,12 @@ export function ModelSelector({
 
             return (
               <DropdownMenuSub key={group.providerId}>
-                <DropdownMenuSubTrigger className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary">
+                <DropdownMenuSubTrigger
+                  className={cn(
+                    'gap-2 rounded-md px-3 py-2 text-sm text-text-primary',
+                    isActiveProvider && 'bg-bg-subtle font-medium text-text-primary'
+                  )}
+                >
                   <span className="min-w-0 flex-1 truncate">{group.label}</span>
                   {/*
                     The same OpenCode can be reached two ways: as this
@@ -243,17 +250,20 @@ export function ModelSelector({
                     hand. They can even carry the same name, so the one that
                     runs the turn itself says so.
                   */}
-                  {group.selfManaged ? (
-                    <span className="shrink-0 rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
-                      Agent
-                    </span>
-                  ) : null}
-                  {group.configured ? null : (
-                    <span className="shrink-0 rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
-                      No key
+                  {(group.selfManaged || !group.configured) && (
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {group.selfManaged ? (
+                        <span className="rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
+                          Agent
+                        </span>
+                      ) : null}
+                      {group.configured ? null : (
+                        <span className="rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
+                          No key
+                        </span>
+                      )}
                     </span>
                   )}
-                  {isActiveProvider ? <Check className="size-4 shrink-0 text-text-secondary" /> : null}
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent
                   className="max-h-[min(420px,60vh)] min-w-[220px] max-w-[300px] overflow-y-auto border-border-default bg-bg-overlay p-1.5"
@@ -307,7 +317,7 @@ export function ModelSelector({
             <DropdownMenuSub>
               <DropdownMenuSubTrigger className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary">
                 <span className="min-w-0 flex-1 truncate">Reasoning effort</span>
-                <span className="shrink-0 text-2xs text-text-muted">
+                <span className="shrink-0 rounded-full border border-border-subtle bg-bg-subtle px-1.5 py-0.5 text-2xs font-medium text-text-secondary leading-none">
                   {REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label}
                 </span>
               </DropdownMenuSubTrigger>

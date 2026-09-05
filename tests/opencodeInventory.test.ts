@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { normalizeProviderListPayload } from '../src/main/ai/providers/opencode/OpenCodeClient.js';
 import {
+  deriveOpenCodeReasoning,
   flattenOpenCodeModels,
   formatOpenCodeModelSlug,
   parseOpenCodeModelSlug
@@ -126,6 +127,7 @@ test('flatten lists only connected providers, skipping deprecated models', () =>
   // Atlas cannot pass sampling parameters to opencode, so no model claims it.
   assert.equal(opus!.supportsTemperature, false);
   assert.equal(opus!.supportsReasoning, true);
+  assert.deepEqual(opus!.reasoningEfforts, ['low', 'medium', 'high', 'xhigh']);
   assert.equal(opus!.isFree, false);
   assert.equal(opus!.lastSyncedAt, SYNCED_AT);
 });
@@ -141,6 +143,8 @@ test('flatten can include unconnected providers and reads free pricing', () => {
   assert.ok(tiny);
   assert.equal(tiny.isFree, true);
   assert.equal(tiny.supportsTools, false);
+  assert.equal(tiny.supportsReasoning, false);
+  assert.equal(tiny.reasoningEfforts, null);
   // opencode advertises temperature support for this one; Atlas still cannot
   // send a value, so the catalog must not promise the control works.
   assert.equal(tiny.supportsTemperature, false);
@@ -209,6 +213,8 @@ test('custom slugs are appended, deduped against the live catalog, and validated
   assert.equal(custom.label, 'anthropic/claude-3');
   assert.equal(custom.contextWindow, null);
   assert.equal(custom.supportsTools, null);
+  assert.equal(custom.supportsReasoning, true);
+  assert.deepEqual(custom.reasoningEfforts, ['low', 'medium', 'high', 'xhigh']);
 });
 
 test('slug parsing splits on the first separator only', () => {
@@ -225,4 +231,61 @@ test('slug parsing splits on the first separator only', () => {
   assert.equal(parseOpenCodeModelSlug('nope/'), null);
   assert.equal(parseOpenCodeModelSlug('two words/model'), null);
   assert.equal(formatOpenCodeModelSlug({ providerID: 'a', modelID: 'b/c' }), 'a/b/c');
+});
+
+test('derives reasoning efforts: synthesizes standard ladder when model has reasoning but no variants (PR #9287)', () => {
+  const reasoning = deriveOpenCodeReasoning(true);
+  assert.equal(reasoning.supportsReasoning, true);
+  assert.deepEqual(reasoning.reasoningEfforts, ['low', 'medium', 'high', 'xhigh']);
+});
+
+test('derives reasoning efforts: maps explicit variant keys when present', () => {
+  const reasoning = deriveOpenCodeReasoning(null, ['low', 'high', 'xhigh']);
+  assert.equal(reasoning.supportsReasoning, true);
+  assert.deepEqual(reasoning.reasoningEfforts, ['low', 'high', 'xhigh']);
+
+  const withOff = deriveOpenCodeReasoning(true, ['none', 'low', 'medium']);
+  assert.equal(withOff.supportsReasoning, true);
+  assert.deepEqual(withOff.reasoningEfforts, ['off', 'low', 'medium']);
+});
+
+test('derives reasoning efforts: reasoning false and no variants disables reasoning', () => {
+  const reasoning = deriveOpenCodeReasoning(false);
+  assert.equal(reasoning.supportsReasoning, false);
+  assert.equal(reasoning.reasoningEfforts, null);
+});
+
+test('normalizes variants from provider list payload and flattens into model reasoning efforts', () => {
+  const inventory = normalizeProviderListPayload({
+    all: [
+      {
+        id: 'opencode',
+        name: 'OpenCode Zen',
+        models: {
+          'with-variants': {
+            id: 'with-variants',
+            name: 'With Variants',
+            capabilities: { reasoning: true },
+            variants: { low: {}, high: {} }
+          },
+          'no-variants': {
+            id: 'no-variants',
+            name: 'No Variants',
+            capabilities: { reasoning: true }
+          }
+        }
+      }
+    ],
+    connected: ['opencode']
+  });
+
+  const models = flattenOpenCodeModels({ inventory, syncedAt: SYNCED_AT });
+  const withVariants = models.find((m) => m.id === 'opencode/with-variants')!;
+  const noVariants = models.find((m) => m.id === 'opencode/no-variants')!;
+
+  assert.equal(withVariants.supportsReasoning, true);
+  assert.deepEqual(withVariants.reasoningEfforts, ['low', 'high']);
+
+  assert.equal(noVariants.supportsReasoning, true);
+  assert.deepEqual(noVariants.reasoningEfforts, ['low', 'medium', 'high', 'xhigh']);
 });

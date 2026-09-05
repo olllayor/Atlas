@@ -47,6 +47,9 @@ import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../sha
 import type { GoalRuntime } from '../goal/goalRuntime';
 import { GOAL_CONTINUATION_STEER, GOAL_PROGRESS_TOOLS } from '../goal/goalRuntime';
 import {
+  buildThreadTitleDigest,
+  buildThreadTitlePrompt,
+  buildThreadTitleRegenerationPrompt,
   deriveTitleFromUserMessage,
   isPlaceholderSessionTitle,
   sanitizeGeneratedTitle,
@@ -76,7 +79,15 @@ import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import type { TurnCheckpointHooks } from '../../workspace/CheckpointCoordinator';
 import { NOOP_TURN_CHECKPOINTS } from '../../workspace/CheckpointCoordinator';
-import { getBufferedEventKey, mergeBufferedEvents } from './streamBuffer';
+import {
+  getBufferedEventKey,
+  mergeBufferedEvents,
+  isBufferedStreamEvent,
+  isToolCompletedEvent,
+  dropSupersededBufferedToolEvents,
+  MAX_PENDING_UPDATES,
+  type BufferedStreamEvent,
+} from './streamBuffer';
 
 type ActiveRequest = {
   requestId: string;
@@ -110,7 +121,7 @@ type ActiveRequest = {
 
 type BufferedRequestEvents = {
   timer: ReturnType<typeof setTimeout> | null;
-  events: Map<string, Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>>;
+  events: Map<string, BufferedStreamEvent>;
 };
 
 const STREAM_BATCH_INTERVAL_MS = 33;
@@ -493,7 +504,7 @@ export class ChatEngine {
           modelId,
           messages: [],
           enableTools: true,
-          toolPermissionMode: effectiveParentMode === 'read-only' ? 'read-only' : 'full-access',
+          toolPermissionMode: effectiveParentMode,
         };
 
         let currentMessages: ModelMessage[] = [
@@ -1683,7 +1694,7 @@ export class ChatEngine {
         // parking the turn on an approval card.
         const effectiveMode =
           request.toolPermissionMode ??
-          this.conversationsRepo.getSummary(request.conversationId)?.toolPermissionMode ??
+          this.conversationsRepo.getSummary?.(request.conversationId)?.toolPermissionMode ??
           DEFAULT_TOOL_PERMISSION_MODE;
         const autoApprovedList =
           effectiveMode === 'full-access'
@@ -2047,7 +2058,11 @@ export class ChatEngine {
       return;
     }
 
-    if (event.type === 'chunk' || event.type === 'reasoning' || event.type === 'tool-input-delta') {
+    if (isToolCompletedEvent(event)) {
+      this.supersedeBufferedToolUpdates(event.requestId, event.toolCallId);
+    }
+
+    if (isBufferedStreamEvent(event)) {
       this.queueBufferedEvent(event.requestId, event);
       return;
     }
@@ -2067,7 +2082,7 @@ export class ChatEngine {
 
   private queueBufferedEvent(
     requestId: string,
-    event: Extract<StreamEvent, { type: 'chunk' | 'reasoning' | 'tool-input-delta' }>
+    event: BufferedStreamEvent
   ) {
     let buffered = this.bufferedEvents.get(requestId);
     if (!buffered) {
@@ -2082,6 +2097,11 @@ export class ChatEngine {
     const existing = buffered.events.get(key);
     buffered.events.set(key, mergeBufferedEvents(existing, event));
 
+    if (buffered.events.size >= MAX_PENDING_UPDATES) {
+      this.flushBufferedEvents(requestId);
+      return;
+    }
+
     if (buffered.timer) {
       return;
     }
@@ -2089,6 +2109,14 @@ export class ChatEngine {
     buffered.timer = setTimeout(() => {
       this.flushBufferedEvents(requestId);
     }, STREAM_BATCH_INTERVAL_MS);
+  }
+
+  private supersedeBufferedToolUpdates(requestId: string, toolCallId: string | null | undefined) {
+    const buffered = this.bufferedEvents.get(requestId);
+    if (!buffered || !toolCallId) {
+      return;
+    }
+    dropSupersededBufferedToolEvents(buffered.events, requestId, toolCallId);
   }
 
   private flushBufferedEvents(requestId: string) {
@@ -2534,6 +2562,12 @@ export class ChatEngine {
     // on that basis left every one of its chats named by the local heuristic.
     if (adapter && (apiKey || !requiresStoredCredential(adapter))) {
       try {
+        // Durable prompt (t3code PR #5357): name the subject and outcome so
+        // the title still identifies the session weeks later.
+        const titlePrompt = buildThreadTitlePrompt({
+          userMessage: userText,
+          assistantReply: assistantText
+        });
         const result = await adapter.streamChat({
           apiKey: apiKey ?? '',
           modelId: active.request.modelId,
@@ -2545,14 +2579,11 @@ export class ChatEngine {
           // thinking tokens come out of the same budget as the answer —
           // leaving the reply empty if the model is allowed to ruminate.
           reasoningEffort: 'minimal',
-          system:
-            'Generate a short title for a chat session based on its opening exchange. ' +
-            'Reply with the title only: 3-6 words, no quotes, no trailing punctuation, ' +
-            'same language as the conversation.',
+          system: titlePrompt.system,
           messages: [
             {
               role: 'user',
-              content: `User message:\n${userText}\n\nAssistant reply:\n${assistantText || '(none)'}`,
+              content: titlePrompt.message,
             },
           ],
           maxOutputTokens: 1_000,
@@ -2592,9 +2623,9 @@ export class ChatEngine {
   }
 
   /**
-   * Explicit user-triggered title regeneration. Re-reads the opening
-   * exchange and calls the model to produce a fresh 3-6 word title,
-   * falling back to the heuristic generator if offline or erroring.
+   * Explicit user-triggered title regeneration. Reads the whole thread and
+   * asks the model for a fresh durable title (t3code PR #5357), falling back
+   * to the heuristic generator if offline or erroring.
    */
   async regenerateTitle(conversationId: string): Promise<ConversationSummary> {
     const detail = this.conversationsRepo.get(conversationId);
@@ -2603,21 +2634,24 @@ export class ChatEngine {
     }
 
     const messages = detail.messages ?? [];
-    const firstUserMessage = messages.find((message) => message.role === 'user');
-    const firstAssistantMessage = messages.find((message) => message.role === 'assistant');
+    // Whole-thread digest, not just the opening exchange: the new title must
+    // capture the current durable subject, not the first request. Plain text,
+    // never href bytes: the model names the session from words.
+    const digest = buildThreadTitleDigest(
+      messages
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => ({
+          role: message.role as 'user' | 'assistant',
+          text:
+            message.role === 'user'
+              ? assistantCitationsToPlainText(message.content)
+              : assistantCitationsToPlainText(getTextContentFromParts(message.parts))
+        }))
+    );
 
     let title: string | null = null;
-    // Plain text, never href bytes: the model names the session from words.
-    const userText = firstUserMessage
-      ? assistantCitationsToPlainText(firstUserMessage.content).trim().slice(0, 600)
-      : undefined;
-    const assistantText = firstAssistantMessage
-      ? assistantCitationsToPlainText(getTextContentFromParts(firstAssistantMessage.parts))
-          .trim()
-          .slice(0, 600)
-      : '';
 
-    if (userText) {
+    if (digest) {
       const fallback = this.resolveFallbackModel();
       const modelId = detail.conversation.defaultModelId || fallback?.modelId || 'gpt-4o-mini';
       const providerId = detail.conversation.defaultProviderId || fallback?.providerId || 'opencode';
@@ -2626,19 +2660,20 @@ export class ChatEngine {
 
       if (adapter && (apiKey || !requiresStoredCredential(adapter))) {
         try {
+          const titlePrompt = buildThreadTitleRegenerationPrompt({
+            thread: digest,
+            previousTitle: detail.conversation.title
+          });
           const result = await adapter.streamChat({
             apiKey: apiKey ?? '',
             modelId,
             modelHints: this.modelsRepo.getRuntimeHints(modelId, providerId),
             reasoningEffort: 'minimal',
-            system:
-              'Generate a short title for a chat session based on its opening exchange. ' +
-              'Reply with the title only: 3-6 words, no quotes, no trailing punctuation, ' +
-              'same language as the conversation.',
+            system: titlePrompt.system,
             messages: [
               {
                 role: 'user',
-                content: `User message:\n${userText}\n\nAssistant reply:\n${assistantText || '(none)'}`,
+                content: titlePrompt.message,
               },
             ],
             maxOutputTokens: 1_000,
@@ -2656,7 +2691,10 @@ export class ChatEngine {
       }
 
       if (!title) {
-        title = deriveTitleFromUserMessage(assistantCitationsToPlainText(userText));
+        const firstUserMessage = messages.find((message) => message.role === 'user');
+        if (firstUserMessage) {
+          title = deriveTitleFromUserMessage(assistantCitationsToPlainText(firstUserMessage.content));
+        }
       }
     }
 

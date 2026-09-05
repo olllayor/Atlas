@@ -2,8 +2,10 @@ import { create } from 'zustand';
 
 import type {
   SiteDetail,
+  ExportSiteToWorkspaceResult,
   SiteExportFormat,
   SiteFileInput,
+  WorkspaceProjectAnalysis,
   SitePreviewTarget,
   SiteReviewChecklist,
   SiteSummary,
@@ -20,7 +22,7 @@ function getErrorMessage(error: unknown) {
 
 export type SiteCanvasPrefs = {
   viewMode: 'canvas' | 'split' | 'code';
-  viewport: 'desktop' | 'tablet' | 'mobile';
+  viewport: 'desktop' | 'tablet' | 'mobile' | 'multi';
   zoom: number;
   backdrop: 'dots' | 'grid' | 'blank';
   inspectMode: boolean;
@@ -92,6 +94,8 @@ type SitesState = {
   refreshPreview: (versionId?: string | null) => Promise<void>;
   openPreviewWindow: (versionId?: string | null) => Promise<void>;
   exportSite: (format: SiteExportFormat, versionId?: string | null) => Promise<string | null>;
+  exportToWorkspace: (projectRoot: string, subpath: string, versionId?: string | null) => Promise<ExportSiteToWorkspaceResult | null>;
+  analyzeWorkspace: (projectRoot: string, versionId?: string | null) => Promise<WorkspaceProjectAnalysis | null>;
   openInBrowser: (versionId?: string | null) => Promise<void>;
   clearError: () => void;
 };
@@ -400,6 +404,33 @@ export const useSitesStore = create<SitesState>((set, get) => {
         window.atlasChat.sites.export({ siteId, versionId: versionId ?? null, format })
       );
       return result && !result.cancelled ? result.destination : null;
+    },
+
+    exportToWorkspace: async (projectRoot, subpath, versionId) => {
+      const siteId = get().selectedSiteId;
+      if (!siteId) return null;
+
+      return withBusy(() =>
+        window.atlasChat.sites.exportToWorkspace({
+          siteId,
+          versionId: versionId ?? null,
+          projectRoot,
+          subpath,
+        })
+      );
+    },
+
+    analyzeWorkspace: async (projectRoot, versionId) => {
+      const siteId = get().selectedSiteId;
+      if (!siteId) return null;
+
+      return withBusy(() =>
+        window.atlasChat.sites.analyzeWorkspace({
+          siteId,
+          versionId: versionId ?? null,
+          projectRoot,
+        })
+      );
     },
 
     openInBrowser: async (versionId) => {

@@ -18,6 +18,7 @@ import {
 } from './windowChrome';
 import { getAppIconPath } from './iconPath';
 import { perfMark } from './perfTrace';
+import { IPC_CHANNELS } from '../../shared/ipc';
 import { attachContextMenu } from '../ipc/contextMenu';
 
 /**
@@ -197,7 +198,7 @@ export type CreateWindowOptions = {
 export function createWindow({
   translucentSidebar = false,
   themeMode = 'dark',
-  designTheme = 'codex',
+  designTheme = 'atlas',
   backgroundColor = null,
   foregroundColor = null,
 }: CreateWindowOptions = {}) {
@@ -281,6 +282,16 @@ export function createWindow({
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
+
+  // Native fullscreen hides the traffic lights and the system menu bar, so the
+  // 52px drag strip the sidebar reserves for them becomes dead space. The
+  // renderer collapses it, and only this process is told when the state flips.
+  const sendFullScreenState = () => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(IPC_CHANNELS.windowFullScreenChanged, window.isFullScreen());
+  };
+  window.on('enter-full-screen', sendFullScreenState);
+  window.on('leave-full-screen', sendFullScreenState);
 
   window.once('ready-to-show', () => {
     perfMark('window:ready-to-show (first paint possible)');

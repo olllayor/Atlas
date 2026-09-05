@@ -106,7 +106,7 @@ test('every mode-defining theme block carries the full color-token contract', ()
   const required = requiredTokens(root);
   assert.ok(required.length >= 40, `contract shrank unexpectedly: ${required.length} tokens`);
 
-  for (const theme of ['codex', 'default', 'xai', 'cursor']) {
+  for (const theme of ['atlas', 'codex', 'default', 'xai', 'cursor']) {
     const blocks = parseBlocks(readTheme(theme));
 
     // Cursor's dark variant is authored as deltas only (inherits typography,
@@ -210,6 +210,7 @@ function contrast(aHex: string, bHex: string): number {
 
 /** Which selector carries each mode's palette, per theme file. */
 const MODE_BLOCKS: Record<string, { light?: string; dark: string }> = {
+  atlas: { dark: "[data-design-theme='atlas']", light: "[data-theme='light'][data-design-theme='atlas']" },
   codex: { dark: "[data-design-theme='codex']", light: "[data-theme='light'][data-design-theme='codex']" },
   cursor: { light: "[data-design-theme='cursor']", dark: "[data-theme='dark'][data-design-theme='cursor']" },
   default: { dark: "[data-design-theme='default']" },

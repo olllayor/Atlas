@@ -223,6 +223,7 @@ test('ChatEngine handles inline approval denial in the same assistant turn', asy
         updateMessageCalls.push(input);
       },
       getModelHistory: () => [],
+      getSummary: () => ({ defaultProviderId: 'openrouter', defaultModelId: 'test-model' }),
       // No title state means "no such conversation", so these tests opt out
       // of automatic naming entirely.
       getTitleState: () => null,

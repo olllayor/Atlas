@@ -934,6 +934,26 @@ export class SettingsRepo {
   }
 
   /**
+   * Settings for every other local agent (Claude Code, Codex, Cursor, …),
+   * persisted as one JSON blob under `providers.localAgents` keyed by agent
+   * id. OpenCode keeps its own blob above: it predates this record and
+   * carries server-mode fields none of the others have.
+   */
+  getLocalAgentSettingsRecord(): Record<string, unknown> {
+    const stored = this.getJsonSetting<unknown>('providers.localAgents', null);
+    return stored && typeof stored === 'object' && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  }
+
+  setLocalAgentSettings(agentId: string, settings: unknown) {
+    this.setJsonSetting('providers.localAgents', {
+      ...this.getLocalAgentSettingsRecord(),
+      [agentId]: settings
+    });
+  }
+
+  /**
    * There are no built-in providers, so the credential list is exactly the set
    * of providers the user configured.
    */

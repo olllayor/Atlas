@@ -25,6 +25,7 @@ test('contrastFactor maps the slider to 0.6–1.4 with a neutral midpoint', () =
   assert.equal(contrastFactor(50), 1);
   assert.equal(contrastFactor(0), 0.6);
   assert.equal(contrastFactor(100), 1.4);
+  assert.equal(contrastFactor(200), 2.2);
   assert.equal(contrastFactor(Number.NaN), 1);
 });
 
@@ -35,6 +36,8 @@ test('contrastVars splits the slider into base, boost, and border boost', () => 
   assert.deepEqual(contrastVars(0), { base: '0%', boost: '0%', borderBoost: '0%' });
   // High end keeps the base and pushes text toward the target; borders at quarter rate.
   assert.deepEqual(contrastVars(100), { base: '100%', boost: '100%', borderBoost: '25%' });
+  assert.deepEqual(contrastVars(150), { base: '50%', boost: '100%', borderBoost: '62.5%' });
+  assert.deepEqual(contrastVars(200), { base: '0%', boost: '100%', borderBoost: '100%' });
   assert.deepEqual(contrastVars(75), { base: '100%', boost: '50%', borderBoost: '12.5%' });
   assert.deepEqual(contrastVars(Number.NaN), { base: '100%', boost: '0%', borderBoost: '0%' });
 });
@@ -217,5 +220,5 @@ test('parseThemeImport rejects garbage and normalizes bad colors to null', () =>
   assert.equal(parseThemeImport('{}'), null);
 
   const partial = parseThemeImport(JSON.stringify({ accentColor: 'red', contrast: 250 }));
-  assert.deepEqual(partial, { accentColor: null, contrast: 100 });
+  assert.deepEqual(partial, { accentColor: null, contrast: 200 });
 });

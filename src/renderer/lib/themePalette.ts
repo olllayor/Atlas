@@ -119,6 +119,45 @@ export function saveCustomTheme(theme: ThemeDefinition): void {
   }
 }
 
+
+export function removeCustomThemeCollection(collectionId: string): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  const current = getCustomThemes();
+  const updated = current.filter((t) => t.collection?.id !== collectionId);
+  try {
+    localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(updated));
+    notifyCustomThemesChange();
+  } catch (err) {
+    console.error("Failed to remove custom theme collection:", err);
+  }
+}
+
+export function getVariantShortLabel(variantLabel: string, collectionLabel: string): string {
+  const cleanVariant = variantLabel.trim();
+  const cleanCollection = collectionLabel.trim();
+
+  if (cleanVariant.toLowerCase() === cleanCollection.toLowerCase()) {
+    const words = cleanVariant.split(/\s+/);
+    return words[words.length - 1] || cleanVariant;
+  }
+
+  if (cleanVariant.toLowerCase().startsWith(cleanCollection.toLowerCase())) {
+    const remainder = cleanVariant.slice(cleanCollection.length).trim();
+    if (remainder) {
+      return remainder.replace(/^[-_–—:]\s*/, "");
+    }
+  }
+
+  const collWords = cleanCollection.toLowerCase().split(/\s+/);
+  const variantWords = cleanVariant.split(/\s+/);
+  const filtered = variantWords.filter((w) => !collWords.includes(w.toLowerCase()));
+  if (filtered.length > 0) {
+    return filtered.join(" ");
+  }
+
+  return cleanVariant;
+}
+
 export function removeCustomTheme(id: string): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   const current = getCustomThemes();
@@ -182,7 +221,7 @@ export function applyThemePalette(
   const effectiveId = themeId && themeId.trim() ? themeId : 'default';
   const theme = getThemeDefinition(effectiveId) ?? ATLAS_THEME;
 
-  const colors = getThemeColorsForAppearance(theme, appearance) ?? theme.colors;
+  const colors = getThemeColorsForAppearance(theme, appearance) ?? getThemeColorsForAppearance(ATLAS_THEME, appearance) ?? theme.colors;
   root.dataset.themeId = theme.id;
 
   for (const role of THEME_COLOR_ROLES) {
@@ -191,4 +230,36 @@ export function applyThemePalette(
       root.style.setProperty(APP_THEME_VARIABLES[role], value);
     }
   }
+}
+
+export function installCustomTheme(theme: ThemeDefinition): ThemeDefinition {
+  saveCustomTheme(theme);
+  return theme;
+}
+
+export function updateCustomTheme(theme: ThemeDefinition): ThemeDefinition {
+  saveCustomTheme(theme);
+  return theme;
+}
+
+export function getStoredCustomThemeCollection(collectionId: string): ThemeDefinition[] {
+  return getCustomThemes().filter((t) => t.collection?.id === collectionId);
+}
+
+export function replaceCustomThemeCollection(
+  collectionId: string,
+  themes: readonly ThemeDefinition[],
+  _options?: { expectedCollection?: readonly ThemeDefinition[] | null }
+): readonly ThemeDefinition[] {
+  if (typeof window === "undefined" || !window.localStorage) return themes;
+  const current = getCustomThemes();
+  const withoutOldCollection = current.filter((t) => t.collection?.id !== collectionId);
+  const next = [...withoutOldCollection, ...themes];
+  try {
+    localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(next));
+    notifyCustomThemesChange();
+  } catch (err) {
+    console.error("Failed to replace custom theme collection:", err);
+  }
+  return themes;
 }

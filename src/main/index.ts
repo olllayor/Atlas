@@ -35,6 +35,9 @@ import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
 import { initializeOpenCode } from './ai/providers/opencode/openCodeController';
+import { initializeLocalAgents } from './ai/agents/localAgentController';
+import { LOCAL_AGENTS } from '../shared/localAgents';
+import { registerLocalAgentsIpc } from './ipc/localAgents';
 import { registerWorkspaceIpc } from './ipc/workspace';
 import { registerBrowserIpc } from './ipc/browser';
 import { PortDiscovery } from './browser/PortDiscovery';
@@ -52,6 +55,7 @@ import { AgentInstructionsService } from './workspace/AgentInstructions';
 import { EnvStore } from './workspace/EnvStore';
 import { GitReviewService } from './workspace/GitReviewService';
 import { GitStateService } from './workspace/GitStateService';
+import { autoPullProjects } from './workspace/projectAutoPull';
 import { getSharedGitHubService } from './workspace/GitHubCli';
 import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
@@ -89,6 +93,7 @@ import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
 import { registerContextMenuIpc } from './ipc/contextMenu';
+import { registerWindowIpc } from './ipc/window';
 import { registerImagesIpc } from './ipc/images';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
@@ -384,6 +389,21 @@ app.whenReady().then(async () => {
   });
   perfMark('opencode:controller-constructed');
 
+  // Every other local agent (Claude Code, Codex, Cursor, …). Same gating rule
+  // as opencode: disabled means nothing spawns, and the initial registry sync
+  // runs in the background so a cold start never pays for it.
+  const { controller: localAgentController } = initializeLocalAgents({
+    settingsRepo: database.settings,
+    sessions: database.localAgentSessions,
+    registry: providers,
+    opencode: opencodeController,
+    defaultDirectory: () => app.getPath('home'),
+    onRegistryChanged: async () => {
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
+      broadcastModelsChanged();
+    }
+  });
+
   // Drop cached models left behind by providers that no longer exist, so the
   // catalog does not carry entries nothing can serve.
   database.models.deleteOrphanedModels();
@@ -579,6 +599,7 @@ app.whenReady().then(async () => {
     ptyService.disposeAll();
     // An `opencode serve` child Atlas spawned outlives the window otherwise.
     void opencodeController.shutdown();
+    void localAgentController.shutdown();
     // Spawned servers outlive the window otherwise: the transport keeps the
     // child alive, and nothing else would reap it.
     void mcpManager.disposeAll();
@@ -752,6 +773,8 @@ app.whenReady().then(async () => {
   chatEngine.attachGoalRuntime(goalRuntime);
   perfMark('chatengine+goal:constructed');
 
+  registerLocalAgentsIpc({ localAgents: localAgentController });
+
   registerSettingsIpc({
     settingsRepo: database.settings,
     modelRegistry,
@@ -783,6 +806,10 @@ app.whenReady().then(async () => {
       // longer exists. The FK cascade drops the row too, but the delete should
       // not depend on a pragma to be correct.
       opencodeController.forgetConversation(conversationId);
+      // Same for every other local agent's ACP cursor.
+      for (const agent of LOCAL_AGENTS) {
+        database.localAgentSessions.clear(agent.id, conversationId);
+      }
       chatEngine.continuations.evictForConversation(conversationId);
       void chatEngine.subagents
         .interruptAll(conversationId, 'conversation deleted')
@@ -842,6 +869,7 @@ app.whenReady().then(async () => {
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
   registerContextMenuIpc();
+  registerWindowIpc();
   registerImagesIpc();
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
@@ -926,6 +954,26 @@ app.whenReady().then(async () => {
     // Gated servers are deliberately not warmed: warming one would spawn the
     // process the gate exists to avoid.
     void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(reportBackgroundFailure('mcp.prewarm_failed'));
+    // Background pull of opted-in projects: network I/O that must never delay
+    // first paint or a failed pull block boot. Per-checkout guards live in
+    // `autoPullProjects`; failures land here as a log line, nothing more.
+    void (async () => {
+      try {
+        const roots = database.projects
+          .list()
+          .filter((project) => project.autoPull && project.exists)
+          .map((project) => project.root);
+        if (roots.length === 0) return;
+        const outcomes = await autoPullProjects(roots, gitStateService, { fetchFirst: true });
+        for (const outcome of outcomes) {
+          if (outcome.pulled) {
+            console.info(`[projects] automatic pull completed: ${outcome.root}`);
+          }
+        }
+      } catch (err) {
+        reportBackgroundFailure('projects.auto_pull_failed')(err);
+      }
+    })();
   });
 
   app.on('activate', () => {

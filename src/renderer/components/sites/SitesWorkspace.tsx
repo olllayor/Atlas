@@ -1,4 +1,5 @@
 import { CodeEditorPane } from "./CodeEditorPane";
+import { ExportWorkspaceDialog } from "./ExportWorkspaceDialog";
 import {
   Crosshair2Icon,
   ChatBubbleIcon,
@@ -53,7 +54,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 type RightPanelTab = "preview" | "review" | "versions";
 type ViewMode = "canvas" | "split" | "code";
-type ViewportMode = "desktop" | "tablet" | "mobile";
+type ViewportMode = "desktop" | "tablet" | "mobile" | "multi";
 type BackdropMode = "dots" | "grid" | "blank";
 
 const LABEL_CLASS =
@@ -891,6 +892,19 @@ function CanvasToolbar({
             <MobileIcon className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Mobile</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setViewport("multi")}
+            title="Multi-Device Artboards View (Mobile, Tablet, Desktop side-by-side)"
+            className={`flex h-6 items-center gap-1.5 rounded px-2 text-2xs font-medium transition ${
+              viewport === "multi"
+                ? "bg-bg-hover text-text-primary shadow-xs"
+                : "text-text-tertiary hover:text-text-secondary"
+            }`}
+          >
+            <ColumnsIcon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Multi</span>
+          </button>
         </div>
 
         {/* Inspect Mode Toggle */}
@@ -1011,6 +1025,7 @@ function DesignCanvas({
   previewTarget,
   previewNonce,
   viewport,
+  onSetViewport,
   zoom,
   backdrop,
   inspectMode,
@@ -1024,6 +1039,7 @@ function DesignCanvas({
   previewTarget: { versionId: string; url: string } | null;
   previewNonce: number;
   viewport: ViewportMode;
+  onSetViewport?: (vp: ViewportMode) => void;
   zoom: number;
   backdrop: BackdropMode;
   inspectMode: boolean;
@@ -1033,25 +1049,32 @@ function DesignCanvas({
   onJumpToCode: (el: SelectedElementInfo) => void;
   onCopyMarkup: (el: SelectedElementInfo) => void;
 }) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const singleIframeRef = useRef<HTMLIFrameElement>(null);
+  const desktopIframeRef = useRef<HTMLIFrameElement>(null);
+  const tabletIframeRef = useRef<HTMLIFrameElement>(null);
+  const mobileIframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Soft reload preview via postMessage without unmounting iframe DOM node
+  // Soft reload preview via postMessage across all active iframes
   useEffect(() => {
-    if (!iframeRef.current) return;
-    try {
-      iframeRef.current.contentWindow?.postMessage("atlas:reload", "*");
-    } catch {}
+    const refs = [singleIframeRef, desktopIframeRef, tabletIframeRef, mobileIframeRef];
+    refs.forEach((ref) => {
+      try {
+        ref.current?.contentWindow?.postMessage("atlas:reload", "*");
+      } catch {}
+    });
   }, [previewNonce]);
 
-  // Synchronize inspect mode with preview bridge
+  // Synchronize inspect mode with preview bridge across all active iframes
   useEffect(() => {
-    if (!iframeRef.current) return;
-    try {
-      iframeRef.current.contentWindow?.postMessage(
-        { type: "atlas:toggle_inspect", enabled: inspectMode },
-        "*"
-      );
-    } catch {}
+    const refs = [singleIframeRef, desktopIframeRef, tabletIframeRef, mobileIframeRef];
+    refs.forEach((ref) => {
+      try {
+        ref.current?.contentWindow?.postMessage(
+          { type: "atlas:toggle_inspect", enabled: inspectMode },
+          "*"
+        );
+      } catch {}
+    });
   }, [inspectMode]);
 
   const getBackdropStyle = (): CSSProperties => {
@@ -1071,7 +1094,7 @@ function DesignCanvas({
     return {};
   };
 
-  // Exact natural dimensions for device viewports
+  // Natural dimensions for individual device viewports
   const naturalWidth = viewport === "mobile" ? 392 : viewport === "tablet" ? 770 : 1200;
   const naturalHeight = viewport === "mobile" ? 884 : viewport === "tablet" ? 1064 : 800;
   const scale = zoom / 100;
@@ -1079,71 +1102,187 @@ function DesignCanvas({
 
   return (
     <div
-      className="relative flex-1 min-h-0 w-full overflow-auto flex items-center justify-center p-6 bg-bg-base"
+      className={`relative flex-1 min-h-0 w-full overflow-auto flex ${
+        viewport === "multi" ? "items-start justify-start p-8" : "items-center justify-center p-6"
+      } bg-bg-base`}
       style={getBackdropStyle()}
     >
       {previewTarget ? (
-        <div
-          className="relative transition-all duration-150 ease-out"
-          style={{
-            width: isDesktopFluid ? "100%" : `${naturalWidth * scale}px`,
-            height: isDesktopFluid ? "100%" : `${naturalHeight * scale}px`,
-            maxWidth: isDesktopFluid ? "1440px" : undefined,
-            margin: "auto",
-            flexShrink: 0,
-          }}
-        >
+        viewport === "multi" ? (
+          /* Multi-Artboard Canvas View: Desktop, Tablet, Mobile side-by-side */
           <div
+            className="flex items-start justify-center gap-10 min-w-max transition-transform duration-150 m-auto"
             style={{
-              width: isDesktopFluid ? "100%" : `${naturalWidth}px`,
-              height: isDesktopFluid ? "100%" : `${naturalHeight}px`,
-              transform: isDesktopFluid ? undefined : `scale(${scale})`,
-              transformOrigin: "top left",
-              transition: "transform 150ms ease",
+              transform: `scale(${scale})`,
+              transformOrigin: "top center",
             }}
-            className="flex flex-col h-full w-full"
           >
-            {/* Device Frame Header for Tablet & Mobile */}
-            {viewport !== "desktop" && (
-              <div className="w-full flex items-center justify-between px-4 py-2.5 bg-bg-surface border border-border-default rounded-t-2xl text-2xs text-text-tertiary font-mono shrink-0 select-none">
+            {/* 1. Desktop Artboard (1200 x 800) */}
+            <div className="flex flex-col shrink-0 shadow-2xl rounded-2xl overflow-hidden border border-border-default bg-bg-surface">
+              <div className="flex items-center justify-between px-4 py-2.5 bg-bg-surface border-b border-border-subtle select-none">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-border-strong" />
-                  <span>
-                    {viewport === "mobile"
-                      ? "390 × 844 · Mobile Viewport"
-                      : "768 × 1024 · iPad Tablet"}
-                  </span>
+                  {/* design-tokens-allow: macOS traffic light window controls */}
+                  <span className="size-3 rounded-full bg-[#ff5f57] border border-[#e0443e]/50" />
+                  {/* design-tokens-allow: macOS traffic light window controls */}
+                  <span className="size-3 rounded-full bg-[#febc2e] border border-[#d89e24]/50" />
+                  {/* design-tokens-allow: macOS traffic light window controls */}
+                  <span className="size-3 rounded-full bg-[#28c840] border border-[#1aab29]/50" />
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-success" />
-                  <span className="text-3xs text-success font-sans font-medium uppercase">Active</span>
+                <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-bg-base border border-border-subtle text-2xs font-mono text-text-secondary">
+                  <DesktopIcon className="size-3 text-text-tertiary" />
+                  <span>Desktop · 1280 × 800</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => onSetViewport?.("desktop")}
+                  title="Focus Desktop Viewport"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition"
+                >
+                  <EyeOpenIcon className="size-3" />
+                  <span>Focus</span>
+                </button>
               </div>
-            )}
+              {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
+              <div className="w-[1200px] h-[800px] bg-white overflow-hidden">
+                {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
+                <iframe
+                  className="w-full h-full border-0 bg-white"
+                  ref={desktopIframeRef}
+                  key={`${previewTarget.versionId}-desktop`}
+                  src={previewTarget.url}
+                  title={`${title} desktop preview`}
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                />
+              </div>
+            </div>
 
-            {/* Exact Viewport Canvas Box */}
-            {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
-            <div
-              className={`w-full overflow-hidden bg-white ${
-                viewport === "desktop"
-                  ? "h-full rounded-xl border border-border-subtle shadow-lg"
-                  : viewport === "tablet"
-                    ? "h-[1024px] w-[768px] rounded-b-2xl border-x border-b border-border-default shadow-2xl"
-                    : "h-[844px] w-[390px] rounded-b-3xl border-x border-b border-border-default shadow-2xl"
-              }`}
-            >
-              {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
-              <iframe
-                className="w-full h-full border-0 bg-white"
-                ref={iframeRef}
-                key={previewTarget.versionId}
-                src={previewTarget.url}
-                title={`${title} preview`}
-                sandbox="allow-scripts allow-same-origin allow-forms"
-              />
+            {/* 2. Tablet Artboard (768 x 1024) */}
+            <div className="flex flex-col shrink-0 shadow-2xl rounded-2xl overflow-hidden border border-border-default bg-bg-surface">
+              <div className="flex items-center justify-between px-4 py-2.5 bg-bg-surface border-b border-border-subtle select-none">
+                <div className="flex items-center gap-2">
+                  <span className="size-2 rounded-full bg-border-strong" />
+                  <span className="text-2xs font-mono text-text-secondary">iPad Tablet · 768 × 1024</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onSetViewport?.("tablet")}
+                  title="Focus Tablet Viewport"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition"
+                >
+                  <EyeOpenIcon className="size-3" />
+                  <span>Focus</span>
+                </button>
+              </div>
+              {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
+              <div className="w-[768px] h-[1024px] bg-white overflow-hidden">
+                {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
+                <iframe
+                  className="w-full h-full border-0 bg-white"
+                  ref={tabletIframeRef}
+                  key={`${previewTarget.versionId}-tablet`}
+                  src={previewTarget.url}
+                  title={`${title} tablet preview`}
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                />
+              </div>
+            </div>
+
+            {/* 3. Mobile Artboard (390 x 844) */}
+            <div className="flex flex-col shrink-0 shadow-2xl rounded-3xl overflow-hidden border border-border-default bg-bg-surface">
+              <div className="flex items-center justify-between px-4 py-2 bg-bg-surface border-b border-border-subtle select-none">
+                <div className="flex items-center gap-2">
+                  {/* design-tokens-allow: dynamic island simulator */}
+                  <span className="w-14 h-3.5 rounded-full bg-black shrink-0" />
+                  <span className="text-2xs font-mono text-text-secondary">iPhone · 390 × 844</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onSetViewport?.("mobile")}
+                  title="Focus Mobile Viewport"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition"
+                >
+                  <EyeOpenIcon className="size-3" />
+                  <span>Focus</span>
+                </button>
+              </div>
+              {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
+              <div className="w-[390px] h-[844px] bg-white overflow-hidden">
+                {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
+                <iframe
+                  className="w-full h-full border-0 bg-white"
+                  ref={mobileIframeRef}
+                  key={`${previewTarget.versionId}-mobile`}
+                  src={previewTarget.url}
+                  title={`${title} mobile preview`}
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                />
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          /* Single Artboard View */
+          <div
+            className="relative transition-all duration-150 ease-out"
+            style={{
+              width: isDesktopFluid ? "100%" : `${naturalWidth * scale}px`,
+              height: isDesktopFluid ? "100%" : `${naturalHeight * scale}px`,
+              maxWidth: isDesktopFluid ? "1440px" : undefined,
+              margin: "auto",
+              flexShrink: 0,
+            }}
+          >
+            <div
+              style={{
+                width: isDesktopFluid ? "100%" : `${naturalWidth}px`,
+                height: isDesktopFluid ? "100%" : `${naturalHeight}px`,
+                transform: isDesktopFluid ? undefined : `scale(${scale})`,
+                transformOrigin: "top left",
+                transition: "transform 150ms ease",
+              }}
+              className="flex flex-col h-full w-full"
+            >
+              {/* Device Frame Header for Tablet & Mobile */}
+              {viewport !== "desktop" && (
+                <div className="w-full flex items-center justify-between px-4 py-2.5 bg-bg-surface border border-border-default rounded-t-2xl text-2xs text-text-tertiary font-mono shrink-0 select-none">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-border-strong" />
+                    <span>
+                      {viewport === "mobile"
+                        ? "390 × 844 · Mobile Viewport"
+                        : "768 × 1024 · iPad Tablet"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-success" />
+                    <span className="text-3xs text-success font-sans font-medium uppercase">Active</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Exact Viewport Canvas Box */}
+              {/* design-tokens-allow: web preview canvas must have an authentic white background for user site rendering */}
+              <div
+                className={`w-full overflow-hidden bg-white ${
+                  viewport === "desktop"
+                    ? "h-full rounded-xl border border-border-subtle shadow-lg"
+                    : viewport === "tablet"
+                      ? "h-[1024px] w-[768px] rounded-b-2xl border-x border-b border-border-default shadow-2xl"
+                      : "h-[844px] w-[390px] rounded-b-3xl border-x border-b border-border-default shadow-2xl"
+                }`}
+              >
+                {/* design-tokens-allow: web preview iframe must have an authentic white background for user site rendering */}
+                <iframe
+                  className="w-full h-full border-0 bg-white"
+                  ref={singleIframeRef}
+                  key={previewTarget.versionId}
+                  src={previewTarget.url}
+                  title={`${title} preview`}
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                />
+              </div>
+            </div>
+          </div>
+        )
       ) : (
         <div className="flex flex-1 items-center justify-center text-xs text-text-faint">
           No preview target active.
@@ -1308,14 +1447,37 @@ export function SitesWorkspace({
   }, [fileDirty, isBusy, saveFile]);
 
   // Fit to window handler
-  const handleFitZoom = () => {
-    const naturalWidth = viewport === "mobile" ? 392 : viewport === "tablet" ? 770 : 1200;
-    const naturalHeight = viewport === "mobile" ? 884 : viewport === "tablet" ? 1064 : 800;
-    const availW = Math.max(320, window.innerWidth - 380);
+  const handleFitZoom = (targetViewport: ViewportMode = viewport) => {
+    const naturalWidth =
+      targetViewport === "mobile"
+        ? 392
+        : targetViewport === "tablet"
+          ? 770
+          : targetViewport === "multi"
+            ? 2460
+            : 1200;
+    const naturalHeight =
+      targetViewport === "mobile"
+        ? 884
+        : targetViewport === "tablet"
+          ? 1064
+          : targetViewport === "multi"
+            ? 1100
+            : 800;
+    const availW = Math.max(320, window.innerWidth - (viewMode === "split" ? 640 : 380));
     const availH = Math.max(300, window.innerHeight - 200);
     const fitRatio = Math.min(availW / naturalWidth, availH / naturalHeight);
-    const fitPercent = Math.max(40, Math.min(100, Math.round(fitRatio * 100)));
+    const fitPercent = Math.max(30, Math.min(100, Math.round(fitRatio * 100)));
     setZoom(fitPercent);
+  };
+
+  const handleSetViewport = (vp: ViewportMode) => {
+    setViewport(vp);
+    if (vp === "multi") {
+      handleFitZoom("multi");
+    } else if (viewport === "multi" && zoom < 60) {
+      setZoom(100);
+    }
   };
 
   const handleAskAtlas = (element: SelectedElementInfo) => {
@@ -1358,6 +1520,7 @@ export function SitesWorkspace({
   const [creatingSite, setCreatingSite] = useState(false);
   const [creatingFile, setCreatingFile] = useState(false);
   const [pendingSiteDelete, setPendingSiteDelete] = useState(false);
+  const [exportWorkspaceOpen, setExportWorkspaceOpen] = useState(false);
   const [pendingFileDelete, setPendingFileDelete] = useState<string | null>(null);
   const [pendingResetDraft, setPendingResetDraft] = useState<SiteVersionSummary | null>(null);
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch | null>(null);
@@ -1530,6 +1693,14 @@ export function SitesWorkspace({
                 Build
               </ToolbarButton>
               <ToolbarButton
+                onClick={() => setExportWorkspaceOpen(true)}
+                disabled={isBusy}
+                title="Export this design to your active project workspace with package detection"
+              >
+                <CodeIcon className="h-3.5 w-3.5" />
+                Export to Code
+              </ToolbarButton>
+              <ToolbarButton
                 onClick={() => void openPreviewWindow()}
                 disabled={isBusy}
                 title="Open the design in a standalone window"
@@ -1564,6 +1735,9 @@ export function SitesWorkspace({
                 <DropdownMenuContent align="end" className="min-w-[200px] rounded-md">
                   <DropdownMenuItem disabled={isBusy} onSelect={() => void openInBrowser()}>
                     Open in default browser
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={isBusy} onSelect={() => setExportWorkspaceOpen(true)}>
+                    Export to Workspace Project…
                   </DropdownMenuItem>
                   <DropdownMenuItem disabled={isBusy} onSelect={() => void handleExport("folder")}>
                     Export to folder…
@@ -1639,7 +1813,7 @@ export function SitesWorkspace({
               viewMode={viewMode}
               setViewMode={setViewMode}
               viewport={viewport}
-              setViewport={setViewport}
+              setViewport={handleSetViewport}
               zoom={zoom}
               setZoom={setZoom}
               backdrop={backdrop}
@@ -1656,6 +1830,7 @@ export function SitesWorkspace({
               previewTarget={previewTarget}
               previewNonce={previewNonce}
               viewport={viewport}
+              onSetViewport={handleSetViewport}
               zoom={zoom}
               backdrop={backdrop}
               inspectMode={inspectMode}
@@ -1697,7 +1872,7 @@ export function SitesWorkspace({
                 viewMode={viewMode}
                 setViewMode={setViewMode}
                 viewport={viewport}
-                setViewport={setViewport}
+                setViewport={handleSetViewport}
                 zoom={zoom}
                 setZoom={setZoom}
                 backdrop={backdrop}
@@ -1714,6 +1889,7 @@ export function SitesWorkspace({
                 previewTarget={previewTarget}
                 previewNonce={previewNonce}
                 viewport={viewport}
+                onSetViewport={handleSetViewport}
                 zoom={zoom}
                 backdrop={backdrop}
                 inspectMode={inspectMode}
@@ -1853,6 +2029,14 @@ export function SitesWorkspace({
           setPendingFileDelete(null);
         }}
       />
+
+      {detail ? (
+        <ExportWorkspaceDialog
+          open={exportWorkspaceOpen}
+          onOpenChange={setExportWorkspaceOpen}
+          detail={detail}
+        />
+      ) : null}
 
       <ConfirmDialog
         open={pendingSiteDelete}

@@ -5,27 +5,56 @@
  * (`flattenOpenCodeModels`, `providerModelsFromSettings`) and the composite
  * slug parser at `opencodeRuntime.ts:318-335`.
  *
+ * Reasoning selection parity: pingdotgg/t3code PR #9287 — variants and
+ * reasoning levels are mapped to Atlas reasoning efforts, with fallback
+ * standard levels ('low', 'medium', 'high', 'xhigh') synthesized when a model
+ * advertises no explicit variants.
+ *
  * Everything here is pure so the whole matrix runs under `node --test` from
  * canned inventory fixtures.
  */
 
 import type { ModelSummary } from '../../../../shared/contracts.js';
+import type { ReasoningEffort } from '../../../../shared/chatParameters.js';
+import { sortReasoningEfforts } from '../../../../shared/chatParameters.js';
 import { OPENCODE_PROVIDER_ID } from '../../../../shared/opencodeSettings.js';
 import type { OpenCodeProviderListResult } from './OpenCodeClient.js';
+
+/**
+ * Standard reasoning levels synthesized when an OpenCode model advertises no
+ * explicit variants (mirrors pingdotgg/t3code PR #9287).
+ */
+export const DEFAULT_OPENCODE_REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh'
+];
 
 /**
  * Fallbacks for a model Atlas knows only as a hand-typed slug. Unknown
  * capabilities stay `null` rather than `false`: Atlas' three-valued modality
  * flags treat `null` as "nobody has said", which lets the first real request
- * settle it (see `ModelSummary.supportsVision`).
+ * settle it (see `ModelSummary.supportsVision`). Hand-typed slugs synthesize
+ * standard OpenCode reasoning levels (PR #9287 parity).
  */
-export const DEFAULT_OPENCODE_MODEL_CAPABILITIES = {
+export const DEFAULT_OPENCODE_MODEL_CAPABILITIES: {
+  contextWindow: null;
+  maxOutputTokens: null;
+  supportsVision: null;
+  supportsDocumentInput: null;
+  supportsTools: null;
+  supportsReasoning: true;
+  reasoningEfforts: ReasoningEffort[];
+} = {
   contextWindow: null,
   maxOutputTokens: null,
   supportsVision: null,
   supportsDocumentInput: null,
-  supportsTools: null
-} as const;
+  supportsTools: null,
+  supportsReasoning: true,
+  reasoningEfforts: [...DEFAULT_OPENCODE_REASONING_EFFORTS]
+};
 
 /** `<providerID>/<modelID>` — how opencode addresses every model. */
 export interface OpenCodeModelSlug {
@@ -79,6 +108,67 @@ function isOfferable(status: string | undefined): boolean {
 }
 
 /**
+ * Resolve reasoning capability and available effort levels for an OpenCode model.
+ * Matches pingdotgg/t3code PR #9287: map known variants to `ReasoningEffort`, or
+ * synthesize standard reasoning spectrum (low, medium, high, xhigh) if reasoning
+ * is supported but no variants are advertised.
+ */
+export function deriveOpenCodeReasoning(
+  capabilitiesReasoning: boolean | null | undefined,
+  variants?: readonly string[]
+): {
+  supportsReasoning: boolean;
+  reasoningEfforts: ReasoningEffort[] | null;
+} {
+  const hasVariants = Boolean(variants && variants.length > 0);
+  if (capabilitiesReasoning === false && !hasVariants) {
+    return { supportsReasoning: false, reasoningEfforts: null };
+  }
+
+  if (hasVariants && variants) {
+    const mapped: ReasoningEffort[] = [];
+    for (const v of variants) {
+      const lower = v.toLowerCase().trim();
+      if (lower === 'none' || lower === 'off') {
+        mapped.push('off');
+      } else if (lower === 'minimal') {
+        mapped.push('minimal');
+      } else if (lower === 'low') {
+        mapped.push('low');
+      } else if (lower === 'medium') {
+        mapped.push('medium');
+      } else if (lower === 'high') {
+        mapped.push('high');
+      } else if (lower === 'xhigh' || lower === 'extra-high' || lower === 'extra_high') {
+        mapped.push('xhigh');
+      } else if (lower === 'max') {
+        mapped.push('max');
+      }
+    }
+    if (mapped.length > 0) {
+      return {
+        supportsReasoning: true,
+        reasoningEfforts: sortReasoningEfforts(mapped)
+      };
+    }
+  }
+
+  // When a model advertises no variants, synthesize the standard reasoning
+  // levels so the composer still offers a Reasoning selector (mirrors PR #9287).
+  if (capabilitiesReasoning === true) {
+    return {
+      supportsReasoning: true,
+      reasoningEfforts: [...DEFAULT_OPENCODE_REASONING_EFFORTS]
+    };
+  }
+
+  return {
+    supportsReasoning: false,
+    reasoningEfforts: null
+  };
+}
+
+/**
  * Flatten the inventory into `ModelSummary` rows under `providerId:
  * "opencode"`, id'd by their composite slug.
  *
@@ -109,6 +199,7 @@ export function flattenOpenCodeModels(input: FlattenOpenCodeModelsInput): ModelS
 
       const id = formatOpenCodeModelSlug({ providerID: provider.id, modelID: model.id });
       const ambiguous = (nameCounts.get(model.name) ?? 0) > 1;
+      const reasoningInfo = deriveOpenCodeReasoning(model.capabilities.reasoning, model.variants);
 
       rows.set(id, {
         id,
@@ -125,12 +216,9 @@ export function flattenOpenCodeModels(input: FlattenOpenCodeModelsInput): ModelS
         lastSyncedAt: syncedAt,
         lastSeenFreeAt: null,
         maxOutputTokens: model.maxOutputTokens,
-        // Sampling belongs to opencode: `session/prompt` takes no temperature,
-        // token ceiling, or effort, so Atlas has nothing to offer here however
-        // the upstream model is described (see `OpenCodeAgentAdapter`).
         supportsTemperature: false,
-        supportsReasoning: model.capabilities.reasoning === true,
-        reasoningEfforts: null
+        supportsReasoning: reasoningInfo.supportsReasoning,
+        reasoningEfforts: reasoningInfo.reasoningEfforts
       });
     }
   }
@@ -153,7 +241,6 @@ export function flattenOpenCodeModels(input: FlattenOpenCodeModelsInput): ModelS
       archived: false,
       lastSyncedAt: syncedAt,
       lastSeenFreeAt: null,
-      reasoningEfforts: null,
       supportsTemperature: false,
       ...DEFAULT_OPENCODE_MODEL_CAPABILITIES
     });

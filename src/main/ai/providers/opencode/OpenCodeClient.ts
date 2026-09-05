@@ -26,6 +26,11 @@ export interface OpenCodeModelInfo {
     readonly image: boolean | null;
     readonly pdf: boolean | null;
   };
+  /**
+   * Upstream reasoning variants exposed by OpenCode (e.g. low, medium, high, xhigh).
+   * Maps to reasoning effort selectors in Atlas.
+   */
+  readonly variants?: readonly string[];
 }
 
 export interface OpenCodeProviderInfo {
@@ -171,6 +176,8 @@ export function normalizeProviderListPayload(payload: unknown): OpenCodeProvider
           const cost = (model?.cost ?? {}) as { input?: unknown; output?: unknown };
           const capabilities = (model?.capabilities ?? {}) as Record<string, unknown>;
           const input = (capabilities.input ?? {}) as Record<string, unknown>;
+          const rawVariants = (model?.variants ?? {}) as Record<string, unknown>;
+          const variants = Object.keys(rawVariants).filter((key) => key.trim().length > 0);
 
           return {
             id: typeof model?.id === 'string' ? model.id : modelKey,
@@ -188,7 +195,8 @@ export function normalizeProviderListPayload(payload: unknown): OpenCodeProvider
               toolcall: toBooleanOrNull(capabilities.toolcall),
               image: toBooleanOrNull(input.image),
               pdf: toBooleanOrNull(input.pdf)
-            }
+            },
+            ...(variants.length > 0 ? { variants } : {})
           } satisfies OpenCodeModelInfo;
         })
         .sort((left, right) => left.id.localeCompare(right.id));
@@ -209,11 +217,13 @@ export function normalizeProviderListPayload(payload: unknown): OpenCodeProvider
     Object.entries(defaultsRecord).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   );
 
+  const modelCount = providers.reduce((sum, provider) => sum + provider.models.length, 0);
+
   return {
     providers,
     connected,
     defaults,
-    modelCount: providers.reduce((total, provider) => total + provider.models.length, 0)
+    modelCount
   };
 }
 

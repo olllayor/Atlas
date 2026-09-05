@@ -30,6 +30,14 @@ const MAX_BUFFERED_UPDATES = 32;
 const DEFAULT_SPAWN_TIMEOUT_MS = 10_000;
 /** Mirror of the SDK driver's per-file ceiling: bigger files travel as paths. */
 const MAX_FILE_BYTES = 20_000_000;
+/**
+ * Framing guard: one JSON-RPC line bigger than this is pathology, not
+ * protocol — a runaway agent streaming megabytes without a newline would
+ * otherwise grow `buffer` without bound until the main process OOMs. Failing
+ * the client is loud and recoverable (the turn errors, the user retries);
+ * silently accumulating is neither.
+ */
+const MAX_BUFFERED_LINE_BYTES = 16_777_216;
 
 export class AcpError extends Error {
   constructor(
@@ -103,11 +111,24 @@ export interface AcpPermissionAsk {
 
 export type AcpPermissionDecision = 'approve' | 'approve_always' | 'deny';
 
-export interface AcpSessionUpdate {
-  readonly sessionId: string;
-  readonly kind: string;
-  readonly text?: string;
-}
+export type AcpSessionUpdate =
+  | {
+      readonly sessionId: string;
+      readonly kind: 'agent_message_chunk' | 'agent_thought_chunk';
+      readonly text?: string;
+    }
+  | {
+      readonly sessionId: string;
+      readonly kind: 'tool_call' | 'tool_call_update';
+      readonly toolCallId: string;
+      readonly title?: string;
+      readonly toolKind?: string;
+      readonly status?: string;
+      readonly input?: unknown;
+      readonly outputText?: string;
+      readonly errorText?: string;
+    }
+  | { readonly sessionId: string; readonly kind: 'unknown'; readonly rawKind: string };
 
 export type AcpPromptBlock =
   | { readonly type: 'text'; readonly text: string }
@@ -127,6 +148,8 @@ type ChildFactory = (
     env?: NodeJS.ProcessEnv;
     windowsHide?: boolean;
     detached?: boolean;
+    shell?: boolean;
+    cwd?: string;
   }
 ) => ChildProcess;
 
@@ -134,6 +157,18 @@ export interface AcpClientOptions {
   /** Workspace the agent runs in; also the root `fs/read_text_file` may touch. */
   readonly cwd: string;
   readonly binaryPath?: string;
+  /** Appended after the `acp` subcommand, before `--cwd`. */
+  readonly extraArgs?: readonly string[];
+  /**
+   * Full argv, replacing the default `['acp', ...extraArgs, '--cwd', cwd]`.
+   *
+   * opencode speaks ACP behind its own `acp` subcommand; a bridge like
+   * `claude-code-acp` *is* the ACP server and takes neither. `session/new`
+   * carries the working directory either way, so the flag is not load-bearing.
+   */
+  readonly spawnArgs?: readonly string[];
+  /** Run the child in `cwd` instead of inheriting the app's directory. */
+  readonly spawnCwd?: boolean;
   readonly env?: NodeJS.ProcessEnv;
   readonly spawnTimeoutMs?: number;
   readonly childFactory?: ChildFactory;
@@ -168,6 +203,38 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function contentText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const texts = value
+    .map(asRecord)
+    .filter((entry) => entry.type === 'content')
+    .map((entry) => asString(asRecord(entry.content).text))
+    .filter((text): text is string => text !== undefined);
+  return texts.length > 0 ? texts.join('\n') : undefined;
+}
+
+
+/**
+ * Cap tool output text stream chunks to 8,000 characters tail (t3code pattern).
+ * Interactive CLI tools that re-stream full progress bars or terminal output
+ * on every update can easily flood the IPC pipe and UI state without this bound.
+ */
+export const MAX_ACP_TOOL_OUTPUT_CHARS = 8_000;
+
+export function boundToolOutput(text: string | undefined): string | undefined {
+  if (text === undefined || text.length <= MAX_ACP_TOOL_OUTPUT_CHARS) {
+    return text;
+  }
+  return "[Earlier output truncated]\n\n" + text.slice(-MAX_ACP_TOOL_OUTPUT_CHARS);
+}
+
+function nonEmptyRecord(value: unknown): Record<string, unknown> | undefined {
+  const record = asRecord(value);
+  return Object.keys(record).length > 0 ? record : undefined;
+}
+
 function parseSessionUpdate(params: unknown): AcpSessionUpdate | null {
   const record = asRecord(params);
   const sessionId = asString(record.sessionId);
@@ -176,9 +243,39 @@ function parseSessionUpdate(params: unknown): AcpSessionUpdate | null {
   if (!sessionId || !kind) {
     return null;
   }
-  const content = asRecord(update.content);
-  const text = asString(content.text);
-  return { sessionId, kind, ...(text !== undefined ? { text } : {}) };
+  if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
+    const content = asRecord(update.content);
+    const text = asString(content.text);
+    return { sessionId, kind, ...(text !== undefined ? { text } : {}) };
+  }
+  if (kind === 'tool_call' || kind === 'tool_call_update') {
+    const toolCallId = asString(update.toolCallId);
+    if (!toolCallId) {
+      return null;
+    }
+    const title = asString(update.title);
+    const toolKind = asString(update.kind);
+    const status = asString(update.status);
+    const input = nonEmptyRecord(update.rawInput);
+    const output = asRecord(update.rawOutput);
+    const text = contentText(update.content);
+    const outputText = boundToolOutput(text ?? asString(output.output));
+    const rawError = asString(output.error);
+    return {
+      sessionId,
+      kind,
+      toolCallId,
+      ...(title !== undefined ? { title } : {}),
+      ...(toolKind !== undefined ? { toolKind } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(outputText !== undefined ? { outputText } : {}),
+      ...(status === 'failed'
+        ? { errorText: rawError ?? outputText ?? 'The tool failed without reporting a reason.' }
+        : {})
+    };
+  }
+  return { sessionId, kind: 'unknown', rawKind: kind };
 }
 
 function parsePermissionRequest(params: unknown): {
@@ -250,6 +347,9 @@ export class AcpClient {
   private exitFired = false;
 
   private readonly binaryPath: string;
+  private readonly extraArgs: readonly string[];
+  private readonly spawnArgs: readonly string[] | null;
+  private readonly spawnCwd: boolean;
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv | undefined;
   private readonly spawnTimeoutMs: number;
@@ -271,6 +371,9 @@ export class AcpClient {
   constructor(options: AcpClientOptions) {
     this.cwd = options.cwd;
     this.binaryPath = options.binaryPath?.trim() || 'opencode';
+    this.extraArgs = options.extraArgs ?? [];
+    this.spawnArgs = options.spawnArgs ?? null;
+    this.spawnCwd = options.spawnCwd ?? false;
     this.env = options.env;
     this.spawnTimeoutMs = options.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
     this.childFactory =
@@ -301,13 +404,22 @@ export class AcpClient {
     return this.stderrTail;
   }
 
-  /** Register an update sink; replays whatever arrived before registering. */
-  handleSessionUpdate(handler: (update: AcpSessionUpdate) => void): void {
+  /**
+   * Register an update sink; replays whatever arrived before registering.
+   * Returns an unsubscribe for per-turn sinks so they never outlive the turn.
+   */
+  handleSessionUpdate(handler: (update: AcpSessionUpdate) => void): () => void {
     this.updateHandlers.push(handler);
     const backlog = this.updateBacklog.splice(0, this.updateBacklog.length);
     for (const update of backlog) {
       handler(update);
     }
+    return () => {
+      const index = this.updateHandlers.indexOf(handler);
+      if (index >= 0) {
+        this.updateHandlers.splice(index, 1);
+      }
+    };
   }
 
   /** Spawn `opencode acp` and finish the `initialize` handshake. */
@@ -315,12 +427,16 @@ export class AcpClient {
     if (this.child) {
       return { capabilities: this.capabilities, authMethods: this.authMethods };
     }
-    const child = this.childFactory(this.binaryPath, ['acp', '--cwd', this.cwd], {
+    const isWindows = process.platform === 'win32';
+    const args = this.spawnArgs ?? ['acp', ...this.extraArgs, '--cwd', this.cwd];
+    const child = this.childFactory(this.binaryPath, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...(this.spawnCwd ? { cwd: this.cwd } : {}),
       // Own process group on POSIX so shutdown can signal the whole tree
       // without touching Atlas itself (mirrors OpenCodeRuntime).
-      detached: process.platform !== 'win32',
+      detached: !isWindows,
       windowsHide: true,
+      shell: isWindows,
       ...(this.env ? { env: this.env } : {})
     });
     this.child = child;
@@ -336,6 +452,33 @@ export class AcpClient {
     child.stderr?.on('data', (chunk: Buffer | string) => {
       this.stderrTail = (this.stderrTail + chunk.toString()).slice(-4096);
     });
+    // A spawn that never happens (bad binary path, missing ACP bridge) emits
+    // `error` and no `exit`. Unhandled, that is an uncaught exception in the
+    // main process — a mistyped path must fail this call, not the app.
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      const missing = error.code === 'ENOENT';
+      this.failAll(
+        new AcpError(
+          'transport',
+          missing
+            ? `The ACP agent could not be started: ${this.binaryPath} was not found.`
+            : `The ACP agent could not be started: ${error.message}`,
+          undefined,
+          undefined,
+          error
+        )
+      );
+      this.child = null;
+      if (!this.exitFired) {
+        this.exitFired = true;
+        try {
+          this.onExit?.();
+        } catch {
+          // Eviction must never throw into the failure handler.
+        }
+      }
+    });
+
     child.once('exit', (code, signal) => {
       const tail = this.stderrTail.trim();
       this.failAll(
@@ -499,12 +642,12 @@ export class AcpClient {
     const chunkHandler =
       onChunk !== undefined
         ? (update: AcpSessionUpdate) => {
-            if (update.sessionId !== sessionId || update.text === undefined) {
+            if (update.sessionId !== sessionId) {
               return;
             }
-            if (update.kind === 'agent_message_chunk') {
+            if (update.kind === 'agent_message_chunk' && update.text !== undefined) {
               onChunk({ kind: 'text', delta: update.text });
-            } else if (update.kind === 'agent_thought_chunk') {
+            } else if (update.kind === 'agent_thought_chunk' && update.text !== undefined) {
               onChunk({ kind: 'thought', delta: update.text });
             }
           }
@@ -769,6 +912,17 @@ export class AcpClient {
 
   private async onStdout(chunk: string): Promise<void> {
     this.buffer += chunk;
+    if (this.buffer.length > MAX_BUFFERED_LINE_BYTES && this.buffer.indexOf('\n') < 0) {
+      const bytes = this.buffer.length;
+      this.buffer = '';
+      this.failAll(
+        new AcpError(
+          'protocol',
+          `The ACP agent sent a single output line over ${bytes} characters without a newline; the client was reset rather than buffering it unbounded.`
+        )
+      );
+      return;
+    }
     let index: number;
     while ((index = this.buffer.indexOf('\n')) >= 0) {
       const line = this.buffer.slice(0, index).trim();
@@ -837,10 +991,10 @@ export class AcpClient {
       return;
     }
     const accum = this.promptAccum.get(update.sessionId);
-    if (accum && update.text !== undefined) {
-      if (update.kind === 'agent_message_chunk') {
+    if (accum) {
+      if (update.kind === 'agent_message_chunk' && update.text !== undefined) {
         accum.text += update.text;
-      } else if (update.kind === 'agent_thought_chunk') {
+      } else if (update.kind === 'agent_thought_chunk' && update.text !== undefined) {
         accum.thought += update.text;
       }
     }

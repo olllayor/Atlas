@@ -3,27 +3,25 @@ import test from 'node:test';
 
 import type { ModelMessage } from 'ai';
 
-import {
-  OpenCodeAcpAdapter,
-  probeOpenCodeAcp,
-  type AcpDriverClient
-} from '../src/main/ai/providers/opencode/OpenCodeAcpAdapter.js';
+import { AcpAgentAdapter, type AcpDriverClient } from '../src/main/ai/acp/AcpAgentAdapter.js';
 import type { OpenCodeSessionStore } from '../src/main/ai/providers/opencode/OpenCodeAgentAdapter.js';
 import type { AcpSessionInfo } from '../src/main/ai/acp/acpClient.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
+
+/** The agent under test: any ACP CLI; Claude Code is the one Atlas ships with. */
+const AGENT = { providerId: 'claude-code', agentLabel: 'Claude Code' } as const;
 
 const USER_TURN: ModelMessage[] = [{ role: 'user', content: 'ship it' }];
 
 function memoryStore(seed?: { conversationId: string; sessionId: string; directory: string }) {
-  const rows = new Map<string, { sessionId: string; directory: string; schemaVersion?: number }>();
+  const rows = new Map<string, { sessionId: string; directory: string; schemaVersion?: number; transport?: 'sdk' | 'acp' }>();
   if (seed) {
-    rows.set(seed.conversationId, { sessionId: seed.sessionId, directory: seed.directory });
+    rows.set(seed.conversationId, { sessionId: seed.sessionId, directory: seed.directory, transport: 'acp' });
   }
   return {
     rows,
     get: (conversationId: string) => rows.get(conversationId) ?? null,
-    set: ({ conversationId, sessionId, directory }: { conversationId: string; sessionId: string; directory: string }) => {
-      rows.set(conversationId, { sessionId, directory });
+    set: ({ conversationId, sessionId, directory, transport }: { conversationId: string; sessionId: string; directory: string; transport?: 'sdk' | 'acp' }) => {
+      rows.set(conversationId, { sessionId, directory, transport });
     },
     clear: (conversationId: string) => {
       rows.delete(conversationId);
@@ -40,6 +38,8 @@ type FakeAcpOptions = {
   stopReason?: string;
   hangUntilCancel?: boolean;
   raiseAsk?: { approvalId: string; toolCallId: string };
+  /** Hold the prompt open until the test drives frames, then resolves. */
+  promptGate?: () => Promise<void>;
 };
 
 function fakeAcpClient(options: FakeAcpOptions = {}) {
@@ -59,8 +59,11 @@ function fakeAcpClient(options: FakeAcpOptions = {}) {
   let forkCount = 0;
   let cancelResolve: (() => void) | null = null;
   let permissionHandler: ((ask: { approvalId: string; toolCallId: string | null }) => void) | null = null;
+  const updateHandlers = new Set<(update: Record<string, unknown>) => void>();
 
-  const client: AcpDriverClient = {
+  const client: AcpDriverClient & {
+    emitUpdate(update: Record<string, unknown>): void;
+  } = {
     async start() {
       calls.started += 1;
       return {};
@@ -113,6 +116,9 @@ function fakeAcpClient(options: FakeAcpOptions = {}) {
         // Let the test resolve the ask before the turn completes.
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
       }
+      if (options.promptGate) {
+        await options.promptGate();
+      }
       if (options.hangUntilCancel) {
         await new Promise<void>((resolve) => {
           cancelResolve = resolve;
@@ -140,6 +146,19 @@ function fakeAcpClient(options: FakeAcpOptions = {}) {
     setPermissionHandler(handler) {
       permissionHandler = handler;
     },
+    handleSessionUpdate(handler) {
+      const wrapped = handler as (update: Record<string, unknown>) => void;
+      updateHandlers.add(wrapped);
+      return () => {
+        updateHandlers.delete(wrapped);
+      };
+    },
+    /** Test seam: drive a session update through the turn's subscribers. */
+    emitUpdate(update: Record<string, unknown>) {
+      for (const handler of [...updateHandlers]) {
+        handler(update);
+      }
+    },
     resolvePermission(approvalId, decision) {
       calls.permissionReplies.push({ approvalId, decision });
     }
@@ -158,8 +177,9 @@ function buildAdapter(
   const store = overrides.store ?? memoryStore();
   const clientDirs = overrides.clientDirs ?? [];
   const client = overrides.client ?? fakeAcpClient().client;
-  const adapter = new OpenCodeAcpAdapter({
-    readSettings: () => defaultOpenCodeSettings(),
+  const adapter = new AcpAgentAdapter({
+    ...AGENT,
+    readSettings: () => ({ customModels: [] }),
     getClient: (directory) => {
       clientDirs.push(directory);
       return client;
@@ -192,7 +212,7 @@ function streamRequest(
     onNotice: (event: { code: string }) => {
       notices.push({ code: event.code });
     }
-  } as Parameters<OpenCodeAcpAdapter['streamChat']>[0];
+  } as Parameters<AcpAgentAdapter['streamChat']>[0];
   return { request, controller, chunks, notices };
 }
 
@@ -294,17 +314,6 @@ test('a forked 404 falls back to a fresh seeded session', async () => {
   assert.equal(store.get('conv_1')!.directory, '/proj');
 });
 
-test('an unknown model id fails before anything spawns', async () => {
-  const { client, calls } = fakeAcpClient();
-  const { adapter } = buildAdapter({ client });
-
-  await assert.rejects(
-    adapter.streamChat(streamRequest({ modelId: 'not-a-slug' }).request),
-    /Expected "<provider>\/<model>"/
-  );
-  assert.equal(calls.started, 0);
-});
-
 test('an unknown session model fails the turn loudly', async () => {
   const { client } = fakeAcpClient({ setModelError: new Error('unknown model oh-no') });
   const store = memoryStore();
@@ -359,45 +368,9 @@ test('listModels maps the session catalog and closes the probe session', async (
       ['opencode/other', 'Other']
     ]
   );
-  assert.equal(models[0]!.providerId, 'opencode');
+  assert.equal(models[0]!.providerId, 'claude-code');
   assert.equal(models[0]!.supportsTemperature, false);
   assert.deepEqual(calls.closed, ['ses_acp_1']);
-});
-
-test('probe reports missing binary, floor, and ready states', async () => {
-  const missing = await probeOpenCodeAcp({
-    settings: defaultOpenCodeSettings(),
-    directory: '/proj',
-    deps: { readBinaryVersion: async () => ({ version: null, executableMissing: true }) }
-  });
-  assert.equal(missing.installed, false);
-  assert.equal(missing.status, 'error');
-
-  const old = await probeOpenCodeAcp({
-    settings: defaultOpenCodeSettings(),
-    directory: '/proj',
-    deps: { readBinaryVersion: async () => ({ version: '1.13.0', executableMissing: false }) }
-  });
-  assert.match(old.message!, /Upgrade to v/);
-
-  const ready = await probeOpenCodeAcp({
-    settings: defaultOpenCodeSettings(),
-    directory: '/proj',
-    deps: {
-      readBinaryVersion: async () => ({ version: '1.18.27', executableMissing: false }),
-      createClient: () => ({
-        async start() {},
-        async createSession() {
-          return { sessionId: 'ses_p', models: [{ value: 'a/b', name: 'B' }], currentModel: null };
-        },
-        async closeSession() {},
-        async shutdown() {}
-      })
-    }
-  });
-  assert.equal(ready.status, 'ready');
-  assert.equal(ready.modelCount, 1);
-  assert.equal(ready.version, '1.18.27');
 });
 
 test('image and remote attachments map to file bytes and path fallbacks', async () => {
@@ -466,26 +439,6 @@ test('permission asks surface and resolve through the client exactly once', asyn
   assert.deepEqual(resolved, ['call_9']);
 });
 
-test('probe maps signed-out failures to the login guidance', async () => {
-  const result = await probeOpenCodeAcp({
-    settings: defaultOpenCodeSettings(),
-    directory: '/proj',
-    deps: {
-      readBinaryVersion: async () => ({ version: '1.18.27', executableMissing: false }),
-      createClient: () => ({
-        async start() {},
-        async createSession(): Promise<AcpSessionInfo> {
-          throw new Error('not authenticated: run `opencode auth login`');
-        },
-        async closeSession() {},
-        async shutdown() {}
-      })
-    }
-  });
-  assert.equal(result.status, 'warning');
-  assert.match(result.message!, /opencode auth login/);
-});
-
 test('the system prompt rides as the first text block', async () => {
   const { client, calls } = fakeAcpClient({ sessions: ['ses_known'] });
   const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
@@ -497,4 +450,192 @@ test('the system prompt rides as the first text block', async () => {
   const blocks = calls.prompts[0]!.blocks as Array<Record<string, unknown>>;
   assert.deepEqual(blocks[0], { type: 'text', text: 'You are Atlas. Be terse.' });
   assert.deepEqual(blocks[1], { type: 'text', text: 'ship it' });
+});
+
+test('tool calls surface start, input, and output with the shared lifecycle', async () => {
+  let releasePrompt!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releasePrompt = resolve;
+  });
+  const { client, calls: turnCalls } = fakeAcpClient({ sessions: ['ses_known'], promptGate: () => gate });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  const started: unknown[] = [];
+  const inputs: unknown[] = [];
+  const outputs: unknown[] = [];
+  const errors: unknown[] = [];
+  const { request } = streamRequest();
+  const pending = adapter.streamChat({
+    ...request,
+    onToolInputStart: (event) => {
+      started.push(event);
+    },
+    onToolInputAvailable: (event) => {
+      inputs.push(event);
+    },
+    onToolOutputAvailable: (event) => {
+      outputs.push(event);
+    },
+    onToolOutputError: (event) => {
+      errors.push(event);
+    }
+  });
+  // The turn subscribes before the fake prompt runs, so reaching the prompt
+  // means every frame below lands on a live subscriber.
+  while (turnCalls.prompts.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call',
+    toolCallId: 'call_1',
+    title: 'read',
+    toolKind: 'read',
+    status: 'pending'
+  });
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call_update',
+    toolCallId: 'call_1',
+    title: 'read',
+    toolKind: 'read',
+    status: 'in_progress',
+    input: { filePath: '/proj/a.txt' }
+  });
+  // Repeated input snapshots do not re-emit.
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call_update',
+    toolCallId: 'call_1',
+    title: 'read',
+    toolKind: 'read',
+    status: 'in_progress',
+    input: { filePath: '/proj/a.txt' }
+  });
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call_update',
+    toolCallId: 'call_1',
+    title: 'proj/a.txt',
+    toolKind: 'read',
+    status: 'completed',
+    input: { filePath: '/proj/a.txt' },
+    outputText: 'hello'
+  });
+  // A late duplicate terminal state cannot repeat the output.
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call_update',
+    toolCallId: 'call_1',
+    status: 'completed',
+    outputText: 'hello'
+  });
+  client.emitUpdate({
+    sessionId: 'other',
+    kind: 'tool_call',
+    toolCallId: 'call_x',
+    title: 'bash'
+  });
+  releasePrompt();
+  await pending;
+
+  assert.equal(started.length, 1);
+  assert.deepEqual(started[0], {
+    toolCallId: 'call_1',
+    toolName: 'read',
+    dynamic: true,
+    providerExecuted: true
+  });
+  assert.equal(inputs.length, 1);
+  assert.deepEqual(inputs[0], {
+    toolCallId: 'call_1',
+    toolName: 'read',
+    input: { filePath: '/proj/a.txt' },
+    dynamic: true,
+    providerExecuted: true,
+    title: 'read'
+  });
+  assert.equal(outputs.length, 1);
+  assert.deepEqual(outputs[0], {
+    toolCallId: 'call_1',
+    toolName: 'read',
+    input: { filePath: '/proj/a.txt' },
+    output: 'hello',
+    dynamic: true,
+    providerExecuted: true,
+    title: 'proj/a.txt'
+  });
+  assert.deepEqual(errors, []);
+});
+
+test('failed tool calls report errors, never success', async () => {
+  let releasePrompt!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releasePrompt = resolve;
+  });
+  const { client, calls: turnCalls } = fakeAcpClient({ sessions: ['ses_known'], promptGate: () => gate });
+  const store = memoryStore({ conversationId: 'conv_1', sessionId: 'ses_known', directory: '/proj' });
+  const { adapter } = buildAdapter({ client, store });
+
+  const outputs: unknown[] = [];
+  const errors: unknown[] = [];
+  const { request } = streamRequest();
+  const pending = adapter.streamChat({
+    ...request,
+    onToolOutputAvailable: (event) => {
+      outputs.push(event);
+    },
+    onToolOutputError: (event) => {
+      errors.push(event);
+    }
+  });
+  while (turnCalls.prompts.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call',
+    toolCallId: 'call_2',
+    title: 'read'
+  });
+  client.emitUpdate({
+    sessionId: 'ses_known',
+    kind: 'tool_call_update',
+    toolCallId: 'call_2',
+    title: 'read',
+    status: 'failed',
+    input: { filePath: '/proj/missing.txt' },
+    errorText: 'File not found: /proj/missing.txt'
+  });
+  releasePrompt();
+  await pending;
+
+  assert.deepEqual(outputs, []);
+  assert.equal(errors.length, 1);
+  assert.deepEqual(errors[0], {
+    toolCallId: 'call_2',
+    toolName: 'read',
+    input: { filePath: '/proj/missing.txt' },
+    errorText: 'File not found: /proj/missing.txt',
+    dynamic: true,
+    providerExecuted: true,
+    title: 'read'
+  });
+});
+
+test('a foreign-transport cursor is a miss, never resumed', async () => {
+  const { client, calls } = fakeAcpClient();
+  const store = memoryStore();
+  store.rows.set('conv_1', { sessionId: 'ses_sdk', directory: '/proj', transport: 'sdk' });
+  const { adapter } = buildAdapter({ client, store });
+
+  await adapter.streamChat(streamRequest().request);
+
+  assert.deepEqual(calls.resumed, []);
+  assert.deepEqual(calls.forked, []);
+  assert.equal(calls.created, 1);
+  assert.equal(store.get('conv_1')!.transport, 'acp');
 });

@@ -9,6 +9,7 @@ import { stampCachedTheme } from './lib/earlyThemeStamp';
 import './styles.css';
 import 'slot-text/style.css';
 import './themes/xai.css';
+import './themes/atlas.css';
 import './themes/default.css';
 import './themes/landing.css';
 import './themes/cursor.css';

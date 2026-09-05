@@ -79,6 +79,30 @@ function answerInitialize(child: FakeChild, requestId: number): void {
   });
 }
 
+test('a binary that does not exist fails the start instead of crashing the process', async () => {
+  let evicted = 0;
+  const client = new AcpClient({
+    cwd: '/proj',
+    binaryPath: '/nope/claude-code-acp',
+    onExit: () => {
+      evicted += 1;
+    },
+    childFactory: () => {
+      const child = new FakeChild();
+      // Node reports a failed spawn as an `error` event, never `exit`.
+      setImmediate(() => {
+        const failure: NodeJS.ErrnoException = new Error('spawn ENOENT');
+        failure.code = 'ENOENT';
+        child.emit('error', failure);
+      });
+      return child as unknown as ChildProcess;
+    }
+  });
+
+  await assert.rejects(() => client.start(), /was not found/);
+  assert.equal(evicted, 1, 'the owner is told to evict the dead client');
+});
+
 function startHarness(
   onWrite?: (line: string, child: FakeChild) => void,
   options: { spawnTimeoutMs?: number } = {}
@@ -665,4 +689,31 @@ test('stderr tail rides on the exit error', async () => {
   child().stderr.emit('data', Buffer.from('FATAL: something broke badly\n'));
   child().simulateExit();
   await assert.rejects(pending, /something broke badly/);
+});
+
+test("boundToolOutput bounds large tool outputs to 8000 characters tail", async () => {
+  const { boundToolOutput, MAX_ACP_TOOL_OUTPUT_CHARS } = await import("../src/main/ai/acp/acpClient.js");
+  assert.equal(boundToolOutput(undefined), undefined);
+  assert.equal(boundToolOutput("short text"), "short text");
+  const oversized = "A".repeat(10_000);
+  const bounded = boundToolOutput(oversized);
+  assert.ok(bounded?.startsWith("[Earlier output truncated]\n\n"));
+  assert.equal(bounded?.endsWith("A".repeat(MAX_ACP_TOOL_OUTPUT_CHARS)), true);
+});
+
+test("a newline-free output flood resets the client instead of buffering unbounded", async () => {
+  const { client, child } = startHarness();
+  await client.start();
+
+  const pending = client.prompt("ses_1", [{ type: "text", text: "flood me" }]);
+  pending.catch(() => undefined);
+  // 17 MB with no newline: over the framing guard, under nothing legitimate.
+  child().emitRaw("x".repeat(17_000_000));
+  await flush();
+  await assert.rejects(pending, /without a newline/);
+
+  // The client is dead after the reset: further turns fail fast, and a
+  // newline afterwards cannot resurrect a framing state that was dropped.
+  await assert.rejects(client.prompt("ses_1", [{ type: "text", text: "again" }]), /shut down|dead|reset/i);
+  await client.shutdown();
 });

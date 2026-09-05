@@ -20,6 +20,7 @@ import {
   OPENCODE_SERVER_STARTUP_TIMEOUT_MS,
   compareOpenCodeVersions,
   parseOpenCodeServerUrlFromOutput,
+  splitLaunchArgs,
   summarizeProcessFailure
 } from './openCodeParsers.js';
 import { fetchOpenCodeHealth } from './OpenCodeClient.js';
@@ -297,8 +298,20 @@ export class OpenCodeRuntime {
     port: number
   ): Promise<RunningServer> {
     const command = input.settings.binaryPath.trim() || 'opencode';
-    const args = ['serve', `--hostname=${OPENCODE_DEFAULT_HOSTNAME}`, `--port=${port}`];
-    const env = resolveOpenCodeSpawnEnvironment(input.env, process.env, input.serverPassword);
+    const args = [
+      'serve',
+      `--hostname=${OPENCODE_DEFAULT_HOSTNAME}`,
+      `--port=${port}`,
+      ...splitLaunchArgs(input.settings.launchArgs)
+    ];
+    const baseEnv = resolveOpenCodeSpawnEnvironment(input.env, process.env, input.serverPassword);
+    // `resolveOpenCodeSpawnEnvironment` only ever returns `undefined` to mean
+    // "inherit untouched" — once there are custom vars to layer on, that case
+    // needs its own copy of the inherited environment to layer onto.
+    const env =
+      Object.keys(input.settings.env).length > 0
+        ? { ...(baseEnv ?? process.env), ...input.settings.env }
+        : baseEnv;
     const effectivePassword =
       typeof input.serverPassword === 'string' && input.serverPassword.trim().length > 0
         ? input.serverPassword.trim()

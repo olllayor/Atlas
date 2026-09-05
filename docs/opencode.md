@@ -27,15 +27,17 @@ even carry the same name, and they behave nothing alike: the badged one runs
 the turn inside OpenCode, with OpenCode's tools, approvals and sampling. The
 other is a plain HTTP endpoint Atlas calls itself.
 
-### Integration mode
+### Transport
 
-Two transports, both under the same Beta toggle:
+One transport, the same one t3code uses: Atlas spawns `opencode serve` on a free
+local port and drives it over the official SDK, or connects to a server you run
+yourself (**Server URL**). One shared server per app run, 30s idle reaping.
 
-- **SDK server** (default) — Atlas spawns `opencode serve` on a free local port
-  and drives it over the official SDK. This is the path that ships today.
-- **ACP** — launches OpenCode as an Agent Client Protocol agent over stdio.
-  Planned; the setting exists so the choice is a first-class one rather than a
-  rewrite later.
+There was briefly a second option — `opencode acp` over stdio — behind an
+`integrationMode` setting. It is gone: two transports for one agent doubled the
+surface for no user-visible gain. The ACP client stack it produced lives on in
+`src/main/ai/acp/`, driving the [other local agents](./local-agents.md) that
+have no server to connect to.
 
 ### Using your own server
 
@@ -80,7 +82,9 @@ prints the raw result, which is usually faster than round-tripping the UI.
 
 ## Notes and limits
 
-- Windows is untested; OpenCode's own guidance is to run it under WSL.
+- **Windows support**: the server and native CLI execution work directly or via
+  WSL. (ACP-driven agents launch through the system shell, which resolves
+  `.cmd` batch shims.)
 - One OpenCode configuration at a time. Two side-by-side configs would need
   instance routing, which is deliberately out of scope.
 - Title and commit-message generation still go through your other providers.

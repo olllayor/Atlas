@@ -503,7 +503,10 @@ CREATE TABLE IF NOT EXISTS projects (
   last_used_at TEXT,
   -- Same reasoning as conversations.pinned_at above: a timestamp, so the pinned
   -- section keeps a stable order of its own, independent of recency.
-  pinned_at TEXT
+  pinned_at TEXT,
+  -- Opt-in background pull of the default branch. Off for existing rows, so an
+  -- upgrade never starts moving a checkout the user did not ask to track.
+  auto_pull INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_last_used
@@ -555,17 +558,31 @@ CREATE INDEX IF NOT EXISTS idx_terminal_history_conversation
 ON terminal_history (conversation_id, started_at);
 
 -- Resume cursor for the OpenCode provider: which opencode session backs this
--- conversation, and the directory it was created against. opencode scopes its
--- own history per session and per directory, so a conversation that moves to
--- another project forks the stored session there rather than resuming into the
--- wrong history. schema_version lets future cursor shapes invalidate old rows
--- instead of grafting history onto the wrong chat.
+-- conversation, the directory it was created against, and the transport that
+-- owns it. Both runtimes share opencode's session storage, so a cursor must
+-- never resume across transports: an SDK id would resolve over ACP and graft
+-- the wrong runtime onto the chat. A move forks (SDK) or forks (ACP).
 CREATE TABLE IF NOT EXISTS opencode_sessions (
   conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL,
   directory TEXT NOT NULL,
   schema_version INTEGER NOT NULL DEFAULT 1,
+  transport TEXT NOT NULL DEFAULT 'sdk',
   updated_at TEXT NOT NULL
+);
+
+-- Same cursor, for every other local agent driven over ACP (Claude Code, …).
+-- Kept apart from opencode_sessions rather than bolted onto it: opencode's
+-- cursor carries transport/version semantics none of these share, and a
+-- session id is only ever meaningful to the agent that issued it — hence the
+-- composite key.
+CREATE TABLE IF NOT EXISTS local_agent_sessions (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, agent_id)
 );
 `;
 
@@ -618,6 +635,10 @@ export function applySchema(database: SqliteDatabase) {
 
   if (opencodeSessionColumns.length > 0 && !opencodeSessionColumns.includes('schema_version')) {
     database.exec('ALTER TABLE opencode_sessions ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1');
+  }
+
+  if (opencodeSessionColumns.length > 0 && !opencodeSessionColumns.includes('transport')) {
+    database.exec("ALTER TABLE opencode_sessions ADD COLUMN transport TEXT NOT NULL DEFAULT 'sdk'");
   }
 
   const toolExecutionColumns = database
@@ -843,6 +864,13 @@ export function applySchema(database: SqliteDatabase) {
 
   if (projectColumns.length > 0 && !projectColumns.includes('pinned_at')) {
     database.exec('ALTER TABLE projects ADD COLUMN pinned_at TEXT');
+  }
+
+  // Migration: opt-in automatic pull of the default branch. Defaults to 0, so
+  // existing projects read back as opted out — an upgrade never starts moving
+  // a checkout on its own.
+  if (projectColumns.length > 0 && !projectColumns.includes('auto_pull')) {
+    database.exec('ALTER TABLE projects ADD COLUMN auto_pull INTEGER NOT NULL DEFAULT 0');
   }
 
   // Migration: precomputed diff line counts. Both default to 0, so rows written

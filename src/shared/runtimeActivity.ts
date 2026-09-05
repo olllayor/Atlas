@@ -742,3 +742,56 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
 
   return applyStreamEventToParts(parts, legacy);
 }
+
+/**
+ * Drops `tool.updated` events that are superseded by a subsequent `tool.completed`
+ * within the same turn for the same toolCallId.
+ *
+ * Modeled after t3code PR #8368: in-flight intermediate tool updates (e.g. streaming
+ * bash output, partial diffs, progress updates) are purely ephemeral in-flight state;
+ * once the completion arrives, the completion row is a full superset. Dropping superseded
+ * updates on recovery/load eliminates unnecessary IPC traffic and renderer reducer runs.
+ */
+export function dropSupersededToolUpdatedEvents<T extends {
+  activityType: ActivityType | string;
+  turnId?: string | null;
+  toolCallId?: string | null;
+  payload?: Record<string, unknown> | null;
+}>(events: ReadonlyArray<T>): T[] {
+  const completionIndicesByKey = new Map<string, number[]>();
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!;
+    if (event.activityType !== "tool.completed") {
+      continue;
+    }
+    const toolCallId = event.toolCallId ?? (event.payload?.toolCallId as string | undefined) ?? null;
+    if (!toolCallId) {
+      continue;
+    }
+    const key = `${event.turnId ?? ""}\0${toolCallId}`;
+    const indices = completionIndicesByKey.get(key);
+    if (indices) {
+      indices.push(index);
+    } else {
+      completionIndicesByKey.set(key, [index]);
+    }
+  }
+
+  if (completionIndicesByKey.size === 0) {
+    return [...events];
+  }
+
+  return events.filter((event, index) => {
+    if (event.activityType !== "tool.updated") {
+      return true;
+    }
+    const toolCallId = event.toolCallId ?? (event.payload?.toolCallId as string | undefined) ?? null;
+    if (!toolCallId) {
+      return true;
+    }
+    const key = `${event.turnId ?? ""}\0${toolCallId}`;
+    const indices = completionIndicesByKey.get(key);
+    return !indices?.some((completionIndex) => completionIndex > index);
+  });
+}

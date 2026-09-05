@@ -149,7 +149,7 @@ const HISTORY_FOLD_KEEP = 12;
  *
  * Transcript and composer share one axis and one measure: both are centred
  * full-bleed rows with the padding *outside* the max width (`px-4 lg:px-5`)
- * and both cap at `max-w-composer` (48rem — t3code's `max-w-3xl` for timeline
+ * and both cap at `max-w-composer` (60rem, one token in styles.css for timeline
  * rows and composer form alike). Panels opening and closing re-centre both
  * automatically — `mx-auto` is the whole mechanism. Putting the padding
  * inside narrowed the message column ~32px per side relative to the slab;
@@ -710,6 +710,123 @@ function hasRenderableAssistantParts(parts: ChatMessagePart[]) {
  * by the store's reducers only when that message changed, and the callbacks are
  * `useCallback`-stable up in `App`.
  */
+const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
+const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
+const COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM = 1.75;
+const COLLAPSED_USER_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
+
+function shouldCollapseUserMessage(text: string): boolean {
+  if (text.trim().length === 0) {
+    return false;
+  }
+
+  return (
+    text.length > MAX_COLLAPSED_USER_MESSAGE_LENGTH ||
+    text.split('\n').length > MAX_COLLAPSED_USER_MESSAGE_LINES
+  );
+}
+
+/**
+ * User message bubble with collapsible clamp and fade-out for long messages.
+ *
+ * Matches t3code styling 1:1:
+ * - max-h-44 clamp (176px)
+ * - CSS mask-image bottom fade (WebkitMaskImage & maskImage)
+ * - Clean ghost toggle button ("Show full message" / "Show less") in footer
+ * - Bubble container with p-3 and rounded-2xl
+ */
+function UserMessageBubble({
+  text,
+  onNavigateCitation,
+}: {
+  text: string;
+  onNavigateCitation?: (citation: AssistantCitation) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isLongByText = shouldCollapseUserMessage(text);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const bubbleRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      // 176px (11rem = max-h-44)
+      if (el.scrollHeight > 180) {
+        setIsOverflowing(true);
+      }
+    };
+
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text]);
+
+  const canCollapse = isLongByText || isOverflowing;
+  const isCollapsed = canCollapse && !expanded;
+
+  const handleToggle = useCallback(() => {
+    setExpanded((prev) => {
+      const next = !prev;
+      if (!next) {
+        // When collapsing back down, ensure the bubble remains visible in the scroll viewport
+        bubbleRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+      return next;
+    });
+  }, []);
+
+  return (
+    <div
+      ref={bubbleRef}
+      className="relative max-w-[80%] rounded-2xl border border-border-subtle bg-bg-message p-3 text-text-message shadow-2xs"
+    >
+      <div
+        className={cn('relative', isCollapsed && 'max-h-44 overflow-hidden')}
+        data-user-message-body="true"
+        data-user-message-collapsed={isCollapsed ? 'true' : 'false'}
+        data-user-message-collapsible={canCollapse ? 'true' : 'false'}
+        data-user-message-fade={isCollapsed ? 'true' : 'false'}
+        style={
+          isCollapsed
+            ? {
+                WebkitMaskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
+                maskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
+              }
+            : undefined
+        }
+      >
+        <div ref={contentRef}>
+          <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-message">
+            <CitedText text={text} onNavigate={onNavigateCitation} />
+          </p>
+        </div>
+      </div>
+
+      {canCollapse ? (
+        <div
+          className="mt-1.5 flex items-center justify-end"
+          data-user-message-footer="true"
+        >
+          <button
+            type="button"
+            aria-expanded={expanded}
+            data-scroll-anchor-ignore
+            onClick={handleToggle}
+            className="-ml-1 h-6 rounded-md px-1.5 text-xs font-normal text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer select-none"
+          >
+            {expanded ? 'Show less' : 'Show full message'}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const MessageRow = memo(function MessageRow({
   message,
   deferRichContent = false,
@@ -763,13 +880,9 @@ const MessageRow = memo(function MessageRow({
             // Right-aligned bubble, capped at 80% like t3code — a full-width
             // bubble shares the assistant's right rail instead of the
             // composer's, which reads as the column jumping sides per turn.
-            // No border, no avatar, no name, no timestamp. Radius ~22px: a
-            // single-line message reads as a pill.
-            <div className="max-w-[80%] rounded-2xl bg-bg-surface px-4 py-3">
-              <p className="whitespace-pre-wrap break-words text-md leading-relaxed text-text-primary">
-                <CitedText text={userText} onNavigate={onNavigateCitation} />
-              </p>
-            </div>
+            // Long messages start folded with a bottom gradient fade and a
+            // toggle button to show full message / show less.
+            <UserMessageBubble text={userText} onNavigateCitation={onNavigateCitation} />
           ) : null}
           {userText ? (
             <div className={cn(ACTION_ROW, 'justify-end')}>
@@ -1049,10 +1162,13 @@ function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
   const fileCount = getMessageFileParts(message.parts).length;
 
   if (message.role === 'user') {
-    return Math.max(
-      44,
-      ROW_HEIGHT.userBase + Math.ceil(message.content.length / 120) * 22 + fileCount * ROW_HEIGHT.file
-    );
+    const rawHeight =
+      ROW_HEIGHT.userBase + Math.ceil(message.content.length / 120) * 22 + fileCount * ROW_HEIGHT.file;
+    const isLikelyCollapsible = shouldCollapseUserMessage(message.content) || message.content.length > 500;
+    const estimatedHeight = isLikelyCollapsible
+      ? Math.min(rawHeight, 230 + fileCount * ROW_HEIGHT.file)
+      : rawHeight;
+    return Math.max(44, estimatedHeight);
   }
 
   const toolParts = message.parts.filter((part): part is ChatToolPart => part.type === 'tool');

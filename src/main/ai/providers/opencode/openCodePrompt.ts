@@ -8,6 +8,10 @@
  * after a confirmed miss.
  */
 
+import fs from 'node:fs';
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 import type { ModelMessage } from 'ai';
 
 import type { OpenCodePromptPart } from './OpenCodeAgentClient.js';
@@ -16,13 +20,111 @@ import type { OpenCodePromptPart } from './OpenCodeAgentClient.js';
 const HISTORY_MESSAGE_LIMIT = 20;
 const HISTORY_CHAR_LIMIT = 24_000;
 
+export const OPENCODE_NATIVE_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp'
+]);
+
+export const OPENCODE_NATIVE_FILE_PART_MAX_BYTES = 20 * 1024 * 1024; // 20MB
+
+/**
+ * Attachments OpenCode can hand to a model as a native file part. Anything
+ * else (ZIP, binaries, image formats like BMP/AVIF/SVG that model APIs
+ * reject, or files over the direct-attachment size limit) would make the turn
+ * fail before it starts, so those ride only as the file path text in the prompt.
+ *
+ * Blueprint: pingdotgg/t3code `apps/server/src/provider/opencodeRuntime.ts:432-455`.
+ */
+export function isOpenCodeNativeFilePart(input: {
+  readonly mimeType: string;
+  readonly sizeBytes?: number | null;
+}): boolean {
+  if (typeof input.sizeBytes === 'number' && input.sizeBytes > OPENCODE_NATIVE_FILE_PART_MAX_BYTES) {
+    return false;
+  }
+  const normalized = input.mimeType.trim().toLowerCase();
+  return (
+    OPENCODE_NATIVE_IMAGE_MIMES.has(normalized) ||
+    normalized.startsWith('text/') ||
+    normalized === 'application/pdf'
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
 
+function resolveFilePath(part: Record<string, unknown>): string | null {
+  if (typeof part.path === 'string' && isAbsolute(part.path)) {
+    return part.path;
+  }
+  const data = part.image ?? part.data;
+  if (typeof data === 'string' && isAbsolute(data)) {
+    return data;
+  }
+  return null;
+}
+
+function resolveSizeBytes(part: Record<string, unknown>, filePath: string | null): number | null {
+  if (typeof part.sizeBytes === 'number') {
+    return part.sizeBytes;
+  }
+  if (typeof part.size === 'number') {
+    return part.size;
+  }
+  const raw = part.image ?? part.data;
+  if (raw instanceof Uint8Array || Buffer.isBuffer(raw)) {
+    return raw.byteLength;
+  }
+  if (raw instanceof ArrayBuffer) {
+    return raw.byteLength;
+  }
+  if (typeof raw === 'string' && raw.startsWith('data:')) {
+    const commaIndex = raw.indexOf(',');
+    if (commaIndex >= 0) {
+      const payload = raw.slice(commaIndex + 1);
+      return Math.floor((payload.length * 3) / 4);
+    }
+  }
+  if (filePath) {
+    try {
+      const stat = fs.statSync(filePath, { throwIfNoEntry: false });
+      if (stat?.size != null) {
+        return stat.size;
+      }
+    } catch {
+      // Best-effort local file size check
+    }
+  }
+  return null;
+}
+
+function toFallbackTextPart(part: Record<string, unknown>, filePath: string | null): OpenCodePromptPart {
+  const filename = typeof part.filename === 'string' ? part.filename : undefined;
+  if (filePath) {
+    return {
+      type: 'text',
+      text: `[Attached file "${filename ?? filePath}" is saved at: ${filePath}]`
+    };
+  }
+  if (filename) {
+    return {
+      type: 'text',
+      text: `[Attached file: ${filename}]`
+    };
+  }
+  const mediaType = typeof part.mediaType === 'string' ? part.mediaType : undefined;
+  return {
+    type: 'text',
+    text: `[Attached file (${mediaType ?? 'unsupported format'})]`
+  };
+}
+
 function toBase64(data: unknown): string | null {
   if (typeof data === 'string') {
-    // Already a URL (data: or https:) — opencode takes either verbatim.
+    // Already a URL (data:, file:, or https:) — opencode takes either verbatim.
     return data;
   }
   if (data instanceof Uint8Array) {
@@ -37,14 +139,44 @@ function toBase64(data: unknown): string | null {
   return null;
 }
 
-/** Build a `file` part from an AI-SDK image/file content block, if we can. */
-function toFilePart(part: Record<string, unknown>): OpenCodePromptPart | null {
-  const mediaType =
-    (typeof part.mediaType === 'string' ? part.mediaType : undefined) ??
-    (part.type === 'image' ? 'image/png' : 'application/octet-stream');
+/** Build a `file` or fallback `text` part from an image/file content block. */
+function toFileOrTextPart(part: Record<string, unknown>, gateNative = true): OpenCodePromptPart | null {
+  const filePath = resolveFilePath(part);
+  const sizeBytes = resolveSizeBytes(part, filePath);
+
+  let mediaType = typeof part.mediaType === 'string' ? part.mediaType : undefined;
+  if (!mediaType) {
+    const raw = part.image ?? part.data;
+    if (typeof raw === 'string' && raw.startsWith('data:')) {
+      const match = raw.match(/^data:([^;,]+)/);
+      if (match?.[1]) {
+        mediaType = match[1];
+      }
+    }
+  }
+  if (!mediaType) {
+    mediaType = part.type === 'image' ? 'image/png' : 'application/octet-stream';
+  }
+
+  // Gate native file part support: png/jpeg/gif/webp + text/* + pdf, max 20MB.
+  if (gateNative && !isOpenCodeNativeFilePart({ mimeType: mediaType, sizeBytes })) {
+    return toFallbackTextPart(part, filePath);
+  }
+
+  // If native and a local file path exists, convert to file:// URL
+  if (filePath) {
+    const filename = typeof part.filename === 'string' ? part.filename : undefined;
+    return {
+      type: 'file',
+      mime: mediaType,
+      url: pathToFileURL(filePath).href,
+      ...(filename ? { filename } : {})
+    };
+  }
+
   const encoded = toBase64(part.image ?? part.data);
   if (!encoded) {
-    return null;
+    return toFallbackTextPart(part, filePath);
   }
 
   const url = encoded.startsWith('base64,') ? `data:${mediaType};${encoded}` : encoded;
@@ -99,6 +231,13 @@ export interface BuildOpenCodePromptInput {
   readonly messages: readonly ModelMessage[];
   /** True when the session was just created and knows nothing yet. */
   readonly seedHistory: boolean;
+  /**
+   * Whether to gate file parts to native supported formats (PNG/JPEG/GIF/WEBP/PDF/text, max 20MB).
+   * Default true (OpenCode SDK transport).
+   * When false (e.g. ACP adapter), non-native attachments are retained as file parts so ACP
+   * can handle them via path fallbacks.
+   */
+  readonly gateNative?: boolean;
 }
 
 /**
@@ -137,9 +276,9 @@ export function buildOpenCodePromptParts(input: BuildOpenCodePromptInput): OpenC
       continue;
     }
     if (part.type === 'image' || part.type === 'file') {
-      const filePart = toFilePart(part);
-      if (filePart) {
-        parts.push(filePart);
+      const resolved = toFileOrTextPart(part, input.gateNative);
+      if (resolved) {
+        parts.push(resolved);
       }
     }
   }

@@ -959,9 +959,8 @@ test('ChatSessionRuntime clears approval gating in full-access mode', async () =
   });
 
   assert.equal(capturedTools?.web_fetch?.needsApproval, false);
-  // bash keeps a per-call check so a request to run outside the OS sandbox
-  // still pauses; everything else about it runs unattended.
-  assert.equal(typeof capturedTools?.bash?.needsApproval, 'function');
+  // Full-access clears approval gating across all tools including bash
+  assert.equal(capturedTools?.bash?.needsApproval, false);
 });
 
 test('ChatSessionRuntime defaults to asking for approval when no mode is sent', async () => {

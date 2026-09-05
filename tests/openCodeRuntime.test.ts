@@ -9,6 +9,7 @@ import {
   compareOpenCodeVersions,
   parseOpenCodeServerUrlFromOutput,
   parseOpenCodeVersionOutput,
+  splitLaunchArgs,
   summarizeProcessFailure
 } from '../src/main/ai/providers/opencode/openCodeParsers.js';
 import {
@@ -63,6 +64,13 @@ test('process failure summary prefers stderr and bounds tails', () => {
   assert.match(detail, /command not found/);
   assert.doesNotMatch(detail, /ignored when stderr exists/);
   assert.ok(detail.length < 600);
+});
+
+test('launch-args splitter handles quoting and blank input', () => {
+  assert.deepEqual(splitLaunchArgs('  '), []);
+  assert.deepEqual(splitLaunchArgs('--foo --bar=1'), ['--foo', '--bar=1']);
+  assert.deepEqual(splitLaunchArgs('--title "my server" --flag'), ['--title', 'my server', '--flag']);
+  assert.deepEqual(splitLaunchArgs("--title 'my server'"), ['--title', 'my server']);
 });
 
 /* ------------------------------------------------------------------ *
@@ -458,6 +466,41 @@ test('keychain password reaches the child env and the health gate', async () => 
   assert.equal(connection.baseUrl, 'http://127.0.0.1:40101');
   assert.equal(spawnedEnvs[0]?.OPENCODE_SERVER_PASSWORD, 'k3ychain');
   assert.deepEqual(seen[0], { password: 'k3ychain' });
+  connection.release();
+  await runtime.shutdown();
+});
+
+test('launch arguments and env vars from settings reach the spawned child', async () => {
+  const spawnedArgs: Array<readonly string[]> = [];
+  const spawnedEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const children: FakeChild[] = [];
+  const runtime = new OpenCodeRuntime({
+    healthCheck: async () => ({ healthy: true, version: '1.18.23' }),
+    childFactory: ((command: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      void command;
+      spawnedArgs.push(args);
+      spawnedEnvs.push(opts.env);
+      const child = new FakeChild();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    }) as never
+  });
+
+  const settings = {
+    ...defaultOpenCodeSettings(),
+    launchArgs: '--print-logs --title "my server"',
+    env: { OPENCODE_CUSTOM_FLAG: 'yes' }
+  };
+  const connecting = runtime.connect({ settings });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  children[0]!.emitData('stdout', `${OPENCODE_SERVER_READY_PREFIX} on http://127.0.0.1:40103\n`);
+  const connection = await connecting;
+  assert.deepEqual(
+    spawnedArgs[0]!.slice(3),
+    ['--print-logs', '--title', 'my server']
+  );
+  assert.equal(spawnedEnvs[0]?.OPENCODE_CUSTOM_FLAG, 'yes');
   connection.release();
   await runtime.shutdown();
 });

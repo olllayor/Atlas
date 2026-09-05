@@ -1,10 +1,6 @@
 import { z } from 'zod';
 
-import {
-  OPENCODE_INTEGRATION_MODES,
-  type OpenCodeSettings,
-  type ParseOpenCodeSettingsResult
-} from './opencodeSettings';
+import type { OpenCodeSettings, ParseOpenCodeSettingsResult } from './opencodeSettings';
 
 /*
   The opencode settings validator, split out from `opencodeSettings.ts`.
@@ -36,8 +32,6 @@ const MODEL_SLUG_PATTERN = /^[^\s]+\/[^\s]+$/;
 
 export const OpenCodeSettingsSchema = z.object({
   enabled: z.boolean().default(false),
-  /** Which transport drives the agent — see OPENCODE_INTEGRATION_MODES (D7). */
-  integrationMode: z.enum(OPENCODE_INTEGRATION_MODES).default('server'),
   binaryPath: z
     .string()
     .trim()
@@ -62,7 +56,18 @@ export const OpenCodeSettingsSchema = z.object({
         .regex(MODEL_SLUG_PATTERN, 'Custom models must look like "<provider>/<model>".')
     )
     .max(64)
-    .default([])
+    .default([]),
+  /** Extra CLI arguments appended after `serve`/`acp`, e.g. `--print-logs`. */
+  launchArgs: z
+    .string()
+    .trim()
+    .max(2048, 'Launch arguments are unreasonably long.')
+    .default(''),
+  /** Extra env vars merged over the inherited environment for every spawn. */
+  env: z
+    .record(z.string().trim().min(1).max(256), z.string().max(4096))
+    .refine((value) => Object.keys(value).length <= 50, 'Too many environment variables.')
+    .default({})
 });
 
 /**

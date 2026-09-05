@@ -1,12 +1,22 @@
-import { BoxIcon, PlusIcon } from '@radix-ui/react-icons';
+import { PlusIcon } from '@radix-ui/react-icons';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { ProviderSelection } from '../../stores/useProvidersStore';
 import { useProvidersStore } from '../../stores/useProvidersStore';
+import { ProviderLogo } from '../../lib/providerLogos';
 import { ConfirmDialog } from './ConfirmDialog';
+import { LocalAgentsSection } from './LocalAgentsSection';
 import { ProviderDetail } from './ProviderDetail';
 import { ProviderForm } from './ProviderForm';
 
+/**
+ * Settings → Providers.
+ *
+ * Two kinds of provider, two surfaces, because they have almost nothing in
+ * common: local agents are CLIs that sign themselves in and carry their own
+ * catalog, while custom endpoints are URLs plus a key. Mixing them into one
+ * list meant every row lied about half its neighbours.
+ */
 export function ModelSettingsPage() {
   const providers = useProvidersStore((state) => state.providers);
   const selectedProviderId = useProvidersStore((state) => state.selectedProviderId);
@@ -43,60 +53,69 @@ export function ModelSettingsPage() {
   const hasProviders = providers.length > 0;
 
   return (
-    <div>
-      <div className="flex min-h-[420px] rounded-lg border border-border-default">
-        <aside className="flex w-[220px] shrink-0 flex-col rounded-l-lg border-r border-border-default bg-bg-subtle p-2">
-          <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
-            Providers
-          </div>
+    <div className="space-y-10">
+      <LocalAgentsSection />
 
-          <div className="min-h-0 flex-1 overflow-y-auto scroll-container">
-            {isLoading && !hasProviders ? (
-              <p className="px-2 py-1.5 text-xs text-text-muted">Loading…</p>
+      <div>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
+            Custom endpoints
+          </span>
+          <span className="text-xs text-text-muted">
+            Any OpenAI-, Anthropic- or Responses-compatible API.
+          </span>
+        </div>
+
+        <div className="mt-3 flex min-h-[420px] rounded-lg border border-border-default">
+          <aside className="flex w-[220px] shrink-0 flex-col rounded-l-lg border-r border-border-default bg-bg-subtle p-2">
+            <div className="min-h-0 flex-1 overflow-y-auto scroll-container">
+              {isLoading && !hasProviders ? (
+                <p className="px-2 py-1.5 text-xs text-text-muted">Loading…</p>
+              ) : null}
+
+              {providers.map((provider) => (
+                <RailItem
+                  key={provider.id}
+                  label={provider.name}
+                  providerId={provider.id}
+                  active={provider.id === selectedProviderId}
+                  // Green only when the provider is both enabled and usable.
+                  tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
+                  onClick={() => requestSelect(provider.id)}
+                />
+              ))}
+            </div>
+
+            {hasProviders ? (
+              <button
+                type="button"
+                onClick={() => requestSelect(null)}
+                className={`mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
+                  selectedProviderId === null
+                    ? 'bg-bg-hover text-text-primary'
+                    : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+                }`}
+              >
+                <PlusIcon className="h-3.5 w-3.5 shrink-0" />
+                Add endpoint
+              </button>
+            ) : null}
+          </aside>
+
+          <div className="min-w-0 flex-1 p-6">
+            {!hasProviders && !isLoading && isOnForm ? (
+              <p className="mb-5 text-sm leading-relaxed text-text-tertiary">
+                No endpoints yet. Add one below to start chatting — a name, an endpoint and (usually) a key
+                is all it takes.
+              </p>
             ) : null}
 
-            {providers.map((provider) => (
-              <RailItem
-                key={provider.id}
-                label={provider.name}
-                icon={<BoxIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
-                active={provider.id === selectedProviderId}
-                // Green only when the provider is both enabled and usable.
-                tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
-                onClick={() => requestSelect(provider.id)}
-              />
-            ))}
+            {selected ? (
+              <ProviderDetail provider={selected} />
+            ) : (
+              <ProviderForm onCreated={() => setFormDirty(false)} onDirtyChange={handleDirtyChange} />
+            )}
           </div>
-
-          {hasProviders ? (
-            <button
-              type="button"
-              onClick={() => requestSelect(null)}
-              className={`mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
-                selectedProviderId === null
-                  ? 'bg-bg-hover text-text-primary'
-                  : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
-              }`}
-            >
-              <PlusIcon className="h-3.5 w-3.5 shrink-0" />
-              Add provider
-            </button>
-          ) : null}
-        </aside>
-
-        <div className="min-w-0 flex-1 p-6">
-          {!hasProviders && !isLoading && isOnForm ? (
-            <p className="mb-5 text-sm leading-relaxed text-text-tertiary">
-              No providers yet. Add one below to start chatting — a name, an endpoint and (usually) a key
-              is all it takes.
-            </p>
-          ) : null}
-
-          {selected ? (
-            <ProviderDetail provider={selected} />
-          ) : (
-            <ProviderForm onCreated={() => setFormDirty(false)} onDirtyChange={handleDirtyChange} />
-          )}
         </div>
       </div>
 
@@ -123,13 +142,13 @@ export function ModelSettingsPage() {
 
 function RailItem({
   label,
-  icon,
+  providerId,
   active,
   tone = 'idle',
   onClick
 }: {
   label: string;
-  icon?: React.ReactNode;
+  providerId: string;
   active: boolean;
   tone?: 'ready' | 'idle';
   onClick: () => void;
@@ -143,7 +162,7 @@ function RailItem({
         active ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
       }`}
     >
-      {icon}
+      <ProviderLogo providerId={providerId} label={label} className="h-3.5 w-3.5 text-text-tertiary" />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       <span
         aria-hidden="true"

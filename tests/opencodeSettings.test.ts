@@ -7,7 +7,6 @@ import test from 'node:test';
 
 import {
   OPENCODE_PROVIDER_ID,
-  isOpenCodeIntegrationMode,
   openCodeServerMode
 } from '../src/shared/opencodeSettings.js';
 import {
@@ -35,27 +34,13 @@ test('opencode settings schema defaults an empty blob', () => {
   assert.ok(parsed.ok);
   assert.deepEqual(parsed.settings, {
     enabled: false,
-    integrationMode: 'server',
     binaryPath: '',
     serverUrl: '',
-    customModels: []
+    customModels: [],
+    launchArgs: '',
+    env: {}
   });
   assert.equal(defaultOpenCodeSettings().enabled, false);
-});
-
-test('integration mode accepts only server|acp (D7 dual options)', () => {
-  for (const mode of ['server', 'acp']) {
-    const parsed = parseOpenCodeSettings({ integrationMode: mode });
-    assert.ok(parsed.ok);
-    assert.equal(parsed.settings.integrationMode, mode);
-  }
-
-  const rejected = parseOpenCodeSettings({ integrationMode: 'webhook' });
-  assert.ok(!rejected.ok);
-  assert.match(rejected.error, /integrationMode/);
-
-  assert.ok(isOpenCodeIntegrationMode('acp'));
-  assert.equal(isOpenCodeIntegrationMode('stdio'), false);
 });
 
 test('opencode provider id is the fixed "opencode" slug', () => {
@@ -100,7 +85,8 @@ test('unknown keys are stripped, not round-tripped', () => {
     'binaryPath',
     'customModels',
     'enabled',
-    'integrationMode',
+    'env',
+    'launchArgs',
     'serverUrl'
   ]);
 });

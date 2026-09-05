@@ -66,6 +66,27 @@ export function compareOpenCodeVersions(left: string, right: string): number {
   return 0;
 }
 
+/**
+ * Split a user-typed launch-arguments string into argv entries.
+ *
+ * Supports single/double-quoted segments so a flag value with spaces
+ * (`--title "my title"`) survives as one argument; otherwise splits on
+ * whitespace. Not a full shell parser — no escapes, no nesting — the same
+ * ceiling t3code's launch-args field draws.
+ */
+export function splitLaunchArgs(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const matches = trimmed.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return matches.map((token) =>
+    (token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))
+      ? token.slice(1, -1)
+      : token
+  );
+}
+
 /** Flatten stderr/stdout tails into an actionable error detail (bounded). */
 export function summarizeProcessFailure(input: {
   readonly exitCode: number | null;
@@ -85,4 +106,131 @@ export function summarizeProcessFailure(input: {
   if (stderr) parts.push(`stderr:\n${stderr}`);
   if (stdout && !stderr) parts.push(`stdout:\n${stdout}`);
   return parts.join('\n\n');
+}
+
+export type OpenCodePermissionAction = 'allow' | 'ask' | 'deny';
+
+export interface OpenCodePermissionRule {
+  readonly permission: string;
+  readonly pattern: string;
+  readonly action: OpenCodePermissionAction;
+}
+
+export type OpenCodePermissionRuleset = OpenCodePermissionRule[];
+
+/**
+ * Builds OpenCode session permission rules based on Atlas tool permission mode.
+ *
+ * Blueprint: pingdotgg/t3code `apps/server/src/provider/opencodeRuntime.ts:483-520`.
+ *
+ * Under 'full-access': pre-approves everything + external directories.
+ * Under 'auto-accept-edits': auto-approves edits, asks for everything else.
+ * Otherwise (supervised / ask / default): asks for bash, edit, web, doom_loop, etc.
+ * Question asking permission is always 'allow' in supervised modes so opencode can ask questions.
+ */
+export function buildOpenCodePermissionRules(
+  runtimeMode?: string | null
+): OpenCodePermissionRuleset {
+  if (runtimeMode === 'full-access') {
+    return [
+      { permission: '*', pattern: '*', action: 'allow' },
+      { permission: 'external_directory', pattern: '*', action: 'allow' }
+    ];
+  }
+
+  const editAction = runtimeMode === 'auto-accept-edits' ? 'allow' : 'ask';
+
+  return [
+    { permission: '*', pattern: '*', action: 'ask' },
+    { permission: 'bash', pattern: '*', action: 'ask' },
+    { permission: 'edit', pattern: '*', action: editAction },
+    { permission: 'webfetch', pattern: '*', action: 'ask' },
+    { permission: 'websearch', pattern: '*', action: 'ask' },
+    { permission: 'codesearch', pattern: '*', action: 'ask' },
+    { permission: 'external_directory', pattern: '*', action: 'ask' },
+    { permission: 'doom_loop', pattern: '*', action: 'ask' },
+    { permission: 'question', pattern: '*', action: 'allow' }
+  ];
+}
+
+export interface OpenCodeQuestionOption {
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface OpenCodeNormalizedQuestion {
+  readonly id: string;
+  readonly header: string;
+  readonly question: string;
+  readonly options: readonly OpenCodeQuestionOption[];
+  readonly multiSelect?: boolean;
+  readonly custom?: boolean;
+}
+
+export interface OpenCodeQuestionRequest {
+  readonly id: string;
+  readonly sessionID: string;
+  readonly questions: readonly OpenCodeNormalizedQuestion[];
+  readonly tool?: {
+    readonly messageID?: string;
+    readonly callID?: string;
+  };
+}
+
+export function openCodeQuestionId(
+  index: number,
+  question: { readonly header: string; readonly question: string }
+): string {
+  const header = question.header
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-');
+  return header.length > 0 ? `question-${index}-${header}` : `question-${index}`;
+}
+
+export function normalizeQuestionRequest(
+  request: Record<string, unknown>
+): OpenCodeNormalizedQuestion[] {
+  const questions = Array.isArray(request.questions) ? request.questions : [];
+  return questions.map((q, index) => {
+    const record = typeof q === 'object' && q !== null ? (q as Record<string, unknown>) : {};
+    const header = typeof record.header === 'string' ? record.header : '';
+    const questionText = typeof record.question === 'string' ? record.question : '';
+    const optionsRaw = Array.isArray(record.options) ? record.options : [];
+    const options = optionsRaw.map((opt) => {
+      const optRecord = typeof opt === 'object' && opt !== null ? (opt as Record<string, unknown>) : {};
+      return {
+        label: typeof optRecord.label === 'string' ? optRecord.label : '',
+        ...(typeof optRecord.description === 'string' ? { description: optRecord.description } : {})
+      };
+    });
+    return {
+      id: openCodeQuestionId(index, { header, question: questionText }),
+      header,
+      question: questionText,
+      options,
+      ...(record.multiple === true ? { multiSelect: true } : {}),
+      ...(record.custom === true ? { custom: true } : {})
+    };
+  });
+}
+
+export function toOpenCodeQuestionAnswers(
+  questions: readonly OpenCodeNormalizedQuestion[],
+  answers: Record<string, unknown>
+): string[][] {
+  return questions.map((question, index) => {
+    const raw =
+      answers[question.id] ??
+      answers[question.header] ??
+      answers[question.question] ??
+      answers[`question-${index}`];
+    if (Array.isArray(raw)) {
+      return raw.filter((value): value is string => typeof value === 'string');
+    }
+    if (typeof raw === 'string') {
+      return raw.trim().length > 0 ? [raw] : [];
+    }
+    return [];
+  });
 }

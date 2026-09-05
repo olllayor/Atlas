@@ -78,6 +78,7 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
 import { useMeasuredHeight } from './hooks/useMeasuredHeight';
 import { usePersistentFlag, useResizablePanel, useViewportWidth } from './hooks/useResizablePanel';
+import { useIsFullScreen } from './hooks/useIsFullScreen';
 import { computeColumns } from './lib/columns';
 import { useSubagentComposerState } from './hooks/useSubagentComposerState';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
@@ -218,6 +219,8 @@ export default function App() {
   // Sidebar collapse and width persist: both used to be volatile React
   // state, so every restart reset the layout.
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentFlag('atlas.sidebar.collapsed', false);
+  /** Fullscreen hides the traffic lights, so the chrome insets kept for them go. */
+  const isFullScreen = useIsFullScreen();
   const sidebarResize = useResizablePanel({
     storageKey: 'atlas.sidebar.width',
     defaultWidth: 284,
@@ -414,6 +417,7 @@ export default function App() {
     detachProject,
     renameProject,
     setProjectPinned,
+    setProjectAutoPull,
     setConversationPinned,
     setConversationArchived,
     setConversationSettled,
@@ -518,6 +522,7 @@ export default function App() {
       detachProject: state.detachProject,
       renameProject: state.renameProject,
       setProjectPinned: state.setProjectPinned,
+      setProjectAutoPull: state.setProjectAutoPull,
       setConversationPinned: state.setConversationPinned,
       setConversationArchived: state.setConversationArchived,
       setConversationSettled: state.setConversationSettled,
@@ -2160,7 +2165,8 @@ export default function App() {
               'titlebar-overlay-safe relative grid h-titlebar-height shrink-0 grid-cols-[1fr_auto] items-center gap-3 px-5',
               // With the 56px collapsed rail, macOS traffic lights (x:16, ~70px
               // wide) end ~30px into this bar; inset the title clear of them.
-              sidebarCollapsed && isMacLike && 'pl-12'
+              // Fullscreen hides the lights, so the inset would be dead space.
+              sidebarCollapsed && isMacLike && !isFullScreen && 'pl-12'
             )}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
@@ -2360,6 +2366,9 @@ export default function App() {
                 }}
                 onReveal={(projectId) => {
                   void window.atlasChat.projects.reveal(projectId);
+                }}
+                onToggleAutoPull={(projectId, autoPull) => {
+                  void setProjectAutoPull(projectId, autoPull);
                 }}
                 onRevealTarget={(target) => {
                   if (!selectedConversationId) return;

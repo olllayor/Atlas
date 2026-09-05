@@ -13,6 +13,7 @@ type ProjectRow = {
   updatedAt: string;
   lastUsedAt: string | null;
   pinnedAt: string | null;
+  autoPull: number;
 };
 
 const SELECT_COLUMNS = `
@@ -22,7 +23,8 @@ const SELECT_COLUMNS = `
   created_at AS createdAt,
   updated_at AS updatedAt,
   last_used_at AS lastUsedAt,
-  pinned_at AS pinnedAt
+  pinned_at AS pinnedAt,
+  auto_pull AS autoPull
 `;
 
 /**
@@ -107,6 +109,7 @@ function mapProject(row: ProjectRow): WorkspaceProject {
     updatedAt: row.updatedAt,
     lastUsedAt: row.lastUsedAt,
     pinnedAt: row.pinnedAt,
+    autoPull: row.autoPull === 1,
     ...describeRoot(row.root)
   };
 }
@@ -243,5 +246,28 @@ export class ProjectsRepo {
     this.db
       .prepare('UPDATE projects SET last_used_at = @now, updated_at = @nowUpdate WHERE id = @projectId')
       .run({ projectId, now, nowUpdate: now });
+  }
+
+  /**
+   * Opts a project into (or out of) the background pull of its default
+   * branch. Like pinning, it touches neither ordering timestamp: a settings
+   * toggle is not use.
+   */
+  setAutoPull(projectId: string, autoPull: boolean): WorkspaceProject {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE projects
+          SET auto_pull = @autoPull
+          WHERE id = @projectId
+        `
+      )
+      .run({ projectId, autoPull: autoPull ? 1 : 0 });
+
+    if (result.changes === 0) {
+      throw new Error(`Project ${projectId} not found.`);
+    }
+
+    return this.get(projectId)!;
   }
 }

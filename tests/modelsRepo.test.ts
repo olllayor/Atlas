@@ -118,13 +118,13 @@ test('ModelsRepo pruning is scoped to the refreshed provider', async (t) => {
   assert.equal(repo.getById('glm-4.7')?.archived, false);
 });
 
-test('ModelsRepo does not prune when a refresh returned nothing', async (t) => {
+test('ModelsRepo prunes when a refresh returned nothing with pruneProviderId', async (t) => {
   const repo = createRepo(t);
 
   repo.upsertModels([model('vendor/kept')], { pruneProviderId: 'openrouter' });
   repo.upsertModels([], { pruneProviderId: 'openrouter' });
 
-  assert.equal(repo.getById('vendor/kept')?.archived, false);
+  assert.equal(repo.getById('vendor/kept')?.archived, true);
 });
 
 test('ModelsRepo remembers when a model was last free', async (t) => {

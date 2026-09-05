@@ -10,6 +10,7 @@ import {
   type CreateSiteRequest,
   type SiteDetail,
   type SiteFileInput,
+  type SiteFileMeta,
   type SiteReviewChecklist,
   type SiteSummary,
   type SiteValidationResult,
@@ -395,6 +396,14 @@ export class SiteService {
   async exportVersionTo(siteId: string, versionId: string, destination: string): Promise<void> {
     await this.store.exportVersionTo(siteId, versionId, destination);
     this.recordEvent(siteId, versionId, 'site.exported', { destination });
+  }
+
+  listFiles(versionId: string): SiteFileMeta[] {
+    return this.repo.listFiles(versionId);
+  }
+
+  async readTextFile(siteId: string, versionId: string, path: string): Promise<string> {
+    return this.store.readSiteTextFile(siteId, versionId, path);
   }
 
   recordEvent(

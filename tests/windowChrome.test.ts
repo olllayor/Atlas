@@ -29,6 +29,8 @@ test('explicit modes win, system follows the OS reading', () => {
 
 test('background resolves per design theme, override wins over all', () => {
   assert.equal(resolveChromeBackground(state()), '#181818');
+  assert.equal(resolveChromeBackground(state({ designTheme: 'atlas', themeMode: 'dark' }), true), '#09090b');
+  assert.equal(resolveChromeBackground(state({ designTheme: 'atlas', themeMode: 'light' }), false), '#fcfcfc');
   assert.equal(resolveChromeBackground(state({ designTheme: 'cursor', themeMode: 'dark' }), true), '#26251e');
   assert.equal(resolveChromeBackground(state({ designTheme: 'cursor', themeMode: 'light' }), false), '#f2f1ed');
   assert.equal(

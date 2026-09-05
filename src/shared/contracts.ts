@@ -4,8 +4,12 @@ import type { MentionId } from './mentions';
 import type {
   CreateSiteRequest,
   DeleteSiteFileRequest,
+  AnalyzeWorkspaceRequest,
   ExportSiteRequest,
   ExportSiteResult,
+  ExportSiteToWorkspaceRequest,
+  ExportSiteToWorkspaceResult,
+  WorkspaceProjectAnalysis,
   OpenSitePreviewRequest,
   PublishSiteRequest,
   ReadSiteFileRequest,
@@ -28,11 +32,18 @@ export type * from './sites';
 export type * from './mentions';
 export type * from './customProviders';
 export * from './opencodeSettings';
+export * from './localAgents';
 import type {
   OpenCodeProbeResult,
   OpenCodeSettings,
   OpenCodeStatusView
 } from './opencodeSettings';
+import type {
+  LocalAgentId,
+  LocalAgentProbeResult,
+  LocalAgentStatusView,
+  LocalAgentUpdateRequest
+} from './localAgents';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';
@@ -65,6 +76,11 @@ export type WorkspaceProject = {
   lastUsedAt: string | null;
   /** When the project was pinned, or null. Pinned projects sort above the rest. */
   pinnedAt: string | null;
+  /**
+   * Opt-in: keep the default branch current with a background fast-forward
+   * pull at launch. Off unless the user enables it per project.
+   */
+  autoPull: boolean;
 };
 
 export type CreateWorkspaceProjectRequest = {
@@ -1082,9 +1098,9 @@ export type ProviderCredentialSummary = {
 };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type DesignTheme = 'codex' | 'default' | 'xai' | 'cursor';
+export type DesignTheme = 'atlas' | 'codex' | 'default' | 'xai' | 'cursor';
 
-export const DESIGN_THEMES: readonly DesignTheme[] = ['codex', 'default', 'xai', 'cursor'];
+export const DESIGN_THEMES: readonly DesignTheme[] = ['atlas', 'codex', 'default', 'xai', 'cursor'];
 
 export function isDesignTheme(value: unknown): value is DesignTheme {
   return typeof value === 'string' && (DESIGN_THEMES as readonly string[]).includes(value);
@@ -1098,13 +1114,13 @@ export function isDesignTheme(value: unknown): value is DesignTheme {
  * `default`/`xai` gained light blocks once their dark-only palettes kept
  * `system` users on light OSes pinned to dark. The list stays as the single
  * source of truth so a future dark-only theme gets the same clamping that
- * used to protect these four — `resolveAppliedThemeMode` refuses to paint
+ * used to protect these five — `resolveAppliedThemeMode` refuses to paint
  * light under a theme with no light palette (which used to mean white-on-
  * white inputs: `color-scheme: light` repainted native controls while every
  * app surface stayed dark), and the settings picker greys Light out with an
  * explanation instead of offering a mode that cannot be honoured.
  */
-export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor', 'default', 'xai'];
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['atlas', 'codex', 'cursor', 'default', 'xai'];
 
 export function designThemeSupportsLight(theme: DesignTheme): boolean {
   return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
@@ -1137,7 +1153,7 @@ export function isReduceMotionMode(value: unknown): value is ReduceMotionMode {
 }
 
 export const CONTRAST_MIN = 0;
-export const CONTRAST_MAX = 100;
+export const CONTRAST_MAX = 200;
 /** Neutral midpoint: derived tokens render exactly as the theme authored them. */
 export const CONTRAST_DEFAULT = 50;
 
@@ -1242,7 +1258,7 @@ export type SettingsAppearanceSummary = {
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   themeMode: 'dark',
-  designTheme: 'default',
+  designTheme: 'atlas',
   themeId: 'default',
   themeHalves: null,
   glassOpacity: GLASS_OPACITY_DEFAULT,
@@ -2467,6 +2483,16 @@ export type RendererApi = {
      */
     subscribe: (listener: () => void) => () => void;
   };
+  /**
+   * Local coding agents (OpenCode, Claude Code, …): CLIs already on the
+   * machine that sign themselves in. No keys, so they get their own surface
+   * rather than joining the endpoint list.
+   */
+  localAgents: {
+    list: () => Promise<LocalAgentStatusView[]>;
+    update: (request: LocalAgentUpdateRequest) => Promise<LocalAgentStatusView[]>;
+    probe: (agentId: LocalAgentId) => Promise<LocalAgentProbeResult>;
+  };
   providers: {
     list: () => Promise<CustomProvider[]>;
     create: (request: CreateCustomProviderRequest) => Promise<CustomProvider>;
@@ -2555,6 +2581,7 @@ export type RendererApi = {
     delete: (projectId: string) => Promise<void>;
     reveal: (projectId: string) => Promise<void>;
     setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
+    setAutoPull: (projectId: string, autoPull: boolean) => Promise<WorkspaceProject>;
     /** Editors installed on this machine, in preference order. Empty when none were found. */
     listIdes: () => Promise<DetectedIde[]>;
     /** Opens the project folder in `ideId`, or in the preferred editor when omitted. */
@@ -2599,6 +2626,8 @@ export type RendererApi = {
     previewTarget: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
     openPreviewWindow: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
     export: (request: ExportSiteRequest) => Promise<ExportSiteResult>;
+    exportToWorkspace: (request: ExportSiteToWorkspaceRequest) => Promise<ExportSiteToWorkspaceResult>;
+    analyzeWorkspace: (request: AnalyzeWorkspaceRequest) => Promise<WorkspaceProjectAnalysis>;
     openInBrowser: (siteId: string, versionId?: string | null) => Promise<string>;
   };
   diagnostics: {
@@ -2738,6 +2767,12 @@ export type RendererApi = {
     revert: (conversationId: string, changeId: string) => Promise<FileChangeRecord>;
     accept: (changeId: string) => Promise<FileChangeRecord>;
     getSummary: (conversationId: string) => Promise<FileChangeSummary>;
+  };
+  window: {
+    /** Whether this window is in native fullscreen right now. */
+    getFullScreen: () => Promise<boolean>;
+    /** Fires on every native fullscreen transition. Returns its own unsubscribe. */
+    onFullScreenChange: (listener: (isFullScreen: boolean) => void) => () => void;
   };
   terminal: {
     getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;

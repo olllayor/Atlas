@@ -14,7 +14,6 @@
   /* A light slab cannot separate from a cream page by tone alone — same
      reason codex's light block carries one. The contract default is
      transparent because dark themes separate by tone. */
-  --border-composer: rgba(38, 37, 30, 0.09);
 
   --bg-subtle: #ebeae5; /* Surface 300 - button backgrounds */
   --bg-ghost: #e6e5e0; /* Surface 400 - secondary */
@@ -264,4 +263,8 @@
   --toast-close-hover: rgba(242, 241, 237, 0.85);
 
   color-scheme: dark;
+}
+
+[data-theme='light'][data-design-theme='cursor'] {
+  --border-composer: rgba(38, 37, 30, 0.09);
 }

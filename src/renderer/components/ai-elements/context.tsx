@@ -40,11 +40,11 @@ function useContextData() {
   return value;
 }
 
-function formatTokenCount(value: number) {
+export function formatTokenCount(value: number) {
   return new Intl.NumberFormat("en", {
     notation: "compact",
     maximumFractionDigits: value >= 1000 ? 1 : 0,
-  }).format(value);
+  }).format(value).toLowerCase();
 }
 
 /**
@@ -246,13 +246,14 @@ export const ContextTrigger = ({
   ...props
 }: ContextTriggerProps) => {
   const { remainingLabel, remainingPercentage, tone, usedTokens, maxTokens } = useContextData();
-  const color = TONE_COLOR[tone];
-  const circumference = 2 * Math.PI * 11;
-  const isEmpty = usedTokens <= 0 || remainingPercentage >= 99.5;
-  const exhausted = remainingPercentage <= 0;
-  const progress = exhausted ? 0 : Math.max(0.02, Math.min(1, remainingPercentage / 100));
-  const dashOffset = circumference * (1 - progress);
-  const glow = `drop-shadow(0 0 4px ${color})`;
+  const radius = 9.75;
+  const circumference = 2 * Math.PI * radius;
+  const usedRatio = maxTokens > 0 ? Math.min(1, Math.max(0, usedTokens / maxTokens)) : 0;
+  const isOverloaded = tone === "critical";
+  const usageStroke = isOverloaded
+    ? "var(--error)"
+    : "color-mix(in oklab, var(--text-tertiary) 72%, transparent)";
+  const dashOffset = circumference * (1 - usedRatio);
 
   if (children) {
     return <HoverCardTrigger asChild>{children}</HoverCardTrigger>;
@@ -271,35 +272,34 @@ export const ContextTrigger = ({
         )}
         {...props}
       >
-        <svg aria-hidden="true" className="absolute inset-[2px] -rotate-90" viewBox="0 0 32 32">
-          <circle
-            cx="16"
-            cy="16"
-            r="11"
-            fill="none"
-            stroke={exhausted ? color : "var(--border-default)"}
-            strokeWidth="2.5"
-            opacity={exhausted ? 1 : isEmpty ? 0.6 : 0.3}
-            style={{ filter: exhausted ? glow : "none" }}
-          />
-          {isEmpty ? null : (
+        <span className="relative flex size-5 items-center justify-center">
+          <svg aria-hidden="true" className="absolute inset-0 size-full -rotate-90 transform-gpu" viewBox="0 0 24 24">
+            {/* Background track circle */}
             <circle
-              cx="16"
-              cy="16"
-              r="11"
+              cx="12"
+              cy="12"
+              r={radius}
               fill="none"
-              stroke={color}
-              strokeDasharray={circumference}
-              strokeDashoffset={dashOffset}
-              strokeLinecap="round"
-              strokeWidth="2.5"
-              className="transition-all duration-300"
-              style={{
-                filter: tone !== "normal" && !exhausted ? glow : "none"
-              }}
+              stroke="color-mix(in oklab, var(--text-tertiary) 24%, transparent)"
+              strokeWidth="3"
             />
-          )}
-        </svg>
+            {/* Used progress arc filling clockwise from 12 o'clock */}
+            {usedTokens > 0 ? (
+              <circle
+                cx="12"
+                cy="12"
+                r={radius}
+                fill="none"
+                stroke={usageStroke}
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeDasharray={circumference}
+                strokeDashoffset={dashOffset}
+                className="transition-[stroke-dashoffset,stroke] duration-500 ease-out motion-reduce:transition-none"
+              />
+            ) : null}
+          </svg>
+        </span>
       </button>
     </HoverCardTrigger>
   );
@@ -327,28 +327,12 @@ export const ContextContentHeader = ({
   children,
   ...props
 }: ContextContentHeaderProps) => {
-  const { remainingLabel, usedTokens, maxTokens, tone } = useContextData();
-
   return (
-    <div className={cn("space-y-1.5", className)} {...props}>
+    <div className={cn("space-y-2", className)} {...props}>
       {children ?? (
         <>
-          <div className="flex items-center justify-between text-2xs">
-            <span className="font-semibold uppercase tracking-wider text-text-tertiary">Context Window</span>
-            <span className="font-mono tabular-nums text-text-muted">
-              {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}
-            </span>
-          </div>
-          <div className="flex items-baseline gap-1.5 text-sm font-semibold tracking-tight text-text-primary">
-            <span className={cn(
-              tone === "critical" ? "text-error" : tone === "warning" ? "text-warning" : "text-accent"
-            )}>
-              {remainingLabel}% left
-            </span>
-            <span className="text-xs font-normal text-text-tertiary">
-              ({formatTokenCount(Math.max(0, maxTokens - usedTokens))} free)
-            </span>
-          </div>
+          <div className="text-xs font-medium text-text-secondary">Context Window</div>
+          <ContextThresholdBar />
         </>
       )}
     </div>
@@ -369,17 +353,17 @@ export const ContextContentBody = ({
     <div className={cn("space-y-3 text-sm text-text-secondary", className)} {...props}>
       {children ??
         (breakdown ? (
-          <>
-            <ContextThresholdBar />
-            <ContextBreakdownRows breakdown={breakdown} />
-          </>
+          <ContextBreakdownRows breakdown={breakdown} />
         ) : null)}
     </div>
   );
 };
 
 /**
- * Capacity bar with threshold tick marker, integrated threshold range slider, and compact button.
+ * Unified Capacity + Threshold Slider Bar.
+ * - Displays active usage fill (e.g. blue)
+ * - Compaction threshold track & draggable white pill slider thumb
+ * - Below: [used / max] on the left, [Compact at threshold] on the right
  */
 function ContextThresholdBar() {
   const {
@@ -390,14 +374,13 @@ function ContextThresholdBar() {
     onCompactionThresholdChange,
     onCompactNow,
     tone,
-    remainingPercentage,
   } = useContextData();
 
   const [isCompacting, setIsCompacting] = useState(false);
 
-  const hasThreshold = typeof compactionThresholdPercent === "number" && compactionThresholdTokens != null && maxTokens > 0;
+  const hasThreshold = typeof compactionThresholdPercent === "number" && maxTokens > 0;
   const thresholdPercent = hasThreshold ? (compactionThresholdPercent as number) : 85;
-  const thresholdTokens = hasThreshold ? (compactionThresholdTokens as number) : null;
+  const thresholdTokens = compactionThresholdTokens != null ? (compactionThresholdTokens as number) : null;
 
   const [draftPercent, setDraftPercent] = useState<number>(thresholdPercent);
   const isDraggingRef = useRef(false);
@@ -430,6 +413,7 @@ function ContextThresholdBar() {
   const handlePointerDown = useCallback(() => {
     isDraggingRef.current = true;
   }, []);
+
   const handlePointerUp = useCallback(() => {
     isDraggingRef.current = false;
     handleCommit();
@@ -455,23 +439,20 @@ function ContextThresholdBar() {
   }, [onCompactNow, isCompacting]);
 
   const usedPercent = Math.min(100, Math.max(0, (usedTokens / Math.max(1, maxTokens)) * 100));
-  const markerPercent = hasThreshold && thresholdTokens != null
-    ? Math.min(100, Math.max(0, (thresholdTokens / Math.max(1, maxTokens)) * 100))
-    : (draftPercent / 100) * 100;
-
-  const effectiveMarker = (() => {
-    if (!isDraggingRef.current) return markerPercent;
-    if (!hasThreshold || thresholdPercent === 0) return (draftPercent / 100) * 100;
-    return Math.min(100, Math.max(0, (draftPercent / thresholdPercent) * markerPercent));
-  })();
-
-  const sliderProgress = ((draftPercent - COMPACTION_THRESHOLD_MIN) / (COMPACTION_THRESHOLD_MAX - COMPACTION_THRESHOLD_MIN)) * 100;
+  
+  // Calculate dynamic threshold tokens based on active draft percent
+  const calculatedThresholdTokens = Math.round((draftPercent / 100) * maxTokens);
+  const displayThresholdTokens = thresholdTokens != null && !isDraggingRef.current && draftPercent === thresholdPercent
+    ? thresholdTokens
+    : calculatedThresholdTokens;
 
   return (
-    <div className="space-y-2.5">
-      {/* Visual Window Usage Bar with Threshold Tick Marker */}
-      <div className="space-y-1.5">
-        <div className="relative h-2 w-full overflow-hidden rounded-full bg-bg-subtle/80 border border-border-subtle/40" aria-hidden="true">
+    <div className="space-y-2">
+      {/* Unified Progress Bar + Threshold Slider */}
+      <div className="relative flex h-3.5 w-full items-center">
+        {/* Visual Track (6px rounded bar) */}
+        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-bg-subtle/80 border border-border-subtle/40 pointer-events-none" aria-hidden="true">
+          {/* Active Usage Fill */}
           <div
             className={cn(
               "absolute inset-y-0 left-0 rounded-full transition-all duration-300",
@@ -479,65 +460,67 @@ function ContextThresholdBar() {
             )}
             style={{ width: `${Math.max(usedPercent > 0 ? 1 : 0, usedPercent)}%` }}
           />
-          {hasThreshold ? (
+
+          {/* Region between usage and compaction threshold */}
+          {draftPercent > usedPercent ? (
             <div
-              className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-text-primary/80 shadow-[0_0_0_1.5px_var(--bg-overlay)] z-1"
-              style={{ left: `${effectiveMarker}%` }}
-              title={`Threshold: ${thresholdPercent}% (${thresholdTokens != null ? formatTokenCount(thresholdTokens) : ""})`}
+              className="absolute inset-y-0 transition-all duration-150 opacity-40 bg-accent"
+              style={{
+                left: `${usedPercent}%`,
+                width: `${draftPercent - usedPercent}%`,
+              }}
             />
           ) : null}
         </div>
-        <div className="flex items-center justify-between text-2xs text-text-tertiary">
-          <span className="tabular-nums">
-            {usedPercent < 1 && usedPercent > 0 ? "<1%" : `${Math.round(usedPercent)}%`} used
-          </span>
-          <span className="tabular-nums text-text-secondary font-medium">
-            {thresholdTokens != null ? `Threshold: ${formatTokenCount(thresholdTokens)}` : `Threshold: ${thresholdPercent}%`}
-          </span>
-        </div>
+
+        {/* Interactive Threshold Slider Overlay with native rounded white pill thumb */}
+        {onCompactionThresholdChange ? (
+          <input
+            type="range"
+            min={COMPACTION_THRESHOLD_MIN}
+            max={COMPACTION_THRESHOLD_MAX}
+            step={1}
+            value={draftPercent}
+            onChange={handleChange}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onTouchEnd={handleCommit}
+            onMouseUp={handleCommit}
+            onBlur={handleCommit}
+            onKeyUp={handleKeyUp}
+            aria-label="Automatic compaction threshold"
+            aria-valuetext={`${draftPercent} percent, compact at ${formatTokenCount(displayThresholdTokens)}`}
+            className="context-pill-slider absolute inset-0 z-10 w-full cursor-ew-resize"
+          />
+        ) : (
+          /* Static threshold pill indicator if read-only */
+          <div
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-1 h-3.5 rounded-full bg-text-primary shadow-xs z-10 pointer-events-none"
+            style={{ left: `${draftPercent}%` }}
+          />
+        )}
       </div>
 
-      {/* Threshold Slider (cleanly styled with .settings-range, no invisible tracks or floating thumbs) */}
-      {onCompactionThresholdChange ? (
-        <div className="space-y-1.5 rounded-lg border border-border-subtle/60 bg-bg-subtle/40 p-2.5">
-          <div className="flex items-center justify-between text-2xs">
-            <span className="font-medium text-text-secondary">Auto-compaction threshold</span>
-            <span className="font-mono tabular-nums font-medium text-text-primary">
-              {draftPercent}% {thresholdTokens != null ? `(${formatTokenCount(thresholdTokens)})` : ""}
-            </span>
-          </div>
-          <div className="relative flex items-center pt-0.5">
-            <input
-              type="range"
-              min={COMPACTION_THRESHOLD_MIN}
-              max={COMPACTION_THRESHOLD_MAX}
-              step={1}
-              value={draftPercent}
-              onChange={handleChange}
-              onPointerDown={handlePointerDown}
-              onPointerUp={handlePointerUp}
-              onTouchEnd={handleCommit}
-              onMouseUp={handleCommit}
-              onBlur={handleCommit}
-              onKeyUp={handleKeyUp}
-              aria-label="Automatic compaction threshold"
-              aria-valuetext={`${draftPercent} percent, compact at ${thresholdTokens != null ? formatTokenCount(thresholdTokens) : "—"}`}
-              className="settings-range h-1.5 w-full cursor-pointer rounded-full"
-              style={{
-                "--settings-slider-progress": `${Math.max(0, Math.min(100, sliderProgress))}%`
-              } as React.CSSProperties}
-            />
-          </div>
-        </div>
-      ) : null}
+      {/* Numerical Labels Row: [used / max] on left, [Compact at X] on right */}
+      <div className="flex items-center justify-between text-2xs tabular-nums">
+        <span className="font-medium text-text-primary">
+          <strong className="font-semibold">{formatTokenCount(usedTokens)}</strong>
+          <span className="mx-1 text-text-tertiary">/</span>
+          <span className="text-text-secondary">{formatTokenCount(maxTokens)}</span>
+        </span>
 
-      {/* Compact Now Action */}
+        <span className="text-text-secondary">
+          Compact at <strong className="font-semibold text-text-primary">{formatTokenCount(displayThresholdTokens)}</strong>
+        </span>
+      </div>
+
+      {/* Compact Now Button */}
       {onCompactNow ? (
         <button
           type="button"
           onClick={handleCompact}
           disabled={usedTokens <= 0 || isCompacting}
-          className="inline-flex h-7.5 w-full items-center justify-center gap-1.5 rounded-lg border border-border-default bg-bg-surface px-3 text-xs font-medium text-text-primary shadow-2xs transition hover:bg-bg-hover hover:border-border-medium active:scale-[0.99] disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+          className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-lg border border-border-default bg-bg-surface px-3 text-xs font-medium text-text-primary shadow-2xs transition hover:bg-bg-hover hover:border-border-medium active:scale-[0.99] disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
         >
           <Minimize2 className={cn("size-3.5 text-text-secondary transition-transform", isCompacting && "animate-spin")} />
           <span>{isCompacting ? "Compacting conversation…" : "Compact Now"}</span>

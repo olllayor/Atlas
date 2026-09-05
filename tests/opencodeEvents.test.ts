@@ -22,7 +22,9 @@ function recorder() {
       onToolInputAvailable: push('tool-input'),
       onToolOutputAvailable: push('tool-output'),
       onToolOutputError: push('tool-error'),
-      onToolApprovalRequested: push('approval')
+      onToolApprovalRequested: push('approval'),
+      onToolApprovalResolved: push('approval-resolved'),
+      onQuestionRequested: push('question')
     }
   };
 }
@@ -286,4 +288,103 @@ test('a delta belonging to the user\'s message is dropped like its snapshot', ()
     events.map((event) => event.payload.delta),
     ['pong']
   );
+});
+
+test('question.asked normalizes questions, surfaces approvals, and tracks pending', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  const ask = nextEvent('question.asked', {
+    id: 'q_1',
+    sessionID: SESSION,
+    questions: [
+      {
+        header: 'Database Migration',
+        question: 'Run migration now?',
+        options: [
+          { label: 'Yes', description: 'Run immediately' },
+          { label: 'No', description: 'Skip migration' }
+        ],
+        multiple: false
+      }
+    ],
+    tool: { callID: 'c1', messageID: 'm1' }
+  });
+
+  translator.handle(ask);
+  // Duplicate delivery must be ignored
+  translator.handle(ask);
+
+  const questions = events.filter((e) => e.kind === 'question');
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0]!.payload.approvalId, 'q_1');
+  assert.equal(questions[0]!.payload.header, 'Database Migration');
+
+  const approvals = events.filter((e) => e.kind === 'approval');
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]!.payload.approvalId, 'q_1');
+  assert.equal(approvals[0]!.payload.toolName, 'question');
+  assert.equal(
+    approvals[0]!.payload.reason,
+    '[Database Migration] Run migration now? (Yes / No)'
+  );
+
+  assert.equal(translator.hasPending('q_1'), true);
+  const pending = translator.takePendingQuestions();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]!.id, 'q_1');
+  assert.equal(pending[0]!.questions[0]!.id, 'question-0-database-migration');
+});
+
+test('question.replied and question.rejected clean up pending questions and emit approval-resolved', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  translator.handle(
+    nextEvent('question.asked', {
+      id: 'q_1',
+      questions: [{ header: 'Continue', question: 'Proceed?', options: [] }]
+    })
+  );
+  assert.equal(translator.hasPending('q_1'), true);
+
+  translator.handle(nextEvent('question.replied', { requestID: 'q_1' }));
+  assert.equal(translator.hasPending('q_1'), false);
+  const resolved = events.filter((e) => e.kind === 'approval-resolved');
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0]!.payload.approvalId, 'q_1');
+
+  translator.handle(
+    nextEvent('question.asked', {
+      id: 'q_2',
+      questions: [{ header: 'Skip', question: 'Skip step?', options: [] }]
+    })
+  );
+  assert.equal(translator.hasPending('q_2'), true);
+
+  translator.handle(nextEvent('question.rejected', { requestID: 'q_2' }));
+  assert.equal(translator.hasPending('q_2'), false);
+  const resolved2 = events.filter((e) => e.kind === 'approval-resolved');
+  assert.equal(resolved2.length, 2);
+  assert.equal(resolved2[1]!.payload.approvalId, 'q_2');
+});
+
+test('permission.replied cleans up pending permissions and emits approval-resolved', () => {
+  const { events, callbacks } = recorder();
+  const translator = new OpenCodeEventTranslator(SESSION, callbacks);
+
+  translator.handle(
+    nextEvent('permission.asked', {
+      id: 'p_1',
+      permission: 'bash',
+      patterns: ['rm -rf' ]
+    })
+  );
+  assert.equal(translator.hasPending('p_1'), true);
+
+  translator.handle(nextEvent('permission.replied', { requestID: 'p_1' }));
+  assert.equal(translator.hasPending('p_1'), false);
+  const resolved = events.filter((e) => e.kind === 'approval-resolved');
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0]!.payload.approvalId, 'p_1');
 });

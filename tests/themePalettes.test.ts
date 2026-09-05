@@ -8,15 +8,15 @@ import {
   getThemeColorsForAppearance,
   getThemeDefinition,
 } from '../src/shared/themePalettes';
-import { resolveEffectiveTheme } from '../src/renderer/lib/themePalette';
+import { getVariantShortLabel, resolveEffectiveTheme } from '../src/renderer/lib/themePalette';
 
 test('Theme Color Roles defines all palette roles', () => {
   assert.equal(THEME_COLOR_ROLES.length, 57);
 });
 
 test('Built-in themes contain all 57 roles for both light and dark appearances', () => {
-  const expectedThemeIds = ['t3-chat', 'grove', 'ocean', 'ember', 'iris'];
-  assert.equal(BUILT_IN_THEMES.length, 5);
+  const expectedThemeIds = ['t3-chat', 'grove', 'ocean', 'ember', 'iris', 'workbench'];
+  assert.equal(BUILT_IN_THEMES.length, 6);
 
   for (const themeId of expectedThemeIds) {
     const theme = getThemeDefinition(themeId);
@@ -81,4 +81,22 @@ test('resolveEffectiveTheme handles single theme and appearance halves', () => {
 
   // Case 4: Default fallback
   assert.equal(resolveEffectiveTheme(undefined, 'dark', null), 'default');
+});
+
+test("getVariantShortLabel derives clean short labels for theme family variants", () => {
+  // Base theme matching collection
+  assert.equal(getVariantShortLabel("One Dark Pro", "One Dark Pro"), "Pro");
+  assert.equal(getVariantShortLabel("Tokyo Night", "Tokyo Night"), "Night");
+
+  // Sub-variants starting with collection name
+  assert.equal(getVariantShortLabel("One Dark Pro Darker", "One Dark Pro"), "Darker");
+  assert.equal(getVariantShortLabel("One Dark Pro Flat", "One Dark Pro"), "Flat");
+  assert.equal(getVariantShortLabel("One Dark Pro Mix", "One Dark Pro"), "Mix");
+  assert.equal(getVariantShortLabel("Catppuccin Mocha", "Catppuccin"), "Mocha");
+  assert.equal(getVariantShortLabel("Catppuccin Latte", "Catppuccin"), "Latte");
+  assert.equal(getVariantShortLabel("Tokyo Night Storm", "Tokyo Night"), "Storm");
+  assert.equal(getVariantShortLabel("Solarized Dark", "Solarized"), "Dark");
+
+  // Single word collections fallback
+  assert.equal(getVariantShortLabel("Nord", "Nord"), "Nord");
 });

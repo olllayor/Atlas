@@ -61,7 +61,6 @@ import { getDefaultKeybindingRules } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
 import { ModelSettingsPage } from './providers/ModelSettingsPage';
-import { OpenCodeSettingsSection } from './providers/OpenCodeSettingsSection';
 import { PluginsSettingsPage } from './plugins/PluginsSettingsPage';
 import { SlotLabel } from './ui/slot-label';
 import { Undo2 } from 'lucide-react';
@@ -120,7 +119,7 @@ type NavItem = {
 
 const activeNavItems: NavItem[] = [
   { key: 'general', label: 'General', icon: GearIcon },
-  { key: 'providers', label: 'Model settings', icon: MixerHorizontalIcon },
+  { key: 'providers', label: 'Providers', icon: MixerHorizontalIcon },
   { key: 'appearance', label: 'Appearance', icon: DesktopIcon },
   { key: 'keyboard', label: 'Keyboard', icon: KeyboardIcon },
   { key: 'privacy', label: 'Privacy', icon: LockClosedIcon },
@@ -302,7 +301,7 @@ function sectionTitle(section: SettingsSection): string {
     case 'general':
       return 'General';
     case 'providers':
-      return 'Model settings';
+      return 'Providers';
     case 'plugins':
       return 'Plugins';
     case 'appearance':
@@ -512,10 +511,6 @@ function BetaPage({
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsGroup title="OpenCode (Beta)">
-        <OpenCodeSettingsSection />
-      </SettingsGroup>
-
       <SettingsGroup title="Cloud Sandbox (Experimental)">
         <SettingsRow
           title="Enable Cloud Sandbox"
@@ -663,10 +658,10 @@ function GeneralPage({
       <SettingsGroup title="Providers">
         <SettingsRow
           title="Model providers"
-          description="API keys and model lists live in Model settings, one entry per endpoint."
+          description="Local agents and API endpoints live in Providers, one entry per integration."
         >
           <ActionButton onClick={onOpenProviders}>
-            <SlotLabel text="Open model settings" />
+            <SlotLabel text="Open Providers" />
           </ActionButton>
         </SettingsRow>
 
@@ -1462,7 +1457,7 @@ function ContrastSlider({ value, onCommit }: { value: number; onCommit: (value: 
         style={{ '--settings-slider-progress': `${progress}%` } as CSSProperties}
         className="settings-range h-1 flex-1 cursor-pointer appearance-none rounded-full bg-bg-active accent-[var(--accent)]"
       />
-      <span className="w-7 shrink-0 text-right text-sm tabular-nums text-text-secondary">{draft}</span>
+      <span className="w-9 shrink-0 text-right text-sm tabular-nums text-text-secondary">{draft}</span>
     </div>
   );
 }
@@ -1575,6 +1570,7 @@ function VisualModePicker({
 }
 
 function DesignThemePicker({ current, onChange }: { current: DesignTheme; onChange: (theme: DesignTheme) => void }) {  const items: Array<{ theme: DesignTheme; label: string; description: string }> = [
+    { theme: 'atlas', label: 'Atlas', description: 'Signature minimal' },
     { theme: 'codex', label: 'Codex', description: 'Squircle, tinted elevation' },
     { theme: 'xai', label: 'xAI', description: 'Brutalist monochrome' },
     { theme: 'default', label: 'Default', description: 'Modern balanced' },

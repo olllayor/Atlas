@@ -10,7 +10,7 @@ import type {
   RuntimeProviderSession,
   WorkLogEntry,
 } from '../../../shared/contracts';
-import { classifyTaskAgentKind, deriveWorkLogEntry, getWorkLogEntryId, resolveTaskLinkage } from '../../../shared/runtimeActivity';
+import { classifyTaskAgentKind, deriveWorkLogEntry, dropSupersededToolUpdatedEvents, getWorkLogEntryId, resolveTaskLinkage } from '../../../shared/runtimeActivity';
 import type { SqliteDatabase } from '../client';
 
 type RuntimeEventRow = {
@@ -980,7 +980,7 @@ export class RuntimeStateRepo {
 
     return {
       conversationId,
-      events: rows.map(mapEvent),
+      events: dropSupersededToolUpdatedEvents(rows.map(mapEvent)),
       lastSequence: rows.at(-1)?.sequence ?? this.getLastSequence(conversationId),
     };
   }

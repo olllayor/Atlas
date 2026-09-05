@@ -1,6 +1,6 @@
 import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
 
-import type { ReasoningEffort } from '../../../shared/chatParameters';
+import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
 import type { ModelRuntimeHints, ModelSummary, ProviderId } from '../../../shared/contracts';
 
 export type ProviderStreamRequest = {
@@ -29,10 +29,12 @@ export type ProviderStreamRequest = {
    * providers that keep the transcript on their side (OpenCode) need it to
    * resume the right session, and to notice when the project changed under it.
    */
+  toolPermissionMode?: ToolPermissionMode | string | null;
   agentContext?: {
     conversationId: string;
     /** Absolute directory the agent should work in; null when no project. */
     workspaceRoot?: string | null;
+    toolPermissionMode?: ToolPermissionMode | string | null;
   };
   signal: AbortSignal;
   onChunk: (event: { id: string; delta: string }) => void;

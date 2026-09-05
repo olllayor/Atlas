@@ -60,7 +60,7 @@ export function stampCachedTheme() {
   if (!mode && !designTheme && !themeId) return;
 
   const effectiveMode = mode ?? 'system';
-  const effectiveDesignTheme = designTheme ?? 'default';
+  const effectiveDesignTheme = designTheme ?? 'atlas';
   const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? true;
   const resolved = resolveAppliedThemeMode(effectiveMode, effectiveDesignTheme, prefersDark);
 

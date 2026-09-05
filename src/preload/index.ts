@@ -39,6 +39,11 @@ const api: RendererApi = {
       probe: () => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeProbe)
     }
   },
+  localAgents: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.localAgentsList),
+    update: (request) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsUpdate, request),
+    probe: (agentId) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsProbe, agentId)
+  },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
     refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh),
@@ -113,6 +118,8 @@ const api: RendererApi = {
     delete: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsDelete, projectId),
     reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId),
     setPinned: (projectId, pinned) => ipcRenderer.invoke(IPC_CHANNELS.projectsSetPinned, projectId, pinned),
+    setAutoPull: (projectId, autoPull) =>
+      ipcRenderer.invoke(IPC_CHANNELS.projectsSetAutoPull, projectId, autoPull),
     listIdes: () => ipcRenderer.invoke(IPC_CHANNELS.projectsListIdes),
     openInIde: (projectId, ideId) => ipcRenderer.invoke(IPC_CHANNELS.projectsOpenInIde, projectId, ideId)
   },
@@ -164,6 +171,8 @@ const api: RendererApi = {
     previewTarget: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesPreviewTarget, request),
     openPreviewWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesOpenPreviewWindow, request),
     export: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesExport, request),
+    exportToWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesExportToWorkspace, request),
+    analyzeWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesAnalyzeWorkspace, request),
     openInBrowser: (siteId, versionId) =>
       ipcRenderer.invoke(IPC_CHANNELS.sitesOpenInBrowser, siteId, versionId ?? null)
   },
@@ -294,6 +303,21 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.fileChangesAccept, changeId),
     getSummary: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.fileChangesSummary, conversationId)
+  },
+  window: {
+    getFullScreen: () => ipcRenderer.invoke(IPC_CHANNELS.windowGetFullScreen) as Promise<boolean>,
+    /** Fires on every native fullscreen transition. Returns its own unsubscribe. */
+    onFullScreenChange: (listener: (isFullScreen: boolean) => void) => {
+      const handler = (_event: unknown, isFullScreen: boolean) => {
+        listener(isFullScreen);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.windowFullScreenChanged, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.windowFullScreenChanged, handler);
+      };
+    }
   },
   terminal: {
     getHistory: (conversationId: string, limit?: number) =>

@@ -1,5 +1,5 @@
 import type { SettingsAppearanceSummary } from '../../shared/contracts';
-import { CONTRAST_DEFAULT, normalizeThemeColor } from '../../shared/contracts';
+import { CONTRAST_DEFAULT, CONTRAST_MAX, CONTRAST_MIN, normalizeThemeColor } from '../../shared/contracts';
 
 /**
  * User color overrides ride on top of whichever design theme is active: the
@@ -18,7 +18,7 @@ export type ThemeOverrideInput = Pick<
 
 /** 50 → 1.0; the slider scales every derived opacity between 0.6× and 1.4×. */
 export function contrastFactor(contrast: number): number {
-  const clamped = Math.min(100, Math.max(0, Number.isFinite(contrast) ? contrast : CONTRAST_DEFAULT));
+  const clamped = Math.min(CONTRAST_MAX, Math.max(CONTRAST_MIN, Number.isFinite(contrast) ? contrast : CONTRAST_DEFAULT));
   return 0.6 + (clamped / 100) * 0.8;
 }
 
@@ -32,11 +32,27 @@ export function contrastFactor(contrast: number): number {
  * long before text does.
  */
 export function contrastVars(contrast: number): { base: string; boost: string; borderBoost: string } {
-  const clamped = Math.min(100, Math.max(0, Number.isFinite(contrast) ? contrast : CONTRAST_DEFAULT));
-  const base = Math.min(clamped, 50) * 2;
-  const boost = Math.max(clamped - 50, 0) * 2;
+  const clamped = Math.min(CONTRAST_MAX, Math.max(CONTRAST_MIN, Number.isFinite(contrast) ? contrast : CONTRAST_DEFAULT));
+  let base: number;
+  let boost: number;
+  let borderBoost: number;
+
+  if (clamped <= 50) {
+    base = clamped * 2;
+    boost = 0;
+    borderBoost = 0;
+  } else if (clamped <= 100) {
+    base = 100;
+    boost = (clamped - 50) * 2;
+    borderBoost = boost / 4;
+  } else {
+    base = Math.max(0, 100 - (clamped - 100));
+    boost = 100;
+    borderBoost = Math.min(100, 25 + (clamped - 100) * 0.75);
+  }
+
   const round = (value: number) => `${Math.round(value * 10) / 10}%`;
-  return { base: round(base), boost: round(boost), borderBoost: round(boost / 4) };
+  return { base: round(base), boost: round(boost), borderBoost: round(borderBoost) };
 }
 
 /** Stamps the three contrast numbers App.tsx owns; the target flips in CSS. */
@@ -292,7 +308,7 @@ export function parseThemeImport(raw: string): Partial<ThemeExport> | null {
   }
 
   if (typeof source.contrast === 'number' && Number.isFinite(source.contrast)) {
-    result.contrast = Math.min(100, Math.max(0, Math.round(source.contrast)));
+    result.contrast = Math.min(CONTRAST_MAX, Math.max(CONTRAST_MIN, Math.round(source.contrast)));
   }
 
   for (const key of ['uiFontFamily', 'codeFontFamily'] as const) {

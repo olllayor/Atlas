@@ -222,9 +222,9 @@ export function SidebarConversationRow({
     !isActive && !isSelected && !isRunning && !isFailed && !needsInput && !isWoke && !isUnread;
 
   return (
-    <div className="relative flex min-w-0 flex-1 flex-col gap-1 text-left py-0.5">
+    <div className="relative flex min-w-0 flex-1 flex-col gap-1.5 text-left py-0.5">
       {/* Line 1: project + status. Status yields to hover actions. */}
-      <div className="flex h-5 items-center gap-1.5 text-xs">
+      <div className="flex h-6 items-center gap-1.5 text-sm">
         {projectTitle && !hideProjectName ? (
           <span className="flex min-w-0 items-center gap-1.5">
             <Folder className="size-3.5 shrink-0 text-text-tertiary" strokeWidth={1.75} aria-hidden />
@@ -243,7 +243,7 @@ export function SidebarConversationRow({
 
         {pinIndicator}
 
-        <span className="group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-center justify-end">
+        <span className="group/sidebar-status-slot relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end">
           <span
             className={cn(
               'pointer-events-none flex items-center gap-1 tabular-nums transition-opacity duration-150 motion-reduce:transition-none',
@@ -346,7 +346,7 @@ export function SidebarConversationRow({
       <div className="min-w-0 text-left">
         <span
           className={cn(
-            'block truncate text-sm leading-snug transition-colors group-hover/row:text-text-primary',
+            'block truncate text-base leading-snug transition-colors group-hover/row:text-text-primary',
             recede ? 'font-medium text-text-secondary' : 'font-semibold text-text-primary'
           )}
           title={primaryLabel}
@@ -366,13 +366,13 @@ export function SidebarConversationRow({
           />
         ) : null}
         {branch ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-3xs font-medium">{branch}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-2xs font-medium">{branch}</span>
         ) : (
           <span className="min-w-0 flex-1" />
         )}
         {diff ? (
           <span
-            className="flex shrink-0 items-center gap-1 font-mono text-3xs"
+            className="flex shrink-0 items-center gap-1 font-mono text-2xs"
             title={diff.detail}
           >
             {diff.added ? <span className="font-medium text-success">{diff.added}</span> : null}

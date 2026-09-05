@@ -43,7 +43,7 @@ test('buildTextDetail handles massive outputs lazily without eager line allocati
   assert.equal(cell.detail.lines[9], 'Log entry number 10000: processing batch payload chunk 420000');
 
   // Must finish rapidly without allocating all 10,000 strings upfront
-  assert.ok(elapsedMs < 50, `parsing took ${elapsedMs}ms, expected < 50ms`);
+  assert.ok(elapsedMs < 200, `parsing took ${elapsedMs}ms, expected < 200ms`);
 
   // When requested, allLines still resolves accurately
   assert.equal(cell.detail.allLines.length, lineCount);

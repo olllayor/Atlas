@@ -5,7 +5,7 @@ import { code } from '@streamdown/code';
 import { math } from '@streamdown/math';
 import { mermaid } from '@streamdown/mermaid';
 import type { ComponentProps } from 'react';
-import { Streamdown, defaultRemarkPlugins, type Components, type CustomRenderer } from 'streamdown';
+import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins, type Components, type CustomRenderer } from 'streamdown';
 
 import { parseFileRef } from '../../../shared/fileRef';
 import { parseAssistantCitationHref } from '../../../shared/citations';
@@ -14,6 +14,7 @@ import { FileRefChip } from './file-ref';
 import { CiteChip } from '../CiteChip';
 import { useCiteNavigation } from '../citeNavigation';
 import { markdownTableComponents } from './markdown-table';
+import { ChatMarkdownImage, rehypeMarkStandaloneImages } from './chat-markdown-image';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
 
@@ -55,6 +56,11 @@ function remarkTagUntaggedCode() {
 const streamdownRemarkPlugins = [
   ...Object.values(defaultRemarkPlugins),
   remarkTagUntaggedCode,
+];
+
+const streamdownRehypePlugins = [
+  ...Object.values(defaultRehypePlugins),
+  rehypeMarkStandaloneImages,
 ];
 
 /**
@@ -113,6 +119,7 @@ const streamdownControls = { code: false, table: false } as const;
 const streamdownComponents = {
   ...markdownTableComponents,
   a: MarkdownAnchor,
+  img: ChatMarkdownImage,
 } as Components;
 
 export default function MessageResponseContent({ className, ...props }: MessageResponseInnerProps) {
@@ -126,6 +133,7 @@ export default function MessageResponseContent({ className, ...props }: MessageR
       controls={streamdownControls}
       plugins={streamdownPlugins}
       remarkPlugins={streamdownRemarkPlugins}
+      rehypePlugins={streamdownRehypePlugins}
       {...props}
     />
   );

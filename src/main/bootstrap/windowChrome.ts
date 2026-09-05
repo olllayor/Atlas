@@ -6,6 +6,7 @@ import type { DesignTheme, ThemeColorOverride, ThemeMode } from '../../shared/co
  * design theme's --bg-base; a custom backgroundColor override wins over all.
  */
 const DESIGN_THEME_BASE: Record<DesignTheme, { light: string; dark: string }> = {
+  atlas: { light: '#fcfcfc', dark: '#09090b' },
   default: { light: '#ffffff', dark: '#07080b' },
   codex: { light: '#ffffff', dark: '#181818' },
   cursor: { light: '#f2f1ed', dark: '#26251e' },

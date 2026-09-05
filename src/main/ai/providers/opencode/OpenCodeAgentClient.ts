@@ -6,6 +6,7 @@
 
 import type { OpenCodeProviderListResult } from './OpenCodeClient.js';
 import { createOpenCodeSdkClient, normalizeProviderListPayload } from './OpenCodeClient.js';
+import type { OpenCodePermissionRuleset } from './openCodeParsers.js';
 
 export interface OpenCodePromptPart {
   readonly type: 'text' | 'file';
@@ -20,6 +21,10 @@ export interface OpenCodePromptInput {
   readonly model: { readonly providerID: string; readonly modelID: string };
   readonly parts: readonly OpenCodePromptPart[];
   readonly system?: string;
+  /** Reasoning variant on the wire (low, medium, high, xhigh) matching t3code PR #9287. */
+  readonly variant?: string;
+  /** Agent mode on the wire (e.g. build, plan). */
+  readonly agent?: string;
 }
 
 export interface OpenCodePromptResult {
@@ -40,8 +45,8 @@ export type OpenCodePermissionReply = 'once' | 'always' | 'reject';
 export interface OpenCodeAgentClient {
   listProviders(): Promise<OpenCodeProviderListResult>;
   /** Resolves null when opencode no longer knows the session (confirmed miss). */
-  getSession(sessionId: string): Promise<{ id: string } | null>;
-  createSession(input: { title?: string }): Promise<{ id: string }>;
+  getSession(sessionId: string): Promise<{ id: string; parentID?: string } | null>;
+  createSession(input: { title?: string; permission?: OpenCodePermissionRuleset }): Promise<{ id: string }>;
   /**
    * Fork an existing session into a new one carrying its history.
    * Used when a conversation moves directories: opencode scopes history by
@@ -53,6 +58,11 @@ export interface OpenCodeAgentClient {
   prompt(input: OpenCodePromptInput): Promise<OpenCodePromptResult>;
   abort(sessionId: string): Promise<void>;
   replyToPermission(input: { requestId: string; reply: OpenCodePermissionReply }): Promise<void>;
+  replyToQuestion(input: { requestId: string; answers: string[][] }): Promise<void>;
+  rejectQuestion(input: { requestId: string }): Promise<void>;
+  listChildren?(sessionId: string): Promise<Array<{ id: string }>>;
+  listPermissions?(): Promise<Array<Record<string, unknown>>>;
+  listQuestions?(): Promise<Array<Record<string, unknown>>>;
   /** Server-sent event stream; ends when `signal` aborts. */
   subscribeEvents(signal: AbortSignal): AsyncIterable<unknown>;
 }
@@ -113,7 +123,11 @@ export function createOpenCodeAgentClient(input: {
       try {
         const response = await client.session.get({ sessionID: sessionId });
         const data = asRecord((response as { data?: unknown } | undefined)?.data);
-        return typeof data.id === 'string' ? { id: data.id } : null;
+        if (typeof data.id !== 'string') return null;
+        return {
+          id: data.id,
+          ...(typeof data.parentID === 'string' ? { parentID: data.parentID } : {})
+        };
       } catch (error) {
         if (isOpenCodeNotFound(error)) {
           return null;
@@ -122,8 +136,11 @@ export function createOpenCodeAgentClient(input: {
       }
     },
 
-    async createSession({ title }) {
-      const response = await client.session.create(title ? { title } : {});
+    async createSession({ title, permission }) {
+      const response = await client.session.create({
+        ...(title ? { title } : {}),
+        ...(permission ? { permission } : {})
+      });
       const data = asRecord((response as { data?: unknown } | undefined)?.data);
       if (typeof data.id !== 'string') {
         throw new Error('OpenCode did not return a session id.');
@@ -147,10 +164,12 @@ export function createOpenCodeAgentClient(input: {
       await client.session.delete({ sessionID: sessionId });
     },
 
-    async prompt({ sessionId, model, parts, system }) {
+    async prompt({ sessionId, model, parts, system, variant, agent }) {
       const response = await client.session.prompt({
         sessionID: sessionId,
         model: { providerID: model.providerID, modelID: model.modelID },
+        ...(variant ? { variant } : {}),
+        ...(agent ? { agent } : {}),
         ...(system ? { system } : {}),
         parts: parts.map((part) =>
           part.type === 'text'
@@ -187,11 +206,50 @@ export function createOpenCodeAgentClient(input: {
       await client.session.abort({ sessionID: sessionId });
     },
 
+    async listChildren(sessionId) {
+      try {
+        const response = await client.session.children({ sessionID: sessionId });
+        const data = (response as { data?: unknown } | undefined)?.data;
+        if (Array.isArray(data)) {
+          return data
+            .map((item) => asRecord(item))
+            .filter((item): item is { id: string } => typeof item.id === "string")
+            .map((item) => ({ id: item.id }));
+        }
+        return [];
+      } catch (error) {
+        if (isOpenCodeNotFound(error)) {
+          return [];
+        }
+        throw error;
+      }
+    },
+
     async replyToPermission({ requestId, reply }) {
       await client.permission.reply({ requestID: requestId, reply });
     },
 
-    subscribeEvents(signal) {
+    async replyToQuestion({ requestId, answers }) {
+      await client.question.reply({ requestID: requestId, answers });
+    },
+
+    async rejectQuestion({ requestId }) {
+      await client.question.reject({ requestID: requestId });
+    },
+
+    async listPermissions() {
+      const response = await client.permission.list();
+      const data = (response as { data?: unknown } | undefined)?.data;
+      return Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+    },
+
+    async listQuestions() {
+      const response = await client.question.list();
+      const data = (response as { data?: unknown } | undefined)?.data;
+      return Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+    },
+
+    subscribeEvents(signal: AbortSignal): AsyncIterable<unknown> {
       return {
         async *[Symbol.asyncIterator]() {
           const subscription = await client.event.subscribe({}, { signal });

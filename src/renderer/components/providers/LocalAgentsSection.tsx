@@ -10,6 +10,7 @@ import type {
 import { LOCAL_AGENT_COLORS, type LocalAgentColor } from '../../../shared/localAgents';
 import { useLocalAgentsStore } from '../../stores/useLocalAgentsStore';
 import { notify } from '../../lib/notify';
+import { AntigravitySetupCard } from './AntigravitySetupCard';
 import { ProviderLogo } from '../../lib/providerLogos';
 import { Switch } from '../ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -325,6 +326,7 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
   const summary = summarize(agent, probes[agent.id], probingAgentId === agent.id);
   const name = agent.displayName.trim() || agent.label;
   const isOpenCode = agent.opencode !== undefined;
+  const isAntigravity = agent.id === 'antigravity';
   const canProbe = agent.detection.installed;
   const modelCount = agent.customModels.length;
   const advertised = probes[agent.id]?.modelCount ?? null;
@@ -620,8 +622,7 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
             <div className="flex items-baseline justify-between">
               <label className="block text-xs font-medium text-text-primary">Environment variables</label>
               <span className="text-2xs text-text-faint">Injected into the agent's process.</span>
-            </div>
-            <div className="mt-2 space-y-2">
+            </div>            <div className="mt-2 space-y-2">
               {envRows.map((row, index) => (
                 <div key={index} className="flex items-center gap-2">
                   <input
@@ -671,6 +672,8 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
               </button>
             </div>
           </div>
+
+          {isAntigravity ? <AntigravitySetupCard agent={agent} /> : null}
         </div>
       ) : (
         <div>

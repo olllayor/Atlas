@@ -44,6 +44,26 @@ const api: RendererApi = {
     update: (request) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsUpdate, request),
     probe: (agentId) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsProbe, agentId)
   },
+  antigravity: {
+    install: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityInstall),
+    installStatus: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityInstallStatus),
+    remove: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityRemove),
+    authStart: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthStart),
+    authComplete: (callbackUrl) =>
+      ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthComplete, callbackUrl),
+    authCancel: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthCancel),
+    authStatus: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthStatus),
+    authLogout: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthLogout),
+    setApiKey: (secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsAntigravitySetApiKey, secret),
+    onInstallProgress: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => listener(payload);
+      ipcRenderer.on(IPC_CHANNELS.antigravityInstallProgress, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.antigravityInstallProgress, handler);
+      };
+    }
+  },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
     refresh: () => ipcRenderer.invoke(IPC_CHANNELS.modelsRefresh),

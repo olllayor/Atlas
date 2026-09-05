@@ -161,6 +161,9 @@ export function SpawnAgentCta({
   const failedCount = agents.filter(
     (a) => a.status === 'failed' || a.status === 'cancelled' || a.status === 'interrupted'
   ).length;
+  // Idle batches are parked, not done: a green dot plus "settled" would claim
+  // completion the roster never reported (t3code #9616).
+  const idleCount = batch.idle;
 
   return (
     <div className="my-3 w-full max-w-2xl font-sans">
@@ -171,6 +174,8 @@ export function SpawnAgentCta({
             <span className="h-2 w-2 shrink-0 rounded-full bg-destructive" />
           ) : active > 0 ? (
             <span className="h-2 w-2 shrink-0 rounded-full bg-accent motion-glyph-pulse" />
+          ) : idleCount > 0 ? (
+            <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
           ) : (
             <span className="h-2 w-2 shrink-0 rounded-full bg-success" />
           )}
@@ -185,6 +190,8 @@ export function SpawnAgentCta({
             <span className="font-mono text-destructive font-medium">{failedCount} failed</span>
           ) : active > 0 ? (
             <span className="font-mono text-accent">{active} running</span>
+          ) : idleCount > 0 ? (
+            <span className="font-mono text-text-muted">{idleCount} idle</span>
           ) : (
             <span className="font-mono text-text-muted">{count} settled</span>
           )}
@@ -213,7 +220,9 @@ export function SpawnAgentCta({
           <div className="mb-2 text-xs text-text-muted font-normal">
             {active > 0
               ? `${count} subagent${count === 1 ? '' : 's'} running in background:`
-              : `${count} subagent${count === 1 ? '' : 's'} settled:`}
+              : idleCount > 0
+                ? `${count} subagent${count === 1 ? '' : 's'} idle:`
+                : `${count} subagent${count === 1 ? '' : 's'} settled:`}
           </div>
 
           <div className="overflow-x-auto">

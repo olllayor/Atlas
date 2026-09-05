@@ -30,8 +30,19 @@ import {
 import type { SettingsRepo } from '../../db/repositories/settingsRepo.js';
 import type { LocalAgentSessionsRepo } from '../../db/repositories/localAgentSessionsRepo.js';
 import { AcpClient } from '../acp/acpClient.js';
+import { acpPermissionMode } from '../acp/acpClient.js';
 import type { ProviderRegistry } from '../core/providerRegistry.js';
 import { AcpAgentAdapter, acpSpawnEnv } from '../acp/AcpAgentAdapter.js';
+import {
+  antigravityModelLabel,
+  isAntigravityCurrentModel
+} from '../providers/antigravity/antigravityModels.js';
+import { AntigravityInstallation } from '../providers/antigravity/AntigravityInstallation.js';
+import {
+  ANTIGRAVITY_PERSONAL_AUTH,
+  type AntigravityAuthConfig
+} from '../providers/antigravity/antigravityAuthSupport.js';
+import { planAntigravitySpawn } from '../providers/antigravity/antigravityRuntime.js';
 import { splitLaunchArgs } from '../providers/opencode/openCodeParsers.js';
 import type { OpenCodeController } from '../providers/opencode/openCodeController.js';
 import { detectLocalAgent, type LocalAgentDetectionDeps } from './localAgentDetection.js';
@@ -41,6 +52,17 @@ import { probeClaude } from '../providers/claude/probeClaude.js';
 const IDLE_SHUTDOWN_MS = 30_000;
 /** Long enough to survive a burst of field saves, short enough to notice an install. */
 const DETECTION_TTL_MS = 10_000;
+
+export interface AntigravityControllerPaths {
+  /** Per-instance profiles + managed install live under here. */
+  readonly stateDir: string;
+  /** Executable used for the BROWSER suppression helper (app runtime). */
+  readonly runtimeExecutablePath: string;
+  /** Base dir for the managed install (`<userData>/tools`). */
+  readonly installBaseDir: string;
+  /** Extra session root passed as `additionalDirectories` (attachments). */
+  readonly attachmentsDir?: string;
+}
 
 export interface LocalAgentControllerDeps {
   readonly settingsRepo: Pick<SettingsRepo, 'getLocalAgentSettingsRecord' | 'setLocalAgentSettings'>;
@@ -52,6 +74,10 @@ export interface LocalAgentControllerDeps {
   readonly defaultDirectory?: () => string;
   /** Called after the registry changes so the catalog can be rebuilt. */
   readonly onRegistryChanged?: () => void | Promise<void>;
+  /** Antigravity managed runtime + profile roots. Absent in tests/headless. */
+  readonly antigravity?: AntigravityControllerPaths;
+  /** Read the Antigravity API key from the keychain (never stored in settings). */
+  readonly readAntigravityApiKey?: () => Promise<string>;
   /** Seams for tests: detection and clients that never touch the machine. */
   readonly detectionDeps?: LocalAgentDetectionDeps;
   readonly createAcpClient?: (
@@ -82,6 +108,9 @@ export class LocalAgentController {
   private readonly claudeAdapters = new Map<LocalAgentId, ClaudeAgentAdapter>();
   private readonly lastParseError = new Map<LocalAgentId, string>();
   private readonly detectionCache = new Map<string, { detection: LocalAgentDetection; at: number }>();
+  /** Antigravity spawn plans, refreshed in `syncRegistry` (profile prep is async). */
+  private readonly antigravityPlans = new Map<string, AcpSpawnPlan & { harnessPath?: string }>();
+  private antigravityInstallation: AntigravityInstallation | null = null;
 
   constructor(private readonly deps: LocalAgentControllerDeps) {}
 
@@ -129,7 +158,10 @@ export class LocalAgentController {
         ? await this.deps.opencode.getStatusView()
         : null;
     const settings = openCodeView ? this.mergeOpenCodeSettings(agent, openCodeView) : this.getSettings(agent.id);
-    const command = settings.binaryPath.trim() || agent.binary;
+    const command =
+      agent.id === 'antigravity'
+        ? await this.resolveAntigravityCommand(settings, agent.binary)
+        : settings.binaryPath.trim() || agent.binary;
     const detection = await this.detect(command, agent.versionArgs);
 
     const base: LocalAgentStatusView = {
@@ -151,6 +183,9 @@ export class LocalAgentController {
       launchArgs: settings.launchArgs,
       env: settings.env,
       customModels: settings.customModels,
+      antigravityAuthMethod: settings.antigravityAuthMethod,
+      antigravityGcpProject: settings.antigravityGcpProject,
+      antigravityGcpLocation: settings.antigravityGcpLocation,
       detection
     };
 
@@ -245,7 +280,10 @@ export class LocalAgentController {
       'acpCommand',
       'launchArgs',
       'env',
-      'customModels'
+      'customModels',
+      'antigravityAuthMethod',
+      'antigravityGcpProject',
+      'antigravityGcpLocation'
     ] as const) {
       if (request[key] !== undefined) {
         patch[key] = request[key];
@@ -329,7 +367,18 @@ export class LocalAgentController {
       if (!isClaude) {
         // A spawn-config change retires live children so the next turn starts
         // from the new configuration instead of the one already running.
-        const plan = this.spawnPlan(agent, settings);
+        // Antigravity plans are async (profile prep); fall back to the sync
+        // plan when the managed runtime is unavailable so the error surfaces.
+        let plan: AcpSpawnPlan;
+        if (agent.id === 'antigravity') {
+          try {
+            plan = await this.ensureAntigravityPlan(agent, settings);
+          } catch {
+            plan = this.spawnPlan(agent, settings);
+          }
+        } else {
+          plan = this.spawnPlan(agent, settings);
+        }
         const previous = this.spawnKeys.get(agent.id);
         if (previous !== undefined && previous !== plan.key) {
           await this.shutdownAgent(agent.id);
@@ -349,12 +398,24 @@ export class LocalAgentController {
       return existing;
     }
 
+    const isAntigravity = agent.id === 'antigravity';
     const adapter = new AcpAgentAdapter({
       providerId: agent.id as ProviderId,
       agentLabel: agent.label,
       readSettings: () => this.getSettings(agent.id),
       getClient: (directory) => this.getClient(agent, directory),
       defaultDirectory: () => this.defaultDirectory(),
+      ...(isAntigravity
+        ? {
+            mapPermissionMode: (mode: string | null | undefined) => acpPermissionMode(mode),
+            classifyCatalog: (rows: import('../../../shared/contracts.js').ModelSummary[]) =>
+              rows.map((row) => ({
+                ...row,
+                label: antigravityModelLabel(row.id),
+                archived: !isAntigravityCurrentModel(row.id)
+              }))
+          }
+        : {}),
       sessions: {
         get: (conversationId) => {
           const cursor = this.deps.sessions.get(agent.id, conversationId);
@@ -399,6 +460,76 @@ export class LocalAgentController {
   }
 
   /**
+   * Antigravity spawn, same method as T3: managed install + per-agent
+   * `GEMINI_HOME` profile + BROWSER suppression + harness path. Cached by
+   * config key; callers fall back to the sync plan when this throws (not
+   * installed), so the error names the Settings install action.
+   */
+  private async ensureAntigravityPlan(
+    agent: LocalAgentDefinition,
+    settings: LocalAgentSettings
+  ): Promise<AcpSpawnPlan> {
+    const paths = this.deps.antigravity;
+    if (!paths) {
+      throw new Error('Antigravity paths are not configured in this build.');
+    }
+    const apiKey = (await this.deps.readAntigravityApiKey?.().catch(() => '')) ?? '';
+    const auth: AntigravityAuthConfig = {
+      ...(ANTIGRAVITY_PERSONAL_AUTH as AntigravityAuthConfig),
+      authMethod: settings.antigravityAuthMethod,
+      apiKey,
+      gcpProject: settings.antigravityGcpProject.trim(),
+      gcpLocation: settings.antigravityGcpLocation.trim()
+    };
+    const installation = this.getAntigravityInstallation(paths.installBaseDir);
+    const plan = await planAntigravitySpawn({
+      paths: {
+        stateDir: paths.stateDir,
+        runtimeExecutablePath: paths.runtimeExecutablePath,
+        installBaseDir: paths.installBaseDir,
+        ...(paths.attachmentsDir ? { attachmentsDir: paths.attachmentsDir } : {})
+      },
+      instanceId: agent.id,
+      cwd: this.defaultDirectory(),
+      auth,
+      baseEnv: settings.env,
+      ...(settings.binaryPath.trim() ? { binaryOverride: settings.binaryPath.trim() } : {}),
+      extraArgs: splitLaunchArgs(settings.launchArgs),
+      installation
+    });
+    const cached: AcpSpawnPlan & { harnessPath?: string } = {
+      command: plan.command,
+      args: plan.args,
+      env: plan.env,
+      key: plan.key,
+      harnessPath: plan.harnessPath
+    };
+    this.antigravityPlans.set(agent.id, cached);
+    return cached;
+  }
+
+  private getAntigravityInstallation(baseDir: string): AntigravityInstallation {
+    if (!this.antigravityInstallation) {
+      this.antigravityInstallation = new AntigravityInstallation({ baseDir });
+    }
+    return this.antigravityInstallation;
+  }
+
+  /** Resolve the display command for Antigravity: override, managed, or PATH name. */
+  private async resolveAntigravityCommand(settings: LocalAgentSettings, fallback: string): Promise<string> {
+    const override = settings.binaryPath.trim();
+    if (override) return override;
+    const cached = this.antigravityPlans.get('antigravity');
+    if (cached) return cached.command;
+    const baseDir = this.deps.antigravity?.installBaseDir;
+    if (baseDir) {
+      const active = await this.getAntigravityInstallation(baseDir).readActive().catch(() => null);
+      if (active) return active.executablePath;
+    }
+    return fallback;
+  }
+
+  /**
    * Resolve how this agent's ACP child is started.
    *
    * `'self'` agents speak ACP behind their own subcommand; the rest need a
@@ -437,7 +568,15 @@ export class LocalAgentController {
       };
 
       const settings = this.getSettings(agent.id);
-      const plan = this.spawnPlan(agent, settings);
+      const isAntigravity = agent.id === 'antigravity';
+      const cachedPlan = isAntigravity ? this.antigravityPlans.get(agent.id) : undefined;
+      if (isAntigravity && !cachedPlan) {
+        throw new Error(
+          'Antigravity is not installed. Open Settings → Antigravity and click Install.'
+        );
+      }
+      const plan = cachedPlan ?? this.spawnPlan(agent, settings);
+      const attachmentsDir = isAntigravity ? this.deps.antigravity?.attachmentsDir : undefined;
       const fresh: PooledClient = {
         client:
           this.deps.createAcpClient?.(agent, directory, { onExit }) ??
@@ -447,6 +586,18 @@ export class LocalAgentController {
             spawnArgs: plan.args,
             spawnCwd: true,
             ...(plan.env ? { env: plan.env } : {}),
+            ...(isAntigravity
+              ? {
+                  clientFileSystem: true,
+                  ...(attachmentsDir ? { additionalDirectories: [attachmentsDir] } : {}),
+                  writeTextFile: async (path: string, content: string) => {
+                    const { mkdir, writeFile } = await import('node:fs/promises');
+                    const { dirname } = await import('node:path');
+                    await mkdir(dirname(path), { recursive: true });
+                    await writeFile(path, content, 'utf8');
+                  }
+                }
+              : {}),
             onExit
           }),
         idleTimer: null
@@ -512,7 +663,10 @@ export class LocalAgentController {
     }
 
     const settings = this.getSettings(agentId);
-    const command = settings.binaryPath.trim() || agent.binary;
+    const command =
+      agent.id === 'antigravity'
+        ? await this.resolveAntigravityCommand(settings, agent.binary)
+        : settings.binaryPath.trim() || agent.binary;
     const detection = await this.detect(command, agent.versionArgs);
 
     if (!detection.installed) {
@@ -522,7 +676,10 @@ export class LocalAgentController {
         version: null,
         status: 'error',
         modelCount: 0,
-        message: `${agent.label} (${command}) is not installed or not on PATH.`
+        message:
+          agent.id === 'antigravity'
+            ? 'Antigravity is not installed. Open Settings → Antigravity and click Install.'
+            : `${agent.label} (${command}) is not installed or not on PATH.`
       };
     }
 
@@ -554,6 +711,21 @@ export class LocalAgentController {
         modelCount: 0,
         message: agent.unsupportedReason ?? `Atlas cannot run turns through ${agent.label} yet.`
       };
+    }
+
+    if (agent.id === 'antigravity') {
+      try {
+        await this.ensureAntigravityPlan(agent, settings);
+      } catch (error) {
+        return {
+          agentId,
+          installed: detection.installed,
+          version: detection.version,
+          status: 'error',
+          modelCount: 0,
+          message: error instanceof Error ? error.message : String(error ?? '')
+        };
+      }
     }
 
     const client = this.getClient(agent, this.defaultDirectory());

@@ -42,6 +42,8 @@ export interface AcpDriverClient {
   resumeSession(sessionId: string): Promise<AcpSessionInfo>;
   forkSession(sessionId: string, directory: string): Promise<AcpSessionInfo>;
   setModel(sessionId: string, value: string): Promise<AcpSessionInfo>;
+  /** Optional: agents with a `mode` config (Antigravity default/auto_edit/yolo). */
+  setMode?(sessionId: string, mode: string): Promise<void>;
   prompt(
     sessionId: string,
     blocks: readonly AcpPromptBlock[],
@@ -75,6 +77,13 @@ export interface AcpAgentAdapterDeps {
   readonly providerId: ProviderId;
   /** Name used in user-facing errors. */
   readonly agentLabel: string;
+  /**
+   * Map the turn's tool-permission mode onto the agent's session mode.
+   * Antigravity supplies `default` | `auto_edit` | `yolo`; others ignore.
+   */
+  readonly mapPermissionMode?: (toolPermissionMode: string | null | undefined) => string | null;
+  /** Re-label / fold catalog rows (Antigravity legacy models → archived). */
+  readonly classifyCatalog?: (rows: ModelSummary[]) => ModelSummary[];
 }
 
 function abortError(label = 'OpenCode'): Error {
@@ -201,7 +210,8 @@ export class AcpAgentAdapter implements ProviderAdapter {
     await client.start();
     const session = await client.createSession();
     try {
-      return toCatalogRows(session, settings.customModels, this.providerId);
+      const rows = toCatalogRows(session, settings.customModels, this.providerId);
+      return this.deps.classifyCatalog ? this.deps.classifyCatalog(rows) : rows;
     } finally {
       await client.closeSession(session.sessionId).catch(() => undefined);
     }
@@ -303,6 +313,20 @@ export class AcpAgentAdapter implements ProviderAdapter {
       // at whatever the last turn chose, so every turn reasserts. An unknown
       // model fails loudly here rather than running on the server default.
       await client.setModel(sessionId, request.modelId);
+
+      // Antigravity permission modes: map Atlas' tool-permission mode onto
+      // the agent's `default` | `auto_edit` | `yolo` config. Other agents
+      // have no `mode` config and ignore the call.
+      const toolPermissionMode =
+        request.toolPermissionMode ?? request.agentContext?.toolPermissionMode ?? null;
+      const mappedMode = this.deps.mapPermissionMode
+        ? this.deps.mapPermissionMode(
+            typeof toolPermissionMode === 'string' ? toolPermissionMode : null
+          )
+        : null;
+      if (mappedMode && typeof client.setMode === 'function') {
+        await client.setMode(sessionId, mappedMode);
+      }
 
       onAbort = () => {
         try {

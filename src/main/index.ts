@@ -38,6 +38,8 @@ import { initializeOpenCode } from './ai/providers/opencode/openCodeController';
 import { initializeLocalAgents } from './ai/agents/localAgentController';
 import { LOCAL_AGENTS } from '../shared/localAgents';
 import { registerLocalAgentsIpc } from './ipc/localAgents';
+import { registerAntigravityIpc } from './ipc/antigravity';
+import { ANTIGRAVITY_API_KEY_ACCOUNT } from './secrets/keychain';
 import { registerWorkspaceIpc } from './ipc/workspace';
 import { registerBrowserIpc } from './ipc/browser';
 import { PortDiscovery } from './browser/PortDiscovery';
@@ -256,7 +258,8 @@ app.whenReady().then(async () => {
     app.dock.setIcon(icon);
   }
 
-  const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
+  const attachmentsDir = await resolveAttachmentDirectory();
+  const attachmentStore = new AttachmentStore(attachmentsDir);
   registerAttachmentProtocolHandler(attachmentStore);
   // Every provider is user-configured; the registry starts empty and is filled
   // from the database by CustomProviderService below. Declared before the
@@ -389,15 +392,26 @@ app.whenReady().then(async () => {
   });
   perfMark('opencode:controller-constructed');
 
-  // Every other local agent (Claude Code, Codex, Cursor, …). Same gating rule
+  // Every other local agent (Claude Code, Antigravity, Codex, Cursor, …). Same gating rule
   // as opencode: disabled means nothing spawns, and the initial registry sync
   // runs in the background so a cold start never pays for it.
+  const antigravityPaths = {
+    stateDir: app.getPath('userData'),
+    runtimeExecutablePath: process.execPath,
+    installBaseDir: join(app.getPath('userData'), 'tools'),
+    attachmentsDir
+  };
   const { controller: localAgentController } = initializeLocalAgents({
     settingsRepo: database.settings,
     sessions: database.localAgentSessions,
     registry: providers,
     opencode: opencodeController,
     defaultDirectory: () => app.getPath('home'),
+    antigravity: antigravityPaths,
+    readAntigravityApiKey: async () =>
+      (await keychain
+        .getSecretByAccount(ANTIGRAVITY_API_KEY_ACCOUNT)
+        .catch(() => null)) ?? '',
     onRegistryChanged: async () => {
       await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
       broadcastModelsChanged();
@@ -774,6 +788,11 @@ app.whenReady().then(async () => {
   perfMark('chatengine+goal:constructed');
 
   registerLocalAgentsIpc({ localAgents: localAgentController });
+  registerAntigravityIpc({
+    localAgents: localAgentController,
+    keychain,
+    paths: antigravityPaths
+  });
 
   registerSettingsIpc({
     settingsRepo: database.settings,

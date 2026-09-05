@@ -2493,6 +2493,32 @@ export type RendererApi = {
     update: (request: LocalAgentUpdateRequest) => Promise<LocalAgentStatusView[]>;
     probe: (agentId: LocalAgentId) => Promise<LocalAgentProbeResult>;
   };
+  /**
+   * Google Antigravity via the official ACP agent: managed install plus the
+   * per-instance OAuth flow. Mirrors t3code PR #9348's `provider.auth.*` and
+   * `provider.install.*` RPCs.
+   */
+  antigravity: {
+    install: () => Promise<{ version: string; executablePath: string; harnessPath: string }>;
+    installStatus: () => Promise<{
+      installed: boolean;
+      installing: boolean;
+      runtime: { version: string; executablePath: string; harnessPath: string } | null;
+    }>;
+    remove: () => Promise<{ removed: boolean }>;
+    authStart: () => Promise<{ state: string; authorizationUrl?: string; expiresAt?: string; flowId?: string; message?: string }>;
+    authComplete: (callbackUrl: string) => Promise<{ state: string; message?: string }>;
+    authCancel: () => Promise<{ state: string }>;
+    authStatus: () => Promise<{ state: string; authorizationUrl?: string; expiresAt?: string; flowId?: string; message?: string }>;
+    authLogout: () => Promise<{ state: string }>;
+    /** Stored in the OS keychain; null clears it. */
+    setApiKey: (secret: string | null) => Promise<{ saved?: boolean; cleared?: boolean }>;
+    onInstallProgress: (listener: (progress: {
+      phase: string;
+      downloadedBytes: number;
+      totalBytes: number | null;
+    }) => void) => () => void;
+  };
   providers: {
     list: () => Promise<CustomProvider[]>;
     create: (request: CreateCustomProviderRequest) => Promise<CustomProvider>;

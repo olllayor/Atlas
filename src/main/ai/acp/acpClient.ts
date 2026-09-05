@@ -135,6 +135,36 @@ export type AcpPromptBlock =
   | { readonly type: 'file'; readonly mime: string; readonly path: string }
   | { readonly type: 'file-bytes'; readonly mime: string; readonly base64: string; readonly name?: string };
 
+/** Antigravity stdout prefix carrying the OAuth URL (not JSON-RPC). */
+export const ACP_AUTH_STDOUT_PREFIX =
+  'Open the following link to authenticate the ACP server: ';
+
+/** Audio mimes the ACP `audio` block accepts (T3 Antigravity surface). */
+export const ACP_AUDIO_MIME_TYPES: ReadonlySet<string> = new Set([
+  'audio/aac',
+  'audio/flac',
+  'audio/mp3',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/m4a',
+  'audio/x-m4a',
+  'audio/ogg',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/webm'
+]);
+
+const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_TEXT_BYTES = 1024 * 1024;
+
+/** Map Atlas tool-permission modes onto the agent's `mode` config. */
+export function acpPermissionMode(toolPermissionMode: string | null | undefined): string {
+  if (toolPermissionMode === 'full-access') return 'yolo';
+  if (toolPermissionMode === 'auto-accept-edits') return 'auto_edit';
+  return 'default';
+}
+
 export interface AcpSkippedFile {
   readonly path: string;
   readonly reason: string;
@@ -174,6 +204,25 @@ export interface AcpClientOptions {
   readonly childFactory?: ChildFactory;
   readonly readTextFile?: (path: string) => Promise<string>;
   readonly readFileBytes?: (path: string) => Promise<Buffer>;
+  /**
+   * Write handler for `fs/write_text_file`. Absent means writes are denied.
+   * Antigravity chat sessions provide one so agent edits route through Atlas
+   * (each write arrives as a file-change approval); setup/probe leave it off.
+   */
+  readonly writeTextFile?: (path: string, content: string) => Promise<void>;
+  /**
+   * When true the client advertises both `fs.readTextFile` and
+   * `fs.writeTextFile` (Antigravity chat). Default advertises reads only.
+   */
+  readonly clientFileSystem?: boolean;
+  /** Extra workspace roots sent as `additionalDirectories` on session open. */
+  readonly additionalDirectories?: readonly string[];
+  /**
+   * Antigravity prints its OAuth URL as one plain stdout line with an exact
+   * prefix (not JSON-RPC). When set, matching lines are swallowed and
+   * reported here instead of failing JSON parsing.
+   */
+  readonly onAuthorizationUrl?: (url: string) => void;
   readonly logger?: (direction: 'in' | 'out', payload: unknown) => void;
   /**
    * Sink for tool permission asks. When set, asks wait for `resolvePermission`;
@@ -356,10 +405,19 @@ export class AcpClient {
   private readonly childFactory: ChildFactory;
   private readonly readTextFile: (path: string) => Promise<string>;
   private readonly readFileBytes: (path: string) => Promise<Buffer>;
+  private readonly writeTextFile?: (path: string, content: string) => Promise<void>;
+  private readonly clientFileSystem: boolean;
+  private readonly additionalDirectories: readonly string[];
+  private readonly onAuthorizationUrl?: (url: string) => void;
   private permissionHandler: ((ask: AcpPermissionAsk) => void) | null = null;
   private readonly permissionPending = new Map<
     string,
     { id: number; options: AcpPermissionOption[]; sessionId: string }
+  >();
+  /** Writes awaiting approval: approvalId → agent request + payload. */
+  private readonly pendingWrites = new Map<
+    string,
+    { id: number; path: string; content: string; sessionId: string }
   >();
   private readonly logger?: (direction: 'in' | 'out', payload: unknown) => void;
   private readonly onExit?: () => void;
@@ -380,6 +438,10 @@ export class AcpClient {
       options.childFactory ?? ((command, args, opts) => defaultSpawn(command, [...args], opts));
     this.readTextFile = options.readTextFile ?? ((path) => readFile(path, 'utf8'));
     this.readFileBytes = options.readFileBytes ?? ((path) => readFile(path));
+    this.writeTextFile = options.writeTextFile;
+    this.clientFileSystem = options.clientFileSystem ?? false;
+    this.additionalDirectories = options.additionalDirectories ?? [];
+    this.onAuthorizationUrl = options.onAuthorizationUrl;
     this.permissionHandler = options.onPermissionRequest ?? null;
     this.logger = options.logger;
     this.onExit = options.onExit;
@@ -517,12 +579,11 @@ export class AcpClient {
       const result = (await Promise.race([
         this.request('initialize', {
           protocolVersion: ACP_PROTOCOL_VERSION,
-          // Honest advertisement: reads are served, writes and terminals are
-          // denied until implemented. The agent executes its own tools
-          // natively (permission-gated); these flags only cover client-side
-          // execution, which must not be promised and then refused mid-turn.
+          // Honest advertisement: reads are served; writes only when the
+          // owner provided a write handler (Antigravity chat turns edits
+          // into file-change approvals). Terminals stay denied.
           clientCapabilities: {
-            fs: { readTextFile: true, writeTextFile: false },
+            fs: { readTextFile: true, writeTextFile: this.clientFileSystem },
             terminal: false
           },
           clientInfo: { name: CLIENT_NAME, version: '0.0.0' }
@@ -546,7 +607,10 @@ export class AcpClient {
   async createSession(): Promise<AcpSessionInfo> {
     const result = (await this.request('session/new', {
       cwd: this.cwd,
-      mcpServers: []
+      mcpServers: [],
+      ...(this.additionalDirectories.length > 0
+        ? { additionalDirectories: [...this.additionalDirectories] }
+        : {})
     })) as Record<string, unknown>;
     return this.parseSessionInfo('session/new', result);
   }
@@ -558,7 +622,10 @@ export class AcpClient {
   async resumeSession(sessionId: string): Promise<AcpSessionInfo> {
     const result = (await this.request('session/resume', {
       sessionId,
-      cwd: this.cwd
+      cwd: this.cwd,
+      ...(this.additionalDirectories.length > 0
+        ? { additionalDirectories: [...this.additionalDirectories] }
+        : {})
     })) as Record<string, unknown>;
     return this.parseSessionInfo('session/resume', result, sessionId);
   }
@@ -587,6 +654,28 @@ export class AcpClient {
       value
     })) as Record<string, unknown>;
     return this.parseSessionInfo('session/set_config_option', result, sessionId);
+  }
+
+  /**
+   * Select the session permission mode (`default` | `auto_edit` | `yolo`).
+   * No-op when the agent has no `mode` config (other agents ignore it).
+   */
+  async setMode(sessionId: string, mode: string): Promise<void> {
+    try {
+      await this.request('session/set_config_option', {
+        sessionId,
+        configId: 'mode',
+        value: mode
+      });
+    } catch (error) {
+      // Agents without a mode config answer method/code errors; the turn
+      // runs on the agent default instead of failing for an optimization.
+      const text = error instanceof Error ? error.message : String(error ?? '');
+      if (/method not found|unknown|invalid|no such|mode/i.test(text)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   private parseSessionInfo(
@@ -692,6 +781,13 @@ export class AcpClient {
           this.permissionPending.delete(approvalId);
         }
       }
+      for (const [approvalId, write] of [...this.pendingWrites]) {
+        if (write.sessionId === sessionId) {
+          this.pendingWrites.delete(approvalId);
+          this.permissionPending.delete(approvalId);
+          this.notifyError(write.id, -32000, 'The write was denied (turn ended).');
+        }
+      }
       this.promptAccum.delete(sessionId);
       this.activePrompts.delete(sessionId);
     }
@@ -699,6 +795,30 @@ export class AcpClient {
 
   /** Answer a pending permission ask. One-shot: unknown or settled ids no-op. */
   resolvePermission(approvalId: string, decision: AcpPermissionDecision): void {
+    const write = this.pendingWrites.get(approvalId);
+    if (write) {
+      this.pendingWrites.delete(approvalId);
+      this.permissionPending.delete(approvalId);
+      if (decision === 'deny') {
+        this.notifyError(write.id, -32000, 'The write was denied.');
+        return;
+      }
+      const writer = this.writeTextFile;
+      if (!writer) {
+        this.notifyError(write.id, -32000, 'fs/write_text_file is not enabled for this session.');
+        return;
+      }
+      writer(write.path, write.content).then(
+        () => this.notifyResult(write.id, {}),
+        (error) =>
+          this.notifyError(
+            write.id,
+            -32000,
+            error instanceof Error ? error.message.slice(0, 200) : 'Write failed.'
+          )
+      );
+      return;
+    }
     const pending = this.permissionPending.get(approvalId);
     if (!pending) {
       return;
@@ -732,8 +852,9 @@ export class AcpClient {
   }
 
   /**
-   * Resolve prompt blocks to wire blocks. Images ride as base64, text files
-   * as embedded resources (both shapes verified live). Anything else —
+   * Resolve prompt blocks to wire blocks. Images ride as base64, audio as
+   * native audio blocks, PDFs as resource links, text files as embedded
+   * resources (shapes verified against the Antigravity agent). Anything else —
    * outside root, oversized, unreadable, unmapped mime — comes back skipped
    * so the caller can fall back to a path line, never failing the turn.
    */
@@ -750,6 +871,7 @@ export class AcpClient {
       }
       if (block.type === 'file-bytes') {
         const label = block.name ?? 'attachment';
+        const mime = block.mime.toLowerCase().split(';')[0]?.trim() ?? block.mime;
         let bytes: Buffer;
         try {
           bytes = Buffer.from(block.base64, 'base64');
@@ -757,13 +879,25 @@ export class AcpClient {
           skipped.push({ path: label, reason: 'undecodable content' });
           continue;
         }
-        if (bytes.length > MAX_FILE_BYTES) {
-          skipped.push({ path: label, reason: 'over the file size ceiling' });
-          continue;
-        }
-        if (block.mime.startsWith('image/')) {
+        if (mime.startsWith('image/')) {
+          if (bytes.length > MAX_IMAGE_BYTES) {
+            skipped.push({ path: label, reason: 'over the image size ceiling (10 MiB)' });
+            continue;
+          }
           wire.push({ type: 'image', mimeType: block.mime, data: block.base64 });
-        } else if (block.mime.startsWith('text/') || block.mime === 'application/json') {
+        } else if (ACP_AUDIO_MIME_TYPES.has(mime)) {
+          if (bytes.length > MAX_AUDIO_BYTES) {
+            skipped.push({ path: label, reason: 'over the audio size ceiling (20 MiB)' });
+            continue;
+          }
+          wire.push({ type: 'audio', mimeType: block.mime, data: block.base64 });
+        } else if (mime === 'application/pdf') {
+          skipped.push({ path: label, reason: 'inline PDF bytes need a file path for resource_link' });
+        } else if (mime.startsWith('text/') || mime === 'application/json') {
+          if (bytes.length > MAX_TEXT_BYTES) {
+            skipped.push({ path: label, reason: 'over the text size ceiling (1 MiB)' });
+            continue;
+          }
           wire.push({ type: 'text', text: `--- ${label} ---\n${bytes.toString('utf8')}` });
         } else {
           skipped.push({ path: label, reason: `mime ${block.mime} has no ACP mapping yet` });
@@ -776,18 +910,45 @@ export class AcpClient {
       }
       try {
         const bytes = await this.readFileBytes(block.path);
-        if (bytes.length > MAX_FILE_BYTES) {
-          skipped.push({ path: block.path, reason: 'over the file size ceiling' });
-          continue;
-        }
-        if (block.mime.startsWith('image/')) {
+        const mime = block.mime.toLowerCase().split(';')[0]?.trim() ?? block.mime;
+        if (mime.startsWith('image/')) {
+          if (bytes.length > MAX_IMAGE_BYTES) {
+            skipped.push({ path: block.path, reason: 'over the image size ceiling (10 MiB)' });
+            continue;
+          }
           wire.push({
             type: 'image',
             mimeType: block.mime,
             data: bytes.toString('base64'),
             uri: `file://${block.path}`
           });
-        } else if (block.mime.startsWith('text/') || block.mime === 'application/json') {
+        } else if (ACP_AUDIO_MIME_TYPES.has(mime)) {
+          if (bytes.length > MAX_AUDIO_BYTES) {
+            skipped.push({ path: block.path, reason: 'over the audio size ceiling (20 MiB)' });
+            continue;
+          }
+          wire.push({
+            type: 'audio',
+            mimeType: block.mime,
+            data: bytes.toString('base64'),
+            uri: `file://${block.path}`
+          });
+        } else if (mime === 'application/pdf') {
+          if (bytes.length > MAX_FILE_BYTES) {
+            skipped.push({ path: block.path, reason: 'over the file size ceiling' });
+            continue;
+          }
+          wire.push({
+            type: 'resource_link',
+            uri: `file://${block.path}`,
+            name: block.path.split('/').pop() ?? block.path,
+            mimeType: block.mime
+          });
+        } else if (mime.startsWith('text/') || mime === 'application/json') {
+          if (bytes.length > MAX_FILE_BYTES) {
+            skipped.push({ path: block.path, reason: 'over the file size ceiling' });
+            continue;
+          }
           wire.push({
             type: 'resource',
             resource: {
@@ -930,6 +1091,19 @@ export class AcpClient {
       if (!line) {
         continue;
       }
+      // Antigravity prints its OAuth URL as one plain stdout line with an
+      // exact prefix — not JSON-RPC. Catch only that prefix, like T3.
+      if (line.startsWith(ACP_AUTH_STDOUT_PREFIX)) {
+        const url = line.slice(ACP_AUTH_STDOUT_PREFIX.length).trim();
+        if (url && this.onAuthorizationUrl) {
+          try {
+            this.onAuthorizationUrl(url);
+          } catch {
+            // A bad sink must not break the transport.
+          }
+          continue;
+        }
+      }
       let message: unknown;
       try {
         message = JSON.parse(line);
@@ -1068,7 +1242,62 @@ export class AcpClient {
           }
           return;
         }
-        case 'fs/write_text_file':
+        case 'fs/write_text_file': {
+          const record = asRecord(params);
+          const path = asString(record.path);
+          const content = asString(record.content);
+          if (!path || content === undefined) {
+            this.notifyError(id, -32602, 'Missing path or content.');
+            return;
+          }
+          if (!this.isInsideRoot(path)) {
+            this.notifyError(id, -32000, 'Writes outside the workspace are denied.');
+            return;
+          }
+          if (!this.writeTextFile) {
+            this.notifyError(id, -32000, 'fs/write_text_file is not enabled for this session.');
+            return;
+          }
+          // Route through the permission flow so each write becomes a
+          // file-change approval, like T3. Without a handler, deny.
+          if (!this.permissionHandler) {
+            this.notifyError(id, -32000, 'Write approval has no handler; the write was denied.');
+            return;
+          }
+          const approvalId = `write-${id}`;
+          this.permissionPending.set(approvalId, {
+            id,
+            options: [
+              { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
+              { optionId: 'deny', kind: 'reject_once', name: 'Deny' }
+            ],
+            sessionId: asString(record.sessionId) ?? ''
+          });
+          try {
+            this.permissionHandler({
+              approvalId,
+              toolCallId: approvalId,
+              title: `Write ${path}`,
+              options: [
+                { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
+                { optionId: 'deny', kind: 'reject_once', name: 'Deny' }
+              ]
+            });
+          } catch {
+            this.permissionPending.delete(approvalId);
+            this.notifyError(id, -32000, 'Write approval failed; the write was denied.');
+            return;
+          }
+          // The adapter answers via resolvePermission; stash the write so it
+          // can complete. We hook completion by wrapping notifyResult below.
+          this.pendingWrites.set(approvalId, {
+            id,
+            path,
+            content,
+            sessionId: asString(record.sessionId) ?? ''
+          });
+          return;
+        }
         case 'terminal/create':
         case 'terminal/output':
         case 'terminal/wait_for_exit':

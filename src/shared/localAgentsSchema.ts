@@ -37,7 +37,18 @@ export const LocalAgentSettingsSchema = z.object({
   customModels: z
     .array(z.string().trim().min(1).max(256))
     .max(64)
-    .default([])
+    .default([]),
+  /**
+   * Antigravity sign-in method. Ignored by every other agent. Default is the
+   * personal Google account, the same default T3 Code uses.
+   */
+  antigravityAuthMethod: z
+    .enum(['oauth-personal', 'oauth-business', 'gemini-api-key', 'agent-platform'])
+    .default('oauth-personal'),
+  /** GCP project for Gemini Enterprise / Agent Platform. Empty means unset. */
+  antigravityGcpProject: z.string().trim().max(256).default(''),
+  /** GCP location for Gemini Enterprise / Agent Platform. Empty means unset. */
+  antigravityGcpLocation: z.string().trim().max(128).default('')
 });
 
 /**

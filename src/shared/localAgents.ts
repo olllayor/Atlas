@@ -136,12 +136,14 @@ export const LOCAL_AGENTS: readonly LocalAgentDefinition[] = [
     id: 'antigravity',
     label: 'Antigravity',
     logoId: 'antigravity',
-    binary: 'antigravity',
+    binary: 'agy_acp_server.par',
     versionArgs: ['--version'],
-    transport: 'none',
-    authHint: 'Sign in through the Antigravity desktop app',
-    unsupportedReason:
-      'Antigravity ships no documented ACP endpoint, so Atlas can detect and configure it but cannot run turns through it yet.',
+    transport: 'acp',
+    acp: {
+      command: 'self',
+      args: []
+    },
+    authHint: 'Sign in with Google in Settings → Antigravity',
     settingsSource: 'localAgents'
   }
 ];
@@ -203,6 +205,10 @@ export interface LocalAgentStatusView {
   readonly launchArgs: string;
   readonly env: Record<string, string>;
   readonly customModels: readonly string[];
+  /** Antigravity sign-in method (other agents ignore it). */
+  readonly antigravityAuthMethod: 'oauth-personal' | 'oauth-business' | 'gemini-api-key' | 'agent-platform';
+  readonly antigravityGcpProject: string;
+  readonly antigravityGcpLocation: string;
   readonly detection: LocalAgentDetection;
   /** Present only for `opencode`, whose integration predates this list. */
   readonly opencode?: {
@@ -224,6 +230,10 @@ export interface LocalAgentUpdateRequest {
   readonly launchArgs?: string;
   readonly env?: Record<string, string>;
   readonly customModels?: string[];
+  /** Antigravity-only; ignored for every other agent. */
+  readonly antigravityAuthMethod?: 'oauth-personal' | 'oauth-business' | 'gemini-api-key' | 'agent-platform';
+  readonly antigravityGcpProject?: string;
+  readonly antigravityGcpLocation?: string;
   /** opencode-only; ignored for every other agent. */
   readonly serverUrl?: string;
 }

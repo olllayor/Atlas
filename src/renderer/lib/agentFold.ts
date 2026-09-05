@@ -359,11 +359,16 @@ export function selectBatchAgents(
 /** Batch counters the Spawn CTA reads. `elapsedMs` is the longest live run. */
 export function summarizeBatch(agents: readonly RuntimeAgent[], nowMs: number) {
   let active = 0;
+  let idle = 0;
   let totalTokens = 0;
   let elapsedMs = 0;
 
   for (const agent of agents) {
     if (isActiveAgentStatus(agent.status)) active += 1;
+    // Idle is neither live nor done: counted separately so the UI can name it
+    // instead of folding it into `settled` and printing a completion mark
+    // (t3code #9616). `settled` keeps its non-live meaning for existing readers.
+    else if (agent.status === 'idle') idle += 1;
     totalTokens += agent.usage?.totalTokens ?? 0;
     const started = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
     if (!Number.isNaN(started)) {
@@ -376,6 +381,7 @@ export function summarizeBatch(agents: readonly RuntimeAgent[], nowMs: number) {
   return {
     total: agents.length,
     active,
+    idle,
     settled: agents.length - active,
     totalTokens,
     elapsedMs,

@@ -49,7 +49,7 @@ import {
   reconcileConversationCache
 } from './conversationCache';
 import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
-import { notify, notifyError } from '../lib/notify';
+import { notify, notifyError, repeatingToastId } from '../lib/notify';
 import { hasPendingApprovalInParts } from '../lib/attention';
 import { formatSnoozeClockLabel } from '../lib/snooze';
 import {
@@ -2249,7 +2249,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           DEFAULT_TOOL_PERMISSION_MODE
       });
     } catch (error) {
-      notifyError('Could not send the message', error);
+      // Ring identity, not a fresh toast per attempt: hammering send while a
+      // provider is down used to stack unbounded toast state (t3code #9592).
+      notifyError('Could not send the message', error, { id: repeatingToastId('send-message') });
       throw error;
     }
 

@@ -269,7 +269,43 @@ test('an all-idle batch reports no live work', () => {
 
   const batch = summarizeBatch(foldAgents(rows).agents, Date.now());
   assert.equal(batch.active, 0);
+  assert.equal(batch.idle, 1);
   assert.equal(batch.settled, 1);
+});
+
+test('summarizeBatch counts idle separately from settled work', () => {
+  const now = Date.parse('2026-08-08T01:00:30.000Z');
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      activityType: 'task.started',
+      occurredAt: '2026-08-08T01:00:00.000Z',
+      updatedAt: '2026-08-08T01:00:00.000Z',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:0', status: 'running' },
+    }),
+    makeEntry({
+      activityType: 'task.updated',
+      occurredAt: '2026-08-08T01:00:10.000Z',
+      updatedAt: '2026-08-08T01:00:10.000Z',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:1', status: 'idle' },
+    }),
+    makeEntry({
+      activityType: 'task.completed',
+      occurredAt: '2026-08-08T01:00:20.000Z',
+      updatedAt: '2026-08-08T01:00:20.000Z',
+      parentToolCallId: 'call-a',
+      payload: { agentKind: 'agent', agentId: 'call-a:2', status: 'completed' },
+    }),
+  ];
+
+  const batch = summarizeBatch(foldAgents(rows).agents, now);
+  assert.equal(batch.total, 3);
+  assert.equal(batch.active, 1);
+  assert.equal(batch.idle, 1);
+  // `settled` keeps its non-live meaning; the idle row is named via `idle`
+  // so the UI never prints a completion mark for it.
+  assert.equal(batch.settled, 2);
 });
 
 test('formatTokens rolls 1000k over to megabytes', () => {

@@ -130,11 +130,7 @@ export function AgentsPanel({
 
       {/* Sticky Bottom Bar matching Image 2 */}
       <div className="shrink-0 border-t border-border-default/80 bg-bg-surface/70 backdrop-blur px-4 py-2.5 text-xs text-text-muted flex items-center justify-between font-mono select-none">
-        <span>
-          {model.activeAgents.length > 0
-            ? `${model.activeAgents.length} running · ${model.settledAgents.length} settled`
-            : `${model.settledAgents.length} settled`}
-        </span>
+        <span>{joinAgentCounts(model)}</span>
         {model.totalTokens > 0 && (
           <span className="tabular-nums text-text-muted">
             Σ {formatTokens(model.totalTokens)} tok
@@ -200,7 +196,9 @@ function AgentCard({
           </p>
         ) : (
           <p className="mt-1 truncate text-xs font-normal leading-relaxed text-text-secondary">
-            {agent.result || agent.progress || (isTerminal ? 'Settled' : 'Running...')}
+            {agent.result ||
+              agent.progress ||
+              (isTerminal ? 'Settled' : agent.status === 'idle' ? 'Idle' : 'Running...')}
           </p>
         )}
 
@@ -276,8 +274,21 @@ function AgentCard({
   );
 }
 
-function agentElapsedMs(agent: RuntimeAgent, nowMs: number): number {
-  if (!agent.startedAt) return 0;
+/**
+ * Bottom-bar counts. Idle agents are parked, not done: naming them keeps the
+ * bar from claiming completion the roster never reported (t3code #9616).
+ */
+function joinAgentCounts(model: { activeAgents: readonly unknown[]; settledAgents: RuntimeAgent[] }) {
+  const idle = model.settledAgents.filter((agent) => agent.status === 'idle').length;
+  const settled = model.settledAgents.length - idle;
+  const parts: string[] = [];
+  if (model.activeAgents.length > 0) parts.push(`${model.activeAgents.length} running`);
+  if (idle > 0) parts.push(`${idle} idle`);
+  if (settled > 0 || parts.length === 0) parts.push(`${settled} settled`);
+  return parts.join(' · ');
+}
+
+function agentElapsedMs(agent: RuntimeAgent, nowMs: number): number {  if (!agent.startedAt) return 0;
   const started = Date.parse(agent.startedAt);
   if (Number.isNaN(started)) return 0;
   const end = agent.completedAt ? Date.parse(agent.completedAt) : nowMs;

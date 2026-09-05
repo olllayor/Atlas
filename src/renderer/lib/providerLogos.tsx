@@ -34,7 +34,8 @@ const LOGOS: Record<string, string> = {
 
 const LOGO_ALIASES: Record<string, string> = {
   together: 'togetherai',
-  codex: 'openai'
+  codex: 'openai',
+  antigravity: 'google'
 };
 
 function resolveLogo(providerId: string): string | null {

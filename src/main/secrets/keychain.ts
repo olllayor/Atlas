@@ -27,6 +27,8 @@ function accountNameFor(providerId: ProviderId) {
  * integration's server password (deep-integration plan D3 — never in settings JSON).
  */
 export const OPENCODE_SERVER_PASSWORD_ACCOUNT = 'opencode-server-password';
+/** Antigravity Gemini/API key for non-browser auth methods (never in settings JSON). */
+export const ANTIGRAVITY_API_KEY_ACCOUNT = 'antigravity-api-key';
 
 /**
  * Account-addressed variants of the API above. Accounts are validated with

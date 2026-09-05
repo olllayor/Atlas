@@ -72,6 +72,44 @@ export function rehypeMarkStandaloneImages() {
   };
 }
 
+export function resolveImageStatus(input: {
+  src: string | null;
+  loadedSrc: string | null;
+  failedSrc: string | null;
+  standalone: boolean;
+  sourceFailed?: boolean;
+}): { effectiveSrc: string | null; failed: boolean; settled: boolean } {
+  const effectiveSrc = input.src ?? input.loadedSrc;
+  const failed =
+    input.sourceFailed === true || (effectiveSrc !== null && input.failedSrc === effectiveSrc);
+  // Standalone images settle only once their own URL decoded. Any decoded
+  // bitmap is not enough: a new URL for a different file must load behind
+  // the slot, otherwise it renders bare at zero height and shifts the page.
+  // A null src falls back to the last decoded image so re-resolution (or a
+  // re-signed URL swap upstream) keeps pixels on screen.
+  const settled =
+    effectiveSrc !== null && !failed && (!input.standalone || input.loadedSrc === effectiveSrc);
+  return { effectiveSrc, failed, settled };
+}
+
+/**
+ * The URL a decoded image should be recorded under.
+ *
+ * This is the URL we *asked for*, never `image.currentSrc`: the browser
+ * resolves relative sources, so `currentSrc` can never equal a relative `src`,
+ * and `settled` requires the two to match. An image already complete at mount
+ * does not fire `onLoad` either, so recording `currentSrc` would leave it
+ * behind the 16:9 slot permanently — worse than the layout shift this whole
+ * component exists to prevent.
+ */
+export function decodedSrcFromImage(
+  image: HTMLImageElement | null,
+  requested: string | null
+): string | null {
+  if (requested === null) return null;
+  return image?.complete === true && image.naturalWidth > 0 ? requested : null;
+}
+
 export function authoredImageSizeStyle(
   width: string | number | undefined,
   height: string | number | undefined
@@ -88,6 +126,12 @@ export function authoredImageSizeStyle(
 export interface ChatMarkdownImageProps
   extends Omit<ComponentProps<'img'>, 'src' | 'alt' | 'style'> {
   src?: string;
+  /**
+   * The source can never resolve (a missing file, an unresolvable asset URL).
+   * Renders the failure state in the slot instead of reporting "loading"
+   * forever. Defaults to true when there is no `src` at all.
+   */
+  sourceFailed?: boolean;
   alt?: string;
   style?: CSSProperties;
   width?: string | number;
@@ -107,6 +151,7 @@ export interface ChatMarkdownImageProps
  */
 export function ChatMarkdownImage({
   src,
+  sourceFailed,
   alt = '',
   className,
   style,
@@ -124,15 +169,23 @@ export function ChatMarkdownImage({
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
-  const effectiveSrc = src ?? loadedSrc;
-  const failed = effectiveSrc !== null && failedSrc === effectiveSrc;
-  const settled = effectiveSrc !== null && !failed && (!standalone || loadedSrc !== null);
+  const { effectiveSrc, failed, settled } = resolveImageStatus({
+    src: src ?? null,
+    loadedSrc,
+    failedSrc,
+    standalone,
+    // An image with no source at all can never decode, so it is a failure
+    // rather than an open-ended "loading" slot.
+    sourceFailed: sourceFailed ?? (src === undefined || src === '')
+  });
 
-  const markLoadedIfComplete = useCallback((image: HTMLImageElement | null) => {
-    if (image?.complete && image.naturalWidth > 0) {
-      setLoadedSrc(image.currentSrc || image.src);
-    }
-  }, []);
+  const markLoadedIfComplete = useCallback(
+    (image: HTMLImageElement | null) => {
+      const decoded = decodedSrcFromImage(image, effectiveSrc);
+      if (decoded !== null) setLoadedSrc(decoded);
+    },
+    [effectiveSrc]
+  );
 
   const imageEvents = (loadingSrc: string) => ({
     onLoad: () => {

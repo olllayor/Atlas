@@ -7,9 +7,7 @@ import { makeClaudeEnvironment } from '../src/main/ai/providers/claude/claudeHom
 
 test('makeClaudeEnvironment preserves process.env without modifying HOME by default', () => {
   const env = makeClaudeEnvironment({
-    binaryPath: '',
     homePath: '',
-    launchArgs: '',
     env: {}
   });
 
@@ -17,13 +15,22 @@ test('makeClaudeEnvironment preserves process.env without modifying HOME by defa
   assert.equal(env.HOME, process.env.HOME);
   // CLAUDE_CONFIG_DIR should not be set when homePath is empty
   assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
+  // CLAUDE_CODE_ENABLE_TODO_TOOLS should default to '1' (t3code PR #9031)
+  assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1');
+});
+
+test('makeClaudeEnvironment preserves explicit CLAUDE_CODE_ENABLE_TODO_TOOLS setting', () => {
+  const env = makeClaudeEnvironment({
+    homePath: '',
+    env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: '0' }
+  });
+
+  assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '0');
 });
 
 test('makeClaudeEnvironment sets CLAUDE_CONFIG_DIR and expands tilde when homePath is set', () => {
   const env = makeClaudeEnvironment({
-    binaryPath: '',
     homePath: '~/.custom-claude',
-    launchArgs: '',
     env: {
       CUSTOM_VAR: 'hello'
     }
@@ -33,15 +40,15 @@ test('makeClaudeEnvironment sets CLAUDE_CONFIG_DIR and expands tilde when homePa
   assert.equal(env.CLAUDE_CONFIG_DIR, expectedDir);
   assert.equal(env.CUSTOM_VAR, 'hello');
   assert.equal(env.HOME, process.env.HOME);
+  assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1');
 });
 
 test('makeClaudeEnvironment handles absolute homePath directly', () => {
   const env = makeClaudeEnvironment({
-    binaryPath: '',
     homePath: '/var/data/claude',
-    launchArgs: '',
     env: {}
   });
 
   assert.equal(env.CLAUDE_CONFIG_DIR, '/var/data/claude');
+  assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, '1');
 });

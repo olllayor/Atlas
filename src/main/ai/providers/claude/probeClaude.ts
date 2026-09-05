@@ -4,11 +4,15 @@ import { makeClaudeEnvironment } from './claudeHome.js';
 import { resolveClaudeSdkExecutablePath } from './claudeExecutable.js';
 import { detectLocalAgent } from '../../agents/localAgentDetection.js';
 
+export const CLAUDE_UNAUTHENTICATED_MESSAGE =
+  "Claude Code is not authenticated. Run `claude auth login` in a terminal (using this instance's Claude configuration) and try again.";
+
 export interface ClaudeAccountInfo {
   readonly email?: string;
   readonly organization?: string;
   readonly subscriptionType?: string;
   readonly tokenSource?: string;
+  readonly apiKeySource?: string;
   readonly apiProvider?: string;
 }
 
@@ -16,6 +20,9 @@ export interface ClaudeModelOption {
   readonly id: string;
   readonly label: string;
   readonly resolvedModel?: string;
+  /** False when the model takes no effort level; absent when unknown. */
+  readonly supportsEffort?: boolean;
+  readonly supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
 }
 
 export interface ClaudeProbeResult {
@@ -29,12 +36,34 @@ export interface ClaudeProbeResult {
 
 export const DEFAULT_CLAUDE_MODELS: readonly ClaudeModelOption[] = [
   { id: 'default', label: 'Default (recommended)' },
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
   { id: 'sonnet', label: 'Sonnet' },
   { id: 'opus', label: 'Opus' },
   { id: 'haiku', label: 'Haiku' }
 ];
 
 const CAPABILITIES_PROBE_TIMEOUT_MS = 6_000;
+/** t3code parity: capabilities are per binary + home + cwd, refreshed lazily. */
+const CAPABILITIES_CACHE_TTL_MS = 5 * 60_000;
+
+interface CachedProbe {
+  readonly at: number;
+  readonly result: ClaudeProbeResult;
+}
+
+const probeCache = new Map<string, CachedProbe>();
+
+function probeCacheKey(options: {
+  binaryPath: string;
+  homePath?: string;
+  cwd?: string;
+}): string {
+  return `${options.binaryPath.trim() || 'claude'}\0${options.homePath?.trim() ?? ''}\0${options.cwd ?? ''}`;
+}
+
+export function clearClaudeProbeCache(): void {
+  probeCache.clear();
+}
 
 export async function probeClaude(options: {
   binaryPath: string;
@@ -43,13 +72,21 @@ export async function probeClaude(options: {
   env?: Record<string, string>;
   customModels?: readonly string[];
   cwd?: string;
+  detectionDeps?: import('../../agents/localAgentDetection.js').LocalAgentDetectionDeps;
 }): Promise<ClaudeProbeResult> {
   const binaryCommand = options.binaryPath.trim() || 'claude';
-  const detection = await detectLocalAgent({
-    command: binaryCommand,
-    versionArgs: ['--version'],
-    env: options.env
-  });
+  const cached = probeCache.get(probeCacheKey(options));
+  if (cached && Date.now() - cached.at < CAPABILITIES_CACHE_TTL_MS) {
+    return appendCustomModels(cached.result, options.customModels);
+  }
+  const detection = await detectLocalAgent(
+    {
+      command: binaryCommand,
+      versionArgs: ['--version'],
+      env: options.env
+    },
+    options.detectionDeps
+  );
 
   if (!detection.installed) {
     return {
@@ -97,49 +134,79 @@ export async function probeClaude(options: {
     const discoveredModels: ClaudeModelOption[] = (init.models ?? []).map((m) => ({
       id: m.value,
       label: m.displayName || m.value,
-      resolvedModel: m.resolvedModel
+      resolvedModel: m.resolvedModel,
+      ...(typeof m.supportsEffort === 'boolean' ? { supportsEffort: m.supportsEffort } : {}),
+      ...(Array.isArray(m.supportedEffortLevels) && m.supportedEffortLevels.length > 0
+        ? { supportedEffortLevels: [...m.supportedEffortLevels] }
+        : {})
     }));
 
-    const models = discoveredModels.length > 0 ? discoveredModels : [...DEFAULT_CLAUDE_MODELS];
+    // A logged-out first-party CLI still initializes and reports tokenSource "none"
+    // with no apiKeySource (t3code PR #8869). Only that explicit combination counts as logged out.
+    const isUnauthenticated =
+      account?.apiProvider === 'firstParty' &&
+      account?.tokenSource === 'none' &&
+      !account?.apiKeySource;
 
-    const knownIds = new Set(models.map((m) => m.id));
-    for (const custom of options.customModels ?? []) {
-      const id = custom.trim();
-      if (id && !knownIds.has(id)) {
-        knownIds.add(id);
-        models.push({ id, label: id });
-      }
+    if (isUnauthenticated) {
+      const result: ClaudeProbeResult = {
+        installed: true,
+        version: detection.version,
+        status: 'error',
+        models: discoveredModels.length > 0 ? discoveredModels : [...DEFAULT_CLAUDE_MODELS],
+        account,
+        message: CLAUDE_UNAUTHENTICATED_MESSAGE
+      };
+      probeCache.set(probeCacheKey(options), { at: Date.now(), result });
+      return appendCustomModels(result, options.customModels);
     }
 
-    const accountLabel = [account?.subscriptionType, account?.email].filter(Boolean).join(' · ');
-    const message = accountLabel ? `Connected · ${accountLabel}` : 'Connected to Claude Code.';
-
-    return {
+    const result: ClaudeProbeResult = {
       installed: true,
       version: detection.version,
       status: 'ready',
-      models,
+      models: discoveredModels.length > 0 ? discoveredModels : [...DEFAULT_CLAUDE_MODELS],
       account,
-      message
+      message: ''
     };
+    const accountLabel = [account?.subscriptionType, account?.email].filter(Boolean).join(' · ');
+    const completed: ClaudeProbeResult = {
+      ...result,
+      message: accountLabel ? `Connected · ${accountLabel}` : 'Connected to Claude Code.'
+    };
+    probeCache.set(probeCacheKey(options), { at: Date.now(), result: completed });
+    return appendCustomModels(completed, options.customModels);
   } catch (_err) {
     clearTimeout(timer);
-    const models = [...DEFAULT_CLAUDE_MODELS];
-    const knownIds = new Set(models.map((m) => m.id));
-    for (const custom of options.customModels ?? []) {
-      const id = custom.trim();
-      if (id && !knownIds.has(id)) {
-        knownIds.add(id);
-        models.push({ id, label: id });
-      }
-    }
-
-    return {
-      installed: true,
-      version: detection.version,
-      status: 'ready',
-      models,
-      message: `Connected to Claude Code v${detection.version ?? 'unknown'}.`
-    };
+    return appendCustomModels(
+      {
+        installed: true,
+        version: detection.version,
+        status: 'ready',
+        models: [...DEFAULT_CLAUDE_MODELS],
+        message: `Connected to Claude Code v${detection.version ?? 'unknown'}.`
+      },
+      options.customModels
+    );
   }
+}
+
+/** Custom ids merge after the cached catalog so a settings edit needs no re-probe. */
+function appendCustomModels(
+  result: ClaudeProbeResult,
+  customModels: readonly string[] | undefined
+): ClaudeProbeResult {
+  if (!customModels || customModels.length === 0) {
+    return result;
+  }
+  const models = [...result.models];
+  const knownIds = new Set(models.map((m) => m.id));
+  for (const custom of customModels) {
+    const id = custom.trim();
+    if (id && !knownIds.has(id)) {
+      knownIds.add(id);
+      models.push({ id, label: id });
+    }
+  }
+  return { ...result, models };
 }

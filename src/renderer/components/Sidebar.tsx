@@ -28,6 +28,7 @@ import { useIsFullScreen } from '../hooks/useIsFullScreen';
 import { cn } from '../lib/utils';
 import { isTimerWoken, resolveSnoozePresets, snoozeWakeLabel } from '../lib/snooze';
 import { RailSectionLabel } from './railPrimitives';
+import { ProjectIcon } from './ProjectIcon';
 import { RowIconButton } from './RowIconButton';
 import { SidebarThreadRow } from './SidebarThreadRow';
 import { SidebarActivityBell } from './SidebarActivityBell';
@@ -50,7 +51,9 @@ import {
   filterSidebarItemsByMode,
   formatShelfSectionLabel,
   groupSidebarConversationItems,
+  parseScopeProjectId,
   resolveModelDisplayLabel,
+  resolveScopeProjectId,
   resolveSidebarRowVariant,
   splitPinnedSidebarItems,
   splitSettledSidebarItems,
@@ -71,6 +74,17 @@ const EMPTY_SIDEBAR_ITEMS: SidebarConversationItem[] = [];
 
 /** Manual pinned order lives outside the store: ids only, persisted locally. */
 const PIN_ORDER_STORAGE_KEY = 'atlas.sidebar.pin-order';
+
+/** Project scope filter: a bare project id, or absent for all projects. */
+const SCOPE_PROJECT_STORAGE_KEY = 'atlas.sidebar.project-scope';
+
+function loadScopeProjectId(): string | null {
+  try {
+    return parseScopeProjectId(globalThis.localStorage?.getItem(SCOPE_PROJECT_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
 
 function loadPinOrder(): string[] | null {
   try {
@@ -342,7 +356,7 @@ export function Sidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   /** Project scope filter (T3 parity): null means all projects. */
-  const [scopeProjectId, setScopeProjectId] = useState<string | null>(null);
+  const [scopeProjectId, setScopeProjectId] = useState<string | null>(loadScopeProjectId);
   /** Multi-select (T3 parity): mod-click toggles, shift-click ranges. */
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
   const selectionAnchorRef = useRef<string | null>(null);
@@ -498,6 +512,30 @@ export function Sidebar({
       // Private window: order stays session-only.
     }
   }, [pinOrderOverride]);
+
+  // Persisted next to the pin order: routes that unmount the sidebar
+  // (Settings, Sites) and app restarts must not reset the filter (t3code #9416).
+  useEffect(() => {
+    try {
+      if (scopeProjectId) {
+        globalThis.localStorage?.setItem(SCOPE_PROJECT_STORAGE_KEY, scopeProjectId);
+      } else {
+        globalThis.localStorage?.removeItem(SCOPE_PROJECT_STORAGE_KEY);
+      }
+    } catch {
+      // Private window: scope stays session-only.
+    }
+  }, [scopeProjectId]);
+
+  // A persisted scope whose project is gone (detached/deleted) falls back to
+  // all projects — but only once the list has loaded, so the restored scope
+  // survives the bootstrap round-trip.
+  useEffect(() => {
+    if (scopeProjectId === null || projects.length === 0) return;
+    if (resolveScopeProjectId(scopeProjectId, projects.map((project) => project.id), true) === null) {
+      setScopeProjectId(null);
+    }
+  }, [projects, scopeProjectId]);
   // Flat inbox (T3 method): every active chat in one chronological list with
   // its project named on the row. No per-project sections, no date groups —
   // the project is a row attribute, not list structure.
@@ -878,6 +916,7 @@ export function Sidebar({
     () => new Map(projects.map((project) => [project.id, project])),
     [projects]
   );
+  const scopeProject = scopeProjectId ? (projectById.get(scopeProjectId) ?? null) : null;
 
   const renderConversationRow = useCallback(
     (
@@ -1212,11 +1251,13 @@ export function Sidebar({
                     aria-label="Filter threads by project"
                     className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-md font-medium text-text-primary transition-colors hover:bg-bg-hover"
                   >
-                    <Folder className="size-4 shrink-0 text-text-secondary" strokeWidth={1.75} aria-hidden />
+                    {scopeProject ? (
+                      <ProjectIcon title={scopeProject.title} root={scopeProject.root} className="size-4" />
+                    ) : (
+                      <Folder className="size-4 shrink-0 text-text-secondary" strokeWidth={1.75} aria-hidden />
+                    )}
                     <span className="min-w-0 flex-1 truncate">
-                      {scopeProjectId
-                        ? (projects.find((project) => project.id === scopeProjectId)?.title ?? 'All projects')
-                        : 'All projects'}
+                      {scopeProject?.title ?? 'All projects'}
                     </span>
                     <ChevronDown className="size-4 shrink-0 text-text-faint" strokeWidth={1.75} aria-hidden />
                   </button>
@@ -1228,7 +1269,7 @@ export function Sidebar({
                   </DropdownMenuItem>
                   {projects.map((project) => (
                     <DropdownMenuItem key={project.id} onSelect={() => setScopeProjectId(project.id)}>
-                      <Folder aria-hidden />
+                      <ProjectIcon title={project.title} root={project.root} />
                       <span className="min-w-0 flex-1 truncate">{project.title}</span>
                     </DropdownMenuItem>
                   ))}

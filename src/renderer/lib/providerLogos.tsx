@@ -39,7 +39,7 @@ const LOGO_ALIASES: Record<string, string> = {
 };
 
 function resolveLogo(providerId: string): string | null {
-  const id = providerId.toLowerCase();
+  const id = providerId.trim().toLowerCase();
   return LOGOS[id] ?? LOGOS[LOGO_ALIASES[id] ?? ''] ?? null;
 }
 

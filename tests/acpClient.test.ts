@@ -436,8 +436,13 @@ test('writes, terminals, and unknown methods are refused with codes', async () =
     const frame = JSON.parse(line) as Record<string, unknown>;
     if (frame.method === 'session/prompt') {
       setImmediate(() => {
+        agent.emitFrame({
+          jsonrpc: '2.0',
+          id: 11,
+          method: 'fs/write_text_file',
+          params: { path: '/proj/notes.txt', content: 'hi' }
+        });
         for (const [id, method] of [
-          [11, 'fs/write_text_file'],
           [12, 'terminal/create'],
           [13, 'frob/nicate']
         ] as const) {
@@ -468,9 +473,37 @@ test('writes, terminals, and unknown methods are refused with codes', async () =
       .filter((frame) => typeof frame.id === 'number' && frame.error !== undefined)
       .map((frame) => [frame.id, frame.error as Record<string, unknown>])
   );
+  // A well-formed write with no handler is denied (no approval surface);
+  // malformed params fail validation first.
   assert.equal(byId.get(11)?.code, -32000);
   assert.equal(byId.get(12)?.code, -32000);
   assert.equal(byId.get(13)?.code, -32601);
+  await client.shutdown();
+});
+
+test('malformed writes fail validation', async () => {
+  const { client, child } = startHarness((line, agent) => {
+    const frame = JSON.parse(line) as Record<string, unknown>;
+    if (frame.method === 'session/prompt') {
+      setImmediate(() => {
+        agent.emitFrame({ jsonrpc: '2.0', id: 21, method: 'fs/write_text_file', params: {} });
+        agent.emitFrame({
+          jsonrpc: '2.0',
+          id: frame.id,
+          result: { stopReason: 'end_turn', usage: {} }
+        });
+      });
+    }
+  });
+  await client.start();
+  await client.prompt('ses_1', [{ type: 'text', text: 'bad write' }]);
+  const byId = new Map(
+    child()
+      .stdin.frames()
+      .filter((frame) => typeof frame.id === 'number' && frame.error !== undefined)
+      .map((frame) => [frame.id, frame.error as Record<string, unknown>])
+  );
+  assert.equal(byId.get(21)?.code, -32602);
   await client.shutdown();
 });
 

@@ -19,12 +19,16 @@ export function resolveClaudeHomePath(homePath: string): string {
  * so the spawned CLI cannot find its stored OAuth credentials and reports "Not logged in".
  * CLAUDE_CONFIG_DIR points Claude Code at its config dir directly while leaving HOME
  * (and the keychain) intact.
+ *
+ * We also default CLAUDE_CODE_ENABLE_TODO_TOOLS=1 so spawned sessions receive
+ * task/todo progress updates (t3code PR #9031).
  */
 export function makeClaudeEnvironment(
   settings: { homePath?: string; env?: Record<string, string> },
   baseEnv?: NodeJS.ProcessEnv
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...(baseEnv ?? process.env), ...(settings.env ?? {}) };
+  env.CLAUDE_CODE_ENABLE_TODO_TOOLS = env.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? '1';
   const homePath = settings.homePath?.trim();
   if (homePath) {
     env.CLAUDE_CONFIG_DIR = resolveClaudeHomePath(homePath);

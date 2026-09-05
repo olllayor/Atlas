@@ -305,6 +305,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
               jumpLabel={jumpLabel}
               showJumpHint={showJumpHint}
               projectTitle={project?.title ?? null}
+              projectRoot={project?.root ?? null}
               hideProjectName={indented && project !== null}
               branch={project?.branch ?? null}
               changeStats={item.changeStats}

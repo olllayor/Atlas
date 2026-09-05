@@ -807,3 +807,30 @@ export function filterSidebarItemsByMode<T extends Pick<SidebarConversationItem,
   const wantWork = mode !== 'code';
   return items.filter((item) => isWorkChat(item) === wantWork);
 }
+
+/**
+ * Sidebar project scope filter (t3code #9416): the selected project id, or
+ * null for "all projects". The selection persists in localStorage next to the
+ * manual pin order, so routes that unmount the sidebar (Settings, Sites) and
+ * app restarts keep it.
+ */
+
+/** Storage form is a bare id string; anything else means "all projects". */
+export function parseScopeProjectId(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * A stored scope whose project is gone falls back to all projects — but only
+ * once the project list has loaded. Projects arrive after mount, so clearing
+ * while the list is still empty would drop the restored scope every launch.
+ */
+export function resolveScopeProjectId(
+  stored: string | null,
+  projectIds: readonly string[],
+  hasProjects: boolean
+): string | null {
+  if (stored === null) return null;
+  if (!hasProjects) return stored;
+  return projectIds.includes(stored) ? stored : null;
+}

@@ -1,7 +1,7 @@
 import { CheckCircledIcon, Cross2Icon, ExclamationTriangleIcon, Link2Icon, ReloadIcon, TrashIcon, UpdateIcon } from '@radix-ui/react-icons';
 import { useState } from 'react';
 
-import type { AuthConfig, PluginServerSummary, PluginSummary, PluginUpdateView } from '../../../shared/contracts';
+import type { AuthConfig, PluginServerHealth, PluginServerSummary, PluginSummary, PluginUpdateView } from '../../../shared/contracts';
 import { notify, notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 import { Switch as UiSwitch } from '../ui/switch';
@@ -34,7 +34,11 @@ export function PluginDetailPanel({
   const [authValues, setAuthValues] = useState<Record<string, string>>({});
   const [savingAuth, setSavingAuth] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
-  const [healthStatus, setHealthStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [healthStatus, setHealthStatus] = useState<{
+    ok: boolean;
+    message: string;
+    servers: PluginServerHealth[];
+  } | null>(null);
 
   const handleSaveAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,18 +54,42 @@ export function PluginDetailPanel({
     }
   };
 
-  const handleCheckHealth = async () => {
-    setCheckingHealth(true);
+  const handleConnectServer = async (name: string, serverKey: string) => {
+    try {
+      return await window.atlasChat.plugins.connectServer(name, serverKey);
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  };
+
+  const handleCheckHealth = async () => {    setCheckingHealth(true);
     setHealthStatus(null);
     try {
       const res = await window.atlasChat.plugins.checkHealth(plugin.name);
-      if (res.ok) {
-        setHealthStatus({ ok: true, message: `Connected successfully (${res.toolsCount ?? 0} capabilities ready)` });
+
+      if (res.error) {
+        setHealthStatus({ ok: false, message: res.error, servers: [] });
+      } else if (res.servers.length === 0) {
+        setHealthStatus({
+          ok: true,
+          message: 'No MCP servers — skills work without a connection.',
+          servers: []
+        });
       } else {
-        setHealthStatus({ ok: false, message: res.error ?? 'Connection check failed.' });
+        const ready = res.servers.filter((server) => server.status === 'ready');
+        const tools = ready.reduce((sum, server) => sum + server.toolCount, 0);
+        const failed = res.servers.filter((server) => server.status !== 'ready');
+        setHealthStatus({
+          ok: res.ok,
+          message:
+            failed.length === 0
+              ? `Connected — ${tools} tool${tools === 1 ? '' : 's'} available.`
+              : `${ready.length} of ${res.servers.length} servers connected (${tools} tools).`,
+          servers: res.servers
+        });
       }
     } catch (err) {
-      setHealthStatus({ ok: false, message: String(err) });
+      setHealthStatus({ ok: false, message: String(err), servers: [] });
     } finally {
       setCheckingHealth(false);
     }
@@ -89,7 +117,7 @@ export function PluginDetailPanel({
                   className={cn(
                     'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-medium',
                     plugin.state === 'enabled'
-                      ? 'bg-brand/10 text-brand'
+                      ? 'bg-brand/10 text-brand-strong'
                       : plugin.state === 'needs_configuration'
                       ? 'bg-warning-bg text-warning'
                       : plugin.state === 'error'
@@ -162,7 +190,7 @@ export function PluginDetailPanel({
                     disabled={checkingHealth}
                     className="flex items-center gap-1.5 rounded-md border border-border-default px-2.5 py-1 text-2xs text-text-secondary hover:bg-bg-hover disabled:opacity-50"
                   >
-                    <ReloadIcon className={cn('size-3', checkingHealth && 'animate-spin')} />
+                    <ReloadIcon className={cn('size-3', checkingHealth && 'motion-spin-steps')} />
                     Test Connection
                   </button>
                   {healthStatus ? (
@@ -181,6 +209,38 @@ export function PluginDetailPanel({
                     </span>
                   ) : null}
                 </div>
+                {healthStatus && healthStatus.servers.length > 0 ? (
+                  <ul className="space-y-1 rounded-lg border border-border-default/60 bg-bg-surface p-2.5">
+                    {healthStatus.servers.map((server) => (
+                      <li key={server.key} className="flex items-center gap-2 text-2xs">
+                        <span
+                          aria-hidden
+                          className={cn(
+                            'size-1.5 shrink-0 rounded-full',
+                            server.status === 'ready'
+                              ? 'bg-success'
+                              : server.status === 'disabled'
+                                ? 'bg-text-faint'
+                                : 'bg-error-text'
+                          )}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-text-secondary">{server.name}</span>
+                        <span className="shrink-0 text-text-faint">
+                          {server.status === 'ready'
+                            ? `${server.toolCount} tools`
+                            : server.status === 'disabled'
+                              ? 'disabled'
+                              : 'failed'}
+                        </span>
+                        {server.error ? (
+                          <span className="min-w-0 flex-1 truncate text-right text-error-text" title={server.error}>
+                            {server.error}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ) : (
               <form onSubmit={handleSaveAuth} className="space-y-3 rounded-lg border border-border-default/60 bg-bg-surface p-3">
@@ -213,7 +273,7 @@ export function PluginDetailPanel({
                   <button
                     type="submit"
                     disabled={savingAuth}
-                    className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+                    className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-brand-text hover:bg-brand/90 disabled:opacity-50"
                   >
                     {savingAuth ? 'Saving...' : 'Save to Keychain'}
                   </button>
@@ -237,7 +297,12 @@ export function PluginDetailPanel({
             }
           >
             {plugin.servers.map((server) => (
-              <ServerRow key={server.name} server={server} />
+              <ServerRow
+                key={server.name}
+                server={server}
+                pluginName={plugin.name}
+                onConnect={handleConnectServer}
+              />
             ))}
           </Section>
         ) : null}
@@ -437,14 +502,58 @@ function ShaTransition({ update }: { update: PluginUpdateView }) {
   );
 }
 
-function ServerRow({ server }: { server: PluginServerSummary }) {
+function ServerRow({
+  server,
+  pluginName,
+  onConnect
+}: {
+  server: PluginServerSummary;
+  pluginName: string;
+  onConnect: (pluginName: string, serverKey: string) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const [connecting, setConnecting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Only a remote server authorizes: stdio has no endpoint to consent at.
+  const isRemote = server.transport === 'http' || server.transport === 'sse';
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    setResult(null);
+    try {
+      const res = await onConnect(pluginName, server.key);
+      setResult({
+        ok: res.ok,
+        message: res.ok
+          ? 'Authorized. Tools are available on the next turn.'
+          : (res.error ?? 'The authorization did not complete.')
+      });
+    } catch (err) {
+      setResult({ ok: false, message: String(err) });
+    } finally {
+      setConnecting(false);
+    }
+  };
+
   return (
     <div className="rounded-md border border-border-default p-2">
       <div className="flex items-center gap-2">
         <span className="text-2xs font-medium text-text-secondary">{server.name}</span>
         <span className="rounded bg-bg-hover px-1 text-2xs text-text-faint">{server.transport}</span>
+        {isRemote ? (
+          <button
+            type="button"
+            onClick={() => void handleConnect()}
+            disabled={connecting}
+            className="ml-auto rounded-md border border-border-default px-2 py-0.5 text-2xs text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+          >
+            {connecting ? 'Waiting for consent…' : 'Connect account'}
+          </button>
+        ) : null}
       </div>
       <p className="mt-1 break-all font-mono text-2xs text-text-tertiary">{server.detail}</p>
+      {result ? (
+        <p className={cn('mt-1 text-2xs', result.ok ? 'text-success' : 'text-error-text')}>{result.message}</p>
+      ) : null}
       {server.envVars.length > 0 || server.envKeys.length > 0 ? (
         <p className="mt-1 text-2xs text-text-faint">
           Environment: {[...server.envVars, ...server.envKeys].join(', ')}

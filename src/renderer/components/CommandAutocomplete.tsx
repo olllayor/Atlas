@@ -5,12 +5,15 @@ import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { CommandDefinition } from '../../shared/commands';
 import { commandToken, filterCommands, matchCommandQuery } from '../../shared/commands';
 import { notifyError } from '../lib/notify';
+import { filterSlashCommands, BUILTIN_SLASH_COMMANDS } from '../lib/slashCommands';
 
 type UseCommandAutocompleteOptions = {
   value: string;
   onChange: (value: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   disabled?: boolean;
+  /** Receives built-in command names (`compact`, `review`…) — consumed, never sent. */
+  onBuiltinCommand?: (name: string) => void;
 };
 
 /**
@@ -26,9 +29,10 @@ export function useCommandAutocomplete({
   value,
   onChange,
   textareaRef,
-  disabled
+  disabled,
+  onBuiltinCommand
 }: UseCommandAutocompleteOptions) {
-  const [commands, setCommands] = useState<CommandDefinition[]>([]);
+  const [pluginCommands, setPluginCommands] = useState<CommandDefinition[]>([]);
   const [caret, setCaret] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -44,7 +48,7 @@ export function useCommandAutocomplete({
       .commands()
       .then((next) => {
         if (!cancelled) {
-          setCommands(next);
+          setPluginCommands(next);
         }
       })
       .catch(() => {
@@ -56,16 +60,44 @@ export function useCommandAutocomplete({
     };
   }, []);
 
+  // Built-ins ride the same popup as plugin templates: one grammar, one
+  // gesture. They are marked by their `builtin:` qualified name and executed
+  // rather than expanded (see `select`).
+  const builtinDefinitions = useMemo<CommandDefinition[]>(
+    () =>
+      BUILTIN_SLASH_COMMANDS.map((command) => ({
+        qualifiedName: `builtin:${command.name}`,
+        pluginName: 'Atlas',
+        name: command.name,
+        description: command.description,
+        argumentHint: ''
+      })),
+    []
+  );
+  const commands = useMemo(
+    () => [...builtinDefinitions, ...pluginCommands],
+    [builtinDefinitions, pluginCommands]
+  );
+
   const match = useMemo(() => {
     if (disabled || caret == null || commands.length === 0) return null;
     return matchCommandQuery(value, caret);
   }, [caret, commands.length, disabled, value]);
 
   const query = dismissed ? null : match;
-  const suggestions = useMemo(
-    () => (query ? filterCommands(commands, query.query) : []),
-    [commands, query]
-  );
+  const suggestions = useMemo(() => {
+    if (!query) return [];
+    const needle = query.query.toLowerCase();
+    const builtinMatches = filterSlashCommands(needle);
+    const pluginMatches = filterCommands(pluginCommands, query.query);
+    // Built-ins first: they are the fixed vocabulary, plugin templates follow.
+    return [
+      ...builtinDefinitions.filter((definition) =>
+        builtinMatches.some((command) => commandToken(definition) === `/${command.name}`)
+      ),
+      ...pluginMatches,
+    ];
+  }, [builtinDefinitions, pluginCommands, query]);
   const isOpen = Boolean(query) && suggestions.length > 0;
 
   useEffect(() => {
@@ -107,6 +139,11 @@ export function useCommandAutocomplete({
       // the body is read.
       setDismissed(true);
 
+      if (onBuiltinCommand && definition.qualifiedName.startsWith('builtin:')) {
+        onBuiltinCommand(definition.name);
+        return;
+      }
+
       void window.atlasChat.plugins
         .commandBody(definition.qualifiedName, range.args)
         .then((body) => {
@@ -118,7 +155,7 @@ export function useCommandAutocomplete({
           setDismissed(false);
         });
     },
-    [onChange, query]
+    [onChange, onBuiltinCommand, query]
   );
 
   const handleKeyDown = useCallback(

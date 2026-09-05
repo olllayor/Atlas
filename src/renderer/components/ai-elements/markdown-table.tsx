@@ -26,7 +26,8 @@ import { useClipboard } from '../../hooks/useClipboard';
  *   - cell padding `10px 24px 10px 0`, i.e. flush left, gap on the right, so
  *     the first column aligns with the paragraph text above it;
  *   - right-aligned cells get `tabular-nums`;
- *   - the only wrapper is `overflow-x: auto`.
+ *   - the only wrapper is `overflow-x: auto` (plus `scroll-x-only`, so the
+ *     vertical wheel stays on the transcript).
  *
  * The TUI states the same grammar in box-drawing characters: header row, a
  * heavy `━` rule, `─` between body rows, and no vertical rules anywhere
@@ -69,7 +70,15 @@ function MarkdownTable({ children, className, node: _node, ...props }: Component
         {copied ? <Check className="h-3.5 w-3.5 text-[var(--text-tertiary)]" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
 
-      <div className="scrollbar-auto-hide overflow-x-auto overscroll-y-auto">
+      {/*
+        Horizontal-only scroller: `scroll-x-only` keeps the vertical wheel on
+        the transcript. `overflow-x-auto` alone would compute `overflow-y` to
+        `auto` and trap vertical scrolling over the table (plus
+        `.scrollbar-auto-hide`'s `overscroll-behavior: contain` stops
+        chaining — the layered `overscroll-y-auto` utility cannot override
+        unlayered author CSS, so it was dead code here).
+      */}
+      <div className="scrollbar-auto-hide scroll-x-only overflow-x-auto">
         <table
           className={cn(
             'w-full border-collapse text-left [&_tbody_tr:last-child>td]:border-b-0',

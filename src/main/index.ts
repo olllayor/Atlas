@@ -1,14 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserWindow, app, ipcMain } from 'electron/main';
+import { BrowserWindow, app, ipcMain, nativeTheme } from 'electron/main';
+import { shell } from 'electron/common';
 
 import { ChatEngine } from './ai/core/ChatEngine';
 import { ChatSessionRuntime } from './ai/core/ChatSessionRuntime';
+import { ContextManager } from './ai/core/ContextManager';
+import { SummaryRefreshService } from './ai/compaction/summaryRefresher';
 import { CustomProviderService } from './ai/core/CustomProviderService';
 import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
 import { SpillStore } from './ai/tools/spill/SpillStore';
+import { BackgroundJobRegistry, type JobSnapshot } from './ai/jobs/BackgroundJobRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
@@ -17,8 +22,9 @@ import {
   registerAttachmentProtocolHandler,
   registerAttachmentScheme,
 } from './attachments/attachmentProtocol';
-import { createWindow, syncNativeTheme } from './bootstrap/createWindow';
+import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
+import { perfMark, perfNow } from './bootstrap/perfTrace';
 import { createAppDatabase } from './db/client';
 import { registerDiagnosticsIpc } from './ipc/diagnostics';
 import { withUserFacingErrors } from './ipc/errors';
@@ -28,17 +34,30 @@ import { registerModelsIpc } from './ipc/models';
 import { registerProjectsIpc } from './ipc/projects';
 import { registerProvidersIpc } from './ipc/providers';
 import { registerSettingsIpc } from './ipc/settings';
+import { initializeOpenCode } from './ai/providers/opencode/openCodeController';
+import { initializeLocalAgents } from './ai/agents/localAgentController';
+import { LOCAL_AGENTS } from '../shared/localAgents';
+import { registerLocalAgentsIpc } from './ipc/localAgents';
+import { registerAntigravityIpc } from './ipc/antigravity';
+import { ANTIGRAVITY_API_KEY_ACCOUNT } from './secrets/keychain';
 import { registerWorkspaceIpc } from './ipc/workspace';
+import { registerBrowserIpc } from './ipc/browser';
+import { PortDiscovery } from './browser/PortDiscovery';
+import { hardenBrowserSession } from './browser/webviewSecurity';
+import { WorkspaceIndex } from './workspace/WorkspaceIndex';
 import { registerGitIpc } from './ipc/git';
 import { registerGitHubIpc } from './ipc/github';
 import { registerFileChangesIpc } from './ipc/fileChanges';
 import { registerTerminalIpc } from './ipc/terminal';
+import { registerJobsIpc } from './ipc/jobs';
+import { registerGoalsIpc } from './ipc/goals';
 import { IdeLauncher } from './workspace/IdeLauncher';
 import { ProjectDetector } from './workspace/ProjectDetector';
 import { AgentInstructionsService } from './workspace/AgentInstructions';
 import { EnvStore } from './workspace/EnvStore';
 import { GitReviewService } from './workspace/GitReviewService';
 import { GitStateService } from './workspace/GitStateService';
+import { autoPullProjects } from './workspace/projectAutoPull';
 import { getSharedGitHubService } from './workspace/GitHubCli';
 import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
@@ -66,7 +85,8 @@ import { McpUiStore } from './ai/mcp/McpUiStore';
 import { registerMcpUiProtocolHandler, registerMcpUiScheme } from './ai/mcp/mcpUiProtocol';
 import { createPluginMcpSource } from './plugins/PluginMcpSource';
 import { SkillsService } from './plugins/SkillsService';
-import { McpSecretStore } from './secrets/mcpSecrets';
+import { createKeychainOAuthStore, McpSecretStore } from './secrets/mcpSecrets';
+import { McpOAuthProvider } from './ai/mcp/mcpOAuth';
 import { createMcpToolsProvider } from './ai/mcp/mcpToolsProvider';
 import { FileChangeTracker } from './workspace/FileChangeTracker';
 import { PtyService } from './terminal/PtyService';
@@ -74,13 +94,24 @@ import { assertTrustedSender } from './ipc/security';
 import { registerSitesIpc } from './ipc/sites';
 import { registerUpdatesIpc } from './ipc/updates';
 import { registerVisualsIpc } from './ipc/visuals';
+import { registerContextMenuIpc } from './ipc/contextMenu';
+import { registerWindowIpc } from './ipc/window';
+import { registerImagesIpc } from './ipc/images';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
+import {
+  parkColdStartLink,
+  registerAtlasProtocolHandler,
+  registerAtlasScheme,
+  registerDeepLinkIpc,
+  wireOsLaunchLinks,
+} from './bootstrap/deepLink';
 import { SiteService } from './sites/SiteService';
 import { logger } from './observability/logger';
 import { KeychainStore } from './secrets/keychain';
 import { worktreeService } from './workspace/WorktreeService';
+import { GoalRuntime } from './ai/goal/goalRuntime';
 import { resolveConversationWorkspace } from './workspace/conversationWorkspace';
 import { UpdateService } from './updates/UpdateService';
 import { captureFirstLaunchIfNeeded, capturePostHogEvent, getAnonymousId, getTelemetryEnabled, setTelemetryEnabled, shutdownPostHog } from './analytics/PostHogClient';
@@ -109,6 +140,37 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 registerSitePreviewScheme();
 registerAttachmentScheme();
 registerPluginIconScheme();
+/**
+ * Reports a background failure instead of dropping it.
+ *
+ * Every call site here is work the app deliberately does not wait on, so the
+ * catch is what keeps a slow disk or an unreachable endpoint from taking the
+ * boot down with it. Swallowing the error entirely is a different thing: it
+ * left failed migrations, stale catalogs and orphaned spill directories with
+ * no trace anywhere. `event` names the step so a log line points at one.
+ */
+const reportBackgroundFailure =
+  (event: string) =>
+  (error: unknown): undefined => {
+    logger.warn(event, { error: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  };
+
+// `atlas://` deep links — same privileged-registration constraint, and the
+// OS launch hooks must attach before `whenReady` resolves to catch cold starts.
+registerAtlasScheme();
+wireOsLaunchLinks();
+// Windows and Linux hand an `atlas://` link to a freshly spawned second
+// process's argv; Electron only delivers `second-instance` to a primary that
+// holds the single-instance lock, so without it the handoff is dead code.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  // This primary may itself have been launched from a link (cold start);
+  // park it until the renderer's subscription can pull it.
+  parkColdStartLink(process.argv);
+}
 // Plugin UI components. Must be registered before the app is ready, like the
 // three above, and gets its own scheme for the same reason: the widget's CSP is
 // a response header this process writes, which is a guarantee no `srcdoc`
@@ -172,6 +234,9 @@ async function resolveSpillsDirectory() {
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return; // A second launch: hand over and die.
+  const bootStart = perfNow();
+  perfMark('app:whenReady');
   // First thing after ready: everything below is worth having a record of, and
   // a failure here is exactly the kind that leaves no other trace.
   logger.configure({
@@ -193,10 +258,35 @@ app.whenReady().then(async () => {
     app.dock.setIcon(icon);
   }
 
-  const attachmentStore = new AttachmentStore(await resolveAttachmentDirectory());
+  const attachmentsDir = await resolveAttachmentDirectory();
+  const attachmentStore = new AttachmentStore(attachmentsDir);
   registerAttachmentProtocolHandler(attachmentStore);
-  const database = createAppDatabase(await resolveDatabasePath(), attachmentStore);
+  // Every provider is user-configured; the registry starts empty and is filled
+  // from the database by CustomProviderService below. Declared before the
+  // database because the model cache asks it which providers are servable
+  // without a saved endpoint (OpenCode signs itself in), and that answer has
+  // to stay live as the integration is switched on and off.
+  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>();
+  const database = createAppDatabase(await resolveDatabasePath(), attachmentStore, () =>
+    [...providers.entries()]
+      .filter(([, adapter]) => adapter.capabilities?.authenticatesItself === true)
+      .map(([providerId]) => providerId)
+  );
+  perfMark('db:open+schema');
   const spillStore = new SpillStore(await resolveSpillsDirectory());
+  // One registry for every long-running producer (background bash today;
+  // subagents and terminals can register as kinds later). Conversation-fenced:
+  // ids are predictable, so the fence, not id secrecy, is the boundary.
+  const jobRegistry = new BackgroundJobRegistry();
+  // Push registration and settlement to every window so the jobs chip stays
+  // live without polling. Each window filters by its own conversation.
+  const broadcastJobEvent = (type: 'started' | 'done') => (snapshot: JobSnapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.jobsEvent, { type, snapshot });
+    }
+  };
+  jobRegistry.onJobStart(broadcastJobEvent('started'));
+  jobRegistry.onJobDone(broadcastJobEvent('done'));
   // Reclaim spill directories whose conversation is gone. Fire-and-forget:
   // sweeping is housekeeping, and a slow disk must not delay startup. The
   // min-age guard keeps any directory a live turn may be writing to.
@@ -218,9 +308,6 @@ app.whenReady().then(async () => {
     console.warn('[startup] primeCloudSandboxSecret failed:', err);
   });
   const updateService = new UpdateService();
-  // Every provider is user-configured; the registry starts empty and is filled
-  // from the database by CustomProviderService below.
-  const providers: ProviderRegistry = new Map<ProviderAdapter['providerId'], ProviderAdapter>();
 
   // Upgrade path: convert the former built-in providers into ordinary entries.
   await migrateLegacyBuiltInProviders({
@@ -229,7 +316,8 @@ app.whenReady().then(async () => {
     settingsRepo: database.settings,
     keychain,
     remapConversationProvider: (from, to) => database.conversations.remapProviderId(from, to)
-  }).catch(() => undefined);
+  }).catch(reportBackgroundFailure('providers.legacy_migration_failed'));
+  perfMark('migrateLegacyBuiltInProviders');
 
   const modelRegistry = new ModelRegistry(
     database.models,
@@ -261,7 +349,7 @@ app.whenReady().then(async () => {
     // A configuration change can add, remove or re-point models, so the catalog
     // is rebuilt rather than left showing endpoints that no longer exist.
     onProvidersChanged: async () => {
-      await modelRegistry.refresh().catch(() => undefined);
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
       // The rebuild happens here, in the main process; the window that made the
       // change gets back a provider record, not a catalog. Without this a
       // freshly added provider's models sat in the cache unseen — the picker
@@ -272,6 +360,7 @@ app.whenReady().then(async () => {
 
   // Adapters for providers saved in a previous session.
   await customProviderService.syncRegistry();
+  perfMark('providers:syncRegistry');
   // Saved custom models are re-checked against models.dev: effort levels for
   // models predating them, and context/output limits, which go stale silently
   // and skew every context reading until they are corrected. Network-backed, so
@@ -284,7 +373,55 @@ app.whenReady().then(async () => {
         broadcastModelsChanged();
       }
     })
-    .catch(() => undefined);
+    .catch(reportBackgroundFailure('models.backfill_facts_failed'));
+  // Deep OpenCode integration (Beta, off by default): while it is disabled the
+  // adapter stays out of the registry and nothing spawns or probes. The initial
+  // registry sync runs in the background — see `initializeOpenCode` — because
+  // awaiting it here held the first window back by about a second of cold
+  // start, for a feature that is off unless someone turned it on.
+  const { controller: opencodeController } = initializeOpenCode({
+    settingsRepo: database.settings,
+    keychain,
+    sessions: database.opencodeSessions,
+    registry: providers,
+    defaultDirectory: () => app.getPath('home'),
+    onRegistryChanged: async () => {
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
+      broadcastModelsChanged();
+    }
+  });
+  perfMark('opencode:controller-constructed');
+
+  // Every other local agent (Claude Code, Antigravity, Codex, Cursor, …). Same gating rule
+  // as opencode: disabled means nothing spawns, and the initial registry sync
+  // runs in the background so a cold start never pays for it.
+  const antigravityPaths = {
+    stateDir: app.getPath('userData'),
+    runtimeExecutablePath: process.execPath,
+    installBaseDir: join(app.getPath('userData'), 'tools'),
+    attachmentsDir
+  };
+  const { controller: localAgentController } = initializeLocalAgents({
+    settingsRepo: database.settings,
+    sessions: database.localAgentSessions,
+    registry: providers,
+    opencode: opencodeController,
+    defaultDirectory: () => app.getPath('home'),
+    antigravity: antigravityPaths,
+    readAntigravityApiKey: async () =>
+      (await keychain
+        .getSecretByAccount(ANTIGRAVITY_API_KEY_ACCOUNT)
+        .catch(() => null)) ?? '',
+    onRegistryChanged: async () => {
+      await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
+      broadcastModelsChanged();
+    },
+    onCatalogUpdated: async (providerId, rows) => {
+      database.models.upsertModels(rows, { pruneProviderId: providerId });
+      broadcastModelsChanged();
+    }
+  });
+
   // Drop cached models left behind by providers that no longer exist, so the
   // catalog does not carry entries nothing can serve.
   database.models.deleteOrphanedModels();
@@ -303,15 +440,32 @@ app.whenReady().then(async () => {
   const gitReviewService = new GitReviewService();
   const githubService = getSharedGitHubService();
   const fileChangeTracker = new FileChangeTracker(database.fileChanges);
+  // The Files surface's listing, cached per workspace root across windows.
+  const workspaceIndex = new WorkspaceIndex();
+  // Local servers worth offering when a Browser surface opens empty.
+  const portDiscovery = new PortDiscovery();
+  // Every permission the browser partition could ever be asked for, denied
+  // once, before any guest page exists to ask.
+  hardenBrowserSession();
 
   // The Terminal panel's shells. Output is pushed to every open window: the
   // panel filters by conversation, and a second window showing the same
   // conversation should see the same session rather than a dead pane.
-  const ptyService = new PtyService((payload) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(IPC_CHANNELS.terminalOutput, payload);
+  const ptyService = new PtyService(
+    (payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_CHANNELS.terminalOutput, payload);
+      }
+    },
+    database.terminalHistory,
+    // Status and label changes go to every window for the same reason output
+    // does: two windows on one conversation are looking at the same shells.
+    (event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(IPC_CHANNELS.terminalMetadata, event);
+      }
     }
-  }, database.terminalHistory);
+  );
 
   // Where each installed bundle came from. Nothing else records it, and both
   // the update check and a scoped revocation are unanswerable without it.
@@ -337,11 +491,17 @@ app.whenReady().then(async () => {
     // load beats loading it without the parts its author relied on.
     appVersion: app.getVersion(),
   });
+  // The beta switch, read live everywhere it matters. Off is not "hidden":
+  // no MCP server source, no skills in the prompt, no IPC answers, no default
+  // installs — the whole pipeline goes inert while the files stay on disk.
+  const pluginsBetaEnabled = () => database.settings.getPluginsBetaEnabled();
   const pluginInstaller = new PluginInstaller(pluginRegistry, pluginOrigins);
   const checkoutRoot = marketplaceCheckoutRoot();
   // Artwork is served from these two roots and nowhere else, whatever a
   // manifest asks for.
   registerPluginIconProtocolHandler(() => [pluginRegistry.root, checkoutRoot]);
+  registerAtlasProtocolHandler();
+  registerDeepLinkIpc();
   // Interrupted installs leave staging directories behind. Upstream documents
   // sweeping them and does not; a machine surveyed for this work still had
   // three from a month earlier.
@@ -359,6 +519,7 @@ app.whenReady().then(async () => {
   // installer's own sweep never covered — it only looks inside the plugins
   // directory, and these live beside it.
   marketplaceRegistry.sweepCheckouts();
+  perfMark('plugins:registry+sweeps');
   const pluginMarketplaces = new PluginMarketplaceService(
     marketplaceRegistry,
     pluginRegistry,
@@ -379,9 +540,43 @@ app.whenReady().then(async () => {
   // only inside installed plugins, and this manager is the loader internal that
   // runs them.
   const mcpSecrets = new McpSecretStore();
-  const listPluginServers = createPluginMcpSource(pluginRegistry);
-  const mcpManager = new McpClientManager(listPluginServers, (serverId) =>
-    mcpSecrets.getEnv(serverId)
+  const keychainOAuthStore = createKeychainOAuthStore();
+  const listPluginServers = createPluginMcpSource(pluginRegistry, pluginsBetaEnabled);
+  const mcpManager = new McpClientManager(
+    listPluginServers,
+    async (serverId) => {
+      const env = await mcpSecrets.getEnv(serverId);
+      // A plugin server's id is `plugin:<name>:<key>`, and the credential panel
+      // saves per plugin rather than per server. Merged here — the one place
+      // both sides of the id are known — so a token typed into the plugin's
+      // detail panel reaches every server that plugin carries.
+      const pluginName = serverId.startsWith('plugin:') ? serverId.split(':')[1] : null;
+
+      if (!pluginName) {
+        return env;
+      }
+
+      const credentials = await mcpSecrets.getPluginCredentials(pluginName);
+      return { ...credentials, ...env };
+    },
+    undefined,
+    // OAuth for remote servers: a 401 becomes a browser consent flow with a
+    // loopback landing, tokens in the keychain. Stdio servers return nothing —
+    // they have nothing to authorize against.
+    (server) => {
+      if ((server.transport !== 'http' && server.transport !== 'sse') || !server.url) {
+        return undefined;
+      }
+
+      return new McpOAuthProvider({
+        serverId: server.id,
+        serverName: server.name,
+        store: keychainOAuthStore,
+        openExternal: (url) => {
+          void shell.openExternal(url);
+        }
+      });
+    }
   );
   // Gating: a bundle's servers stay unconnected and out of the request until a
   // skill from that plugin is opened. Twenty installed plugins therefore cost
@@ -413,13 +608,26 @@ app.whenReady().then(async () => {
     mcpUiStore,
     mcpAuditLog,
   );
-  const skillsService = new SkillsService(pluginRegistry);
+  const skillsService = new SkillsService(pluginRegistry, pluginsBetaEnabled);
 
   app.on('will-quit', () => {
+    // Buffered log lines must land before the process goes away; after this,
+    // the exit hook is a backstop for anything logged during teardown.
+    logger.flushSync();
     ptyService.disposeAll();
+    // An `opencode serve` child Atlas spawned outlives the window otherwise.
+    void opencodeController.shutdown();
+    void localAgentController.shutdown();
     // Spawned servers outlive the window otherwise: the transport keeps the
     // child alive, and nothing else would reap it.
     void mcpManager.disposeAll();
+    // Background jobs are tracked, not detached: quit cancels them instead of
+    // orphaning them the way the old fire-and-forget spawn did. Fire-and-
+    // forget here too — quit must not hang on a slow kill.
+    void jobRegistry.killAll('app quitting');
+    // Same for live subagent sessions: they are tracked by the runtime, so
+    // quit cascade-stops them rather than leaving child turns running.
+    void chatEngine.subagents.interruptAllConversations('app quitting');
   });
 
   // The turn path reads project env vars synchronously, so the keychain values
@@ -430,7 +638,24 @@ app.whenReady().then(async () => {
 
   const checkpointCoordinator = new CheckpointCoordinator(database);
 
-  const chatEngine = new ChatEngine(
+  // Rolling summaries survive relaunch via the durable store, and each fresh
+  // heuristic summary gets an async model upgrade in the background.
+  const summaryRefresher = new SummaryRefreshService({
+    conversationsRepo: database.conversations,
+    modelsRepo: database.models,
+    keychain,
+    providers,
+    summaries: database.conversationSummaries,
+  });
+  const contextManager = new ContextManager(
+    {
+      onSummaryRefresh: (conversationId, fingerprint, olderMessages) =>
+        summaryRefresher.refresh(conversationId, fingerprint, olderMessages),
+    },
+    database.conversationSummaries,
+  );
+
+  const chatEngine: ChatEngine = new ChatEngine(
     database.conversations,
     database.models,
     keychain,
@@ -441,16 +666,28 @@ app.whenReady().then(async () => {
       database.models,
       keychain,
       providers,
-      undefined,
+      contextManager,
       ({ conversationId, mentions }) => {
-        const optedIn = shouldLoadSiteTools({
-          mentions,
-          hasExistingSite: database.sites.hasSiteForConversation(conversationId),
-        });
+        // Sticky opt-in: once a conversation mentions @Sites the toolset stays
+        // registered for the rest of it, so the tool catalog stops toggling per
+        // message and the provider's prompt cache survives. The mention check
+        // still runs first so the very first opt-in persists itself.
+        const mentioned = mentions.includes('sites');
+        if (mentioned && !database.conversations.getSiteOptIn(conversationId)) {
+          database.conversations.setSiteOptIn(conversationId, true);
+        }
+
+        const optedIn =
+          mentioned ||
+          database.conversations.getSiteOptIn(conversationId) ||
+          shouldLoadSiteTools({
+            mentions,
+            hasExistingSite: database.sites.hasSiteForConversation(conversationId),
+          });
         return optedIn ? createSiteTools(siteService, sitePreviewHost, conversationId) : null;
       },
-      (conversationId) =>
-        resolveConversationWorkspace(database, conversationId, {
+      (conversationId) => ({
+        ...resolveConversationWorkspace(database, conversationId, {
           fileChangeTracker,
           envStore,
           agentInstructions,
@@ -461,6 +698,16 @@ app.whenReady().then(async () => {
           onAgentCommand: (command, exitCode) =>
             ptyService.echoAgentCommand(conversationId, command, exitCode),
         }),
+        jobRegistry,
+        spillStore,
+        // Read-only: the agent may watch the user's terminal but never type
+        // into it (PtyService.snapshot has no stdin path).
+        terminalReadback: ptyService,
+        // The model side of /goal: without this the update_goal tool is never
+        // advertised and the goal etiquette never ships, so the runtime would
+        // keep admitting continuation turns the model cannot report on.
+        goalTools: goalRuntime,
+      }),
       () => database.settings.getVisualMode(),
       mcpToolsProvider,
       skillsService,
@@ -477,12 +724,15 @@ app.whenReady().then(async () => {
       },
       mcpAuditLog,
       spillStore,
+      () => database.settings.getCompactionThresholdPercent(),
     ),
     database.runtimeState,
     toolStateStore,
     undefined,
     async ({ modelId, capability }) => {
-      await customProviderService.recordCapabilityRejection(modelId, capability).catch(() => undefined);
+      await customProviderService
+        .recordCapabilityRejection(modelId, capability)
+        .catch(reportBackgroundFailure('providers.capability_rejection_failed'));
     },
     checkpointCoordinator,
     mcpAuditLog,
@@ -503,12 +753,56 @@ app.whenReady().then(async () => {
 
       return plugin ? { name: plugin.manifest.name, version: plugin.manifest.version } : null;
     },
+    // Resumed follow-ups borrow the frontmost window for event delivery.
+    () => {
+      const windows = BrowserWindow.getAllWindows();
+      return windows.length > 0 ? windows[windows.length - 1] : null;
+    },
   );
+
+  /*
+    Goal mode (/goal). The runtime owns every goal state transition; the
+    engine owns turn scheduling. Each is wired to the other here, after both
+    exist — a constructor parameter would be circular.
+  */
+  const pushGoalEvent = (conversationId: string, info?: { notice?: string }): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.goalsEvent, {
+        type: 'updated',
+        conversationId,
+        goal: database.conversationGoals.getActive(conversationId),
+        ...(info?.notice ? { notice: info.notice } : {}),
+      });
+    }
+  };
+  const goalRuntime: GoalRuntime = new GoalRuntime({
+    goals: database.conversationGoals,
+    randomId: () => randomUUID(),
+    recordActivity: ({ eventId, conversationId, activityType, payload }) => {
+      // Same durable-log writer the followup queue uses: lifecycle rows land
+      // in conversation_activities and replay like any other work log.
+      void chatEngine.recordGoalActivity({ eventId, conversationId, activityType, payload });
+    },
+    isBusy: (conversationId): boolean => chatEngine.isBusyForGoal(conversationId),
+    hasPendingApproval: (conversationId) => chatEngine.hasPendingGoalApproval(conversationId),
+    enqueueContinuation: (conversationId) => chatEngine.startGoalContinuation(conversationId),
+    pushEvent: pushGoalEvent,
+  });
+  chatEngine.attachGoalRuntime(goalRuntime);
+  perfMark('chatengine+goal:constructed');
+
+  registerLocalAgentsIpc({ localAgents: localAgentController });
+  registerAntigravityIpc({
+    localAgents: localAgentController,
+    keychain,
+    paths: antigravityPaths
+  });
 
   registerSettingsIpc({
     settingsRepo: database.settings,
     modelRegistry,
-    keychain
+    keychain,
+    opencode: opencodeController
   });
   registerModelsIpc(modelRegistry);
   registerProvidersIpc(customProviderService);
@@ -516,11 +810,36 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     projectsRepo: database.projects,
     settingsRepo: database.settings,
+    onRegenerateTitle: (conversationId) => chatEngine.regenerateTitle(conversationId),
     onConversationDeleted: (conversationId) => {
-      ptyService.kill(conversationId);
+      ptyService.killConversation(conversationId);
       // Spill files are an implementation detail of the conversation's turns;
       // they go with it. Fire-and-forget for the same reason the sweep is.
-      void spillStore.deleteConversation(conversationId).catch(() => undefined);
+      void spillStore.deleteConversation(conversationId).catch(reportBackgroundFailure('spill.delete_failed'));
+      // Same for its background jobs: the owner is gone, so nothing can
+      // claim their output anymore.
+      void jobRegistry
+        .killConversation(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('jobs.kill_conversation_failed'));
+      // And its live subagent sessions, for the same reason. Eviction stops the
+      // continuation loops (child-first through nested trees) and drops any
+      // completion notices nobody will ever drain; interruptAll handles the
+      // remaining one-shot Task sessions.
+      // The opencode resume cursor points at a session for a chat that no
+      // longer exists. The FK cascade drops the row too, but the delete should
+      // not depend on a pragma to be correct.
+      opencodeController.forgetConversation(conversationId);
+      // Same for every other local agent's ACP cursor.
+      for (const agent of LOCAL_AGENTS) {
+        database.localAgentSessions.clear(agent.id, conversationId);
+      }
+      chatEngine.continuations.evictForConversation(conversationId);
+      void chatEngine.subagents
+        .interruptAll(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('subagents.interrupt_all_failed'));
+      void chatEngine.subagents
+        .clearConversationBackground(conversationId, 'conversation deleted')
+        .catch(reportBackgroundFailure('subagents.clear_background_failed'));
     },
   });
   registerProjectsIpc({
@@ -530,14 +849,20 @@ app.whenReady().then(async () => {
     conversationsRepo: database.conversations,
     worktreeService,
   });
-  registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions);
+  registerWorkspaceIpc(database, projectDetector, envStore, agentInstructions, workspaceIndex);
+  registerBrowserIpc(portDiscovery);
   registerGitIpc(database, gitStateService, gitReviewService);
   registerGitHubIpc(database, githubService);
   // Plugins Atlas ships with are present without being asked for. Runs after
   // the staging sweep so a half-finished copy is never mistaken for installed.
-  pluginMarketplaces.installDefaults();
+  // Skipped while the beta is off: a default install is the feature acting,
+  // and an off feature does nothing at all.
+  if (pluginsBetaEnabled()) {
+    pluginMarketplaces.installDefaults();
+  }
 
   registerPluginsIpc({
+    isEnabled: pluginsBetaEnabled,
     registry: pluginRegistry,
     installer: pluginInstaller,
     marketplaces: pluginMarketplaces,
@@ -545,15 +870,30 @@ app.whenReady().then(async () => {
     origins: pluginOrigins,
     activations: pluginActivations,
     secrets: mcpSecrets,
+    mcpManager,
     setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),
     setEnabled: (name, enabled) => database.settings.setPluginEnabled(name, enabled),
   });
   registerFileChangesIpc(database, fileChangeTracker);
   registerTerminalIpc(database, ptyService);
+  registerJobsIpc(jobRegistry);
+  registerGoalsIpc({ goalRuntime, chatEngine });
   registerChatIpc(chatEngine);
+  perfMark('ipc:handlers-registered');
+  // Fold the durable follow-up queue back in and start draining it. The
+  // window resolver lets a resumed entry borrow the frontmost window for
+  // event delivery; entries wait in the queue until one exists.
+  chatEngine.resumePersistedFollowups();
+  // Boot admission tick (plan §2.7): a crash mid-turn leaves its goal active
+  // with no settle coming. Idle conversations get one admission decision now;
+  // busy ones are skipped because their own settle will decide.
+  goalRuntime.continueIdleGoals();
   registerDiagnosticsIpc(database.conversations);
   registerUpdatesIpc(updateService);
   registerVisualsIpc(database.visuals);
+  registerContextMenuIpc();
+  registerWindowIpc();
+  registerImagesIpc();
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
   // Wrapped like every other handler: these are registered here rather than in
@@ -603,7 +943,28 @@ app.whenReady().then(async () => {
   // Before the first window: the vibrancy material is created with the native
   // appearance, so setting it afterwards leaves the first paint mismatched.
   syncNativeTheme(database.settings.getThemeMode());
-  const window = createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
+  perfMark('boot:pre-window-complete');
+  const windowChromeState = () => ({
+    themeMode: database.settings.getThemeMode(),
+    designTheme: database.settings.getDesignTheme(),
+    backgroundColor: database.settings.getThemeColor('backgroundColor'),
+    foregroundColor: database.settings.getThemeColor('foregroundColor'),
+    translucentSidebar: database.settings.getTranslucentSidebar(),
+  });
+  const window = createWindow({ ...windowChromeState() });
+  // System mode tracks the OS live; re-resolve the frame when it flips.
+  nativeTheme.on('updated', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      syncWindowChrome(win, windowChromeState());
+    }
+  });
+  perfMark('window:created');
+  window.webContents.once('did-finish-load', () => {
+    perfMark('boot:total (module eval → renderer loaded)');
+    if (process.env.ATLAS_PERF_TRACE === '1') {
+      console.info(`[perf] bootStart→whenReady measured from module eval; whenReady delta: ${Math.round(performance.now() - bootStart)}ms`);
+    }
+  });
   captureFirstLaunchIfNeeded();
   window.once('show', () => {
     updateService.start();
@@ -615,12 +976,32 @@ app.whenReady().then(async () => {
     // connected and their tools already listed.
     // Gated servers are deliberately not warmed: warming one would spawn the
     // process the gate exists to avoid.
-    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(() => undefined);
+    void mcpManager.prewarm(pluginActivations.eagerOnlyFilter()).catch(reportBackgroundFailure('mcp.prewarm_failed'));
+    // Background pull of opted-in projects: network I/O that must never delay
+    // first paint or a failed pull block boot. Per-checkout guards live in
+    // `autoPullProjects`; failures land here as a log line, nothing more.
+    void (async () => {
+      try {
+        const roots = database.projects
+          .list()
+          .filter((project) => project.autoPull && project.exists)
+          .map((project) => project.root);
+        if (roots.length === 0) return;
+        const outcomes = await autoPullProjects(roots, gitStateService, { fetchFirst: true });
+        for (const outcome of outcomes) {
+          if (outcome.pulled) {
+            console.info(`[projects] automatic pull completed: ${outcome.root}`);
+          }
+        }
+      } catch (err) {
+        reportBackgroundFailure('projects.auto_pull_failed')(err);
+      }
+    })();
   });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow({ translucentSidebar: database.settings.getTranslucentSidebar() });
+      createWindow({ ...windowChromeState() });
     }
   });
 });

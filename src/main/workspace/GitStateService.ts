@@ -184,6 +184,44 @@ export class GitStateService {
     await runGit(['switch', normalizeBranchName(name)], workspace);
   }
 
+  /**
+   * The remote's default branch (`origin/HEAD`), or null when it cannot be
+   * determined — no `origin`, `origin/HEAD` unset, or git failing. Null means
+   * "not provably the default", so callers treat it as ineligible rather than
+   * guessing from the checked-out name.
+   */
+  async getDefaultBranch(root: string): Promise<string | null> {
+    if (!this.isGitRepo(root)) return null;
+    const workspace: ToolWorkspace = { mode: 'code', root };
+    try {
+      const output = await runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], workspace);
+      const match = /^refs\/remotes\/origin\/(.+)$/.exec(output.trim());
+      return match?.[1] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fast-forward only. Anything needing a merge or rebase throws, and the
+   * caller leaves the checkout exactly where it was.
+   */
+  async pullCurrentBranch(root: string): Promise<string> {
+    const workspace: ToolWorkspace = { mode: 'code', root };
+    const output = await runGit(['pull', '--ff-only'], workspace);
+    return output.trim();
+  }
+
+  /**
+   * Refreshes the upstream tracking refs without touching the checkout.
+   * Throws when offline or the remote is unreachable — callers treat that as
+   * a skip, never an error.
+   */
+  async fetchRemote(root: string): Promise<void> {
+    const workspace: ToolWorkspace = { mode: 'code', root };
+    await runGit(['fetch'], workspace);
+  }
+
   async createBranch(root: string, name: string): Promise<void> {
     const workspace: ToolWorkspace = { mode: 'code', root };
     await runGit(['switch', '-c', normalizeBranchName(name)], workspace);

@@ -21,7 +21,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 
 const EMPTY_STATE: GitStateSummary = {
@@ -113,7 +112,7 @@ export function GitPanel({ conversationId }: { conversationId?: string }) {
           aria-label="Refresh git state"
           className="ml-auto rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
-          <RefreshCw className={cn('size-3.5', loading && 'animate-spin motion-reduce:animate-none')} aria-hidden />
+          <RefreshCw className={cn('size-3.5', loading && 'motion-spin-steps')} aria-hidden />
         </button>
         <button
           type="button"
@@ -259,18 +258,20 @@ function CommitDialog({
 
         <div className="flex flex-col gap-2 text-sm text-text-secondary">
           <label className="flex items-center gap-2">
-            <Input
+            {/* Bare checkbox — `Input` wraps a text-field chrome (h-9 border
+                box) around what must stay a 16px native control. */}
+            <input
               type="checkbox"
-              className="size-4"
+              className="size-4 shrink-0 accent-[var(--accent)]"
               checked={addAll}
               onChange={(event) => setAddAll(event.target.checked)}
             />
             Stage all changes first (<code className="font-mono text-xs">git add -A</code>)
           </label>
           <label className="flex items-center gap-2">
-            <Input
+            <input
               type="checkbox"
-              className="size-4"
+              className="size-4 shrink-0 accent-[var(--accent)]"
               checked={amend}
               onChange={(event) => setAmend(event.target.checked)}
             />

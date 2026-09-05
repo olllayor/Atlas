@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 export const KEYBINDING_COMMANDS = [
   'app.commandPalette.toggle',
   'sidebar.toggle',
@@ -11,9 +9,12 @@ export const KEYBINDING_COMMANDS = [
   'workspace.mode.toggle',
   'workspace.project.attach',
   'terminal.toggle',
+  'chat.side.toggle',
   'transcript.raw.toggle',
+  'workbench.review.open',
   'conversation.previous',
   'conversation.next',
+  'conversation.nextAttention',
   'conversation.jump.1',
   'conversation.jump.2',
   'conversation.jump.3',
@@ -74,23 +75,6 @@ export type ResolvedKeybindingRule = {
 };
 
 export type KeybindingContext = Record<KeybindingWhenIdentifier, boolean>;
-
-export const KeybindingShortcutSchema = z.object({
-  key: z.string().trim().min(1).max(64),
-  metaKey: z.boolean().default(false),
-  ctrlKey: z.boolean().default(false),
-  shiftKey: z.boolean().default(false),
-  altKey: z.boolean().default(false),
-  modKey: z.boolean().default(false),
-});
-
-export const KeybindingRuleSchema = z.object({
-  command: z.enum(KEYBINDING_COMMANDS),
-  shortcut: KeybindingShortcutSchema,
-  when: z.string().trim().min(1).max(256).optional(),
-});
-
-export const KeybindingRulesSchema = z.array(KeybindingRuleSchema).max(256);
 
 export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
   {
@@ -192,6 +176,20 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
     when: 'view.chat',
   },
   {
+    // The side chat's open/close, on the plan's binding. `mod+alt+S`: S for
+    // "side", and the alt keeps it clear of every `mod+S` muscle memory.
+    command: 'chat.side.toggle',
+    shortcut: {
+      key: 's',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: true,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
     // Codex spells this `/raw`. `mod+shift+R` is the nearest free binding —
     // plain `mod+R` is the window reload every Electron app inherits, and the
     // other `mod+shift` letters in this table (L, M, E) are already taken.
@@ -202,6 +200,19 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
       ctrlKey: false,
       shiftKey: true,
       altKey: false,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
+    // Codex binds its review pane to mod+alt+B; same gesture here.
+    command: 'workbench.review.open',
+    shortcut: {
+      key: 'b',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: true,
       modKey: true,
     },
     when: 'view.chat',
@@ -222,6 +233,19 @@ export const DEFAULT_KEYBINDING_RULES: KeybindingRule[] = [
     command: 'conversation.next',
     shortcut: {
       key: 'ArrowDown',
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: true,
+      modKey: true,
+    },
+    when: 'view.chat',
+  },
+  {
+    // Codex parity: next chat needing attention (approvals first).
+    command: 'conversation.nextAttention',
+    shortcut: {
+      key: 'a',
       metaKey: false,
       ctrlKey: false,
       shiftKey: false,
@@ -417,29 +441,20 @@ export function getDefaultKeybindingRules() {
   return cloneKeybindingRules(DEFAULT_KEYBINDING_RULES);
 }
 
-export function parseKeybindingRules(value: unknown) {
-  const rules = KeybindingRulesSchema.parse(value);
-  for (const rule of rules) {
-    if (rule.when) {
-      parseKeybindingWhenExpression(rule.when);
-    }
-  }
-
-  return rules;
-}
-
+/**
+ * Compile already-typed rules into their matchable form.
+ *
+ * Deliberately not a validator: untrusted input is checked once by
+ * `parseKeybindingRules` where it enters (a settings file, an IPC payload),
+ * and by the time the renderer holds a `KeybindingRule[]` it has been through
+ * that gate. Re-running the schema here would pull zod onto the boot path to
+ * re-check data the type system already covers. A malformed `when` still
+ * throws, since that expression is parsed, not merely shape-checked.
+ */
 export function resolveKeybindingRules(rules: KeybindingRule[]): ResolvedKeybindingRule[] {
-  return parseKeybindingRules(rules).map((rule) => ({
+  return rules.map((rule) => ({
     command: rule.command,
     shortcut: rule.shortcut,
     whenAst: rule.when ? parseKeybindingWhenExpression(rule.when) : undefined,
   }));
-}
-
-export function decodeKeybindingRules(value: unknown) {
-  try {
-    return parseKeybindingRules(value);
-  } catch {
-    return getDefaultKeybindingRules();
-  }
 }

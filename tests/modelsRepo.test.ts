@@ -10,7 +10,10 @@ import { ModelsRepo } from '../src/main/db/repositories/modelsRepo.js';
 import { applySchema } from '../src/main/db/schema.js';
 import type { ModelSummary } from '../src/shared/contracts.js';
 
-function createRepo(t: { after: (fn: () => void) => void }) {
+function createRepo(
+  t: { after: (fn: () => void) => void },
+  selfManaged: () => readonly string[] = () => []
+) {
   const tempDir = mkdtempSync(join(tmpdir(), 'atlas-models-repo-'));
   const raw = new DatabaseSync(join(tempDir, 'atlas.db'));
   const database = {
@@ -38,7 +41,7 @@ function createRepo(t: { after: (fn: () => void) => void }) {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  return new ModelsRepo(database);
+  return new ModelsRepo(database, selfManaged);
 }
 
 function model(id: string, overrides: Partial<ModelSummary> = {}): ModelSummary {
@@ -115,13 +118,13 @@ test('ModelsRepo pruning is scoped to the refreshed provider', async (t) => {
   assert.equal(repo.getById('glm-4.7')?.archived, false);
 });
 
-test('ModelsRepo does not prune when a refresh returned nothing', async (t) => {
+test('ModelsRepo prunes when a refresh returned nothing with pruneProviderId', async (t) => {
   const repo = createRepo(t);
 
   repo.upsertModels([model('vendor/kept')], { pruneProviderId: 'openrouter' });
   repo.upsertModels([], { pruneProviderId: 'openrouter' });
 
-  assert.equal(repo.getById('vendor/kept')?.archived, false);
+  assert.equal(repo.getById('vendor/kept')?.archived, true);
 });
 
 test('ModelsRepo remembers when a model was last free', async (t) => {
@@ -192,4 +195,95 @@ test('deleteOrphanedModels drops removed providers but spares disabled ones', as
     repo.list({ includeArchived: true }).map((entry) => entry.id).sort(),
     ['off-model', 'on-model']
   );
+});
+
+test('the same model id on two providers is two rows, not a clobbered one', async (t) => {
+  const repo = createRepo(t);
+
+  // Both endpoints expose `shared-model`; neither refresh may steal the row
+  // from the other, which the old model_id-only primary key allowed.
+  repo.upsertModels([model('shared-model', { providerId: 'custom:first', label: 'First copy' })]);
+  repo.upsertModels([model('shared-model', { providerId: 'custom:second', label: 'Second copy' })]);
+
+  const rows = repo.list({ includeArchived: true });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((entry) => entry.providerId).sort(),
+    ['custom:first', 'custom:second']
+  );
+
+  // Re-refreshing one provider leaves the other's copy intact.
+  repo.upsertModels([model('shared-model', { providerId: 'custom:first', label: 'First copy' })]);
+  assert.equal(repo.list({ includeArchived: true }).length, 2);
+});
+
+test('getById prefers an enabled provider when a model id is served twice', async (t) => {
+  const repo = createRepo(t);
+
+  configureProvider(repo, 'custom:on');
+  configureProvider(repo, 'custom:off', false);
+  repo.upsertModels([
+    model('dual-model', { providerId: 'custom:off' }),
+    model('dual-model', { providerId: 'custom:on' })
+  ]);
+
+  assert.equal(repo.getById('dual-model')?.providerId, 'custom:on');
+
+  // Deterministic even with nothing enabled: lowest provider id wins.
+  const bareRepo = createRepo(t);
+  bareRepo.upsertModels([
+    model('dual-model', { providerId: 'custom:zzz' }),
+    model('dual-model', { providerId: 'custom:aaa' })
+  ]);
+  assert.equal(bareRepo.getById('dual-model')?.providerId, 'custom:aaa');
+});
+
+/* ------------------------------------------------------------------ *
+ * Providers that configure themselves (the OpenCode integration)
+ * ------------------------------------------------------------------ */
+
+test('a self-managed provider reaches the picker without a saved endpoint', async (t) => {
+  const repo = createRepo(t, () => ['opencode']);
+
+  repo.upsertModels([model('opencode/mimo', { providerId: 'opencode' })]);
+
+  // It has no `custom_providers` row and never will: OpenCode signs itself in.
+  assert.deepEqual(repo.list({ configuredOnly: true }).map((entry) => entry.id), ['opencode/mimo']);
+
+  repo.deleteOrphanedModels();
+  assert.deepEqual(repo.list({ configuredOnly: true }).map((entry) => entry.id), ['opencode/mimo']);
+});
+
+test('its models go the moment the integration is off', async (t) => {
+  let enabled = true;
+  const repo = createRepo(t, () => (enabled ? ['opencode'] : []));
+
+  repo.upsertModels([model('opencode/mimo', { providerId: 'opencode' })]);
+  assert.equal(repo.list({ configuredOnly: true }).length, 1);
+
+  enabled = false;
+  assert.deepEqual(repo.list({ configuredOnly: true }), [], 'hidden as soon as it is switched off');
+
+  repo.deleteOrphanedModels();
+  assert.deepEqual(repo.list({ includeArchived: true }), [], 'and swept like any other dead provider');
+});
+
+test('a model id served by both an endpoint and an integration resolves to a servable row', async (t) => {
+  const repo = createRepo(t, () => ['opencode']);
+
+  configureProvider(repo, 'custom:byurl');
+  repo.upsertModels([
+    model('shared/model', { providerId: 'custom:byurl', label: 'via base URL' }),
+    model('shared/model', { providerId: 'opencode', label: 'via the integration' })
+  ]);
+
+  // Both are servable, so the tie breaks on provider id — the point is that
+  // the integration ranks with the endpoint rather than below it.
+  const resolved = repo.getById('shared/model');
+  assert.ok(resolved);
+  assert.equal(resolved.providerId, 'custom:byurl');
+
+  configureProvider(repo, 'custom:disabled', false);
+  repo.upsertModels([model('agent-only', { providerId: 'opencode' })]);
+  assert.equal(repo.getById('agent-only')?.providerId, 'opencode');
 });

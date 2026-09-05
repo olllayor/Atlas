@@ -12,7 +12,15 @@ import { isPlanToolPart } from '../../../shared/planTool';
 export type AssistantSegment =
   | { kind: 'tools'; parts: ChatToolPart[] }
   | { kind: 'plan'; parts: ChatToolPart[] }
+  | { kind: 'spawn'; parts: ChatToolPart[] }
   | { kind: 'part'; part: Exclude<ChatMessagePart, ChatToolPart> };
+
+/** The tool that fans a turn out into subagents. */
+export const SPAWN_TOOL_NAME = 'spawn_agent';
+
+export function isSpawnToolPart(part: ChatToolPart): boolean {
+  return part.toolName === SPAWN_TOOL_NAME;
+}
 
 /**
  * Collect runs of adjacent tool parts so the transcript can group them.
@@ -21,13 +29,29 @@ export type AssistantSegment =
  * message joins one segment anchored where the first one appeared, however
  * much text or how many other calls sit between them. That is what makes the
  * checklist update in place instead of leaving a trail of snapshots.
+ *
+ * `spawn_agent` follows the same rule for the same reason: a turn that fans
+ * out four agents in four calls owns one fleet, and one row is what the
+ * reader needs. The segment is anchored at the first spawn so the CTA stays
+ * where the batch started.
  */
 export function groupAssistantParts(parts: ChatMessagePart[]): AssistantSegment[] {
   const segments: AssistantSegment[] = [];
   let planSegment: Extract<AssistantSegment, { kind: 'plan' }> | null = null;
+  let spawnSegment: Extract<AssistantSegment, { kind: 'spawn' }> | null = null;
 
   for (const part of parts) {
     if (part.type === 'tool') {
+      if (isSpawnToolPart(part)) {
+        if (spawnSegment) {
+          spawnSegment.parts.push(part);
+        } else {
+          spawnSegment = { kind: 'spawn', parts: [part] };
+          segments.push(spawnSegment);
+        }
+        continue;
+      }
+
       if (isPlanToolPart(part)) {
         if (planSegment) {
           planSegment.parts.push(part);
@@ -61,6 +85,12 @@ export type AssistantTurnSplit = {
   activity: AssistantSegment[];
   /** Plan checklists, which stay visible: they are state, not history. */
   plan: Extract<AssistantSegment, { kind: 'plan' }>[];
+  /**
+   * Spawn batches, which also stay visible. Agents outlive the turn that
+   * launched them, so folding the fleet away with the turn's work would hide
+   * live state behind a disclosure.
+   */
+  spawn: Extract<AssistantSegment, { kind: 'spawn' }>[];
   /** The reply itself: the last unbroken run of prose the turn produced. */
   answer: AssistantSegment[];
 };
@@ -95,10 +125,13 @@ export function splitAssistantTurn(segments: AssistantSegment[]): AssistantTurnS
   const plan = segments.filter(
     (segment): segment is Extract<AssistantSegment, { kind: 'plan' }> => segment.kind === 'plan'
   );
-  const rest = segments.filter((segment) => segment.kind !== 'plan');
+  const spawn = segments.filter(
+    (segment): segment is Extract<AssistantSegment, { kind: 'spawn' }> => segment.kind === 'spawn'
+  );
+  const rest = segments.filter((segment) => segment.kind !== 'plan' && segment.kind !== 'spawn');
 
   if (!rest.some((segment) => segment.kind === 'tools')) {
-    return { activity: [], plan, answer: rest };
+    return { activity: [], plan, spawn, answer: rest };
   }
 
   // Walk back over any trailing tool/reasoning rows, then back over the prose
@@ -112,6 +145,7 @@ export function splitAssistantTurn(segments: AssistantSegment[]): AssistantTurnS
   return {
     activity: [...rest.slice(0, start), ...rest.slice(end)],
     plan,
+    spawn,
     answer: rest.slice(start, end),
   };
 }
@@ -120,7 +154,7 @@ export function splitAssistantTurn(segments: AssistantSegment[]): AssistantTurnS
 export function hasPendingApproval(segments: AssistantSegment[]) {
   return segments.some(
     (segment) =>
-      (segment.kind === 'tools' || segment.kind === 'plan') &&
+      (segment.kind === 'tools' || segment.kind === 'plan' || segment.kind === 'spawn') &&
       segment.parts.some((part) => part.state === 'approval-requested')
   );
 }

@@ -26,6 +26,11 @@ import {
 } from '../../../shared/toolCellGrammar';
 import { useDisclosure } from '../../stores/useTranscriptUiStore';
 import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
+import {
+  DISCLOSURE_ANCHOR_MS,
+  isPinnedToBottom,
+  shouldAnchorDisclosure,
+} from '../../lib/scrollAnchor';
 import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
 import { McpUiFrame } from './McpUiFrame';
@@ -95,8 +100,62 @@ export function Disclosure({
   // height — exactly the jump the animation exists to avoid.
   const render = open || keepMounted;
 
+  /*
+   * Scroll anchor. Expanding above the viewport grows content above the
+   * reader and shoves visible text down, so the block's viewport offset is
+   * captured before the change and restored after layout, frame by frame
+   * for the length of the 160ms reveal. Position-based (not height-delta),
+   * so whatever the virtualizer already compensated reads as ~0 residual
+   * instead of a double correction. Stands down at the live edge, where
+   * stick-to-bottom owns the position, and for blocks fully below the view,
+   * which grow into unseen space.
+   */
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const prevOpenRef = useRef(open);
+
+  useEffect(() => {
+    if (prevOpenRef.current === open) {
+      return;
+    }
+    prevOpenRef.current = open;
+
+    const root = rootRef.current;
+    const scroller = root?.closest?.('[data-transcript-scroller]') as HTMLElement | null;
+    if (!root || !scroller) {
+      return;
+    }
+    if (isPinnedToBottom(scroller)) {
+      return;
+    }
+
+    const viewportTop = () => root.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    const target = viewportTop();
+    if (!shouldAnchorDisclosure(target, scroller.clientHeight)) {
+      return;
+    }
+
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      requestAnimationFrame(() => {
+        scroller.scrollTop += viewportTop() - target;
+      });
+      return;
+    }
+
+    let raf = 0;
+    const start = performance.now();
+    const tick = () => {
+      scroller.scrollTop += viewportTop() - target;
+      if (performance.now() - start < DISCLOSURE_ANCHOR_MS) {
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+
   return (
     <div
+      ref={rootRef}
       className={cn(
         'grid transition-[grid-template-rows] duration-[160ms] ease-out motion-reduce:transition-none',
         open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
@@ -320,8 +379,11 @@ function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCe
         </button>
       ) : (
         // No `cursor-pointer` here: a row with nothing to reveal must not
-        // advertise itself as clickable.
-        <div className={rowClassName} aria-label={accessibleName}>
+        // advertise itself as clickable. The status rides in a real text
+        // node — ARIA forbids author naming on a `generic` div, so an
+        // `aria-label` here would never be announced.
+        <div className={rowClassName}>
+          <span className="sr-only">{accessibleName}</span>
           {rowContent}
         </div>
       )}
@@ -404,8 +466,11 @@ function McpUiSlot({ cell }: { cell: ToolCellModel }) {
 function DiffSummary({ added, removed }: { added: number; removed: number }) {
   return (
     <span className="app-code-compact shrink-0">
-      <span className="text-diff-add-fg">+{added}</span>{' '}
-      <span className="text-diff-del-fg">
+      {/* The `-count` tokens exist so themes can quieten the numbers next to
+          the full-strength diff body (codex does); falling back to the body
+          colour keeps themes that never defined them correct. */}
+      <span className="text-[var(--diff-add-fg-count,var(--diff-add-fg))]">+{added}</span>{' '}
+      <span className="text-[var(--diff-del-fg-count,var(--diff-del-fg))]">
         {MINUS}
         {removed}
       </span>
@@ -577,6 +642,24 @@ function DiffFileBlock({ file, showHeader }: { file: DiffFile; showHeader: boole
  */
 const focusedApprovals = new Set<string>();
 
+/** Bound on the once-focused set, so a long session cannot grow it forever. */
+const FOCUSED_APPROVALS_CAP = 256;
+
+/**
+ * Records an approval id as seen, pruning the oldest entries once the set
+ * outlives its cap. Eviction can re-arm auto-focus for a very old prompt
+ * scrolled back into view — a one-time caret move, and only for prompts
+ * older than hundreds of newer ones.
+ */
+function rememberApprovalFocus(approvalId: string) {
+  if (focusedApprovals.size >= FOCUSED_APPROVALS_CAP) {
+    for (const id of [...focusedApprovals].slice(0, FOCUSED_APPROVALS_CAP / 2)) {
+      focusedApprovals.delete(id);
+    }
+  }
+  focusedApprovals.add(approvalId);
+}
+
 /** True when the caret is somewhere the user is actively typing. */
 function isTypingElsewhere(): boolean {
   const active = document.activeElement as HTMLElement | null;
@@ -609,7 +692,7 @@ function ApprovalPrompt({
   useEffect(() => {
     if (!approvalId) return;
     if (focusedApprovals.has(approvalId)) return;
-    focusedApprovals.add(approvalId);
+    rememberApprovalFocus(approvalId);
     if (isTypingElsewhere()) return;
     primaryRef.current?.focus();
   }, [approvalId]);

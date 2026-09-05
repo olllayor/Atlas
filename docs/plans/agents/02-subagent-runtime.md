@@ -48,6 +48,16 @@ Responsibilities:
   t3code this leak also reset the parent's Working timer — check Atlas's equivalent
   elapsed-time source for the same failure.
 - Bounded concurrency (default 4, configurable) with a queue; `pending` status while queued.
+  One extra rule keeps spawns deadlock-free: a single conversation can never have more
+  in-flight subagents (running + waiting) than the total slot count. A subagent keeps its
+  slot while it awaits its own nested spawns, so a conversation that could occupy every
+  slot and still queue one more would let the last waiter block on a slot held by the
+  ancestor it waits on — a circular wait only abort could break. The over-capacity spawn
+  is rejected at `acquire` time with an actionable per-task error instead of queueing.
+- `canSpawn` is depth-only (`depth < maxDepth`). Slot pressure is deliberately not a
+  registration condition: the tool catalog must stay stable across turns so the
+  provider's prompt cache prefix survives. An over-capacity spawn surfaces as a
+  per-task `failed` result, never as `spawn_agent` vanishing from the catalog.
 - Usage rollup per child via `mergeTaskUsage` from T1.
 
 ### 2. `src/main/ai/tools/agentTools.ts` (new), registered in `builtInTools.ts`

@@ -1,4 +1,7 @@
 @import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark, .dark *));
+@custom-variant light (&:not(.dark, .dark *));
 /*
  * Supplies the `animate-in` / `fade-in-*` / `zoom-in-*` / `slide-in-from-*`
  * utilities the Radix primitives are written against. Tailwind v4 dropped
@@ -31,9 +34,9 @@
   --bg-overlay: #1a1e29;
   /* Opaque composer slab; themes without an opinion inherit the overlay. */
   --bg-composer: var(--bg-overlay);
-  /* The slab is borderless by default — dark themes separate it from the page
-     by tone alone. A light theme cannot: white on white needs the hairline. */
-  --border-composer: transparent;
+  --border-composer: var(--border-default);
+  --bg-message: var(--bg-surface);
+  --text-message: var(--text-primary);
   --bg-code: rgba(0, 0, 0, 0.3);
 
   --bg-subtle: rgba(255, 255, 255, 0.03);
@@ -81,12 +84,22 @@
   --error-text: #fecdd3;
 
   /* Accent — defined by every theme but previously missing from the
-     contract and from @theme, so no component could reach it. */
-  --accent: #3b82f6;
+     contract and from @theme, so no component could reach it. Same values
+     as themes/default.css: #2563eb clears AA under white text where the
+     old #3b82f6 failed at 3.68:1. */
+  --accent: #2563eb;
   --accent-hover: #60a5fa;
   --accent-text: #ffffff;
-  --accent-surface: rgba(59, 130, 246, 0.14);
-  --ring: rgba(59, 130, 246, 0.7);
+  /*
+   * High-contrast accent for TEXT that sits ON an accent-tinted surface
+   * (file-ref badges, gallery type badges). An accent can never read on a
+   * tint of itself at AA — brightening the accent brightens its tint in
+   * lockstep — so this slot decouples the two: fills stay brand-true,
+   * chip text gets a value tuned per theme and mode.
+   */
+  --accent-strong: #7ab0ff;
+  --accent-surface: rgba(37, 99, 235, 0.14);
+  --ring: rgba(37, 99, 235, 0.7);
 
   /* Diff palette (GitHub's, per docs/codex-parity/design-audit.md §5). */
   --diff-add-bg: #213a2b;
@@ -160,6 +173,16 @@
   --tool-web: #f472b6;
   --tool-generic: #94a3b8;
 
+  /* Accent a user can pin to a local agent, so its rows are recognisable at a
+     glance. Hue only — never a surface or type colour — which is why these sit
+     outside the light/dark contract and hold in every theme. */
+  --agent-accent-blue: #60a5fa;
+  --agent-accent-green: #4ade80;
+  --agent-accent-orange: #fb923c;
+  --agent-accent-red: #f87171;
+  --agent-accent-purple: #c084fc;
+  --agent-accent-teal: #2dd4bf;
+
   /* Toasts */
   --toast-bg: rgba(27, 44, 77, 0.92);
   --toast-border: rgba(82, 110, 167, 0.42);
@@ -228,7 +251,17 @@
   --tracking-label: 0.12em;
 
   /* Layout */
-  --content-max: clamp(680px, 102vw, 860px);
+  --content-max: 48rem; /* 768px — single chat measure, mirrors t3code max-w-3xl */
+  /*
+   * Transcript and composer share one centred column (`max-w-composer`).
+   * Two caps produced a ~46px-per-side overhang where user bubbles stuck out
+   * past the input slab; one cap keeps a single right rail. Widened past
+   * t3code's 48rem `max-w-3xl` because at typical window widths that left
+   * ~400px of dead panel on each side of the column.
+   * Container-relative (`min(100%, …)` at usage) so sidebar/workbench width
+   * cannot push it off axis — never `vw`.
+   */
+  --composer-max: 55rem; /* 960px */
   --sidebar-width: 17.75rem; /* 284px at default font size */
   /* 56px: the rail is 4-5 36px buttons in `px-2`, nothing else — 72px left
      a 20px empty column on either side of them. */
@@ -245,6 +278,12 @@
 
   /* Shared titlebar height used by both the sidebar header and the main panel. */
   --titlebar-height: 3.25rem; /* 52px at default font size */
+  /*
+   * Fullscreen has no traffic lights to clear, so the sidebar's strip shrinks
+   * to breathing room only. 12px puts the wordmark row's centre on the same
+   * line as the breadcrumb in the 52px main titlebar beside it.
+   */
+  --titlebar-height-fullscreen: 0.75rem; /* 12px */
 
   /*
    * Border radius.
@@ -275,10 +314,110 @@
   --shadow-elevated: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
 
   /* Transitions */
+  --panel-animation-duration: 50ms;
+  --duration-panel: var(--panel-animation-duration, 50ms);
   --duration-fast: 150ms;
   --duration-normal: 200ms;
   --duration-slow: 400ms;
   --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /*
+   * Contrast engine (t3code method). App.tsx stamps base/boost live via
+   * applyAppearanceContrast; derivations answer without a rebuild. 50 is
+   * neutral: base 100% keeps authored values, boost 0% pushes nowhere.
+   * Target is white here (dark contract) and flips to black under light.
+   */
+  --contrast-base: 100%;
+  --contrast-boost: 0%;
+  --contrast-border-boost: 0%;
+  --contrast-target: #ffffff;
+
+  /*
+   * Glass triple and procedural surface grain (t3code method).
+   * Dialogs, menus, popovers share the glass triple; a future opacity slider
+   * stamps --glass-opacity once and all follow. Light mode thins the blur and
+   * lifts saturation. The procedural grain SVG is baked only into glass
+   * overlays (never fullscreen, preserving compositor performance).
+   */
+  --glass-opacity: 82%;
+  --glass-blur: 16px;
+  --glass-saturation: 1.12;
+  --surface-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  --surface-grain-size: 256px 256px;
+}
+
+/* ============================================
+   T3 Code Theme Palette Engine
+   Maps the 55 --app-theme-* roles to Atlas tokens
+   ============================================ */
+html[data-theme-id]:not([data-theme-id=""]) {
+  --bg-base: var(--app-theme-canvas);
+  --bg-panel: var(--app-theme-sidebar);
+  --bg-surface: var(--app-theme-surface);
+  --bg-elevated: var(--app-theme-surface-raised);
+  --bg-overlay: var(--app-theme-surface-overlay);
+  --bg-composer: var(--app-theme-surface-raised, var(--app-theme-surface));
+  --border-composer: var(--app-theme-border);
+  --bg-message: var(--app-theme-message-surface, var(--app-theme-surface-raised));
+  --text-message: var(--app-theme-message-foreground, var(--app-theme-text));
+  --bg-code: var(--app-theme-code-background);
+  --bg-subtle: var(--app-theme-muted);
+  --bg-ghost: var(--app-theme-secondary);
+  --bg-hover: var(--app-theme-sidebar-row-hover);
+  --bg-active: var(--app-theme-sidebar-row-active);
+  --bg-button: var(--app-theme-message-action);
+  --bg-button-hover: var(--app-theme-message-action-hover);
+
+  --border-subtle: color-mix(in oklab, var(--app-theme-border) 55%, transparent);
+  --border-default: var(--app-theme-border);
+  --border-medium: color-mix(in oklab, var(--app-theme-border) 80%, var(--app-theme-text));
+  --border-strong: var(--app-theme-sidebar-border, var(--app-theme-border));
+
+  --text-primary: var(--app-theme-text);
+  --text-secondary: var(--app-theme-secondary-foreground);
+  --text-tertiary: var(--app-theme-muted-foreground);
+  --text-muted: var(--app-theme-text-muted);
+  --text-faint: var(--app-theme-placeholder);
+  --text-inverse: var(--app-theme-message-action-foreground);
+
+  --accent: var(--app-theme-accent);
+  --accent-hover: var(--app-theme-message-action-hover);
+  --accent-surface: var(--app-theme-accent-surface);
+  --accent-strong: var(--app-theme-accent);
+  --ring: var(--app-theme-focus);
+
+  --error: var(--app-theme-error);
+  --error-text: var(--app-theme-error-foreground);
+  --error-bg: var(--app-theme-error-surface);
+
+  --warning: var(--app-theme-warning);
+  --warning-text: var(--app-theme-warning-foreground);
+  --warning-bg: var(--app-theme-warning-surface);
+
+  --success: var(--app-theme-update);
+  --success-text: var(--app-theme-update-foreground);
+  --success-bg: var(--app-theme-update-surface);
+
+  --term-bg: var(--app-theme-terminal-background);
+  --term-fg: var(--app-theme-terminal-foreground);
+  --term-cursor: var(--app-theme-terminal-cursor);
+  --term-selection: var(--app-theme-terminal-selection-background);
+
+  --background: var(--app-theme-canvas);
+  --foreground: var(--app-theme-text);
+  --card: var(--app-theme-surface);
+  --card-foreground: var(--app-theme-text);
+  --popover: var(--app-theme-surface-overlay);
+  --popover-foreground: var(--app-theme-text);
+  --primary: var(--app-theme-message-action);
+  --primary-foreground: var(--app-theme-message-action-foreground);
+  --secondary: var(--app-theme-secondary);
+  --secondary-foreground: var(--app-theme-secondary-foreground);
+  --muted: var(--app-theme-muted);
+  --muted-foreground: var(--app-theme-muted-foreground);
+  --sidebar: var(--app-theme-sidebar);
+  --sidebar-foreground: var(--app-theme-sidebar-foreground);
+  --sidebar-border: var(--app-theme-sidebar-border);
 }
 
 /*
@@ -337,6 +476,15 @@ html[data-border-radius='none'][data-design-theme] {
   --color-input: var(--border-medium);
   --color-ring: var(--ring);
 
+  /*
+   * Tailwind v4 paints a bare `border` with `currentColor` unless this is
+   * set — every menu, popover, dialog and input in the app shipped a white
+   * (dark mode) border until it was. One default here beats a border-color
+   * utility on forty call sites, present and future. Surfaces that want a
+   * quieter hairline still opt out explicitly (`border-border-subtle`).
+   */
+  --default-border-color: var(--border-default);
+
   /* Custom theme colors */
   --color-bg-base: var(--bg-base);
   --color-bg-panel: var(--bg-panel);
@@ -356,6 +504,9 @@ html[data-border-radius='none'][data-design-theme] {
   --color-border-default: var(--border-default);
   --color-border-medium: var(--border-medium);
   --color-border-strong: var(--border-strong);
+  --color-border-composer: var(--border-composer);
+  --color-bg-message: var(--bg-message);
+  --color-text-message: var(--text-message);
 
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
@@ -390,6 +541,7 @@ html[data-border-radius='none'][data-design-theme] {
   --color-brand: var(--accent);
   --color-brand-hover: var(--accent-hover);
   --color-brand-text: var(--accent-text);
+  --color-brand-strong: var(--accent-strong);
   --color-brand-surface: var(--accent-surface);
 
   /* Diff palette. */
@@ -400,6 +552,14 @@ html[data-border-radius='none'][data-design-theme] {
   --color-diff-add-gutter-bg: var(--diff-add-gutter-bg);
   --color-diff-del-gutter-bg: var(--diff-del-gutter-bg);
   --color-diff-gutter-fg: var(--diff-gutter-fg);
+
+  /* Local agent accents. */
+  --color-agent-blue: var(--agent-accent-blue);
+  --color-agent-green: var(--agent-accent-green);
+  --color-agent-orange: var(--agent-accent-orange);
+  --color-agent-red: var(--agent-accent-red);
+  --color-agent-purple: var(--agent-accent-purple);
+  --color-agent-teal: var(--agent-accent-teal);
 
   /* Per-tool accents. */
   --color-tool-read: var(--tool-read);
@@ -433,9 +593,12 @@ html[data-border-radius='none'][data-design-theme] {
   --font-weight-strong: var(--font-weight-strong);
 
   --spacing-content-max: var(--content-max);
+  --spacing-composer: var(--composer-max);
   --spacing-sidebar-width: var(--sidebar-width);
   --spacing-sidebar-width-collapsed: var(--sidebar-width-collapsed);
   --spacing-titlebar-height: var(--titlebar-height);
+  /* `h-titlebar-height-fullscreen` for the sidebar's collapsed drag strip. */
+  --spacing-titlebar-height-fullscreen: var(--titlebar-height-fullscreen);
   /* `max-h-composer-max-height` for the composer textarea. */
   --spacing-composer-max-height: var(--composer-max-height);
 
@@ -526,6 +689,14 @@ pre,
   text-shadow: none;
 }
 
+/*
+ * Citation click-through target. Painted through the CSS Highlights API, so
+ * the user's own selection is never touched when the API exists.
+ */
+::highlight(atlas-citation) {
+  background: color-mix(in oklab, var(--accent) 35%, transparent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -568,6 +739,11 @@ select {
    the composer from the page by tone. */
 .composer-slab {
   border: 1px solid var(--border-composer);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-slab:focus-within {
+  border-color: var(--border-strong, var(--border-default));
 }
 
 /* Text fields always match :focus-visible, which would draw a ring inside
@@ -575,6 +751,24 @@ select {
    affordance there (reference shows no ring), so exempt its field. */
 .composer-slab textarea:focus-visible,
 [cmdk-input]:focus-visible {
+  outline: none;
+}
+
+/* Menu rows highlight with a background on focus — Radix moves DOM focus to
+   the row under the pointer, so the pointer hover *is* a focus, and the
+   global ring would double-draw a blue outline that sticks to the hovered
+   row (screenshot: the "Read only" box). The background is the affordance,
+   so exempt every menu-row slot. */
+[data-slot="dropdown-menu-item"]:focus-visible,
+[data-slot="dropdown-menu-checkbox-item"]:focus-visible,
+[data-slot="dropdown-menu-radio-item"]:focus-visible,
+[data-slot="dropdown-menu-sub-trigger"]:focus-visible,
+[data-slot="context-menu-item"]:focus-visible,
+[data-slot="context-menu-checkbox-item"]:focus-visible,
+[data-slot="context-menu-radio-item"]:focus-visible,
+[data-slot="context-menu-sub-trigger"]:focus-visible,
+[data-slot="select-item"]:focus-visible,
+[data-slot="command-item"]:focus-visible {
   outline: none;
 }
 
@@ -600,6 +794,21 @@ select {
   transition-timing-function: var(--easing-default);
 }
 
+/*
+ * Theme-switch kill-switch. App.tsx stamps this on <html> before flipping
+ * `data-theme`, forces a reflow, then drops it on the next frame — so one
+ * variable change cannot strobe through every button/card/border at its own
+ * speed. Keep at 0s (not reduce-motion's 0.01ms): this is one frame, not a
+ * user preference.
+ */
+.no-transitions,
+.no-transitions *,
+.no-transitions *::before,
+.no-transitions *::after {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+}
+
 /* ============================================
    Shimmer — the running indicator
 
@@ -616,15 +825,6 @@ select {
    Reduced motion collapses to a static dim mark rather than removing the
    indicator, so "working" is still legible without animation.
    ============================================ */
-
-@keyframes atlas-shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: -100% 0;
-  }
-}
 
 /*
  * `color: transparent` here would be self-defeating: `currentColor` inside
@@ -648,6 +848,25 @@ select {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: atlas-shimmer 2s linear infinite;
+}
+
+/*
+ * Duty-cycled like its siblings below: the sweep occupies the first 55% of
+ * the cycle and the gradient then holds still (background-position is
+ * unchanged from 55% to 100%, so Chromium's damage tracking presents no
+ * frames for the hold). The period stays 2s, so the phase-match with
+ * `.motion-glyph-pulse` holds. The long flat hold is invisible at this
+ * scale — a shimmer that pauses between sweeps reads as a shimmer, not as
+ * a stopped one.
+ */
+@keyframes atlas-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  55%,
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 /*
@@ -687,6 +906,67 @@ select {
 
 .motion-glyph-pulse {
   animation: atlas-glyph-pulse 2s infinite;
+}
+
+/*
+ * Branded loader. The keycap is square - spinning it reads as a bug, and a
+ * continuous scale interpolation would paint a frame every vsync for the whole
+ * load. Duty-cycled opacity + scale (steps) matches atlas-glyph-pulse cost:
+ * ~20% of the cycle actually presents, rest is hold, and the 1.8s period is
+ * close enough to the shimmer (2s) to avoid visual beating.
+ */
+@keyframes atlas-logo-breathe {
+  0%,
+  45% {
+    opacity: 1;
+    scale: 1;
+    animation-timing-function: steps(6);
+  }
+  55%,
+  90% {
+    opacity: 0.52;
+    scale: 0.96;
+    animation-timing-function: steps(6);
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+.motion-logo-breathe {
+  animation: atlas-logo-breathe 1.8s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-logo-breathe {
+    animation: none;
+  }
+}
+
+/*
+ * Duty-cycled rotation for the app's progress rings, replacing Tailwind's
+ * `animate-spin` (a continuous transform interpolation — a compositor frame
+ * every vsync for as long as a fetch runs). `steps(12)` presents ~13 frames
+ * per second instead of 120 and reads identically at ring sizes of 12–24px.
+ * Pair with `motion-reduce:animate-none` exactly as `animate-spin` was.
+ */
+@keyframes atlas-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.motion-spin-steps {
+  animation: atlas-spin 1s steps(12) infinite;
+}
+
+/* Owned here, not via `motion-reduce:animate-none`: this file is unlayered,
+   so it would beat the utility in the reduce-media branch and keep spinning. */
+@media (prefers-reduced-motion: reduce) {
+  .motion-spin-steps {
+    animation: none;
+  }
 }
 
 /*
@@ -807,9 +1087,91 @@ select {
   background: var(--scrollbar-hover);
 }
 
+/*
+ * Horizontal-only scroller. Pair with `overflow-x-auto` (and keep
+ * `scrollbar-auto-hide` for the rail styling) on wrappers that must scroll
+ * sideways but never own the vertical wheel — markdown tables, code blocks.
+ *
+ * Two traps it avoids:
+ *  - `overflow-x: auto` alone computes `overflow-y` to `auto`, turning the
+ *    wrapper into a vertical scroll container that captures the wheel even
+ *    with no vertical overflow. `clip` is exempt from that rule, unlike
+ *    `visible`/`hidden`, and a `clip` box is not a scroll container at
+ *    all — the vertical wheel passes straight through to the transcript.
+ *  - `.scrollbar-auto-hide` sets `overscroll-behavior: contain`, which stops
+ *    scroll chaining. Unlayered author CSS beats Tailwind's layered
+ *    `overscroll-y-auto` utility, so the utility alone cannot undo it —
+ *    this unlayered longhand, placed after, can.
+ */
+.scroll-x-only {
+  overflow-y: clip;
+  overscroll-behavior-y: auto;
+}
+
+/*
+ * Sidebar rail guard: the 6px transparent track holds in every theme, so a
+ * hovered list never paints a wide native bar over the rows.
+ */
+.sidebar-surface .scrollbar-auto-hide::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar-surface .scrollbar-auto-hide::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *::-webkit-scrollbar-thumb {
     transition: none;
+  }
+}
+
+/* ============================================
+   Scroll-edge fade
+
+   The transcript slides behind the floating composer slab; a hard clip at
+   the slab's top edge makes text stop mid-line with a razor cut. A gradient
+   overlay — an ::after on the pane, not a mask on the scroller — fades the
+   last lines into the background instead. Overlay rather than mask because
+   the fade only reads correctly while docked to the bottom: masked content
+   would fade even when the reader has scrolled up and nothing is hidden.
+   The element toggles with the same hysteresis state as the jump-to-latest
+   button, so the two never disagree about whether there is something under
+   the slab.
+
+   `color-mix` keeps the gradient honest in every theme without hardcoding
+   one; the transparent stop uses the same colour so the ramp stays in one
+   hue instead of greying out mid-gradient.
+   ============================================ */
+
+.scroll-edge-fade-bottom {
+  pointer-events: none;
+}
+
+.scroll-edge-fade-bottom::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  /* Tall enough to read as depth of field rather than as a fog bar: a short
+     ramp makes text look damaged; a tall one makes it look further away.
+     Keep in sync with the transcript's bottom pad in ChatWindow. */
+  height: 4rem;
+  /* Alpha-ramped copies of one colour (srgb, so the hue cannot drift across
+     the ramp the way it can through oklab-mixed transparency). */
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-base) 0%, transparent) 0%,
+    color-mix(in srgb, var(--bg-base) 55%, transparent) 45%,
+    var(--bg-base) 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-edge-fade-bottom::after {
+    /* Static dimming is still motion-adjacent for some readers; the fade is
+       decoration, not information, so reduced motion removes it entirely. */
+    display: none;
   }
 }
 
@@ -819,7 +1181,7 @@ select {
 
 ::view-transition-group(app-sidebar),
 ::view-transition-group(app-main-panel) {
-  animation-duration: 180ms;
+  animation-duration: var(--panel-animation-duration, 180ms);
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -827,7 +1189,7 @@ select {
 ::view-transition-new(app-sidebar),
 ::view-transition-old(app-main-panel),
 ::view-transition-new(app-main-panel) {
-  animation-duration: 180ms;
+  animation-duration: var(--panel-animation-duration, 180ms);
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -938,6 +1300,112 @@ select {
     border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
     background: var(--bg-subtle);
+  }
+
+  /*
+   * Glass overlays and backdrops (t3code method). One shared triple — opacity, blur,
+   * saturation — so a future opacity slider touches a single variable and
+   * every overlay follows. A micro procedural grain SVG tile is baked into
+   * overlay backgrounds for tactile depth without expensive fullscreen textures.
+   * Solid fallback where backdrop-filter is missing.
+   */
+  .dialog-glass {
+    background-color: color-mix(in srgb, var(--bg-overlay) var(--glass-opacity), transparent);
+    background-image: var(--surface-grain);
+    background-repeat: repeat;
+    background-size: var(--surface-grain-size);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  }
+
+  .dropdown-glass {
+    background-color: color-mix(in srgb, var(--bg-overlay) var(--glass-opacity), transparent);
+    background-image: var(--surface-grain);
+    background-repeat: repeat;
+    background-size: var(--surface-grain-size);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  }
+
+  .dialog-backdrop {
+    background-color: color-mix(in srgb, var(--overlay) 85%, transparent);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .dialog-glass,
+    .dropdown-glass {
+      background-color: var(--bg-overlay);
+      background-image: none;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+
+    .dialog-backdrop {
+      background-color: var(--overlay);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+
+  /* Smooth scroll mask for content sliding underneath pinned or sticky topbars */
+  .topbar-scroll-fade {
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgb(0 0 0 / 10%) 10%,
+      rgb(0 0 0 / 30%) 24%,
+      rgb(0 0 0 / 58%) 42%,
+      rgb(0 0 0 / 82%) 62%,
+      rgb(0 0 0 / 96%) 82%,
+      black 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgb(0 0 0 / 10%) 10%,
+      rgb(0 0 0 / 30%) 24%,
+      rgb(0 0 0 / 58%) 42%,
+      rgb(0 0 0 / 82%) 62%,
+      rgb(0 0 0 / 96%) 82%,
+      black 100%
+    );
+  }
+
+  /*
+   * Per-surface contrast twins. The global ladder derives text/borders from
+   * the foreground against the page base — wrong inside panels and overlays
+   * that sit on their own surface (sidebar rows on --bg-panel read brighter
+   * than the same token on --bg-base). These scopes re-anchor the twin math
+   * to the surface actually behind the pixels, solid-anchored the way t3code
+   * authors every role: identical output where the backdrop matches, correct
+   * output where it does not.
+   *
+   * Gated on html[data-contrast-ladder='on'], which App.tsx stamps exactly
+   * when a derivation exists (non-neutral contrast or a color override). At
+   * neutral the shipped themes render byte-identical to their authored values
+   * — cursor/xai author alphas no fg formula reproduces, and must keep them.
+   */
+  html[data-contrast-ladder='on'] .sidebar-surface {
+    --text-secondary: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 78%, var(--bg-panel)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-tertiary: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 50%, var(--bg-panel)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-muted: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 50%, var(--bg-panel)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-faint: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 40%, var(--bg-panel)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --border-subtle: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 5.5%, var(--bg-panel)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
+    --border-default: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 8.2%, var(--bg-panel)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
+    --border-medium: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 12%, var(--bg-panel)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
+  }
+
+  html[data-contrast-ladder='on'] .dialog-glass,
+  html[data-contrast-ladder='on'] .dropdown-glass {
+    --text-secondary: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 78%, var(--bg-overlay)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-tertiary: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 50%, var(--bg-overlay)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-muted: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 50%, var(--bg-overlay)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --text-faint: color-mix(in oklab, color-mix(in srgb, var(--text-primary) 40%, var(--bg-overlay)) var(--contrast-base), var(--contrast-target) var(--contrast-boost));
+    --border-subtle: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 5.5%, var(--bg-overlay)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
+    --border-default: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 8.2%, var(--bg-overlay)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
+    --border-medium: color-mix(in srgb, color-mix(in srgb, var(--text-primary) 12%, var(--bg-overlay)) var(--contrast-base), var(--text-primary) var(--contrast-border-boost));
   }
 
   .input {
@@ -1054,6 +1522,11 @@ select {
  * theme, so a future light theme inherits a readable shell for free.
  */
 [data-theme='light'] {
+  --contrast-target: #000000;
+  --glass-opacity: 85%;
+  --glass-blur: 12px;
+  --glass-saturation: 1.14;
+  --surface-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
   --term-selection: rgba(0, 0, 0, 0.16);
   --term-selection-inactive: rgba(0, 0, 0, 0.08);
 
@@ -1162,6 +1635,108 @@ select {
    the desktop app. */
 :root[data-pointer-cursors='true'] :is(button, a, [role='button'], [role='menuitem'], [role='option'], [role='tab'], label[for], summary, input[type='checkbox'], input[type='radio'], input[type='range'], select):not(:disabled, [aria-disabled='true']) {
   cursor: pointer;
+}
+
+/*
+ * Settings sliders (Contrast). The track fills up to
+ * `--settings-slider-progress` so the value reads without the number.
+ * The fill edge adds half a thumb width so it meets the thumb center at both
+ * extremes instead of overshooting. appearance-none removes the native thumb,
+ * so both engines get one here (Firefox covers track + progress natively).
+ * Includes hover/active scaling, focus-visible ring, forced-colors revert.
+ */
+.settings-range {
+  --settings-slider-fill-offset: 0.4375rem;
+  --settings-slider-fill-position: calc(
+    var(--settings-slider-progress, 50%) + var(--settings-slider-fill-offset)
+  );
+  appearance: none;
+  -webkit-appearance: none;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--settings-slider-fill-position),
+    var(--bg-active) var(--settings-slider-fill-position),
+    var(--bg-active) 100%
+  );
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  outline: none;
+}
+
+.settings-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--text-primary);
+  border: 2px solid var(--accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 12%, transparent);
+  transition: transform var(--duration-fast) var(--easing-default), box-shadow var(--duration-fast) var(--easing-default);
+}
+
+.settings-range:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--text-primary) 20%, transparent);
+}
+
+.settings-range:active::-webkit-slider-thumb {
+  transform: scale(0.94);
+}
+
+.settings-range::-moz-range-track {
+  height: 0.375rem;
+  border-radius: var(--radius-full);
+  background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.settings-range::-moz-range-progress {
+  height: 0.375rem;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.settings-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: var(--text-primary);
+  border: 2px solid var(--accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 12%, transparent);
+  transition: transform var(--duration-fast) var(--easing-default), box-shadow var(--duration-fast) var(--easing-default);
+}
+
+.settings-range:hover::-moz-range-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--text-primary) 20%, transparent);
+}
+
+.settings-range:active::-moz-range-thumb {
+  transform: scale(0.94);
+}
+
+.settings-range:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--ring);
+}
+
+@media (forced-colors: active) {
+  .settings-range {
+    appearance: auto;
+    accent-color: Highlight;
+    background: none;
+  }
+
+  .settings-range::-webkit-slider-thumb {
+    all: revert;
+  }
+
+  .settings-range::-moz-range-track,
+  .settings-range::-moz-range-progress,
+  .settings-range::-moz-range-thumb {
+    all: revert;
+  }
 }
 
 /* ---- Translucent sidebar (macOS vibrancy) ----------------------------

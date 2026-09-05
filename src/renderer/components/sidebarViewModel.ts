@@ -1,10 +1,14 @@
 import type {
   ConversationChangeStats,
   ConversationSummary,
+  ModelSummary,
   WorkspaceProject,
   WorkspaceMode,
 } from '../../shared/contracts';
-import type { DraftStateLike } from './types';
+import { deriveAttentionState, type AttentionLevel } from '../lib/attention';
+import { liveJobCountFor, type ConversationJobSummary } from '../lib/jobActivity';
+import { effectiveSnoozed } from '../lib/snooze';
+import type { DraftSummary, PendingApprovalSummary } from '../stores/draftSummaries';
 
 export type SidebarConversationItem = {
   id: string;
@@ -13,7 +17,15 @@ export type SidebarConversationItem = {
   isRunning: boolean;
   /** The turn ended in an error the user has not seen yet. */
   isFailed: boolean;
-  status: DraftStateLike['status'] | 'idle';
+  status: DraftSummary['status'] | 'idle';
+  /**
+   * What this thread needs from a human right now (Codex "Activity" model):
+   * an approval/error to answer, work in flight, a queued turn, or unread
+   * output. Rows render one mark for it; the popover groups by it.
+   */
+  attention: AttentionLevel;
+  /** Finished turns nobody has read yet; >0 pairs with `attention: 'unread'`. */
+  unreadCount: number;
   primaryLabel: string;
   secondaryLabel: string | null;
   timestampLabel: string | null;
@@ -40,9 +52,27 @@ export type SidebarConversationItem = {
    * nothing truthful to render, but "changed nothing" is a fact, and zeros say
    * it. Callers branch on `fileCount === 0`, never on the field being absent.
    */
+  /** When blocked on tool approval, surfaces tool and intent snippet for quick triage. */
+  pendingApproval?: PendingApprovalSummary | null;
   changeStats: ConversationChangeStats;
   /** When the chat was pinned, or null. Orders the Pinned section. */
   pinnedAt: string | null;
+  /**
+   * When the chat was parked as done, or null. Settled chats render in the
+   * Settled shelf, never in project/Recents sections. Null means active.
+   */
+  settledAt: string | null;
+  /**
+   * When the chat last re-entered the active list, or null. Floats the chat
+   * to the top of the active list instead of its recency slot.
+   */
+  unsettledAt: string | null;
+  /** Snooze wake time, or null when never snoozed / woken. */
+  snoozedUntil: string | null;
+  /** When the current snooze was set, or null. */
+  snoozedAt: string | null;
+  /** When the latest turn completed, or null. Used to raise snoozed threads early on completion. */
+  completedAt: string | null;
 };
 
 export type SidebarConversationGroup = {
@@ -54,8 +84,19 @@ export type SidebarConversationGroup = {
 
 type BuildSidebarConversationItemsParams = {
   conversations: ConversationSummary[];
-  draftsByConversation: Record<string, DraftStateLike | undefined>;
+  /**
+   * Turn-level draft state only. The rows never render tokens, so taking the
+   * summary rather than the live draft keeps the sidebar out of the 33ms
+   * stream flush entirely.
+   */
+  draftsByConversation: Record<string, DraftSummary | undefined>;
   now: number;
+  livenessByConversation?: Map<string, 'working' | 'monitoring' | null>;
+  /** Whole-window background-job rollups (`useConversationJobSummaries`). */
+  jobSummariesByConversation?: ReadonlyMap<string, ConversationJobSummary>;
+  unreadByConversation?: Record<string, number>;
+  /** Per-conversation /goal projections; active goals suppress unread bumps. */
+  goalsByConversation?: Record<string, import('../../shared/contracts').ConversationGoalView>;
 };
 
 const MONTHS = [
@@ -310,6 +351,88 @@ export function formatHomeRelativePath(root: string) {
   return rest ? `~${rest}` : '~';
 }
 
+/**
+ * The human name for a chat's model, resolved from the catalog rather than
+ * guessed from the id.
+ *
+ * The gateway spellings the sidebar stores (`vendor/deepseek-v4-flash-0325`)
+ * are not names, and a hardcoded id-to-name table only stays right until the
+ * next model ships. The catalog already carries the label the model picker
+ * shows, so a card and a chip never disagree about what a chat is running.
+ *
+ * `null` when nothing truthful can be said — an unset model, or an id the
+ * catalog does not know (an archived model, or a provider the user removed).
+ * Callers drop the row rather than render a title-cased id as a name.
+ */
+export function resolveModelDisplayLabel(
+  modelId: string | null | undefined,
+  models: readonly ModelSummary[]
+): string | null {
+  if (!modelId) return null;
+
+  const match = models.find((model) => model.id === modelId);
+  if (!match) return null;
+
+  return match.label && match.label !== match.id
+    ? match.label
+    : match.id.split('/').slice(-1)[0]?.replace(/[:@](free|beta|preview|latest)$/i, '') || null;
+}
+
+export type SidebarRowVariant = 'card' | 'slim';
+
+/**
+ * Resolves whether a sidebar row should render as a three-line card or a
+ * one-line slim row. Parked chats — settled, snoozed, archived — collapse
+ * into slim rows; live and pinned chats remain full cards.
+ */
+export function resolveSidebarRowVariant(
+  sectionOrOptions?:
+    | 'pinned'
+    | 'project'
+    | 'recents'
+    | 'archived'
+    | 'settled'
+    | 'snoozed'
+    | { archived?: boolean; settled?: boolean; snoozed?: boolean }
+    | null
+): SidebarRowVariant {
+  if (typeof sectionOrOptions === 'string') {
+    return sectionOrOptions === 'pinned' || sectionOrOptions === 'project' || sectionOrOptions === 'recents'
+      ? 'card'
+      : 'slim';
+  }
+  const options = sectionOrOptions ?? {};
+  return options.archived || options.settled || options.snoozed ? 'slim' : 'card';
+}
+
+/**
+ * Formats a shelf header label ("Archived", "Settled", "Snoozed"). Shows the
+ * count only while collapsed, and never renders a trailing space.
+ */
+export function formatShelfSectionLabel(
+  base: 'Archived' | 'Settled' | 'Snoozed',
+  params: {
+    expanded: boolean;
+    count: number;
+  }
+): string {
+  if (params.expanded || params.count <= 0) {
+    return base;
+  }
+  return `${base} (${params.count})`;
+}
+
+/**
+ * Formats the Settled section header label. Shows the count only while
+ * collapsed, and never renders a trailing space.
+ */
+export function formatSettledSectionLabel(params: {
+  expanded: boolean;
+  count: number;
+}): string {
+  return formatShelfSectionLabel('Settled', params);
+}
+
 function startOfDay(value: number) {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
@@ -332,16 +455,17 @@ function resolveGroup(timestampMs: number | null, now: number) {
     return { key: 'yesterday', label: 'Yesterday' };
   }
 
+  // Rolling windows, not calendar buckets: "This week" meant different things
+  // on Monday vs Sunday. Previous 7 / 30 days always answers "how old".
   if (timestampMs >= todayStart - 6 * DAY_MS) {
-    return { key: 'week', label: 'This week' };
+    return { key: 'week', label: 'Previous 7 days' };
+  }
+
+  if (timestampMs >= todayStart - 29 * DAY_MS) {
+    return { key: 'month', label: 'Previous 30 days' };
   }
 
   const nowDate = new Date(now);
-  const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).getTime();
-  if (timestampMs >= monthStart) {
-    return { key: 'month', label: 'This month' };
-  }
-
   const then = new Date(timestampMs);
   const year = then.getFullYear();
   const month = then.getMonth();
@@ -355,7 +479,7 @@ function resolveGroup(timestampMs: number | null, now: number) {
 
 function buildSecondaryLabel(
   conversation: ConversationSummary,
-  draft: DraftStateLike | undefined,
+  draft: DraftSummary | undefined,
   primaryLabel: string
 ) {
   if (draft?.status === 'streaming') {
@@ -387,7 +511,14 @@ export function buildSidebarConversationItems({
   conversations,
   draftsByConversation,
   now,
-}: BuildSidebarConversationItemsParams) {
+  livenessByConversation,
+  jobSummariesByConversation,
+  unreadByConversation,
+  goalsByConversation,
+  queuedByConversation,
+}: BuildSidebarConversationItemsParams & {
+  queuedByConversation?: Record<string, readonly unknown[]>;
+}) {
   return conversations.map<SidebarConversationItem>((conversation) => {
     const draft = draftsByConversation[conversation.id];
     // No pre-clipping: the row truncates with CSS, and the `title` tooltip
@@ -403,12 +534,35 @@ export function buildSidebarConversationItems({
     const timestampMs = parseTimestamp(draft?.startedAt ?? conversation.updatedAt);
     // The draft is what this window is streaming right now; the persisted
     // status is what a turn started before a reload — or in another window —
-    // left behind. The draft wins where both speak.
-    const isRunning = draft ? draft.status === 'streaming' : conversation.status === 'running';
+    // left behind. The draft wins where both speak, but background liveness
+    // (S6) outranks a settled draft: a parent with a running subagent is still
+    // working even after its own turn settles.
+    const backgroundLiveness = livenessByConversation?.get(conversation.id) ?? null;
+    const backgroundJobsLive = liveJobCountFor(jobSummariesByConversation, conversation.id);
+    // A live background job is work in progress exactly like a running turn —
+    // the row dot and the bell must agree with the chip about it.
+    const isRunning =
+      backgroundLiveness === 'working' || backgroundJobsLive > 0
+        ? true
+        : draft
+          ? draft.status === 'streaming'
+          : conversation.status === 'running';
     const isFailed = draft ? draft.status === 'error' : conversation.status === 'failed';
     const startedMs = isRunning
       ? parseTimestamp(draft?.startedAt ?? conversation.startedAt ?? null)
       : null;
+
+    const unreadCount = unreadByConversation?.[conversation.id] ?? 0;
+    const attention = deriveAttentionState({
+      draftStatus: draft?.status,
+      hasPendingApproval: draft?.hasPendingApproval ?? false,
+      backgroundLiveness,
+      backgroundJobsLive,
+      conversationStatus: conversation.status,
+      queuedFollowups: queuedByConversation?.[conversation.id]?.length ?? 0,
+      unreadCount,
+      hasActiveGoal: goalsByConversation?.[conversation.id]?.status === 'active',
+    });
 
     return {
       id: conversation.id,
@@ -416,6 +570,8 @@ export function buildSidebarConversationItems({
       isRunning,
       isFailed,
       status: draft?.status ?? 'idle',
+      attention,
+      unreadCount,
       primaryLabel,
       secondaryLabel: buildSecondaryLabel(conversation, draft, primaryLabel),
       // A running task reports how long it has been going, which is the only
@@ -430,8 +586,16 @@ export function buildSidebarConversationItems({
       // The contract promises zeros rather than null, but the sidebar also
       // renders summaries that were cached before the column existed; falling
       // back here keeps that one row from reading `undefined files`.
+      pendingApproval: draft?.pendingApproval ?? null,
       changeStats: conversation.changeStats ?? NO_CHANGE_STATS,
       pinnedAt: conversation.pinnedAt ?? null,
+      // Same pre-column tolerance as changeStats: cached summaries predate
+      // these fields, and undefined must read as active/never-snoozed.
+      settledAt: conversation.settledAt ?? null,
+      unsettledAt: conversation.unsettledAt ?? null,
+      snoozedUntil: conversation.snoozedUntil ?? null,
+      snoozedAt: conversation.snoozedAt ?? null,
+      completedAt: conversation.completedAt ?? null,
     };
   });
 }
@@ -454,6 +618,77 @@ export function splitPinnedSidebarItems(items: SidebarConversationItem[]) {
   pinned.sort((left, right) => (right.pinnedAt ?? '').localeCompare(left.pinnedAt ?? ''));
 
   return { pinned, rest };
+}
+
+/**
+ * Lift settled chats out of the list into the Settled shelf, most recently
+ * parked first. Settled sorts by wrap-up time (`settledAt`), not by thread
+ * age — the shelf answers "what did I finish lately", and creation order
+ * cannot answer that.
+ *
+ * Pinned chats never move here: pin is preserved across settling, so a
+ * pinned-and-settled chat keeps its place in Pinned.
+ */
+export function splitSettledSidebarItems(items: SidebarConversationItem[]) {
+  const settled: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    (item.settledAt && !item.pinnedAt ? settled : rest).push(item);
+  }
+
+  settled.sort((left, right) => (right.settledAt ?? '').localeCompare(left.settledAt ?? ''));
+
+  return { settled, rest };
+}
+
+/**
+ * Lift snoozed chats out of the list into the Snoozed shelf, soonest wake
+ * first: "what comes back next" is the shelf's question. Only chats whose
+ * wake still lies in the future and that hold no pending approval count — a
+ * tool approval arriving after the snooze lifts it early, and an elapsed wake
+ * simply stops classifying. Failed turns stay parked: snoozing one is an
+ * explicit "deal with this later".
+ */
+export function splitSnoozedSidebarItems(items: SidebarConversationItem[], now: number) {
+  const snoozed: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    const hidden = effectiveSnoozed(
+      {
+        snoozedUntil: item.snoozedUntil,
+        hasPendingApproval: item.pendingApproval != null,
+        snoozedAt: item.snoozedAt,
+        completedAt: item.completedAt,
+      },
+      now
+    );
+    (hidden ? snoozed : rest).push(item);
+  }
+
+  snoozed.sort((left, right) => (left.snoozedUntil ?? '').localeCompare(right.snoozedUntil ?? ''));
+
+  return { snoozed, rest };
+}
+
+/**
+ * Float re-activated chats above the active list. An unsettle stamps
+ * `unsettledAt`, which always postdates the chat's own `updatedAt` — so
+ * comparing the two only ever moves chats that re-entered, and everything
+ * else keeps exactly the order it arrived in.
+ */
+export function floatUnsettledSidebarItems(items: SidebarConversationItem[]) {
+  const floated: SidebarConversationItem[] = [];
+  const rest: SidebarConversationItem[] = [];
+
+  for (const item of items) {
+    (item.unsettledAt ? floated : rest).push(item);
+  }
+
+  floated.sort((left, right) => (right.unsettledAt ?? '').localeCompare(left.unsettledAt ?? ''));
+
+  return [...floated, ...rest];
 }
 
 /**
@@ -548,4 +783,54 @@ export function splitSidebarItemsByProject(
   }
 
   return { sections: [...sections.values()], ungrouped };
+}
+
+/**
+ * Work chats are folderless chats (`projectId == null`). They live only in
+ * Work mode; Code mode is project chats only. Filtered by folder presence,
+ * not by the `workspaceMode` field: a Work-mode chat with a folder attached
+ * for read-only context still has a folder, so it sorts with projects.
+ */
+export function isWorkChat(item: Pick<SidebarConversationItem, 'projectId'>) {
+  return item.projectId == null;
+}
+
+/**
+ * Mode gate for the whole sidebar. Work shows folderless chats, Code shows
+ * project chats. Applied to every shelf (inbox, pinned, snoozed, settled,
+ * archived) so a hidden chat never leaks back through a shelf.
+ */
+export function filterSidebarItemsByMode<T extends Pick<SidebarConversationItem, 'projectId'>>(
+  items: readonly T[],
+  mode: WorkspaceMode
+): T[] {
+  const wantWork = mode !== 'code';
+  return items.filter((item) => isWorkChat(item) === wantWork);
+}
+
+/**
+ * Sidebar project scope filter (t3code #9416): the selected project id, or
+ * null for "all projects". The selection persists in localStorage next to the
+ * manual pin order, so routes that unmount the sidebar (Settings, Sites) and
+ * app restarts keep it.
+ */
+
+/** Storage form is a bare id string; anything else means "all projects". */
+export function parseScopeProjectId(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * A stored scope whose project is gone falls back to all projects — but only
+ * once the project list has loaded. Projects arrive after mount, so clearing
+ * while the list is still empty would drop the restored scope every launch.
+ */
+export function resolveScopeProjectId(
+  stored: string | null,
+  projectIds: readonly string[],
+  hasProjects: boolean
+): string | null {
+  if (stored === null) return null;
+  if (!hasProjects) return stored;
+  return projectIds.includes(stored) ? stored : null;
 }

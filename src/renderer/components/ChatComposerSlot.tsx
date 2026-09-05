@@ -1,7 +1,10 @@
 import { useCallback } from 'react';
 
-import { EMPTY_COMPOSER_ATTACHMENTS, useAppStore } from '../stores/useAppStore';
+import { EMPTY_COMPOSER_ATTACHMENTS, EMPTY_COMPOSER_CITATIONS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
 import { Composer, type ComposerAttachment, type ComposerProps } from './Composer';
+import type { CitedQuoteEntry } from '../../shared/citations';
+import { QueueDock } from './transcript/QueueDock';
+import { GoalDock } from './goal/GoalDock';
 
 /**
  * Everything the composer needs that is *not* the half-typed message itself.
@@ -11,7 +14,16 @@ import { Composer, type ComposerAttachment, type ComposerProps } from './Compose
  */
 type ChatComposerSlotProps = Omit<
   ComposerProps,
-  'value' | 'attachments' | 'onChange' | 'onAttachmentsChange'
+  | 'value'
+  | 'attachments'
+  | 'onChange'
+  | 'onAttachmentsChange'
+  | 'citations'
+  | 'onCitationsChange'
+  | 'conversationId'
+  | 'draftRequestId'
+  | 'draftStatus'
+  | 'isStreaming'
 > & {
   conversationId: string | null;
 };
@@ -49,9 +61,29 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
       ? state.composerAttachmentsByConversation[conversationId] ?? EMPTY_COMPOSER_ATTACHMENTS
       : EMPTY_COMPOSER_ATTACHMENTS
   );
+  const citations = useAppStore((state) =>
+    conversationId
+      ? state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS
+      : EMPTY_COMPOSER_CITATIONS
+  );
+  /*
+    Turn identity, not turn content. `draftsByConversation` is replaced on every
+    33ms stream flush; these two fields change when a request starts, settles or
+    fails. Subscribing to them instead keeps the composer — and the context
+    meter it owns — off the token path.
+  */
+  const draftRequestId = useAppStore((state) =>
+    conversationId ? state.draftsByConversation[conversationId]?.requestId ?? null : null
+  );
+  const draftStatus = useAppStore((state) =>
+    conversationId ? state.draftsByConversation[conversationId]?.status ?? null : null
+  );
   const setComposerDraft = useAppStore((state) => state.setComposerDraft);
   const setComposerAttachments = useAppStore((state) => state.setComposerAttachments);
-
+  const setComposerCitations = useAppStore((state) => state.setComposerCitations);
+  const cancelQueuedFollowup = useAppStore((state) => state.cancelQueuedFollowup);
+  // Queued follow-ups for this thread — the dock between transcript and slab.
+  const queuedFollowups = useAppStore((state) => selectQueuedFollowups(state, conversationId));
   const handleChange = useCallback(
     (next: string) => {
       if (conversationId) {
@@ -70,13 +102,36 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
     [conversationId, setComposerAttachments]
   );
 
+  const handleCitationsChange = useCallback(
+    (updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]) => {
+      if (conversationId) {
+        setComposerCitations(conversationId, updater);
+      }
+    },
+    [conversationId, setComposerCitations]
+  );
+
   return (
-    <Composer
-      {...composerProps}
-      attachments={attachments}
-      onAttachmentsChange={handleAttachmentsChange}
-      onChange={handleChange}
-      value={value}
-    />
+    <>
+      <GoalDock conversationId={conversationId} />
+      <QueueDock
+        entries={queuedFollowups}
+        onCancel={(requestId) => void cancelQueuedFollowup(requestId)}
+      />
+      <Composer
+        {...composerProps}
+        conversationId={conversationId}
+        draftRequestId={draftRequestId}
+        draftStatus={draftStatus}
+        isStreaming={draftStatus === 'streaming'}
+        queuedCount={queuedFollowups.length}
+        attachments={attachments}
+        onAttachmentsChange={handleAttachmentsChange}
+        citations={citations}
+        onCitationsChange={handleCitationsChange}
+        onChange={handleChange}
+        value={value}
+      />
+    </>
   );
 }

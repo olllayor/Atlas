@@ -40,25 +40,38 @@ import {
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
+import { JOB_TOOL_SYSTEM_PROMPT, buildJobCompletionNoticeMessage } from '../tools/jobTools';
+import { SESSION_SEARCH_SYSTEM_PROMPT } from '../tools/sessionSearchTools';
+import { GOAL_TOOL_SYSTEM_PROMPT } from '../tools/goalTools';
+import { buildGoalEnvelope } from '../goal/goalRuntime';
+import { formatCompletionNotice, type BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
 import type { SkillsService } from '../../plugins/SkillsService';
 import { createSkillTools } from '../../plugins/skillTools';
 import type { ToolWorkspace } from '../tools/toolWorkspace';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
+import type { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
 import { DEFAULT_TOOL_WORKSPACE } from '../tools/toolWorkspace';
 import { SITE_TOOL_SYSTEM_PROMPT } from '../tools/siteTools';
 import { formatToolError } from '../tools/ToolErrorFormatter';
 import type { SpillStore } from '../tools/spill/SpillStore';
 import { applySpillPolicy } from '../tools/spill/spillPolicy';
+import { applyTimeoutPolicy } from '../guards/timeoutPolicy';
 import { logger, startTimer } from '../../observability/logger';
 import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
 import type { ProviderRegistry } from './providerRegistry';
 import { getProviderOrThrow } from './providerRegistry';
+import { requiresStoredCredential } from './ProviderAdapter';
 import { DEFAULT_STREAM_CORE_CONFIG, resolveMaxOutputTokens } from '../providers/streamCore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
 import { VISUAL_PROMPT } from './VISUAL_PROMPT';
 import type { ContextBuildMode } from './ContextManager';
 import { ContextManager } from './ContextManager';
+import {
+  COMPACTION_THRESHOLD_DEFAULT,
+  clampCompactionThresholdPercent,
+  compactionPercentToRatio,
+} from '../../../shared/contextCompaction';
 
 /** What a turn's Sites gate is evaluated against. */
 export type SiteToolContext = {
@@ -100,11 +113,25 @@ export type ExecuteTurnRequest = {
   messagesOverride?: ModelMessage[];
   initialParts?: ChatMessagePart[];
   subagentRuntime?: SubagentRuntime;
+  continuationManager?: SubagentContinuationManager;
   persistMessage?: boolean;
   parentAgentId?: string;
   /** Nesting depth: root turn = 0, child agent = 1, grandchild = 2, … */
   depth?: number;
   allowedTools?: string[];
+  /**
+   * Called once per attempt with the exact request envelope about to go to
+   * the provider. Observational only — the harness records it as a
+   * `request.header` event so prefix stability across turns is checkable.
+   */
+  onRequestHeader?: (header: RequestHeader) => void;
+};
+
+/** Envelope snapshot for one provider attempt; see `onRequestHeader`. */
+export type RequestHeader = {
+  attempt: number;
+  systemPrompt: string | undefined;
+  messages: ModelMessage[];
 };
 
 export type ExecuteTurnResult = {
@@ -116,6 +143,8 @@ export type ExecuteTurnResult = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  /** Provider-reported prompt-cache hit tokens; absent when unreported. */
+  cachedInputTokens?: number;
   latencyMs?: number;
 };
 
@@ -263,6 +292,31 @@ export function buildRetryNotice(code: string, attempt: number, budget: number):
   }
 }
 
+/**
+ * The next compaction step after a provider-confirmed context overflow, or
+ * null once the ladder is exhausted. Each step keeps fewer turns raw and
+ * leans harder on the summary; the newest turn survives every step, so the
+ * reduction is always balanced — a tool call and its result are compressed
+ * together or not at all.
+ */
+function nextCompactionMode(mode: ContextBuildMode): ContextBuildMode | null {
+  switch (mode) {
+    case 'standard':
+      return 'aggressive';
+    case 'aggressive':
+      return 'maximal';
+    case 'maximal':
+      return null;
+  }
+}
+
+function compactionNotice(mode: ContextBuildMode): string {
+  if (mode === 'maximal') {
+    return 'The conversation is still too long for this model. Keeping only the latest exchange raw and retrying.';
+  }
+  return 'The conversation was too long for this model. Summarising older turns and retrying.';
+}
+
 function positiveOrNull(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
@@ -383,7 +437,7 @@ export class ChatSessionRuntime {
     private readonly modelsRepo: ModelsRepo,
     private readonly keychain: KeychainStore,
     private readonly providers: ProviderRegistry,
-    private readonly contextManager: Pick<ContextManager, 'buildModelInput'> = new ContextManager(),
+    private readonly contextManager: Pick<ContextManager, 'buildModelInput' | 'requestForcedCompaction'> = new ContextManager(),
     /**
      * Supplies the Sites toolset for a turn, or null when the user has not
      * opted in. Kept as a provider so tools close over the live service and
@@ -462,7 +516,22 @@ export class ChatSessionRuntime {
      * takes toward a save failure.
      */
     private readonly spillStore: Pick<SpillStore, 'saveText'> | null = null,
+    /**
+     * Live resolver for the global compaction threshold. Injected so an updated
+     * preference takes effect on the next request without restart. Falls back
+     * to the default when absent or throwing, which keeps the send path
+     * failure-free even if the settings store is unavailable in a test.
+     */
+    private readonly compactionThresholdResolver: () => number = () => COMPACTION_THRESHOLD_DEFAULT,
   ) {}
+
+  /**
+   * The compaction depth each conversation last went out at, so a turn that
+   * compresses *more* than the previous one can say so. Insertion-ordered
+   * and capped at write time: a deleted conversation's entry is dead
+   * weight, never a leak worth an eviction ceremony.
+   */
+  private readonly lastDroppedTurnsByConversation = new Map<string, number>();
 
   /** The server behind a namespaced tool name, for an audit record. */
   /**
@@ -559,7 +628,7 @@ export class ChatSessionRuntime {
    * precisely so the model cannot pick them, and naming one is the whole point
    * of the syntax.
    */
-  private describePluginMentionsForPrompt(targets: PluginMentionTarget[]): string | null {
+  private describePluginMentionsForPrompt(targets: PluginMentionTarget[], projectRoot?: string | null): string | null {
     if (targets.length === 0 || !this.skillsService) {
       return null;
     }
@@ -581,7 +650,10 @@ export class ChatSessionRuntime {
         continue;
       }
 
-      const skill = this.skillsService.find(`${target.plugin}:${target.skill}`);
+      const skill = this.skillsService.find(
+        target.skill ? `${target.plugin}:${target.skill}` : target.plugin,
+        projectRoot
+      );
 
       lines.push(
         skill
@@ -590,7 +662,7 @@ export class ChatSessionRuntime {
       );
 
       if (skill) {
-        lines.push(this.skillsService.read(skill.qualifiedName));
+        lines.push(this.skillsService.read(skill.qualifiedName, projectRoot));
       }
     }
 
@@ -730,6 +802,69 @@ export class ChatSessionRuntime {
     }
   }
 
+  private drainSubagentNotices(
+    manager: SubagentContinuationManager,
+    conversationId: string,
+    requestId: string,
+    emitEvent: (event: StreamEvent) => void
+  ): ModelMessage[] {
+    let notices: ReturnType<SubagentContinuationManager['drainCompletionNotices']>;
+    try {
+      notices = manager.drainCompletionNotices(conversationId);
+    } catch {
+      return [];
+    }
+    if (notices.length === 0) return [];
+    emitEvent({
+      type: 'notice',
+      requestId,
+      code: 'subagents-failed',
+      level: 'warning',
+      message: notices.length === 1 ? `Subagent ${notices[0].childId.slice(0, 8)} failed.` : `${notices.length} subagents failed.`,
+    });
+    const text = notices.map((n) => `Subagent ${n.childId.slice(0, 8)} (${n.title}) failed: ${n.error}`).join('\n');
+    return [{ role: 'user', content: text } as ModelMessage];
+  }
+
+  /**
+   * Claim every unreported settled background job for the conversation and
+   * shape them for the model. The drain is the claim — whatever happens to
+   * the turn afterwards, these notices are not re-delivered.
+   */
+  private drainJobCompletionNotices(
+    registry: BackgroundJobRegistry,
+    conversationId: string,
+    requestId: string,
+    emitEvent: (event: StreamEvent) => void
+  ): ModelMessage[] {
+    let drained: ReturnType<BackgroundJobRegistry['drainCompletionNotices']>;
+    try {
+      drained = registry.drainCompletionNotices(conversationId);
+    } catch {
+      // A drain failure must not take the turn down: the notices stay
+      // unreported and the next turn tries again.
+      return [];
+    }
+
+    if (drained.length === 0) {
+      return [];
+    }
+
+    // The transient user-facing half, same channel as the repeat-guard nudge.
+    emitEvent({
+      type: 'notice',
+      requestId,
+      code: 'background-jobs-completed',
+      level: 'info',
+      message:
+        drained.length === 1
+          ? `Background job ${drained[0].id} finished.`
+          : `${drained.length} background jobs finished.`
+    });
+
+    return [buildJobCompletionNoticeMessage(drained)];
+  }
+
   async executeTurn({
     requestId,
     request,
@@ -739,15 +874,19 @@ export class ChatSessionRuntime {
     messagesOverride,
     initialParts,
     subagentRuntime,
+    continuationManager,
     persistMessage = true,
     parentAgentId,
     depth,
     allowedTools,
+    onRequestHeader,
   }: ExecuteTurnRequest): Promise<ExecuteTurnResult> {
-    const apiKey = await this.keychain.getSecret(request.providerId);
     const provider = getProviderOrThrow(this.providers, request.providerId);
+    const apiKey = await this.keychain.getSecret(request.providerId);
 
-    if (!apiKey) {
+    // OpenCode signs itself in, so there is no Atlas key to find and demanding
+    // one failed every one of its turns.
+    if (!apiKey && requiresStoredCredential(provider)) {
       throw new MissingCredentialError('No API key is saved for the selected provider.');
     }
 
@@ -755,16 +894,18 @@ export class ChatSessionRuntime {
       requestId,
       request,
       provider,
-      apiKey,
+      apiKey: apiKey ?? '',
       signal,
       emitEvent,
       messagesOverride,
       initialParts,
       assistantMessageId,
       subagentRuntime,
+      continuationManager,
       parentAgentId,
       depth,
       allowedTools,
+      onRequestHeader,
     });
 
     const status: ExecuteTurnResult['status'] = result.pendingApprovals.length > 0 ? 'awaiting_approval' : 'completed';
@@ -792,6 +933,7 @@ export class ChatSessionRuntime {
             inputTokens: result.inputTokens ?? null,
             outputTokens: result.outputTokens ?? null,
             reasoningTokens: result.reasoningTokens ?? null,
+            cachedInputTokens: result.cachedInputTokens ?? null,
             latencyMs: result.latencyMs ?? null,
           })
         : requestId);
@@ -809,6 +951,7 @@ export class ChatSessionRuntime {
         inputTokens: result.inputTokens ?? null,
         outputTokens: result.outputTokens ?? null,
         reasoningTokens: result.reasoningTokens ?? null,
+        cachedInputTokens: result.cachedInputTokens ?? null,
         latencyMs: result.latencyMs ?? null,
         errorCode: null,
       });
@@ -823,6 +966,7 @@ export class ChatSessionRuntime {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       reasoningTokens: result.reasoningTokens,
+      cachedInputTokens: result.cachedInputTokens,
       latencyMs: result.latencyMs,
     };
   }
@@ -839,8 +983,26 @@ export class ChatSessionRuntime {
    * displayed number cannot drift from the request. Anything that changes what
    * is actually sent changes this too.
    */
+  requestForcedCompaction(conversationId: string): void {
+    this.contextManager.requestForcedCompaction(conversationId);
+  }
+
+  private getCompactionThresholdPercent(): number {
+    try {
+      const raw = this.compactionThresholdResolver();
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return COMPACTION_THRESHOLD_DEFAULT;
+      return clampCompactionThresholdPercent(raw);
+    } catch {
+      return COMPACTION_THRESHOLD_DEFAULT;
+    }
+  }
+
+  private getCompactionRatio(): number {
+    return compactionPercentToRatio(this.getCompactionThresholdPercent());
+  }
+
   measureContextUsage(request: GetContextUsageRequest): ContextUsageSnapshot {
-    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId, request.providerId ?? null);
     const maxTokens = positiveOrNull(modelHints.contextWindow);
 
     const toolPermissionMode =
@@ -851,8 +1013,8 @@ export class ChatSessionRuntime {
     const siteTools = this.resolveSiteTools(request);
     const tools = request.enableTools
       ? {
-          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace),
-          ...(this.skillsService ? createSkillTools(this.skillsService) : {}),
+          ...createBuiltInTools(this.modelsRepo, siteTools, toolPermissionMode, workspace, undefined, undefined, this.conversationsRepo),
+          ...(this.skillsService ? createSkillTools(this.skillsService, undefined, workspace.root) : {}),
           // Deliberately no activation hook here — see the constructor.
           // Last known catalog: this path cannot await a connection, and an
           // estimate is what it exists to produce.
@@ -873,21 +1035,20 @@ export class ChatSessionRuntime {
     );
     const baseSystemPrompt = this.buildSystemPrompt(
       request.enableTools,
-      null,
       siteTools != null,
       toolPermissionMode,
       workspace,
-      visualsEnabled,
-      // Measured off the *unsent* composer text, exactly like the visual gate
-      // above and for the same reason: a named skill's body is inlined into the
-      // prompt, so the ring has to account for it while the user is still
-      // typing rather than dropping several thousand tokens at send time.
-      // Resolution only — `onPluginMentioned` is deliberately not wired on this
-      // path, so measuring cannot activate a server.
-      this.resolvePluginMentions(request.pendingText ?? '')
+      visualsEnabled
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
-    const pendingTokens = estimatePendingTokens(request);
+    // Mentioned skill bodies no longer ride in the system prompt; they are
+    // counted where they now travel — the pending turn's history snapshot.
+    // Resolution only, and deliberately not wired to `onPluginMentioned` on
+    // this path: measuring cannot activate a server.
+    const pendingMentionTokens = estimateTextTokens(
+      this.describePluginMentionsForPrompt(this.resolvePluginMentions(request.pendingText ?? ''), workspace.root) ?? ''
+    );
+    const pendingTokens = estimatePendingTokens(request) + (pendingMentionTokens > 0 ? pendingMentionTokens : 0);
 
     // Same helper the send path uses, so the ring is sized against the same
     // window the request will be. Unsent composer text joins the floor here but
@@ -907,9 +1068,16 @@ export class ChatSessionRuntime {
     });
 
     const lastTurn = this.conversationsRepo.getLatestUsage?.(request.conversationId) ?? null;
+    const cache = this.conversationsRepo.getCacheUsage?.(request.conversationId) ?? null;
     const summaryTokens = modelInput.usage.addendumTokens;
     const historyTokens = modelInput.usage.historyTokens;
     const promptTokens = systemTokens + toolTokens + summaryTokens + historyTokens + pendingTokens;
+    const compactionThresholdPercent = this.getCompactionThresholdPercent();
+    const compactionRatio = compactionPercentToRatio(compactionThresholdPercent);
+    const compactionThresholdTokens =
+      budget != null && maxTokens != null
+        ? Math.max(0, Math.floor((budget.totalTokens - budget.reservedTokens) * compactionRatio))
+        : null;
 
     return {
       maxTokens,
@@ -925,7 +1093,10 @@ export class ChatSessionRuntime {
       droppedTurnCount: modelInput.usage.droppedTurnCount,
       keptTurnCount: modelInput.usage.keptTurnCount,
       overflow: maxTokens != null && promptTokens > maxTokens - reservedOutputTokens,
+      compactionThresholdTokens,
+      compactionThresholdPercent,
       lastTurn,
+      cache,
     };
   }
 
@@ -953,6 +1124,7 @@ export class ChatSessionRuntime {
       DEFAULT_STREAM_CORE_CONFIG
     );
     const contextWindow = positiveOrNull(modelHints.contextWindow);
+    const compactionRatio = this.getCompactionRatio();
 
     return {
       reservedOutputTokens,
@@ -962,25 +1134,17 @@ export class ChatSessionRuntime {
           : {
               totalTokens: Math.max(1, contextWindow - reservedOutputTokens),
               reservedTokens: fixedFloorTokens,
+              compactionRatio,
             },
     };
   }
 
   private buildSystemPrompt(
     enableTools: boolean | undefined,
-    contextAddendum: string | null,
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
-    visualsEnabled = false,
-    /**
-     * Plugins the user named with `@`.
-     *
-     * Counted by the context meter as well as sent, because a named skill's
-     * body is inlined here — that is real tokens, and a ring that ignored them
-     * would under-report exactly the turns that spend the most.
-     */
-    pluginMentions: PluginMentionTarget[] = [],
+    visualsEnabled = false
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -1000,31 +1164,74 @@ export class ChatSessionRuntime {
     const skillsPrompt =
       this.skillsService?.describeForPrompt({
         mode: workspace.mode,
-        hasProject: workspace.root != null
+        hasProject: workspace.root != null,
+        projectRoot: workspace.root
       }) ?? null;
-    const invokedPluginsPrompt = this.describePluginMentionsForPrompt(pluginMentions);
     const toolPrompt = [
       basePrompt,
       PLAN_TOOL_SYSTEM_PROMPT,
+      // Shipped exactly when the job tools are registered: etiquette for a
+      // tool the model cannot call is noise, and omitting it where the tools
+      // exist would leave the model busy-polling.
+      ...(workspace.jobRegistry && workspace.conversationId ? [JOB_TOOL_SYSTEM_PROMPT] : []),
+      // Goal mode: static etiquette ships with the update_goal tool (same
+      // conditional); the dynamic envelope rides beside it. Both are gated on
+      // status 'active', not merely "a row exists" — paused and terminal rows
+      // persist as history, and their etiquette would keep telling a finished
+      // goal it is still live. The envelope changes per continued turn, which
+      // re-keys the prompt cache only while a goal is active — a bounded cost
+      // the plan accepted explicitly.
+      ...(workspace.goalTools && workspace.conversationId
+        ? (() => {
+            const goal = workspace.goalTools.getActive(workspace.conversationId);
+            return goal && goal.status === 'active'
+              ? [GOAL_TOOL_SYSTEM_PROMPT, buildGoalEnvelope(goal)]
+              : [];
+          })()
+        : []),
+      // session_search rides the always-present conversationsRepo, so its
+      // etiquette ships unconditionally, like update_plan's.
+      SESSION_SEARCH_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
       ...(skillsPrompt ? [skillsPrompt] : []),
-      // After the index and before the project's own instructions: an explicit
-      // mention outranks what the model might have chosen for itself, and is
-      // still subject to everything Atlas enforces above it.
-      ...(invokedPluginsPrompt ? [invokedPluginsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
+    // Invoked-plugin context is deliberately NOT here. A `@mention` inlines
+    // the named skill's full body, which differs per turn — at position 0 of
+    // the request that would re-key the provider's prefix cache on every
+    // mentioned turn (the whole conversation re-reads). It rides as a derived
+    // user-role snapshot inside the turn's history instead — see
+    // `deriveTurnSnapshot` and `ContextManager.buildModelInput` — the same
+    // cache-safe shape dsh uses for dynamic context: appended after durable
+    // content, byte-stable once written.
     // The visual spec goes last of the Atlas-owned blocks and only when this
     // turn asked for a visual, so an ordinary question is not carrying two
     // thousand tokens of SVG instructions it will never use.
+    //
+    // No compaction summary here on purpose: the handoff rides in the history
+    // (see `ContextManager`), because a per-turn-volatile block at the head of
+    // the request would re-key the provider's prompt cache on every turn.
     const sections = [
       ...(enableTools ? [toolPrompt] : []),
       ...(visualsEnabled ? [VISUAL_PROMPT] : []),
-      ...(contextAddendum ? [contextAddendum] : []),
     ];
 
     return sections.join('\n\n');
+  }
+
+  /**
+   * Model-facing context for one historical turn's `@mentions`, derived from
+   * that turn's own persisted user text.
+   *
+   * Deterministic given (user text, skill registry): the same bytes rebuild
+   * after a restart, so the snapshot needs no persistence of its own and lands
+   * in the wire request right after its turn's user message — chronologically
+   * where dsh records a pre-step injection. Returns null for mention-free
+   * turns, which contribute nothing and shift nothing.
+   */
+  private deriveTurnSnapshot(userText: string, projectRoot?: string | null): string | null {
+    return this.describePluginMentionsForPrompt(this.resolvePluginMentions(userText), projectRoot);
   }
 
   private resolveSiteTools(request: {
@@ -1053,9 +1260,11 @@ export class ChatSessionRuntime {
     initialParts,
     assistantMessageId,
     subagentRuntime,
+    continuationManager,
     parentAgentId,
     depth,
     allowedTools,
+    onRequestHeader,
   }: {
     requestId: string;
     request: ChatStartRequest;
@@ -1068,10 +1277,12 @@ export class ChatSessionRuntime {
     /** Present on a resumed turn; absent on a first send, where no row exists yet. */
     assistantMessageId?: string;
     subagentRuntime?: SubagentRuntime;
+    continuationManager?: SubagentContinuationManager;
     parentAgentId?: string;
     /** Nesting depth of the current turn (0 = root, 1 = first child agent, …). */
     depth?: number;
     allowedTools?: string[];
+    onRequestHeader?: (header: RequestHeader) => void;
   }): Promise<ProviderStreamResult & { parts: ChatMessagePart[]; pendingApprovals: PendingToolApproval[] }> {
     let attempt = 0;
     let streamedAnyResponse = false;
@@ -1181,13 +1392,17 @@ export class ChatSessionRuntime {
             toolPermissionMode,
             workspace,
             subagentRuntime,
-            subagentContext
+            subagentContext,
+            this.conversationsRepo,
+            continuationManager,
+            subagentContext ? { conversationId: subagentContext.conversationId } : undefined
           ),
           ...(this.skillsService
             ? createSkillTools(
                 this.skillsService,
                 (pluginName, requiredServers) =>
                   this.onSkillLoaded?.(request.conversationId, pluginName, requiredServers) ?? false,
+                workspace.root
               )
             : {}),
           ...mcpTools,
@@ -1209,16 +1424,34 @@ export class ChatSessionRuntime {
     // the context budget. Applied after the allowedTools filter so wrapping
     // never resurrects a withheld tool; a missing store is a no-op.
     if (tools) {
-      tools = applySpillPolicy(
+      const withSpill = applySpillPolicy(
         tools,
         this.spillStore
           ? { conversationId: request.conversationId, store: this.spillStore }
           : null
+      );
+      // Cooperative per-tool deadlines: a tool that declares `timeoutMs` gets
+      // its abort signal fused with a timer, and a fired deadline replaces
+      // the result with a structured TOOL_TIMEOUT. Applied outermost so the
+      // deadline covers the spill wrapper too.
+      tools = applyTimeoutPolicy(withSpill) as any;
+    }
+    if (tools) {
+      // Canonical wire order (dsh invariant): code-unit sort by name, so the
+      // serialized schema block is byte-identical across steps and turns no
+      // matter how the contributing registries were assembled. MCP tools
+      // arrive in server response order, which is exactly the kind of hidden
+      // nondeterminism that silently re-keys a provider's prefix cache.
+      tools = Object.fromEntries(
+        Object.entries(tools).sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0
+        )
       ) as any;
     }
     // Catalog-derived limits so the adapter can size the request to this model
-    // rather than to a provider-wide constant.
-    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId);
+    // rather than to a provider-wide constant. Provider-qualified so a model
+    // served by two endpoints gets the right window for the chosen one.
+    const modelHints = this.modelsRepo.getRuntimeHints(request.modelId, request.providerId);
 
     while (true) {
       const attemptElapsed = startTimer();
@@ -1231,11 +1464,34 @@ export class ChatSessionRuntime {
         pendingApprovals: new Map<string, PendingToolApproval>(),
       };
       // Same budget the ring displays, so what is shown is what is sent.
-      const history = messagesOverride ?? this.selectModelHistory(request.conversationId);
+      //
+      // Background jobs that settled since the conversation's last turn are
+      // drained here — exactly once; the registry marks them reported — and
+      // ride into this request as a synthetic user message. Appended to the
+      // request copy only, never persisted: the transcript already records
+      // what the jobs did, and the notice exists to make the model collect
+      // them with job_output.
+      const jobNotices = workspace.jobRegistry
+        ? this.drainJobCompletionNotices(
+            workspace.jobRegistry,
+            request.conversationId,
+            requestId,
+            emitEvent
+          )
+        : [];
+      const subagentNotices = continuationManager
+        ? this.drainSubagentNotices(continuationManager, request.conversationId, requestId, emitEvent)
+        : [];
+      const combinedNotices = [...jobNotices, ...subagentNotices];
+      const baseHistory = messagesOverride ?? this.selectModelHistory(request.conversationId);
+      const history = combinedNotices.length > 0 ? [...baseHistory, ...combinedNotices] : baseHistory;
       const modelInput = this.contextManager.buildModelInput({
         conversationId: request.conversationId,
         history,
         mode: compactionMode,
+        // Per-turn `@mention` context rides as a derived history snapshot, not
+        // in the system prompt — see `deriveTurnSnapshot`.
+        turnSnapshot: (userText) => this.deriveTurnSnapshot(userText, workspace.root),
         budget: this.resolveContextBudget({
           modelHints,
           requestedMaxOutputTokens: request.maxOutputTokens,
@@ -1243,16 +1499,41 @@ export class ChatSessionRuntime {
             estimateTextTokens(
               this.buildSystemPrompt(
                 request.enableTools,
-                null,
                 siteTools != null,
                 toolPermissionMode,
                 workspace,
-                visualsEnabled,
-                pluginMentions
+                visualsEnabled
               )
             ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
         }).budget,
       });
+
+      // First attempt only — a retry re-derives the same split, and the
+      // notice must not re-announce it. Compaction is invisible by default:
+      // the summary replaces turns the user can no longer watch, so the one
+      // moment it happens is the one moment worth saying so (dsh puts a
+      // durable marker in the transcript; this notice is the live half of
+      // that, and the hover card on the context ring is the standing half).
+      if (attempt === 0) {
+        const previousDropped = this.lastDroppedTurnsByConversation.get(request.conversationId) ?? 0;
+        const dropped = modelInput.usage.droppedTurnCount;
+        this.lastDroppedTurnsByConversation.delete(request.conversationId);
+        this.lastDroppedTurnsByConversation.set(request.conversationId, dropped);
+        while (this.lastDroppedTurnsByConversation.size > 500) {
+          const oldest = this.lastDroppedTurnsByConversation.keys().next().value;
+          if (oldest === undefined) break;
+          this.lastDroppedTurnsByConversation.delete(oldest);
+        }
+        if (dropped > previousDropped) {
+          emitEvent({
+            type: 'notice',
+            requestId,
+            code: 'compacting',
+            level: 'info',
+            message: `Compressed ${dropped} older ${dropped === 1 ? 'turn' : 'turns'} to keep the conversation inside the model's window.`,
+          });
+        }
+      }
 
       logger.info('turn.attempt', {
         requestId,
@@ -1268,26 +1549,38 @@ export class ChatSessionRuntime {
       });
 
       try {
+        const systemPrompt =
+          this.buildSystemPrompt(
+            request.enableTools,
+            siteTools != null,
+            toolPermissionMode,
+            workspace,
+            visualsEnabled,
+          ) || undefined;
+        onRequestHeader?.({
+          attempt,
+          systemPrompt,
+          messages: modelInput.recentMessages,
+        });
+
         const result = await provider.streamChat({
           apiKey,
           modelId: request.modelId,
           messages: modelInput.recentMessages,
-          system:
-            this.buildSystemPrompt(
-              request.enableTools,
-              modelInput.systemContextAddendum,
-              siteTools != null,
-              toolPermissionMode,
-              workspace,
-              visualsEnabled,
-              pluginMentions,
-            ) || undefined,
+          system: systemPrompt,
           tools,
           toolChoice: inferToolChoice(request),
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           modelHints,
           reasoningEffort: request.reasoningEffort,
+          toolPermissionMode,
+          // Only session-based agent providers read this (see ProviderAdapter).
+          agentContext: {
+            conversationId: request.conversationId,
+            workspaceRoot: workspace.worktreeRoot ?? workspace.root,
+            toolPermissionMode,
+          },
           signal,
           onChunk: (event) => {
             streamedAnyResponse = true;
@@ -1379,8 +1672,18 @@ export class ChatSessionRuntime {
 
             this.applyEvent(turnState, { type: 'tool-approval-requested', requestId, ...event }, emitEvent);
           },
+          onToolApprovalResolved: (event) => {
+            // Agent providers answer approvals mid-turn and keep streaming, so
+            // a decided ask must stop counting as pending — otherwise the turn
+            // ends in `awaiting_approval` with nothing left to decide.
+            turnState.pendingApprovals.delete(event.approvalId);
+          },
           onNotice: (event) => {
             emitEvent({ type: 'notice', requestId, ...event });
+          },
+          onTask: (event) => {
+            streamedAnyResponse = true;
+            emitEvent({ type: 'task', requestId, ...event });
           },
         });
 
@@ -1423,18 +1726,18 @@ export class ChatSessionRuntime {
         };
       } catch (error) {
         const normalized = normalizeError(error);
-        const shouldRetryWithCompaction =
-          compactionMode === 'standard' &&
-          !streamedAnyResponse &&
-          !signal.aborted &&
-          this.isPromptTooLongError(error, normalized.message);
+        const nextMode: ContextBuildMode | null =
+          !streamedAnyResponse && !signal.aborted && this.isPromptTooLongError(error, normalized.message)
+            ? nextCompactionMode(compactionMode)
+            : null;
 
-        if (shouldRetryWithCompaction) {
-          compactionMode = 'aggressive';
+        if (nextMode) {
+          compactionMode = nextMode;
           logger.warn('turn.compacting', {
             requestId,
             modelId: request.modelId,
             attempt,
+            compactionMode,
             historyTokens: modelInput.usage.historyTokens,
             code: normalized.code,
           });
@@ -1443,7 +1746,7 @@ export class ChatSessionRuntime {
             requestId,
             code: 'compacting',
             level: 'info',
-            message: 'The conversation was too long for this model. Summarising older turns and retrying.',
+            message: compactionNotice(compactionMode),
             });
           continue;
         }

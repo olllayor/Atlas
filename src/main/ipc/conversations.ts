@@ -10,6 +10,8 @@ import type {
   SetConversationArchivedRequest,
   SetConversationDefaultModelRequest,
   SetConversationPinnedRequest,
+  SetConversationSettledRequest,
+  SetConversationSnoozedRequest,
   SetConversationWorkspaceRequest,
   StartSideConversationRequest
 } from '../../shared/contracts';
@@ -35,13 +37,15 @@ type ConversationsIpcDependencies = {
   /** Lets the deleted conversation's shell and other per-conversation
    *  resources be torn down with it. */
   onConversationDeleted?: (conversationId: string) => void;
+  onRegenerateTitle?: (conversationId: string) => Promise<import('../../shared/contracts').ConversationSummary>;
 };
 
 export function registerConversationsIpc({
   conversationsRepo,
   projectsRepo,
   settingsRepo,
-  onConversationDeleted
+  onConversationDeleted,
+  onRegenerateTitle
 }: ConversationsIpcDependencies) {
   const database = { conversations: conversationsRepo, projects: projectsRepo };
 
@@ -144,6 +148,17 @@ export function registerConversationsIpc({
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.conversationsRegenerateTitle,
+    withUserFacingErrors(IPC_CHANNELS.conversationsRegenerateTitle, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+      if (!onRegenerateTitle) {
+        throw new Error('Title regeneration is not available.');
+      }
+      return await onRegenerateTitle(conversationId);
+    })
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.conversationsGetWorkspace,
     withUserFacingErrors(IPC_CHANNELS.conversationsGetWorkspace, (event, conversationId: string) => {
       assertTrustedSender(event);
@@ -197,7 +212,27 @@ export function registerConversationsIpc({
           throw new Error(`Project folder (${targetProject.root}) is not a Git repository.`);
         }
 
-        const wt = await worktreeService.provisionWorktree(targetProject.root, request.conversationId);
+        if (typeof request.worktreeBaseBranch === 'string' && /[^\w.\-/]/.test(request.worktreeBaseBranch)) {
+          throw new Error('Invalid base branch name.');
+        }
+
+        // Collect before creating: checkouts no conversation references are
+        // GC fodder, and the newest `retention` of those stay recoverable.
+        // Snapshotted to a branch first (`atlas/wt-snapshot/<id>`), so agent
+        // work in a stale checkout is never silently destroyed.
+        try {
+          const bindings = conversationsRepo.listWorktreeBindings();
+          const activePaths = bindings
+            .filter((binding) => binding.projectId === targetProject.id)
+            .map((binding) => binding.worktreeRoot);
+          await worktreeService.gcManagedWorktrees(targetProject.root, { activePaths });
+        } catch {
+          // A failed sweep must never block provisioning.
+        }
+
+        const wt = await worktreeService.provisionWorktree(targetProject.root, request.conversationId, {
+          baseBranch: request.worktreeBaseBranch ?? undefined,
+        });
         worktreeRoot = wt.path;
       } else if (
         shouldResetWorktreeOnProjectChange({
@@ -368,6 +403,39 @@ export function registerConversationsIpc({
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.conversationsSetSettled,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetSettled, (event, request: SetConversationSettledRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string' || typeof request?.settled !== 'boolean') {
+        throw new Error('A conversation id and a settled flag are required.');
+      }
+
+      // Eligibility (notably: no live turn) is enforced inside the repo —
+      // the renderer pre-checks for instant feedback, but this is the check
+      // that counts.
+      return conversationsRepo.setSettled(request.conversationId, request.settled);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsSetSnoozed,
+    withUserFacingErrors(IPC_CHANNELS.conversationsSetSnoozed, (event, request: SetConversationSnoozedRequest) => {
+      assertTrustedSender(event);
+
+      if (typeof request?.conversationId !== 'string') {
+        throw new Error('A conversation id is required.');
+      }
+
+      if (request?.snoozedUntil !== null && typeof request?.snoozedUntil !== 'string') {
+        throw new Error('A snooze wake time must be an ISO string or null.');
+      }
+
+      return conversationsRepo.setSnoozed(request.conversationId, request.snoozedUntil);
+    })
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.conversationsSearchMessages,
     withUserFacingErrors(IPC_CHANNELS.conversationsSearchMessages, (event, request: SearchMessagesRequest) => {
       assertTrustedSender(event);
@@ -423,6 +491,19 @@ export function registerConversationsIpc({
     withUserFacingErrors(IPC_CHANNELS.conversationsListSide, (event, conversationId: string) => {
       assertTrustedSender(event);
       return conversationsRepo.listSideConversations(conversationId);
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.conversationsPromoteSide,
+    withUserFacingErrors(IPC_CHANNELS.conversationsPromoteSide, (event, sideConversationId: string) => {
+      assertTrustedSender(event);
+
+      if (typeof sideConversationId !== 'string') {
+        throw new Error('A side conversation id is required.');
+      }
+
+      return conversationsRepo.promoteSideConversation(sideConversationId);
     })
   );
 }

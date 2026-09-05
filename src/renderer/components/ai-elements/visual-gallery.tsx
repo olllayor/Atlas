@@ -10,12 +10,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { AtlasLoader } from '../ui/atlas-loader';
 import type { SavedVisual } from '../../../shared/contracts';
 import { buildVisualSrcDoc } from '../../../shared/visualDocument';
 import { detectRequiredLibraries } from '../../../shared/visualParser';
 import { chartJs, d3Js } from '../../visual/bundles';
 import { detectDiagramSpec } from '../../../shared/diagramSpec';
-import { detectRiveContent } from './rive-visual';
+import { detectRiveContent } from './riveContent';
 import { readThemeTokens } from './visual';
 
 type VisualGalleryProps = {
@@ -42,7 +43,7 @@ function visualType(content: string): VisualType {
  * either differentiate it or drop it, and differentiating is cheap.
  */
 const TYPE_BADGE: Record<VisualType, string> = {
-  Diagram: 'border-[var(--accent)]/35 bg-[var(--accent-surface)] text-[var(--accent)]',
+  Diagram: 'border-[var(--accent)]/35 bg-[var(--accent-surface)] text-[var(--accent-strong)]',
   Animation: 'border-[var(--warning)]/35 text-[var(--warning)]',
   Chart: 'border-border-default bg-bg-elevated text-text-secondary',
 };
@@ -216,11 +217,11 @@ export function VisualGallery({ isOpen, onClose, onSelect }: VisualGalleryProps)
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
           <div className="scrollbar-auto-hide w-80 overflow-y-auto border-r border-border-default">
             {isLoading ? (
               <div className="flex h-40 items-center justify-center">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-text-muted" />
+                <AtlasLoader size="md" real />
               </div>
             ) : visuals.length === 0 ? (
               <div className="flex h-40 flex-col items-center justify-center gap-2 px-6 text-center text-text-muted">

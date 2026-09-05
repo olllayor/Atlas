@@ -176,6 +176,150 @@ export function toolCellStatus(state: ChatToolState): ToolCellStatus {
 const isFinished = (status: ToolCellStatus) => status === 'success' || status === 'failed';
 
 // ---------------------------------------------------------------------------
+// Known-tool presentation names (t3code PR #9267)
+// ---------------------------------------------------------------------------
+
+/**
+ * Friendly live/settled names for tools whose mechanical label (`Called
+ * git_commit`) names the call but not the outcome. t3code carries these as
+ * `liveDisplayName`/`settledDisplayName` on its work-entry presentation and
+ * prefers the settled name once a single-tool group completes instead of a
+ * generic group summary (`Ran 1 command`). Atlas cells are already one row
+ * per call, so the same table drives the collapsed `label` directly: a
+ * running call reads the live name, a finished call the settled one, and an
+ * unknown tool keeps `Called/Calling X`. Edits keep their path-based labels
+ * and never consult this table.
+ */
+export type ToolCallPhase = 'live' | 'settled';
+
+type ToolCallLabelTemplate = string | ((input: Record<string, unknown>) => string | null);
+
+type ToolCallPresentation = {
+  live: ToolCallLabelTemplate;
+  settled: ToolCallLabelTemplate;
+};
+
+function branchName(input: Record<string, unknown>): string | null {
+  return readString(input, 'name', 'branch');
+}
+
+const TOOL_CALL_PRESENTATIONS: Record<string, ToolCallPresentation> = {
+  git_status: { live: 'Checking git status', settled: 'Checked git status' },
+  git_diff: { live: 'Reading git diff', settled: 'Read git diff' },
+  git_log: { live: 'Reading commit history', settled: 'Read commit history' },
+  git_branch: {
+    live: (input) => {
+      const name = branchName(input);
+      switch (readString(input, 'action')) {
+        case 'list':
+          return 'Listing branches';
+        case 'create':
+          return name ? `Creating branch ${name}` : 'Creating branch';
+        case 'switch':
+          return name ? `Switching to ${name}` : 'Switching branch';
+        case 'delete':
+          return name ? `Deleting branch ${name}` : 'Deleting branch';
+        default:
+          return 'Managing branches';
+      }
+    },
+    settled: (input) => {
+      const name = branchName(input);
+      switch (readString(input, 'action')) {
+        case 'list':
+          return 'Listed branches';
+        case 'create':
+          return name ? `Created branch ${name}` : 'Created branch';
+        case 'switch':
+          return name ? `Switched to ${name}` : 'Switched branch';
+        case 'delete':
+          return name ? `Deleted branch ${name}` : 'Deleted branch';
+        default:
+          return 'Updated branches';
+      }
+    }
+  },
+  git_commit: { live: 'Committing changes', settled: 'Committed changes' },
+  git_stash: {
+    live: (input) => {
+      switch (readString(input, 'action')) {
+        case 'pop':
+          return 'Restoring stashed changes';
+        case 'list':
+          return 'Listing stashes';
+        case 'drop':
+          return 'Dropping stash';
+        default:
+          return 'Stashing changes';
+      }
+    },
+    settled: (input) => {
+      switch (readString(input, 'action')) {
+        case 'pop':
+          return 'Restored stashed changes';
+        case 'list':
+          return 'Listed stashes';
+        case 'drop':
+          return 'Dropped stash';
+        default:
+          return 'Stashed changes';
+      }
+    }
+  },
+  git_push: {
+    live: (input) => {
+      const branch = readString(input, 'branch');
+      return branch ? `Pushing to ${branch}` : 'Pushing commits';
+    },
+    settled: (input) => {
+      const branch = readString(input, 'branch');
+      return branch ? `Pushed to ${branch}` : 'Pushed commits';
+    }
+  },
+  github_pr_status: { live: 'Checking pull requests', settled: 'Checked pull requests' },
+  github_pr_create: { live: 'Creating pull request', settled: 'Created pull request' },
+  job_list: { live: 'Listing background jobs', settled: 'Listed background jobs' },
+  job_output: { live: 'Reading job output', settled: 'Read job output' },
+  job_kill: { live: 'Stopping background job', settled: 'Stopped background job' },
+  site_create: { live: 'Creating site', settled: 'Created site' },
+  site_list: { live: 'Listing sites', settled: 'Listed sites' },
+  site_build: { live: 'Building site', settled: 'Built site' },
+  site_preview: { live: 'Starting site preview', settled: 'Started site preview' },
+  site_publish: { live: 'Publishing site', settled: 'Published site' },
+  site_delete_file: {
+    live: (input) => {
+      const path = readString(input, 'path', 'filePath', 'file');
+      return path ? `Deleting ${basename(path)}` : 'Deleting site file';
+    },
+    settled: (input) => {
+      const path = readString(input, 'path', 'filePath', 'file');
+      return path ? `Deleted ${basename(path)}` : 'Deleted site file';
+    }
+  }
+};
+
+/**
+ * Friendly label for a known tool in a lifecycle phase, or null when the
+ * tool has no presentation entry. Matches the lowercased tool name exactly —
+ * MCP plugin tools are namespaced (`mcp__server__tool`) so they never
+ * collide with these built-ins and keep their `plugin.tool` label.
+ */
+export function resolveToolCallPresentation(
+  toolName: string,
+  phase: ToolCallPhase,
+  input?: unknown
+): string | null {
+  const presentation = TOOL_CALL_PRESENTATIONS[toolName.toLowerCase()];
+  if (!presentation) return null;
+  const template = presentation[phase];
+  if (typeof template === 'string') return template;
+  const record = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as Record<string, unknown>)
+    : {};
+  return template(record);
+}
+
+// ---------------------------------------------------------------------------
 // Input helpers
 // ---------------------------------------------------------------------------
 
@@ -408,14 +552,80 @@ function buildTextDetail(part: ChatToolPart): ToolDetail {
     // look the same.
     return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
   }
-  const allLines = splitLines(text);
-  const { lines, omitted } = truncateHeadTail(allLines);
+
+  // Fast count of lines without splitting the entire string into an array.
+  let end = text.length;
+  while (end > 0 && (text.charCodeAt(end - 1) === 10 || text.charCodeAt(end - 1) === 13)) {
+    end--;
+  }
+  if (end === 0) {
+    return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
+  }
+
+  let lineCount = 1;
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      lineCount++;
+    }
+  }
+
+  // Small outputs: split eagerly, no head/tail omission.
+  if (lineCount <= TOOL_OUTPUT_MAX_LINES * 2) {
+    const allLines = splitLines(text);
+    return {
+      type: 'text',
+      lines: allLines,
+      allLines,
+      head: allLines.length,
+      tail: 0,
+      omitted: 0,
+      empty: false,
+    };
+  }
+
+  // Large outputs: extract only the first and last `TOOL_OUTPUT_MAX_LINES` lines.
+  // This avoids allocating thousands of short-lived string slices on every stream flush.
+  let headEnd = 0;
+  let headSeen = 0;
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      headSeen++;
+      if (headSeen === TOOL_OUTPUT_MAX_LINES) {
+        headEnd = i;
+        break;
+      }
+    }
+  }
+  const headSlice = text.slice(0, headEnd - (headEnd > 0 && text.charCodeAt(headEnd - 1) === 13 ? 1 : 0));
+  const head = splitLines(headSlice);
+
+  let tailStart = 0;
+  let tailSeen = 0;
+  for (let i = end - 1; i >= 0; i--) {
+    if (text.charCodeAt(i) === 10) {
+      tailSeen++;
+      if (tailSeen === TOOL_OUTPUT_MAX_LINES) {
+        tailStart = i + 1;
+        break;
+      }
+    }
+  }
+  const tail = splitLines(text.slice(tailStart, end));
+  const lines = [...head, ...tail];
+  const omitted = lineCount - TOOL_OUTPUT_MAX_LINES * 2;
+
+  let cachedAllLines: string[] | null = null;
   return {
     type: 'text',
     lines,
-    allLines,
-    head: omitted > 0 ? TOOL_OUTPUT_MAX_LINES : lines.length,
-    tail: omitted > 0 ? TOOL_OUTPUT_MAX_LINES : 0,
+    get allLines(): string[] {
+      if (!cachedAllLines) {
+        cachedAllLines = splitLines(text);
+      }
+      return cachedAllLines;
+    },
+    head: TOOL_OUTPUT_MAX_LINES,
+    tail: TOOL_OUTPUT_MAX_LINES,
     omitted,
     empty: false,
   };
@@ -582,11 +792,16 @@ function buildSingleCell(part: ChatToolPart): ToolCell {
     // cannot be read back — a confident half-answer would be worse.
     const display = describeMcpToolName(part.toolName);
     const shown = display?.label ?? part.toolName;
+    const presentation = resolveToolCallPresentation(
+      part.toolName,
+      finished ? 'settled' : 'live',
+      part.input
+    );
 
     return {
       ...base,
-      label: `${finished ? 'Called' : 'Calling'} ${shown}`,
-      verb: finished ? 'Called' : 'Calling',
+      label: presentation ?? `${finished ? 'Called' : 'Calling'} ${shown}`,
+      verb: presentation ?? (finished ? 'Called' : 'Calling'),
       subject: `${shown}(${args})`,
       subjectIsCode: true,
       detail:
@@ -608,10 +823,15 @@ function buildSingleCell(part: ChatToolPart): ToolCell {
   }
 
   const genericSubject = part.title?.trim() || part.toolName;
+  const genericPresentation = resolveToolCallPresentation(
+    part.toolName,
+    finished ? 'settled' : 'live',
+    part.input
+  );
   return {
     ...base,
-    label: `${finished ? 'Called' : 'Calling'} ${genericSubject}`,
-    verb: finished ? 'Called' : 'Calling',
+    label: genericPresentation ?? `${finished ? 'Called' : 'Calling'} ${genericSubject}`,
+    verb: genericPresentation ?? (finished ? 'Called' : 'Calling'),
     subject: genericSubject,
     detail:
       part.state === 'output-error'

@@ -1,0 +1,242 @@
+/* ============================================
+   Theme: Atlas — Signature Minimal
+
+   Clean, minimalist, sexy. Neutral zinc surfaces with zero hue tint,
+   hairline borders, generous radii, and a single indigo accent.
+   Dark-first base block + light override, same mechanism as
+   default.css / codex.css.
+
+   Contrast notes (measured, sRGB compositing):
+   - dark text-muted 0.60 white on #09090B ~= 6.7:1 (AA)
+   - dark text-faint 0.45 white on #09090B ~= 4.5:1 (3:1 floor)
+   - light text-muted 0.62 black on #FCFCFC ~= 6:1 (AA)
+   - light text-faint 0.50 black on #FCFCFC ~= 3.9:1 (3:1 floor)
+   - dark accent-text #08080A on #818CF8 ~= 7:1
+   - light accent-text #FFFFFF on #4F46E5 ~= 6.3:1
+   - chip ink --accent-strong clears AA on --accent-surface both modes
+   ============================================ */
+
+[data-design-theme='atlas'] {
+  color-scheme: dark;
+
+  /* Backgrounds — neutral zinc, no tint */
+  --bg-base: #09090b;
+  --bg-panel: #101013;
+  --bg-surface: #141417;
+  --bg-elevated: #1c1c21;
+  --bg-overlay: #1e1e24;
+  --bg-composer: #141417;
+  --bg-code: rgba(255, 255, 255, 0.06);
+
+  --bg-subtle: rgba(255, 255, 255, 0.04);
+  --bg-ghost: rgba(255, 255, 255, 0.05);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.11);
+  --bg-button: #fafafa;
+  --bg-button-hover: #ffffff;
+
+  /* Borders — barely-there hairlines */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.09);
+  --border-medium: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.26);
+
+  /* Text — zinc scale on near-black */
+  --text-primary: #fafafa;
+  --text-secondary: rgba(250, 250, 250, 0.72);
+  --text-tertiary: rgba(250, 250, 250, 0.55);
+  --text-muted: rgba(250, 250, 250, 0.6);
+  --text-faint: rgba(250, 250, 250, 0.45);
+  --text-inverse: #09090b;
+
+  /* Semantic — quiet by default, legible when it counts */
+  --success: #34d399;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --success-border: rgba(52, 211, 153, 0.28);
+  --success-text: #6ee7b7;
+
+  --warning: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.1);
+  --warning-border: rgba(251, 191, 36, 0.28);
+  --warning-text: #fcd34d;
+
+  --error: #fb7185;
+  --error-bg: rgba(251, 113, 133, 0.1);
+  --error-border: rgba(251, 113, 133, 0.28);
+  --error-text: #fda4af;
+
+  /* Accent — single indigo voice */
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-text: #08080a;
+  --accent-strong: #a5b4fc;
+  --accent-surface: rgba(129, 140, 248, 0.14);
+  --ring: rgba(129, 140, 248, 0.65);
+
+  /* Diffs — GitHub dark */
+  --diff-add-bg: #213a2b;
+  --diff-del-bg: #4a221d;
+  --diff-add-fg: #34d399;
+  --diff-del-fg: #fb7185;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-gutter-fg: rgba(250, 250, 250, 0.4);
+  --diff-add-fg-count: #34d399;
+  --diff-del-fg-count: #fb7185;
+
+  /* Per-tool accents — restrained pastels */
+  --tool-read: #818cf8;
+  --tool-search: #2dd4bf;
+  --tool-edit: #a78bfa;
+  --tool-command: #fbbf24;
+  --tool-web: #f472b6;
+  --tool-generic: rgba(250, 250, 250, 0.55);
+
+  /* Toasts */
+  --toast-bg: rgba(20, 20, 23, 0.92);
+  --toast-border: rgba(255, 255, 255, 0.09);
+  --toast-text: rgba(250, 250, 250, 0.8);
+  --toast-icon: rgba(250, 250, 250, 0.6);
+  --toast-close: rgba(250, 250, 250, 0.4);
+  --toast-close-hover: rgba(250, 250, 250, 0.85);
+
+  /* UI elements */
+  --overlay: rgba(0, 0, 0, 0.55);
+  --scrollbar: rgba(255, 255, 255, 0.12);
+  --scrollbar-hover: rgba(255, 255, 255, 0.22);
+
+  /* Typography */
+  --font-ui-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-mono-system: ui-monospace, 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', monospace;
+  --font-code-sans: var(--font-ui-family);
+  --font-code-mono: var(--font-mono-system);
+
+  /* Radii — soft, generous, sexy */
+  --radius-2xs: 0.125rem; /* 2px */
+  --radius-xs: 0.25rem; /* 4px */
+  --radius-sm: 0.375rem; /* 6px */
+  --radius-md: 0.625rem; /* 10px */
+  --radius-lg: 0.875rem; /* 14px */
+  --radius-xl: 1.125rem; /* 18px */
+  --radius-2xl: 1.375rem; /* 22px */
+  --radius-3xl: 1.75rem; /* 28px */
+  --radius-4xl: 2.25rem; /* 36px */
+  --radius-subtle: 0.375rem; /* 6px */
+  --radius-full: 9999px;
+  --radius-composer: 1.25rem; /* 20px */
+
+  /* Shadows — one deep, diffused lift */
+  --shadow-elevated: 0 24px 60px -12px rgba(0, 0, 0, 0.6);
+
+  /* Motion — snappy, single easing */
+  --duration-fast: 120ms;
+  --duration-normal: 180ms;
+  --duration-slow: 320ms;
+  --easing-default: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ============================================
+   Light variant
+
+   Same neutral system inverted: near-white page, zinc-950 ink,
+   indigo accent deepened to AA. Radii, type and motion inherit
+   from the dark block — mode-independent. Shadow and diffs
+   override: white popovers need real elevation, dark slabs
+   would glow on white.
+   ============================================ */
+
+[data-theme='light'][data-design-theme='atlas'] {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --bg-base: #fcfcfc;
+  --bg-panel: #f4f4f5;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f4f4f5;
+  --bg-overlay: #ffffff;
+  --bg-composer: #ffffff;
+  --border-composer: rgba(9, 9, 11, 0.09);
+  --bg-code: rgba(9, 9, 11, 0.05);
+
+  --bg-subtle: rgba(9, 9, 11, 0.03);
+  --bg-ghost: rgba(9, 9, 11, 0.04);
+  --bg-hover: rgba(9, 9, 11, 0.05);
+  --bg-active: rgba(9, 9, 11, 0.09);
+  --bg-button: #09090b;
+  --bg-button-hover: #27272a;
+
+  /* Borders */
+  --border-subtle: rgba(9, 9, 11, 0.06);
+  --border-default: rgba(9, 9, 11, 0.09);
+  --border-medium: rgba(9, 9, 11, 0.14);
+  --border-strong: rgba(9, 9, 11, 0.24);
+
+  /* Text */
+  --text-primary: #09090b;
+  --text-secondary: rgba(9, 9, 11, 0.72);
+  --text-tertiary: rgba(9, 9, 11, 0.55);
+  --text-muted: rgba(9, 9, 11, 0.62);
+  --text-faint: rgba(9, 9, 11, 0.5);
+  --text-inverse: #ffffff;
+
+  /* Semantic — deepened to AA on white */
+  --success: #15803d;
+  --success-bg: rgba(21, 128, 61, 0.08);
+  --success-border: rgba(21, 128, 61, 0.25);
+  --success-text: #15803d;
+
+  --warning: #b45309;
+  --warning-bg: rgba(180, 83, 9, 0.08);
+  --warning-border: rgba(180, 83, 9, 0.25);
+  --warning-text: #b45309;
+
+  --error: #dc2626;
+  --error-bg: rgba(220, 38, 38, 0.07);
+  --error-border: rgba(220, 38, 38, 0.22);
+  --error-text: #dc2626;
+
+  /* Accent — indigo deepened for white */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-text: #ffffff;
+  --accent-strong: #4338ca;
+  --accent-surface: rgba(79, 70, 229, 0.1);
+  --ring: #4f46e5;
+
+  /* Diffs — GitHub light */
+  --diff-add-bg: #dafbe1;
+  --diff-del-bg: #ffebe9;
+  --diff-add-fg: inherit;
+  --diff-del-fg: inherit;
+  --diff-add-gutter-bg: #aceebb;
+  --diff-del-gutter-bg: #ffcecb;
+  --diff-gutter-fg: #1f2328;
+  --diff-add-fg-count: #15803d;
+  --diff-del-fg-count: #dc2626;
+
+  /* Per-tool accents — dark-tuned set, same hues pulled down */
+  --tool-read: #4f46e5;
+  --tool-search: #0d9488;
+  --tool-edit: #7c3aed;
+  --tool-command: #b45309;
+  --tool-web: #db2777;
+  --tool-generic: rgba(9, 9, 11, 0.55);
+
+  /* Toasts */
+  --toast-bg: #ffffff;
+  --toast-border: rgba(9, 9, 11, 0.08);
+  --toast-text: rgba(9, 9, 11, 0.78);
+  --toast-icon: rgba(9, 9, 11, 0.55);
+  --toast-close: rgba(9, 9, 11, 0.35);
+  --toast-close-hover: rgba(9, 9, 11, 0.75);
+
+  /* UI elements */
+  --overlay: rgba(9, 9, 11, 0.35);
+  --scrollbar: rgba(9, 9, 11, 0.14);
+  --scrollbar-hover: rgba(9, 9, 11, 0.24);
+
+  /* White popovers need real elevation */
+  --shadow-elevated:
+    0 12px 32px rgba(9, 9, 11, 0.1),
+    0 2px 8px rgba(9, 9, 11, 0.06);
+}

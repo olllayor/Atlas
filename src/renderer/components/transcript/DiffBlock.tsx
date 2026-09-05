@@ -100,8 +100,10 @@ export function DiffBlock({
   const hidden = Math.max(0, all.length - MAX_RENDERED_LINES);
   const rows = expanded ? all : all.slice(0, MAX_RENDERED_LINES);
 
-  // Copies as a real unified patch — ASCII signs, not the U+2212 used for
-  // display — so the result can be piped straight into `git apply`.
+  // Copies with ASCII signs — not the U+2212 used for display — but collapsed
+  // hunks serialize as a literal `...` line, which unified-diff parsers reject.
+  // The payload is for pasting into a reply or an issue, not for `git apply`;
+  // the label says "Copy diff", never "Copy patch", so the contract stays honest.
   const patchText = useMemo(
     () => all.map((row) => (row.kind === 'gap' ? '...' : `${row.sign}${row.content}`)).join('\n'),
     [all]

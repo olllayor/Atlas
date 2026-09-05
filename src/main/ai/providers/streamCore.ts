@@ -175,6 +175,7 @@ export async function runProviderStream({
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   let reasoningTokens: number | undefined;
+  let cachedInputTokens: number | undefined;
   let streamError: unknown;
 
   const toolNameByCallId = new Map<string, string>();
@@ -375,6 +376,11 @@ export async function runProviderStream({
         inputTokens = totalUsage.inputTokens;
         outputTokens = totalUsage.outputTokens;
         reasoningTokens = totalUsage.outputTokenDetails?.reasoningTokens ?? totalUsage.reasoningTokens;
+        // Provider-reported prefix-cache hits (OpenAI-compat
+        // `prompt_tokens_details.cached_tokens`, Anthropic
+        // `cache_read_input_tokens`; the SDK normalizes both). Absent when the
+        // provider does not report it — absence is meaningful and is preserved.
+        cachedInputTokens = totalUsage.cachedInputTokens;
       },
       onError: ({ error }) => {
         streamError = error;
@@ -396,6 +402,7 @@ export async function runProviderStream({
       inputTokens,
       outputTokens,
       reasoningTokens,
+      cachedInputTokens,
       latencyMs: Date.now() - startedAt
     };
   } catch (error) {

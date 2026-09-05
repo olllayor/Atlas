@@ -134,13 +134,15 @@ function InputGroupText({ className, ...props }: React.ComponentProps<"span">) {
 
 function InputGroupInput({
   className,
+  type = "text",
   ...props
 }: React.ComponentProps<"input">) {
   return (
-    <Input
+    <input
+      type={type}
       data-slot="input-group-control"
       className={cn(
-        "flex-1 rounded-sm border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent",
+        "flex-1 h-full min-w-0 border-0 bg-transparent px-2 py-1 text-sm shadow-none outline-none focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 placeholder:text-muted-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
         className
       )}
       {...props}

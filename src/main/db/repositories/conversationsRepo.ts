@@ -56,6 +56,11 @@ type ConversationRow = {
   tool_permission_mode: string | null;
   pinned_at: string | null;
   archived_at: string | null;
+  side_of_conversation_id?: string | null;
+  origin?: string | null;
+  subagent_mode?: string | null;
+  subagent_label?: string | null;
+  delegation_depth?: number | null;
 };
 
 type ConversationSummaryRow = {
@@ -80,6 +85,10 @@ type ConversationSummaryRow = {
   completedAt: string | null;
   pinnedAt: string | null;
   archivedAt: string | null;
+  settledAt: string | null;
+  unsettledAt: string | null;
+  snoozedUntil: string | null;
+  snoozedAt: string | null;
   forkOfConversationId: string | null;
   forkPointSequence: number | null;
   sideOfConversationId: string | null;
@@ -158,6 +167,10 @@ const SUMMARY_SELECT = `
     c.completed_at AS completedAt,
     c.pinned_at AS pinnedAt,
     c.archived_at AS archivedAt,
+    c.settled_at AS settledAt,
+    c.unsettled_at AS unsettledAt,
+    c.snoozed_until AS snoozedUntil,
+    c.snoozed_at AS snoozedAt,
     c.fork_of_conversation_id AS forkOfConversationId,
     c.fork_point_sequence AS forkPointSequence,
     c.side_of_conversation_id AS sideOfConversationId,
@@ -236,6 +249,8 @@ type CreateMessageInput = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   reasoningTokens?: number | null;
+  /** Provider-reported prompt-cache hit tokens; undefined leaves the column alone. */
+  cachedInputTokens?: number | null;
   latencyMs?: number | null;
   errorCode?: string | null;
   createdAt?: string;
@@ -253,6 +268,7 @@ type UpdateMessageInput = {
   inputTokens?: number | null;
   outputTokens?: number | null;
   reasoningTokens?: number | null;
+  cachedInputTokens?: number | null;
   latencyMs?: number | null;
   errorCode?: string | null;
 };
@@ -642,6 +658,10 @@ function mapConversationSummary(row: ConversationSummaryRow): ConversationSummar
     },
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
+    settledAt: row.settledAt,
+    unsettledAt: row.unsettledAt,
+    snoozedUntil: row.snoozedUntil,
+    snoozedAt: row.snoozedAt,
     forkOfConversationId: row.forkOfConversationId,
     forkPointSequence: row.forkPointSequence,
     sideOfConversationId: row.sideOfConversationId
@@ -677,8 +697,12 @@ const NOOP_TOOL_EXECUTIONS_REPO: Pick<ToolExecutionsRepo, 'listByMessageIds'> = 
   listByMessageIds: () => [],
 };
 
-const NOOP_RUNTIME_STATE_REPO: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = {
+const NOOP_RUNTIME_STATE_REPO: Pick<
+  RuntimeStateRepo,
+  'listActivitiesByMessageIds' | 'forgetConversationEvents'
+> = {
   listActivitiesByMessageIds: () => [],
+  forgetConversationEvents: () => undefined,
 };
 
 export class ConversationsRepo {
@@ -689,7 +713,10 @@ export class ConversationsRepo {
       'deleteConversationAttachments' | 'readAttachmentData' | 'copyAttachment'
     > = NOOP_ATTACHMENT_STORE,
     private readonly toolExecutionsRepo: Pick<ToolExecutionsRepo, 'listByMessageIds'> = NOOP_TOOL_EXECUTIONS_REPO,
-    private readonly runtimeStateRepo: Pick<RuntimeStateRepo, 'listActivitiesByMessageIds'> = NOOP_RUNTIME_STATE_REPO,
+    private readonly runtimeStateRepo: Pick<
+      RuntimeStateRepo,
+      'listActivitiesByMessageIds' | 'forgetConversationEvents'
+    > = NOOP_RUNTIME_STATE_REPO,
   ) {}
 
   private messageSearchRepo: MessageSearchRepo | null = null;
@@ -757,6 +784,29 @@ export class ConversationsRepo {
   fork(input: ForkConversationInput): ConversationSummary {
     const result = forkConversation(this.db, this.attachmentStore, input);
     return this.getSummary(result.conversationId)!;
+  }
+
+  /**
+   * Promote a side conversation into a normal chat: clearing the parent link
+   * is what makes it appear in `list()`, and it then outlives its parent.
+   *
+   * Subagent rows are refused: they share `side_of_conversation_id` as their
+   * provenance marker, but promoting one would leak an internal worker into
+   * the user's sidebar. Only a user-created side chat (`origin` null) qualifies.
+   */
+  promoteSideConversation(sideConversationId: string): boolean {
+    const result = this.db
+      .prepare<{ id: string; now: string }>(
+        `
+          UPDATE conversations
+          SET side_of_conversation_id = NULL, updated_at = @now
+          WHERE id = @id
+            AND side_of_conversation_id IS NOT NULL
+            AND (origin IS NULL OR origin != 'subagent')
+        `
+      )
+      .run({ id: sideConversationId, now: new Date().toISOString() });
+    return result.changes > 0;
   }
 
   /**
@@ -844,6 +894,157 @@ export class ConversationsRepo {
     return this.getSummary(id)!;
   }
 
+  /**
+   * S1: create a durable subagent child conversation.
+   * The row is a normal conversation with provenance marker so
+   * `list()` filters it via `side_of_conversation_id IS NOT NULL` but
+   * `listSubagentChildren` can surface it for the catalog.
+   */
+  createSubagentConversation(input: {
+    parentConversationId: string;
+    title: string;
+    delegationDepth: number;
+    agentId: string;
+    mode: 'one-shot' | 'continuable';
+    parentTurnId?: string;
+  }): string {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const title = (input.title || 'Subagent').replace(/\s+/g, ' ').trim().slice(0, 200) || 'Subagent';
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO conversations (
+            id,
+            title,
+            created_at,
+            updated_at,
+            workspace_mode,
+            execution_target,
+            tool_permission_mode,
+            origin,
+            subagent_mode,
+            subagent_label,
+            delegation_depth,
+            side_of_conversation_id
+          )
+          VALUES (
+            @id,
+            @title,
+            @createdAt,
+            @updatedAt,
+            'work',
+            'local',
+            'ask',
+            'subagent',
+            @mode,
+            @label,
+            @depth,
+            @parentId
+          )
+        `
+      )
+      .run({
+        id,
+        title,
+        createdAt: now,
+        updatedAt: now,
+        mode: input.mode,
+        label: title,
+        depth: input.delegationDepth,
+        parentId: input.parentConversationId,
+      });
+
+    return id;
+  }
+
+  /**
+   * List direct subagent children of a parent conversation.
+   * Used by the subagent catalog (S1+). Excludes archived? No — children
+   * are hidden from main list anyway, so archiving parent is what matters.
+   */
+  listSubagentChildren(parentConversationId: string): Array<{
+    id: string;
+    title: string;
+    createdAt: string;
+    updatedAt: string;
+    mode: 'one-shot' | 'continuable' | null;
+    label: string | null;
+    depth: number;
+    parentId: string | null;
+  }> {
+    return this.db
+      .prepare<{ parentConversationId: string }, {
+        id: string;
+        title: string;
+        created_at: string;
+        updated_at: string;
+        subagent_mode: string | null;
+        subagent_label: string | null;
+        delegation_depth: number | null;
+        side_of_conversation_id: string | null;
+      }>(
+        `
+          SELECT id, title, created_at, updated_at, subagent_mode, subagent_label, delegation_depth, side_of_conversation_id
+          FROM conversations
+          WHERE origin = 'subagent' AND side_of_conversation_id = @parentConversationId
+          ORDER BY created_at ASC
+        `
+      )
+      .all({ parentConversationId })
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        mode: (row.subagent_mode as 'one-shot' | 'continuable' | null) ?? null,
+        label: row.subagent_label,
+        depth: row.delegation_depth ?? 0,
+        parentId: row.side_of_conversation_id,
+      }));
+  }
+
+  /**
+   * Has-children batched check for S4 optimization. Returns map parentId -> count.
+   */
+  countSubagentChildrenByParent(parentIds: string[]): Map<string, number> {
+    if (parentIds.length === 0) return new Map();
+    const placeholders = parentIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare<unknown[], { parentId: string; count: number }>(
+        `SELECT side_of_conversation_id as parentId, COUNT(*) as count FROM conversations WHERE origin='subagent' AND side_of_conversation_id IN (${placeholders}) GROUP BY side_of_conversation_id`
+      )
+      .all(...parentIds) as Array<{ parentId: string; count: number }>;
+    return new Map(rows.map((r) => [r.parentId, r.count]));
+  }
+
+  getSubagentMeta(childId: string): { parentId: string | null; mode: string | null; origin: string | null; depth: number | null; label: string | null } | null {
+    const row = this.db
+      .prepare<{ childId: string }, { side_of_conversation_id: string | null; subagent_mode: string | null; origin: string | null; delegation_depth: number | null; subagent_label: string | null }>(
+        `SELECT side_of_conversation_id, subagent_mode, origin, delegation_depth, subagent_label FROM conversations WHERE id = @childId`
+      )
+      .get({ childId });
+    if (!row) return null;
+    return { parentId: row.side_of_conversation_id, mode: row.subagent_mode, origin: row.origin, depth: row.delegation_depth, label: row.subagent_label };
+  }
+
+  /**
+   * Settled turn duration per conversation: sum of persisted assistant-turn
+   * latencies. Batched for the catalog (same shape as
+   * `countSubagentChildrenByParent`), so N children cost one query.
+   */
+  sumAssistantLatencyByConversation(conversationIds: string[]): Map<string, number> {
+    if (conversationIds.length === 0) return new Map();
+    const placeholders = conversationIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare<unknown[], { conversation_id: string; total: number | null }>(
+        `SELECT conversation_id, SUM(latency_ms) as total FROM messages WHERE role='assistant' AND latency_ms IS NOT NULL AND conversation_id IN (${placeholders}) GROUP BY conversation_id`
+      )
+      .all(...conversationIds) as Array<{ conversation_id: string; total: number | null }>;
+    return new Map(rows.map((r) => [r.conversation_id, r.total ?? 0]));
+  }
+
   delete(conversationId: string) {
     this.db
       .prepare(
@@ -853,6 +1054,10 @@ export class ConversationsRepo {
         `
       )
       .run({ conversationId });
+
+    // The event rows went with the conversation (ON DELETE CASCADE); drop the
+    // runtime repo's cached sequence watermark so it can never resurrect.
+    this.runtimeStateRepo.forgetConversationEvents(conversationId);
 
     this.attachmentStore.deleteConversationAttachments(conversationId);
   }
@@ -940,6 +1145,137 @@ export class ConversationsRepo {
     return this.getSummary(conversationId)!;
   }
 
+  /**
+   * Park a chat as done, or re-activate it. Settled is not archived: the row
+   * stays in `list()` and the sidebar renders it in the Settled shelf.
+   *
+   * Guards (main-process authoritative): a chat with a live turn cannot be
+   * settled — parking running work would hide it behind a "done" label while
+   * the agent is still writing. The renderer pre-checks the same condition
+   * for instant feedback, but this check is the one that counts.
+   *
+   * Idempotent: re-settling keeps the original `settled_at` (no reorder
+   * churn, silent no-op for double-clicks), and un-settling an active chat
+   * leaves `unsettled_at` alone. `updated_at` is untouched throughout, same
+   * as `setPinned`/`setArchived`.
+   *
+   * Pin is preserved: settling never unpins, so a pinned-and-settled chat
+   * keeps its place in Pinned rather than dropping to the shelf.
+   */
+  setSettled(conversationId: string, settled: boolean): ConversationSummary {
+    const current = this.getSummary(conversationId);
+    if (!current) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    if (settled && current.status === 'running') {
+      throw new Error('Cannot settle a chat while its turn is still running.');
+    }
+
+    const now = new Date().toISOString();
+    if (settled) {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET settled_at = COALESCE(settled_at, @now),
+                unsettled_at = NULL
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, now });
+    } else {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET settled_at = NULL,
+                unsettled_at = CASE WHEN settled_at IS NOT NULL THEN @now ELSE unsettled_at END
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, now });
+    }
+
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * Snooze until an ISO wake time, or clear with null. Snooze only affects
+   * visibility — a running turn keeps running — so unlike settle it is
+   * allowed while work is in flight.
+   *
+   * Guards: the wake time must parse and lie in the future. A past or
+   * unparseable wake would create a chat that is snoozed and woken at once,
+   * so the write is rejected instead of silently normalized. Re-snoozing to
+   * the same wake keeps the original `snoozed_at`.
+   */
+  setSnoozed(conversationId: string, snoozedUntil: string | null): ConversationSummary {
+    const current = this.getSummary(conversationId);
+    if (!current) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
+
+    const now = new Date().toISOString();
+    if (snoozedUntil !== null) {
+      const wakeMs = Date.parse(snoozedUntil);
+      if (Number.isNaN(wakeMs) || wakeMs <= Date.parse(now)) {
+        throw new Error('Snooze wake time must be a valid ISO timestamp in the future.');
+      }
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET snoozed_until = @wake,
+                snoozed_at = CASE WHEN snoozed_until = @wake THEN snoozed_at ELSE @now END
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId, wake: snoozedUntil, now });
+    } else {
+      this.db
+        .prepare(
+          `
+            UPDATE conversations
+            SET snoozed_until = NULL,
+                snoozed_at = NULL
+            WHERE id = @conversationId
+          `
+        )
+        .run({ conversationId });
+    }
+
+    return this.getSummary(conversationId)!;
+  }
+
+  /**
+   * User-initiated activity resets parked lifecycle state: sending a message
+   * to a settled or snoozed chat re-engages it, so the row returns to the
+   * active list (stamping `unsettled_at` when it leaves settled) and the
+   * snooze return ticket is spent.
+   *
+   * Call only for user-initiated activity (a sent message). Background agent
+   * completions, approvals resolving, or goal-loop continuations must not
+   * call this — a finished turn is exactly what settle/snooze is for, and
+   * clearing on it would make parking meaningless.
+   */
+  clearLifecycleOnUserActivity(conversationId: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+          UPDATE conversations
+          SET settled_at = NULL,
+              unsettled_at = CASE WHEN settled_at IS NOT NULL THEN @now ELSE unsettled_at END,
+              snoozed_until = NULL,
+              snoozed_at = NULL
+          WHERE id = @conversationId
+            AND (settled_at IS NOT NULL OR snoozed_until IS NOT NULL)
+        `
+      )
+      .run({ conversationId, now });
+  }
+
   /** The mode, execution target, worktree, and project a turn should run under. Never taken from the renderer. */
   getWorkspace(conversationId: string): {
     mode: WorkspaceMode;
@@ -963,6 +1299,27 @@ export class ConversationsRepo {
       projectId: row?.project_id ?? null,
       worktreeRoot: row?.worktree_root ?? null
     };
+  }
+
+  /**
+   * Every conversation still bound to a worktree root, for the GC's active-set:
+   * a checkout no row points at is by definition unreferenced and collectable.
+   */
+  listWorktreeBindings(): Array<{ conversationId: string; projectId: string | null; worktreeRoot: string }> {
+    return this.db
+      .prepare<Record<string, never>, { conversation_id: string; project_id: string | null; worktree_root: string }>(
+        `
+          SELECT id AS conversation_id, project_id AS project_id, worktree_root AS worktree_root
+          FROM conversations
+          WHERE worktree_root IS NOT NULL
+        `
+      )
+      .all({})
+      .map((row) => ({
+        conversationId: row.conversation_id,
+        projectId: row.project_id,
+        worktreeRoot: row.worktree_root
+      }));
   }
 
   /**
@@ -1054,7 +1411,12 @@ export class ConversationsRepo {
             workspace_mode,
             project_id,
             pinned_at,
-            archived_at
+            archived_at,
+            side_of_conversation_id,
+            origin,
+            subagent_mode,
+            subagent_label,
+            delegation_depth
           FROM conversations
           WHERE id = @conversationId
         `
@@ -1106,7 +1468,12 @@ export class ConversationsRepo {
         workspaceMode: normalizeWorkspaceMode(conversation.workspace_mode),
         projectId: conversation.project_id,
         pinnedAt: conversation.pinned_at,
-        archivedAt: conversation.archived_at
+        archivedAt: conversation.archived_at,
+        sideOfConversationId: (conversation as any).side_of_conversation_id ?? null,
+        origin: (conversation as any).origin ?? null,
+        subagentMode: (conversation as any).subagent_mode ?? null,
+        subagentLabel: (conversation as any).subagent_label ?? null,
+        delegationDepth: (conversation as any).delegation_depth ?? null
       },
       messages: hydratedMessages
     };
@@ -1138,7 +1505,13 @@ export class ConversationsRepo {
     }
 
     const limit = Math.max(1, Math.min(Math.floor(request.limit ?? 100), 250));
-    const cursor = request.cursor ? decodeConversationPageCursor(request.cursor) : null;
+    let cursor: ReturnType<typeof decodeConversationPageCursor> = null;
+    if (request.cursor) {
+      cursor = decodeConversationPageCursor(request.cursor);
+      if (!cursor) {
+        throw new Error('Invalid conversation page cursor');
+      }
+    }
     const rows =
       cursor == null
         ? this.db
@@ -1335,13 +1708,19 @@ export class ConversationsRepo {
     const row = this.db
       .prepare<
         { conversationId: string },
-        { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null }
+        {
+          inputTokens: number | null;
+          outputTokens: number | null;
+          reasoningTokens: number | null;
+          cachedInputTokens: number | null;
+        }
       >(
         `
           SELECT
             input_tokens AS inputTokens,
             output_tokens AS outputTokens,
-            reasoning_tokens AS reasoningTokens
+            reasoning_tokens AS reasoningTokens,
+            cached_input_tokens AS cachedInputTokens
           FROM messages
           WHERE conversation_id = @conversationId
             AND role = 'assistant'
@@ -1360,6 +1739,64 @@ export class ConversationsRepo {
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
       reasoningTokens: row.reasoningTokens,
+      cachedInputTokens: row.cachedInputTokens,
+    };
+  }
+
+  /**
+   * Conversation-wide prompt-cache accounting, summed from provider reports.
+   *
+   * `inputTokens` is the provider's total prompt billing — which INCLUDES
+   * cache hits (AI SDK `inputTokens` ≡ OpenAI `prompt_tokens`; the disjoint
+   * figure is `inputTokenDetails.noCacheTokens`). The hit rate is therefore
+   * cached over input alone, not their sum — summing would double-count the
+   * denominator and halve every displayed percentage. Some adapters report
+   * exclusive figures instead; the guard below self-corrects by falling back
+   * to `input + cached` whenever cached exceeds input. Only turns where the
+   * provider actually reported a cache figure count toward the rate; turns
+   * from providers that stay silent are excluded rather than dragged toward
+   * zero, which keeps an unreported provider from faking a 0% hit rate.
+   */
+  getCacheUsage(conversationId: string) {
+    const row = this.db
+      .prepare<
+        { conversationId: string },
+        { inputTokens: number | null; cachedInputTokens: number | null; reportedTurns: number }
+      >(
+        `
+          SELECT
+            COALESCE(SUM(input_tokens), 0) AS inputTokens,
+            COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+            COUNT(*) AS reportedTurns
+          FROM messages
+          WHERE conversation_id = @conversationId
+            AND role = 'assistant'
+            AND input_tokens IS NOT NULL
+            AND cached_input_tokens IS NOT NULL
+        `
+      )
+      .get({ conversationId });
+
+    if (!row || row.reportedTurns === 0) {
+      return null;
+    }
+
+    const inputTotal = row.inputTokens ?? 0;
+    const cachedTotal = row.cachedInputTokens ?? 0;
+    const denominator = cachedTotal > inputTotal ? inputTotal + cachedTotal : inputTotal;
+
+    return {
+      /** Total billed input across reported turns, cache hits included. */
+      inputTokens: inputTotal,
+      /** Cache-hit tokens across all reported turns. */
+      cachedInputTokens: cachedTotal,
+      /** Turns whose cache figures are in these sums. */
+      reportedTurns: row.reportedTurns,
+      /**
+       * Cache hits over billed input, as a fraction. Null when the provider
+       * reported nothing at all — never coerced to 0.
+       */
+      hitRate: denominator > 0 ? cachedTotal / denominator : null,
     };
   }
 
@@ -1397,17 +1834,26 @@ export class ConversationsRepo {
     const rows = this.db
       .prepare<
         { conversationId: string },
-        Pick<MessageRow, 'role' | 'content' | 'parts_json' | 'response_messages_json'>
+        Pick<MessageRow, 'role' | 'content' | 'parts_json' | 'response_messages_json' | 'status' | 'error_code'>
       >(
         `
           SELECT
             role,
             content,
             parts_json,
-            response_messages_json
+            response_messages_json,
+            status,
+            error_code
           FROM messages
           WHERE conversation_id = @conversationId
-            AND status = 'complete'
+            AND (
+              status = 'complete'
+              OR (
+                role = 'assistant'
+                AND status = 'error'
+                AND error_code IN ('aborted', 'interrupted')
+              )
+            )
           ORDER BY created_at ASC
         `
       )
@@ -1418,6 +1864,27 @@ export class ConversationsRepo {
     for (const row of rows) {
       const responseMessages = parseJson<ModelMessage[]>(row.response_messages_json);
       const parts = parseJson<ChatMessagePart[]>(row.parts_json);
+      const isInterruptedPartial =
+        row.role === 'assistant' && row.status === 'error';
+
+      if (isInterruptedPartial) {
+        // A turn that stopped mid-stream still said things worth remembering:
+        // dropping the delivered prefix made the model restate work it had
+        // already done. Rebuild from parts only — response_messages_json is
+        // deliberately ignored, because an interrupted turn can hold tool
+        // calls with no results, and replaying those would hand the provider
+        // a request it must reject.
+        const text = (parts ?? [])
+          .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+          .map((part) => part.text)
+          .join('\n\n')
+          .trim();
+
+        if (text) {
+          history.push({ role: 'assistant', content: text });
+        }
+        continue;
+      }
 
       if (row.role === 'assistant' && responseMessages?.length) {
         history.push(...responseMessages);
@@ -1487,6 +1954,7 @@ export class ConversationsRepo {
               input_tokens = COALESCE(@inputTokens, input_tokens),
               output_tokens = COALESCE(@outputTokens, output_tokens),
               reasoning_tokens = COALESCE(@reasoningTokens, reasoning_tokens),
+              cached_input_tokens = COALESCE(@cachedInputTokens, cached_input_tokens),
               latency_ms = COALESCE(@latencyMs, latency_ms),
               error_code = CASE WHEN @errorCodePresent = 1 THEN @errorCode ELSE error_code END
           WHERE id = @messageId
@@ -1506,6 +1974,7 @@ export class ConversationsRepo {
         inputTokens: input.inputTokens ?? null,
         outputTokens: input.outputTokens ?? null,
         reasoningTokens: input.reasoningTokens ?? null,
+        cachedInputTokens: input.cachedInputTokens ?? null,
         latencyMs: input.latencyMs ?? null,
         errorCodePresent: input.errorCode !== undefined ? 1 : 0,
         errorCode: input.errorCode ?? null,
@@ -1582,6 +2051,7 @@ export class ConversationsRepo {
               input_tokens,
               output_tokens,
               reasoning_tokens,
+              cached_input_tokens,
               latency_ms,
               error_code,
               created_at
@@ -1600,6 +2070,7 @@ export class ConversationsRepo {
               @inputTokens,
               @outputTokens,
               @reasoningTokens,
+              @cachedInputTokens,
               @latencyMs,
               @errorCode,
               @createdAt
@@ -1620,6 +2091,7 @@ export class ConversationsRepo {
           inputTokens: input.inputTokens ?? null,
           outputTokens: input.outputTokens ?? null,
           reasoningTokens: input.reasoningTokens ?? null,
+          cachedInputTokens: input.cachedInputTokens ?? null,
           latencyMs: input.latencyMs ?? null,
           errorCode: input.errorCode ?? null,
           createdAt: timestamp
@@ -1699,5 +2171,34 @@ export class ConversationsRepo {
     }
 
     return mode;
+  }
+
+  /**
+   * Whether this conversation opted into the Sites toolset. Sticky on purpose:
+   * once the tools are in the catalog they stay there, so the tool list does
+   * not churn between turns and the provider's prompt cache survives.
+   */
+  getSiteOptIn(conversationId: string): boolean {
+    const row = this.db
+      .prepare<{ conversationId: string }, { sites_opt_in: number | null }>(
+        `SELECT sites_opt_in FROM conversations WHERE id = @conversationId`
+      )
+      .get({ conversationId });
+
+    return Boolean(row?.sites_opt_in);
+  }
+
+  setSiteOptIn(conversationId: string, optedIn: boolean): void {
+    const result = this.db
+      .prepare(
+        `UPDATE conversations
+         SET sites_opt_in = @optedIn, updated_at = @updatedAt
+         WHERE id = @conversationId`
+      )
+      .run({ conversationId, optedIn: optedIn ? 1 : 0, updatedAt: new Date().toISOString() });
+
+    if (result.changes === 0) {
+      throw new Error(`Conversation ${conversationId} not found.`);
+    }
   }
 }

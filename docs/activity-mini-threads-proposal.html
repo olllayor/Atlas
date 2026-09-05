@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity Popover as Mini Sidebar Threads — Spec</title>
+<style>
+  :root {
+    --bg-page: #000;
+    --bg-panel: #141414;
+    --bg-hover: #1f1f1f;
+    --bg-active: #262626;
+    --border-subtle: rgba(255,255,255,0.08);
+    --text-primary: #fff;
+    --text-secondary: rgba(255,255,255,0.78);
+    --text-tertiary: rgba(255,255,255,0.55);
+    --text-muted: rgba(255,255,255,0.45);
+    --text-faint: rgba(255,255,255,0.32);
+    --amber: #fbbf24;
+    --amber-ink: #1a1914;
+    --green: #4ade80;
+    --red: #f87171;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: var(--bg-page); color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .lede { color: var(--text-muted); font-size: 13px; margin: 0 0 8px; max-width: 72ch; }
+  .rule { border: 0; border-top: 1px solid var(--border-subtle); margin: 24px 0; }
+  .variants { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+  @media (max-width: 900px) { .variants { grid-template-columns: 1fr; } }
+  .variant-tag {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: var(--text-faint); letter-spacing: 0.04em;
+  }
+  .variant-title { font-size: 15px; font-weight: 600; margin: 4px 0 2px; }
+  .variant-sub { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; max-width: 52ch; }
+  .rec { display: inline-block; font-size: 11px; font-weight: 600; color: var(--amber-ink);
+    background: var(--amber); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 1px; }
+
+  /* Rail + bell */
+  .rail {
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .rail-actions { display: flex; gap: 4px; padding: 4px; border-top: 1px solid var(--border-subtle); margin-top: 4px; }
+  .rail-btn {
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; color: var(--text-tertiary); position: relative;
+  }
+  .rail-btn.is-open { background: var(--bg-hover); color: var(--text-primary); }
+  .rail-btn svg { width: 16px; height: 16px; }
+  .badge {
+    position: absolute; top: 2px; right: 2px; min-width: 14px; height: 14px; padding: 0 4px;
+    border-radius: 999px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9px; font-weight: 600; line-height: 14px; text-align: center;
+    color: var(--amber-ink); background: var(--amber);
+  }
+
+  /* Popover shell */
+  .popover {
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    box-shadow: 0 28px 70px rgba(0,0,0,0.45), 0 14px 32px rgba(0,0,0,0.30);
+    overflow: hidden; position: relative;
+  }
+  .pop-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px 8px;
+  }
+  .pop-header .label { display: flex; align-items: center; gap: 8px; }
+  .pop-header .title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .pop-header .count {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+    color: var(--text-muted); background: rgba(255,255,255,0.05);
+    padding: 2px 6px; border-radius: 999px;
+  }
+  .hairline { height: 1px; background: var(--border-subtle); margin: 0 8px; }
+  .pop-body { padding: 4px; max-height: 340px; overflow-y: auto; }
+  .pop-footer {
+    border-top: 1px solid var(--border-subtle); padding: 7px 12px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .pop-footer .hint { font-size: 10px; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .pop-footer .action { font-size: 11px; color: var(--text-tertiary); }
+  .pop-footer .meta { font-size: 11px; color: var(--text-faint); }
+
+  /* Tier header (variant B only) */
+  .tier-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px 5px;
+  }
+  .tier-head .name { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+  .tier-head .tally {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; color: var(--text-faint);
+  }
+  .tier-head .spacer { flex: 1; }
+  .tier-head .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--text-faint); }
+
+  /* Mini thread row: same grammar as sidebar card rows */
+  .thread {
+    display: block; width: 100%; text-align: left; background: transparent;
+    border: 0; border-radius: 6px; padding: 7px 10px; cursor: pointer; color: inherit;
+  }
+  .thread:hover { background: var(--bg-hover); }
+  .thread.is-active { background: var(--bg-active); }
+  .thread .line1 { display: flex; align-items: center; gap: 6px; height: 20px; font-size: 12px; }
+  .thread .proj {
+    display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+    color: var(--text-tertiary); font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .thread .proj svg { width: 12px; height: 12px; flex-shrink: 0; }
+  .thread .status { font-weight: 600; }
+  .thread .status.approval { color: var(--amber); }
+  .thread .status.working { color: var(--text-primary); display: inline-flex; align-items: center; gap: 6px; }
+  .thread .status.queued { color: var(--text-tertiary); font-weight: 500; }
+  .thread .status.done { color: var(--green); }
+  .thread .status.failed { color: var(--red); }
+  .thread .pulse { width: 6px; height: 6px; border-radius: 999px; background: #fff; display: inline-block; }
+  .thread .status { margin-left: auto; flex-shrink: 0; }
+  .thread .time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; color: var(--text-faint); flex-shrink: 0;
+  }
+  .thread .title {
+    margin-top: 2px; font-size: 13px; font-weight: 500; color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .thread .line3 {
+    margin-top: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; color: var(--text-tertiary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .thread .add { color: var(--green); }
+  .thread .del { color: var(--red); }
+
+  /* Spec list */
+  .spec h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--text-secondary); }
+  .spec ol { margin: 0; padding-left: 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
+  .spec li { margin-bottom: 6px; }
+  .spec code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    padding: 1px 5px; border-radius: 4px; color: var(--text-primary);
+  }
+  .spec table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 12px 0 20px; }
+  .spec th, .spec td {
+    text-align: left; padding: 7px 10px; border-top: 1px solid var(--border-subtle);
+    color: var(--text-secondary); vertical-align: top;
+  }
+  .spec th { color: var(--text-tertiary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+</style>
+</head>
+<body>
+<main class="page">
+  <h1>Activity Popover as Mini Sidebar Threads</h1>
+  <p class="lede">
+    The popover stops inventing its own row grammar (large title plus italic assistant preview)
+    and reuses the sidebar card row users already know: status line, title line, no preview.
+    Same threads, same status words, same order as ⌥⌘A. Data below mirrors the reported
+    screenshot: five threads needing input.
+  </p>
+
+  <section class="variants">
+    <div class="variant">
+      <span class="variant-tag">A</span>
+      <h2 class="variant-title">Flat mini-thread list<span class="rec">Recommended</span></h2>
+      <p class="variant-sub">
+        One list, attention order then recency. No tier chrome. Fastest scan for the common
+        case where everything is needs-input.
+      </p>
+
+      <div class="rail">
+        <div class="rail-actions">
+          <div class="rail-btn is-open" title="Activity">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            <span class="badge">5</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="popover">
+        <div class="pop-header">
+          <div class="label"><span class="title">Activity</span><span class="count">5</span></div>
+        </div>
+        <div class="hairline"></div>
+        <div class="pop-body">
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">8h</span></div>
+            <div class="title">and i want u fully dive deeper into our agentic plans</div>
+          </button>
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">8h</span></div>
+            <div class="title">and i think we need to change color of sidebar</div>
+          </button>
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">1d</span></div>
+            <div class="title">explore the codebase with 5 subagent agents</div>
+          </button>
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">Aug 6</span></div>
+            <div class="title">explain this ai work and asking</div>
+          </button>
+          <button class="thread is-active" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">Aug 4</span></div>
+            <div class="title">which model are u</div>
+          </button>
+        </div>
+        <div class="pop-footer">
+          <span class="hint">⌥⌘A to jump to next</span>
+          <span class="meta">5 need input</span>
+        </div>
+      </div>
+      <p class="variant-sub" style="margin-top:12px">Mixed states render in sidebar words:</p>
+      <div class="popover">
+        <div class="pop-body">
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status working"><span class="pulse"></span>Working 02:14</span><span class="time">now</span></div>
+            <div class="title">Build the parser</div>
+            <div class="line3">atlas/dev <span class="add">+128</span> <span class="del">-34</span></div>
+          </button>
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status queued">Queued</span><span class="time">2m</span></div>
+            <div class="title">Refactor renderer</div>
+          </button>
+          <button class="thread" type="button">
+            <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status done">Done</span><span class="time">1h</span></div>
+            <div class="title">Add export pipeline</div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="variant">
+      <span class="variant-tag">B</span>
+      <h2 class="variant-title">Grouped by tier</h2>
+      <p class="variant-sub">
+        Same rows, quiet tier headers. Pays off when the list mixes running, queued,
+        and unread. Costs one header line per tier.
+      </p>
+
+      <div class="rail">
+        <div class="rail-actions">
+          <div class="rail-btn is-open" title="Activity">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            <span class="badge">4</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="popover">
+        <div class="pop-header">
+          <div class="label"><span class="title">Activity</span><span class="count">6</span></div>
+        </div>
+        <div class="hairline"></div>
+        <div class="pop-body">
+          <div class="tier-head">
+            <span class="name">Needs input</span><span class="tally">4</span>
+            <span class="spacer"></span><span class="kbd">⌥⌘A</span>
+          </div>
+          <div class="hairline"></div>
+          <div style="padding-top:4px">
+            <button class="thread" type="button">
+              <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">8h</span></div>
+              <div class="title">and i want u fully dive deeper into our agentic plans</div>
+            </button>
+            <button class="thread" type="button">
+              <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status approval">Approval</span><span class="time">1d</span></div>
+              <div class="title">explore the codebase with 5 subagent agents</div>
+            </button>
+          </div>
+          <div class="tier-head">
+            <span class="name">Running</span><span class="tally">1</span>
+          </div>
+          <div class="hairline"></div>
+          <div style="padding-top:4px">
+            <button class="thread" type="button">
+              <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status working"><span class="pulse"></span>Working 02:14</span><span class="time">now</span></div>
+              <div class="title">Build the parser</div>
+              <div class="line3">atlas/dev <span class="add">+128</span> <span class="del">-34</span></div>
+            </button>
+          </div>
+          <div class="tier-head">
+            <span class="name">Unread</span><span class="tally">1</span>
+          </div>
+          <div class="hairline"></div>
+          <div style="padding-top:4px">
+            <button class="thread" type="button">
+              <div class="line1"><span class="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Atlas</span><span class="status done">Done</span><span class="time">1h</span></div>
+              <div class="title">Add export pipeline</div>
+            </button>
+          </div>
+        </div>
+        <div class="pop-footer">
+          <span class="hint">⌥⌘A to jump to next</span>
+          <span class="action">Mark all read</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="spec">
+    <h2>Exact behavior (both variants)</h2>
+    <table>
+      <tr><th>Element</th><th>Spec</th></tr>
+      <tr><td>Row line 1</td><td>Project left (folder icon plus name, dim, truncated) and status word plus mono timestamp right (Approval amber semibold, Working with pulse plus live timer, Queued dim, Done green, Failed red). Same words as sidebar rows.</td></tr>
+      <tr><td>Row line 2</td><td>Thread title, 13px medium, single-line truncate. No assistant preview line, ever.</td></tr>
+      <tr><td>Row line 3</td><td>Only when data exists: branch plus diff stats in mono, same as sidebar. Otherwise the row collapses to two lines.</td></tr>
+      <tr><td>Order</td><td>Needs-input, then running, queued, unread; most recent first within a tier. Identical to ⌥⌘A walk order.</td></tr>
+      <tr><td>Badge</td><td>Amber count of needs-input only. Tier dot marks anything else happening. Tooltip names the state: "Activity, 4 threads need you (⌥⌘A)".</td></tr>
+      <tr><td>Click</td><td>Jump to thread and close. Active thread gets the sidebar active background. No settle, snooze, pin, rename, or context menu in the popover.</td></tr>
+      <tr><td>Footer</td><td>Left: ⌥⌘A hint. Right: Mark all read only when unread rows exist, else a quiet "n need input" tally.</td></tr>
+    </table>
+    <h2>What disappears vs now</h2>
+    <ol>
+      <li><code>secondaryLabel</code> preview subtitles (the italic lines under every title).</li>
+      <li><code>Mark all read</code> competing with the title in the header; it gets its own footer row.</li>
+      <li>Blue <code>bg-accent</code> badge; amber reads as act-now across themes.</li>
+      <li>Phantom whitespace under rows with no subtitle; rows collapse.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

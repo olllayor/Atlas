@@ -164,6 +164,38 @@ test('the PATH search covers the shim directories a Finder-launched app never in
   assert.ok(dirs.includes('/Users/dev/.local/bin'));
 });
 
+test('defaultPathDirs collapses exact-duplicate directories', () => {
+  const dirs = defaultPathDirs(
+    'darwin',
+    { PATH: '/usr/bin:/bin:/usr/bin:/opt/homebrew/bin' },
+    '/Users/dev'
+  );
+
+  // '/usr/bin' arrives both from PATH and the hardcoded fallback; probing it
+  // twice per binary per IDE is pure waste (t3code #9618).
+  assert.equal(
+    dirs.filter((dir) => dir === '/usr/bin').length,
+    1
+  );
+  assert.equal(
+    dirs.filter((dir) => dir === '/opt/homebrew/bin').length,
+    1
+  );
+  assert.ok(dirs.includes('/bin'));
+});
+
+test('defaultPathDirs keeps case-distinct spellings', () => {
+  const dirs = defaultPathDirs('darwin', { PATH: '/Tools:/tools:/Tools' }, '/Users/dev');
+
+  // Exact strings merge; case-distinct spellings resolve separately, since
+  // filtering those misses real files on case-sensitive volumes.
+  assert.equal(
+    dirs.filter((dir) => dir === '/Tools').length,
+    1
+  );
+  assert.ok(dirs.includes('/tools'));
+});
+
 test('list() caches the scan and refresh() drops it', () => {
   let scans = 0;
   const launcher = new IdeLauncher(() => {

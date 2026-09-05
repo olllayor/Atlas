@@ -340,3 +340,167 @@ test('RuntimeStateRepo upserts task.* events onto one row and stamps agentKind o
   assert.equal(usage?.totalTokens, 900);
   assert.equal(usage?.inputTokens, 300);
 });
+
+// ---------------------------------------------------------------------------
+// Sequence watermark tracking
+//
+// `recordEvent` derives each event's sequence from an in-memory per-conversation
+// watermark instead of a `MAX(sequence)` query per event. These tests pin the
+// three ways that could silently corrupt the log: sequences drifting from the
+// table, a restart colliding with existing rows, and a delete leaving a stale
+// watermark behind.
+// ---------------------------------------------------------------------------
+
+const MINIMAL_EVENT = {
+  turnId: 'turn-seq',
+  requestId: 'request-seq',
+  activityType: 'message.delta' as const,
+  tone: 'info' as const,
+  provider: 'system' as const,
+  payload: {},
+};
+
+test('recorded sequences are consecutive per conversation and unique across conversations', (t) => {
+  const { raw, database, tempDir } = createDatabase('atlas-runtime-seq-');
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversationA = conversations.create();
+  const conversationB = conversations.create();
+
+  for (let index = 1; index <= 5; index += 1) {
+    const envelope = runtimeState.recordEvent({
+      ...MINIMAL_EVENT,
+      eventId: `a-${index}`,
+      conversationId: conversationA.id,
+    });
+    assert.equal(envelope.sequence, index);
+  }
+
+  // A second conversation starts at its own watermark, not the other's.
+  const envelopeB = runtimeState.recordEvent({
+    ...MINIMAL_EVENT,
+    eventId: 'b-1',
+    conversationId: conversationB.id,
+  });
+  assert.equal(envelopeB.sequence, 1);
+
+  // And the table agrees with the tracker.
+  assert.equal(runtimeState.getLastSequence(conversationA.id), 5);
+  assert.equal(runtimeState.getLastSequence(conversationB.id), 1);
+});
+
+test('a fresh repo instance recovers the watermark from SQLite (restart safety)', (t) => {
+  const { raw, database, tempDir } = createDatabase('atlas-runtime-restart-');
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+  for (let index = 1; index <= 4; index += 1) {
+    runtimeState.recordEvent({
+      ...MINIMAL_EVENT,
+      eventId: `pre-${index}`,
+      conversationId: conversation.id,
+    });
+  }
+
+  // Simulate a restart: same database, brand-new repo (empty tracker).
+  const restarted = new RuntimeStateRepo(database);
+  assert.equal(restarted.getLastSequence(conversation.id), 4);
+
+  const envelope = restarted.recordEvent({
+    ...MINIMAL_EVENT,
+    eventId: 'post-restart',
+    conversationId: conversation.id,
+  });
+  assert.equal(envelope.sequence, 5);
+});
+
+test('rows inserted out-of-band (a fork copy) are picked up by the watermark', (t) => {
+  const { raw, database, tempDir } = createDatabase('atlas-runtime-fork-');
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // A fork copies event rows with their sequences preserved, directly through
+  // the database, before the forked conversation ever records a new event.
+  const forked = conversations.create();
+  const insertRaw = raw.prepare(
+    `INSERT INTO conversation_events (
+       event_id, conversation_id, turn_id, request_id, sequence, occurred_at,
+       activity_type, tone, tool_type, message_id, tool_call_id, approval_id,
+       provider_id, provider_event_type, payload_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const sequence of [1, 2, 3]) {
+    insertRaw.run(
+      `fork-${sequence}`,
+      forked.id,
+      'turn-fork',
+      'request-fork',
+      sequence,
+      new Date().toISOString(),
+      'message.delta',
+      'info',
+      null,
+      null,
+      null,
+      null,
+      'system',
+      'chunk',
+      '{}',
+    );
+  }
+
+  // The first new event on the fork must continue AFTER the copied rows, not
+  // collide with them (the unique index on (conversation_id, sequence) would
+  // reject a collision and abort the turn).
+  const envelope = runtimeState.recordEvent({
+    ...MINIMAL_EVENT,
+    eventId: 'fork-new',
+    conversationId: forked.id,
+  });
+  assert.equal(envelope.sequence, 4);
+});
+
+test('forgetting a conversation re-derives its watermark from the table', (t) => {
+  const { raw, database, tempDir } = createDatabase('atlas-runtime-forget-');
+  const conversations = new ConversationsRepo(database);
+  const runtimeState = new RuntimeStateRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = conversations.create();
+  for (let index = 1; index <= 3; index += 1) {
+    runtimeState.recordEvent({
+      ...MINIMAL_EVENT,
+      eventId: `f-${index}`,
+      conversationId: conversation.id,
+    });
+  }
+  assert.equal(runtimeState.getLastSequence(conversation.id), 3);
+
+  // Rows gone (conversation deletion cascades here). A stale watermark would
+  // make the next event for this id resume at 4 instead of restarting.
+  raw.exec(`DELETE FROM conversation_events WHERE conversation_id = '${conversation.id}'`);
+  runtimeState.forgetConversationEvents(conversation.id);
+  assert.equal(runtimeState.getLastSequence(conversation.id), 0);
+});
+

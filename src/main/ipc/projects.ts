@@ -180,6 +180,19 @@ export function registerProjectsIpc({
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.projectsSetAutoPull,
+    withUserFacingErrors(IPC_CHANNELS.projectsSetAutoPull, (event, projectId: string, autoPull: boolean) => {
+      assertTrustedSender(event);
+
+      if (typeof projectId !== 'string' || typeof autoPull !== 'boolean') {
+        throw new Error('A project id and an automatic-pull flag are required.');
+      }
+
+      return projectsRepo.setAutoPull(projectId, autoPull);
+    })
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.projectsListIdes,
     withUserFacingErrors(IPC_CHANNELS.projectsListIdes, async (event): Promise<DetectedIde[]> => {
       assertTrustedSender(event);

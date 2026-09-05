@@ -43,6 +43,120 @@ export function registerSitePreviewScheme(): void {
  * siteId → versionId map so root-relative links keep working without encoding
  * the version into every URL.
  */
+const PREVIEW_BRIDGE_SCRIPT = `<script id="__atlas_preview_bridge">
+(() => {
+  try {
+    const saved = sessionStorage.getItem('__atlas_scroll');
+    if (saved) {
+      const { x, y } = JSON.parse(saved);
+      requestAnimationFrame(() => window.scrollTo(x, y));
+    }
+    window.addEventListener('beforeunload', () => {
+      sessionStorage.setItem('__atlas_scroll', JSON.stringify({ x: window.scrollX, y: window.scrollY }));
+    });
+  } catch {}
+
+  window.addEventListener('message', (event) => {
+    if (event.data === 'atlas:reload') {
+      window.location.reload();
+      return;
+    }
+    if (event.data && typeof event.data === 'object') {
+      if (event.data.type === 'atlas:toggle_inspect') {
+        setInspectEnabled(Boolean(event.data.enabled));
+      }
+    }
+  });
+
+  let inspectActive = false;
+  const overlay = document.createElement('div');
+  overlay.id = '__atlas_inspect_overlay';
+  overlay.style.cssText = 'position:fixed;pointer-events:none;z-index:999999;border:2px solid #3b82f6;background:rgba(59,130,246,0.1);border-radius:4px;display:none;transition:all 40ms ease;';
+
+  const badge = document.createElement('div');
+  badge.style.cssText = 'position:absolute;top:-24px;left:0;background:#1d4ed8;color:#ffffff;font-size:11px;font-family:ui-monospace,SFMono-Regular,monospace;padding:2px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 2px 4px rgba(0,0,0,0.3);pointer-events:none;';
+  overlay.appendChild(badge);
+
+  function ensureOverlay() {
+    if (!document.body.contains(overlay)) {
+      document.body.appendChild(overlay);
+    }
+  }
+
+  function setInspectEnabled(enabled) {
+    inspectActive = enabled;
+    if (!enabled) {
+      overlay.style.display = 'none';
+      document.body.style.cursor = '';
+    } else {
+      ensureOverlay();
+      document.body.style.cursor = 'crosshair';
+    }
+  }
+
+  function getCssSelector(el) {
+    if (el.id) return "#" + el.id;
+    let path = [];
+    let current = el;
+    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+      let selector = current.tagName.toLowerCase();
+      if (current.className && typeof current.className === 'string') {
+        const firstClass = current.className.trim().split(/\\s+/)[0];
+        if (firstClass && !firstClass.includes(':')) selector += "." + firstClass;
+      }
+      path.unshift(selector);
+      current = current.parentElement;
+      if (path.length >= 3) break;
+    }
+    return path.join(" > ");
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    if (!inspectActive) return;
+    const target = e.target;
+    if (!target || target === overlay || target === badge || target === document.body || target === document.documentElement) return;
+    ensureOverlay();
+    const rect = target.getBoundingClientRect();
+    overlay.style.top = rect.top + "px";
+    overlay.style.left = rect.left + "px";
+    overlay.style.width = rect.width + "px";
+    overlay.style.height = rect.height + "px";
+    overlay.style.display = "block";
+
+    const tag = target.tagName.toLowerCase();
+    const cls = (target.className && typeof target.className === 'string') ? ("." + target.className.trim().split(/\\s+/)[0]) : "";
+    badge.textContent = "<" + tag + cls + ">";
+    badge.style.top = rect.top < 28 ? "4px" : "-24px";
+  }, true);
+
+  document.addEventListener('click', (e) => {
+    if (!inspectActive) return;
+    const target = e.target;
+    if (!target || target === overlay || target === badge) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const tag = target.tagName.toLowerCase();
+    const cls = typeof target.className === 'string' ? target.className : "";
+    const selector = getCssSelector(target);
+    const text = (target.innerText || "").trim().slice(0, 100);
+    const outerHTML = target.outerHTML.slice(0, 1000);
+
+    window.parent.postMessage({
+      type: 'atlas:element_selected',
+      payload: {
+        tagName: tag,
+        className: cls,
+        id: target.id || null,
+        selector,
+        text,
+        outerHTML,
+      }
+    }, "*");
+  }, true);
+})();
+</script>`;
+
 export class SitePreviewHost {
   private readonly servedVersionBySiteId = new Map<string, string>();
   private readonly windowsBySiteId = new Map<string, BrowserWindow>();
@@ -185,7 +299,22 @@ export class SitePreviewHost {
       });
     }
 
-    return new Response(request.method === 'HEAD' ? null : new Uint8Array(body), {
+    let responseBody: string | Buffer | null = null;
+    if (request.method !== 'HEAD') {
+      if (requestedPath.endsWith('.html') || requestedPath.endsWith('.htm')) {
+        let html = body.toString('utf-8');
+        if (html.includes('</body>')) {
+          html = html.replace('</body>', `${PREVIEW_BRIDGE_SCRIPT}</body>`);
+        } else {
+          html += PREVIEW_BRIDGE_SCRIPT;
+        }
+        responseBody = html;
+      } else {
+        responseBody = body;
+      }
+    }
+
+    return new Response(responseBody as BodyInit | null, {
       status: 200,
       headers: this.securityHeaders(getSiteMimeType(requestedPath)),
     });

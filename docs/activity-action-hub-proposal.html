@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity Hub: Action-First Popover — UI/UX Spec & Interactive Prototype</title>
+<style>
+  :root {
+    --bg-page: #08090c;
+    --bg-panel: #111318;
+    --bg-surface: #171922;
+    --bg-elevated: #1e212d;
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.1);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-medium: rgba(255, 255, 255, 0.16);
+    --border-strong: rgba(255, 255, 255, 0.28);
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.78);
+    --text-tertiary: rgba(255, 255, 255, 0.52);
+    --text-muted: rgba(255, 255, 255, 0.40);
+    --text-faint: rgba(255, 255, 255, 0.26);
+
+    --amber: #f59e0b;
+    --amber-hover: #fbbf24;
+    --amber-surface: rgba(245, 158, 11, 0.12);
+    --amber-border: rgba(245, 158, 11, 0.28);
+    --amber-ink: #000000;
+
+    --blue: #38bdf8;
+    --blue-surface: rgba(56, 189, 248, 0.12);
+    --green: #4ade80;
+    --green-surface: rgba(74, 222, 128, 0.12);
+    --red: #f87171;
+    --red-surface: rgba(248, 113, 113, 0.12);
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-full: 9999px;
+
+    --shadow-popover: 0 24px 64px -12px rgba(0, 0, 0, 0.65), 0 12px 24px -8px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Container */
+  .page { max-width: 1240px; margin: 0 auto; padding: 48px 28px 100px; }
+
+  /* Header */
+  .header-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    color: var(--amber); background: var(--amber-surface);
+    border: 1px solid var(--amber-border);
+    padding: 3px 10px; border-radius: var(--radius-full);
+    margin-bottom: 16px; letter-spacing: 0.05em;
+  }
+  h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; color: var(--text-primary); }
+  .lede { color: var(--text-secondary); font-size: 14px; margin: 0 0 24px; max-width: 78ch; line-height: 1.6; }
+
+  /* Tab Nav */
+  .controls-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md); padding: 6px 12px; margin-bottom: 32px;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .tabs { display: flex; gap: 4px; }
+  .tab-btn {
+    background: transparent; border: 0; color: var(--text-muted);
+    font-size: 12px; font-weight: 500; padding: 6px 12px; border-radius: var(--radius-sm);
+    cursor: pointer; transition: all 120ms ease;
+  }
+  .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .tab-btn.is-active {
+    color: var(--text-primary); background: var(--bg-surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  .sim-presets { display: flex; align-items: center; gap: 8px; }
+  .sim-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .preset-btn {
+    background: var(--bg-surface); border: 1px solid var(--border-subtle);
+    color: var(--text-secondary); font-size: 11px; padding: 4px 10px;
+    border-radius: var(--radius-sm); cursor: pointer; transition: all 120ms ease;
+  }
+  .preset-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .preset-btn.is-active { border-color: var(--amber); color: var(--amber); background: var(--amber-surface); }
+
+  /* Comparison Grid */
+  .grid-comparison {
+    display: grid;
+    grid-template-columns: 1fr 1.25fr;
+    gap: 36px;
+    align-items: start;
+    margin-bottom: 48px;
+  }
+  @media (max-width: 1024px) {
+    .grid-comparison { grid-template-columns: 1fr; }
+  }
+
+  .col-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    position: relative;
+  }
+  .col-header { margin-bottom: 20px; }
+  .col-badge {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 6px;
+  }
+  .col-badge.spec { background: rgba(255,255,255,0.08); color: var(--text-tertiary); }
+  .col-badge.our-version { background: var(--amber-surface); color: var(--amber); border: 1px solid var(--amber-border); }
+  .col-title { font-size: 18px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .col-desc { font-size: 12px; color: var(--text-muted); margin: 0; line-height: 1.5; }
+
+  /* Demo Stage */
+  .stage-viewport {
+    background: #000;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    min-height: 480px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+  .stage-toolbar {
+    width: 100%; display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-subtle);
+  }
+  .stage-hint { font-size: 11px; color: var(--text-muted); }
+
+  /* Mock Toolbar with Bell */
+  .app-rail {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-surface); border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 4px 8px; margin-bottom: 12px;
+  }
+  .app-rail-btn {
+    position: relative; width: 34px; height: 34px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 0; color: var(--text-tertiary);
+    cursor: pointer; transition: all 120ms ease;
+  }
+  .app-rail-btn:hover, .app-rail-btn.is-open { background: var(--bg-hover); color: var(--text-primary); }
+  .app-rail-btn svg { width: 16px; height: 16px; }
+
+  /* Status badge on Bell */
+  .bell-badge {
+    position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px;
+    padding: 0 4px; border-radius: var(--radius-full);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9px; font-weight: 700; line-height: 15px; text-align: center;
+    color: var(--amber-ink); background: var(--amber);
+    box-shadow: 0 0 0 2px var(--bg-surface);
+  }
+  .bell-dot {
+    position: absolute; bottom: 2px; right: 2px; width: 6px; height: 6px;
+    border-radius: var(--radius-full); background: var(--blue);
+  }
+  .bell-dot.pulse { animation: dot-pulse 1.8s infinite ease-in-out; }
+  @keyframes dot-pulse {
+    0%, 100% { opacity: 0.5; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.15); }
+  }
+
+  /* Popover Canvas */
+  .popover-container {
+    width: 100%; max-width: 360px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-popover);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    animation: popover-fade-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes popover-fade-in {
+    from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Popover Header */
+  .pop-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .pop-head-left { display: flex; align-items: center; gap: 8px; }
+  .pop-title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .pop-pill {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: var(--radius-full);
+  }
+  .pop-pill.amber { background: var(--amber-surface); color: var(--amber); border: 1px solid var(--amber-border); }
+  .pop-head-shortcut {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; color: var(--text-muted);
+  }
+
+  /* Popover Body */
+  .pop-scrollable {
+    max-height: 380px; overflow-y: auto; padding: 6px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .pop-scrollable::-webkit-scrollbar { width: 6px; }
+  .pop-scrollable::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+
+  /* Deck: Action Required */
+  .deck-section-title {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 8px 4px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .deck-section-title.action { color: var(--amber); }
+  .deck-section-title.ambient { color: var(--text-muted); margin-top: 6px; }
+
+  /* Action Cards */
+  .action-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: all 120ms ease;
+    display: flex; flex-direction: column; gap: 5px;
+    position: relative;
+  }
+  .action-card:hover, .action-card.is-selected {
+    background: var(--bg-hover);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+  .action-card.just-approved {
+    opacity: 0; transform: translateX(20px);
+    transition: all 250ms ease;
+  }
+
+  .card-top {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px;
+  }
+  .card-project {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--text-tertiary); font-weight: 500;
+  }
+  .card-badge {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .card-badge.approval { background: var(--amber-surface); color: var(--amber); }
+  .card-badge.error { background: var(--red-surface); color: var(--red); }
+  .card-time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--text-muted); }
+
+  .card-title {
+    font-size: 12px; font-weight: 500; color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Tool snippet line */
+  .card-intent {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: var(--text-muted);
+    padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .card-intent-snippet {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+  }
+  .card-actions {
+    display: flex; align-items: center; gap: 4px;
+    opacity: 0; transform: scale(0.96); transition: all 120ms ease;
+  }
+  .action-card:hover .card-actions, .action-card.is-selected .card-actions {
+    opacity: 1; transform: scale(1);
+  }
+
+  .btn-quick-approve {
+    background: var(--amber); border: 0; color: var(--amber-ink);
+    font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 3px;
+    transition: background 100ms ease;
+  }
+  .btn-quick-approve:hover { background: var(--amber-hover); }
+  .btn-jump {
+    background: rgba(255,255,255,0.08); border: 0; color: var(--text-secondary);
+    padding: 3px; border-radius: 4px; cursor: pointer; display: flex;
+  }
+  .btn-jump:hover { background: rgba(255,255,255,0.16); color: #fff; }
+
+  /* Ambient Compact Rows */
+  .ambient-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px; border-radius: var(--radius-sm);
+    background: transparent; border: 0; width: 100%; text-align: left;
+    cursor: pointer; color: inherit; transition: background 100ms ease;
+  }
+  .ambient-row:hover { background: var(--bg-hover); }
+  .ambient-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .ambient-title {
+    font-size: 12px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;
+  }
+  .ambient-right { display: flex; align-items: center; gap: 6px; shrink-0; }
+  .ambient-status {
+    font-size: 11px; display: inline-flex; align-items: center; gap: 4px;
+  }
+  .ambient-status.working { color: var(--blue); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ambient-status.queued { color: var(--text-muted); }
+  .ambient-status.done { color: var(--green); }
+  .ambient-time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--text-faint); }
+
+  /* Pulse animation for working */
+  .pulse-indicator {
+    width: 6px; height: 6px; border-radius: var(--radius-full);
+    background: var(--blue); animation: dot-pulse 1.2s infinite ease-in-out;
+  }
+
+  /* Popover Footer */
+  .pop-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-top: 1px solid var(--border-subtle);
+    background: rgba(255,255,255,0.01);
+  }
+  .foot-kbd {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; color: var(--text-muted);
+  }
+  .kbd-key {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 3px; padding: 1px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .foot-action {
+    background: transparent; border: 0; font-size: 11px; color: var(--text-tertiary);
+    cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all 120ms ease;
+  }
+  .foot-action:hover { color: #fff; background: var(--bg-hover); }
+
+  /* Empty state */
+  .empty-state {
+    padding: 32px 16px; text-align: center; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+  }
+  .empty-title { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+  .empty-sub { font-size: 11px; color: var(--text-muted); }
+
+  /* Spec Comparison Table */
+  .spec-table-wrap {
+    margin-top: 40px; background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 24px;
+  }
+  .spec-table-wrap h2 { font-size: 18px; margin: 0 0 16px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border-subtle); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.feature { font-weight: 600; color: var(--text-primary); width: 180px; }
+  td.postplan { color: var(--text-tertiary); }
+  td.our-version { color: var(--text-secondary); background: rgba(245, 158, 11, 0.02); }
+  .badge-diff {
+    font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; display: inline-block;
+  }
+  .badge-diff.win { background: var(--green-surface); color: var(--green); }
+  .badge-diff.alt { background: var(--amber-surface); color: var(--amber); }
+
+  /* Toast Notification */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--bg-elevated); border: 1px solid var(--border-medium);
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5); border-radius: 8px;
+    padding: 10px 16px; display: flex; align-items: center; gap: 10px;
+    font-size: 12px; color: #fff; transform: translateY(100px); opacity: 0;
+    transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1); pointer-events: none; z-index: 1000;
+  }
+  .toast.show { transform: translateY(0); opacity: 1; pointer-events: auto; }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="header-tag">Interactive Spec & Prototype</div>
+  <h1>Activity Popover: From Jump-List to Action Hub</h1>
+  <p class="lede">
+    Critique of the Postplan proposal (<code>fjg5nv39jsa3.postplan.dev</code>) and the interactive demonstration of our upgraded <strong>Two-Deck Action-First Popover</strong> with inline triage, intent preview, and keyboard control.
+  </p>
+
+  <!-- Interactive Controls Toolbar -->
+  <div class="controls-bar">
+    <div class="tabs">
+      <button class="tab-btn is-active" id="tab-interactive" onclick="switchView('interactive')">Interactive Demo</button>
+      <button class="tab-btn" id="tab-comparison" onclick="switchView('comparison')">Postplan vs. Our Version</button>
+      <button class="tab-btn" id="tab-spec" onclick="switchView('spec')">Architecture & Spec</button>
+    </div>
+
+    <div class="sim-presets">
+      <span class="sim-label">State Scenario:</span>
+      <button class="preset-btn is-active" id="btn-scenario-mixed" onclick="setScenario('mixed')">Mixed (4 Action, 3 Ambient)</button>
+      <button class="preset-btn" id="btn-scenario-approvals" onclick="setScenario('approvals')">Approval Heavy</button>
+      <button class="preset-btn" id="btn-scenario-caughtup" onclick="setScenario('caughtup')">All Caught Up</button>
+    </div>
+  </div>
+
+  <!-- View 1: Interactive Stage -->
+  <div id="view-interactive" class="grid-comparison">
+    <!-- Left Column: Postplan Flaws Explainer -->
+    <div class="col-card">
+      <div class="col-header">
+        <span class="col-badge spec">Postplan Spec Summary</span>
+        <h3 class="col-title">The Read-Only Bottleneck</h3>
+        <p class="col-desc">
+          Postplan correctly stripped the noisy secondary message italic preview and introduced pure amber urgency.
+          However, it made the popover a <strong>strictly read-only navigation jumper</strong>.
+        </p>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 14px; font-size: 12px; color: var(--text-secondary);">
+        <div style="border-left: 2px solid var(--amber); padding-left: 12px;">
+          <strong style="color: #fff;">1. Context Switch Fatigue</strong>
+          <p style="margin: 3px 0 0; color: var(--text-muted);">
+            If 4 subagents ask for command execution approvals, Postplan forces 4 window jumps, 4 separate loads, and 4 popover re-openings.
+          </p>
+        </div>
+
+        <div style="border-left: 2px solid var(--amber); padding-left: 12px;">
+          <strong style="color: #fff;">2. Git Diff Stats in Line 3 Waste Space</strong>
+          <p style="margin: 3px 0 0; color: var(--text-muted);">
+            Displaying <code>atlas/dev +128 -34</code> in a notification popover doesn't tell the developer why the agent needs attention.
+          </p>
+        </div>
+
+        <div style="border-left: 2px solid var(--amber); padding-left: 12px;">
+          <strong style="color: #fff;">3. The Flat vs. Tiered Dilemma</strong>
+          <p style="margin: 3px 0 0; color: var(--text-muted);">
+            Variant A (flat) gets chaotic when states mix. Variant B (grouped) wastes 40% of vertical height on dividers and headers.
+          </p>
+        </div>
+      </div>
+
+      <div style="margin-top: 24px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid var(--border-subtle);">
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">KEYBOARD TEST:</div>
+        <div style="font-size: 11px; color: var(--text-muted);">
+          Press <span class="kbd-key">⌥</span>+<span class="kbd-key">⌘</span>+<span class="kbd-key">A</span> anywhere on this page to toggle the popover, or <span class="kbd-key">A</span> while hovering an approval card to quick-approve!
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Our Live Interactive Prototype -->
+    <div class="col-card" style="border-color: rgba(245, 158, 11, 0.2);">
+      <div class="col-header">
+        <span class="col-badge our-version">Our Version: Action Hub</span>
+        <h3 class="col-title">Two-Deck Layout with Inline Triage</h3>
+        <p class="col-desc">
+          Top Deck prioritizes approvals with tool intent previews and 1-click approvals. Bottom Deck compresses running/completed threads into minimal ambient rows.
+        </p>
+      </div>
+
+      <div class="stage-viewport">
+        <!-- Mock Rail -->
+        <div class="stage-toolbar">
+          <span class="stage-hint">Atlas Window Header / Sidebar Rail</span>
+          <div class="app-rail">
+            <button class="app-rail-btn is-open" id="rail-bell-btn" title="Toggle Activity (⌥⌘A)" onclick="togglePopover()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+              </svg>
+              <span class="bell-badge" id="bell-badge-count">4</span>
+              <span class="bell-dot pulse" id="bell-ambient-dot" style="display:none;"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Popover -->
+        <div class="popover-container" id="popover-widget">
+          <!-- Popover Header -->
+          <div class="pop-head">
+            <div class="pop-head-left">
+              <span class="pop-title">Activity Hub</span>
+              <span class="pop-pill amber" id="head-badge-pill">4 Need Input</span>
+            </div>
+            <span class="pop-head-shortcut">⌥⌘A next</span>
+          </div>
+
+          <!-- Popover Body with 2-Deck Split -->
+          <div class="pop-scrollable" id="popover-content">
+            <!-- Content will be injected dynamically by JavaScript -->
+          </div>
+
+          <!-- Popover Footer -->
+          <div class="pop-foot">
+            <div class="foot-kbd">
+              <span class="kbd-key">↑↓</span> Navigate
+              <span class="kbd-key">↵</span> Jump
+            </div>
+            <button class="foot-action" id="foot-mark-read" onclick="markAllRead()">Mark all read</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View 2: Side-by-Side Comparison -->
+  <div id="view-comparison" class="grid-comparison" style="display:none;">
+    <!-- Postplan Mock -->
+    <div class="col-card">
+      <div class="col-header">
+        <span class="col-badge spec">Postplan Spec (Variant A & B)</span>
+        <h3 class="col-title">Sidebar Card Mimicry</h3>
+        <p class="col-desc">
+          Strict copy of sidebar rows into popover. Diff stats line included, but zero inline interactions.
+        </p>
+      </div>
+
+      <!-- Static Mock of Postplan -->
+      <div style="background: #141414; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 6px;">
+        <div style="display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 11px;">
+          <span style="font-weight: 600; text-transform: uppercase; color: var(--text-tertiary);">Activity</span>
+          <span style="font-family: monospace; color: var(--text-muted);">⌥⌘A</span>
+        </div>
+        <div style="padding: 6px 0; display: flex; flex-direction: column; gap: 4px;">
+          <div style="padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px;">
+              <span style="color: var(--text-tertiary);">📁 Atlas</span>
+              <span style="color: var(--amber); font-weight: 600;">Approval · 8m</span>
+            </div>
+            <div style="font-size: 12px; font-weight: 500; color: #fff;">Build the parser</div>
+            <div style="font-family: monospace; font-size: 10px; color: var(--text-faint); margin-top: 2px;">atlas/dev <span style="color:#4ade80">+128</span> <span style="color:#f87171">-34</span></div>
+          </div>
+          <div style="padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 6px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px;">
+              <span style="color: var(--text-tertiary);">📁 Atlas</span>
+              <span style="color: var(--amber); font-weight: 600;">Approval · 1h</span>
+            </div>
+            <div style="font-size: 12px; font-weight: 500; color: #fff;">Explore codebase with subagents</div>
+          </div>
+        </div>
+        <div style="padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
+          <span>⌥⌘A to jump to next</span>
+          <span>4 need input</span>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+        ⚠️ <strong>Problem:</strong> The user has to click each row, leave their current context, click "Approve" in the main chat, then click the bell again for the remaining 3.
+      </div>
+    </div>
+
+    <!-- Our Action-First Version -->
+    <div class="col-card" style="border-color: rgba(245, 158, 11, 0.3);">
+      <div class="col-header">
+        <span class="col-badge our-version">Our Action Hub Version</span>
+        <h3 class="col-title">High-Efficiency Triage Deck</h3>
+        <p class="col-desc">
+          Replaces inert diff stats with real agent intent and enables 1-click approvals without leaving your current workspace view.
+        </p>
+      </div>
+
+      <div style="background: #111318; border: 1px solid rgba(245,158,11,0.25); border-radius: 10px; padding: 6px;">
+        <div style="display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 11px;">
+          <span style="font-weight: 600; text-transform: uppercase; color: var(--amber);">⚡ Action Required (2)</span>
+          <span style="font-family: monospace; color: var(--text-muted);">⌥⌘A next</span>
+        </div>
+        <div style="padding: 6px 0; display: flex; flex-direction: column; gap: 4px;">
+          <!-- Card with quick approve -->
+          <div style="padding: 8px 10px; background: rgba(245,158,11,0.05); border: 1px solid rgba(245,158,11,0.2); border-radius: 6px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px;">
+              <span style="color: var(--text-tertiary);">📁 Atlas</span>
+              <span style="background: var(--amber-surface); color: var(--amber); padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">Approval</span>
+            </div>
+            <div style="font-size: 12px; font-weight: 500; color: #fff;">Build the parser</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 5px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);">
+              <span style="font-family: monospace; font-size: 10px; color: var(--text-muted);">↳ pnpm run build:parser</span>
+              <span style="background: var(--amber); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px;">✓ Approve</span>
+            </div>
+          </div>
+        </div>
+        <div style="padding: 4px 10px 2px; font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">
+          Recent & Ambient
+        </div>
+        <div style="padding: 4px 10px; display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary);">
+          <span>Export pipeline</span>
+          <span style="color: var(--green);">Done · 1h</span>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px; font-size: 12px; color: var(--text-secondary); line-height: 1.6;">
+        ✨ <strong>Benefit:</strong> 80% of routine tool approvals (e.g., test runs, linting, git status, safe reads) can be cleared right from the popover in under 2 seconds.
+      </div>
+    </div>
+  </div>
+
+  <!-- View 3: Architecture & Spec Table -->
+  <div id="view-spec" class="spec-table-wrap">
+    <h2>Detailed Architectural Comparison</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Capability / Feature</th>
+          <th>Original Atlas Popover</th>
+          <th>Postplan Spec</th>
+          <th>Our Action-First Hub</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="feature">Primary Purpose</td>
+          <td class="postplan">Email-like inbox list</td>
+          <td class="postplan">Read-only jump list</td>
+          <td class="our-version"><span class="badge-diff win">Triage & Fast-Action Hub</span></td>
+        </tr>
+        <tr>
+          <td class="feature">Pending Approvals</td>
+          <td class="postplan">Generic subtitle text</td>
+          <td class="postplan">Jump to thread only</td>
+          <td class="our-version"><span class="badge-diff win">1-Click Inline Approval</span> + Intent Snippet</td>
+        </tr>
+        <tr>
+          <td class="feature">Layout Structure</td>
+          <td class="postplan">Loose 4-tier list</td>
+          <td class="postplan">Flat list or header-heavy tiers</td>
+          <td class="our-version"><span class="badge-diff win">Two-Deck (Action Required + Compact Ambient)</span></td>
+        </tr>
+        <tr>
+          <td class="feature">Badge Semantics</td>
+          <td class="postplan">Blue/Amber lumped</td>
+          <td class="postplan">Amber for needs-input only</td>
+          <td class="our-version"><span class="badge-diff win">Amber badge (actions) + Ambient pulse dot (running)</span></td>
+        </tr>
+        <tr>
+          <td class="feature">Line 3 Content</td>
+          <td class="postplan">Italic assistant message preview</td>
+          <td class="postplan">Git diff stats (+128 -34)</td>
+          <td class="our-version"><span class="badge-diff alt">Tool command snippet (e.g. `pnpm test`)</span></td>
+        </tr>
+        <tr>
+          <td class="feature">Keyboard Support</td>
+          <td class="postplan">Global ⌥⌘A only</td>
+          <td class="postplan">Global ⌥⌘A walk</td>
+          <td class="our-version"><span class="badge-diff win">Full inside-popover triage (↑↓, Enter, A to approve)</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Toast Notification Element -->
+<div class="toast" id="toast">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5">
+    <path d="M20 6L9 17l-5-5"/>
+  </svg>
+  <span id="toast-text">Action approved</span>
+</div>
+
+<script>
+  // State Store
+  const state = {
+    popoverOpen: true,
+    scenario: 'mixed', // 'mixed' | 'approvals' | 'caughtup'
+    selectedIndex: 0,
+    items: []
+  };
+
+  const SCENARIOS = {
+    mixed: [
+      {
+        id: '1',
+        type: 'action',
+        subType: 'approval',
+        project: 'Atlas',
+        title: 'Build the parser and lexer',
+        time: '2m ago',
+        intent: 'run_command `pnpm build:parser`',
+        badge: 'Approval'
+      },
+      {
+        id: '2',
+        type: 'action',
+        subType: 'approval',
+        project: 'Atlas',
+        title: 'Add database migration for subagent traces',
+        time: '8m ago',
+        intent: 'edit_file `src/main/db/schema.sql`',
+        badge: 'Approval'
+      },
+      {
+        id: '3',
+        type: 'action',
+        subType: 'question',
+        project: 'Atlas',
+        title: 'Sidebar theme contrast adjustment',
+        time: '25m ago',
+        intent: 'Question: "Keep dark mode contrast at 4.5:1?"',
+        badge: 'Needs Input'
+      },
+      {
+        id: '4',
+        type: 'action',
+        subType: 'error',
+        project: 'Atlas',
+        title: 'Terminal runtime worker spawned crash',
+        time: '1h ago',
+        intent: 'Error: Exit code 137 (OOM)',
+        badge: 'Failed'
+      },
+      {
+        id: '5',
+        type: 'ambient',
+        status: 'working',
+        title: 'Autonomous codebase refactor agent',
+        time: 'now',
+        timer: '03:42'
+      },
+      {
+        id: '6',
+        type: 'ambient',
+        status: 'queued',
+        title: 'Clean unused dependencies in workers',
+        time: '4m'
+      },
+      {
+        id: '7',
+        type: 'ambient',
+        status: 'done',
+        title: 'Add telemetry exporter pipeline',
+        time: '2h ago'
+      }
+    ],
+    approvals: [
+      { id: '10', type: 'action', subType: 'approval', project: 'Atlas', title: 'Compile WebAssembly grammar bindings', time: '1m ago', intent: 'run_command `cargo build --release`', badge: 'Approval' },
+      { id: '11', type: 'action', subType: 'approval', project: 'Atlas', title: 'Write tests for ActivityBlock streaming fold', time: '3m ago', intent: 'create_file `src/renderer/test.ts`', badge: 'Approval' },
+      { id: '12', type: 'action', subType: 'approval', project: 'Atlas', title: 'Update electron.vite.config.ts aliases', time: '12m ago', intent: 'edit_file `electron.vite.config.ts`', badge: 'Approval' },
+      { id: '13', type: 'action', subType: 'approval', project: 'Atlas', title: 'Deploy preview to cloud edge harness', time: '40m ago', intent: 'run_command `pnpm harness:deploy`', badge: 'Approval' },
+      { id: '14', type: 'action', subType: 'approval', project: 'Atlas', title: 'Run memory leak benchmark suite', time: '1h ago', intent: 'run_command `node scripts/mem-check.js`', badge: 'Approval' }
+    ],
+    caughtup: []
+  };
+
+  function setScenario(sc) {
+    state.scenario = sc;
+    state.items = JSON.parse(JSON.stringify(SCENARIOS[sc]));
+    state.selectedIndex = 0;
+
+    document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`btn-scenario-${sc}`).classList.add('is-active');
+
+    render();
+  }
+
+  function togglePopover() {
+    state.popoverOpen = !state.popoverOpen;
+    const pop = document.getElementById('popover-widget');
+    const bellBtn = document.getElementById('rail-bell-btn');
+    if (state.popoverOpen) {
+      pop.style.display = 'flex';
+      bellBtn.classList.add('is-open');
+    } else {
+      pop.style.display = 'none';
+      bellBtn.classList.remove('is-open');
+    }
+  }
+
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    document.getElementById('toast-text').innerText = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2200);
+  }
+
+  function approveItem(id, event) {
+    if (event) event.stopPropagation();
+    const item = state.items.find(i => i.id === id);
+    if (!item) return;
+
+    const el = document.getElementById(`card-${id}`);
+    if (el) {
+      el.classList.add('just-approved');
+      setTimeout(() => {
+        state.items = state.items.filter(i => i.id !== id);
+        showToast(`Approved: ${item.title}`);
+        render();
+      }, 200);
+    } else {
+      state.items = state.items.filter(i => i.id !== id);
+      showToast(`Approved: ${item.title}`);
+      render();
+    }
+  }
+
+  function jumpToThread(id) {
+    const item = state.items.find(i => i.id === id);
+    showToast(`Jumped to: ${item ? item.title : 'Conversation'}`);
+  }
+
+  function markAllRead() {
+    state.items = state.items.filter(i => i.type === 'action');
+    showToast('All completed notifications cleared');
+    render();
+  }
+
+  function render() {
+    const actions = state.items.filter(i => i.type === 'action');
+    const ambient = state.items.filter(i => i.type === 'ambient');
+    const hasRunning = ambient.some(i => i.status === 'working');
+
+    // Update Bell Badge
+    const badge = document.getElementById('bell-badge-count');
+    const dot = document.getElementById('bell-ambient-dot');
+    const headBadgePill = document.getElementById('head-badge-pill');
+
+    if (actions.length > 0) {
+      badge.style.display = 'block';
+      badge.innerText = actions.length > 99 ? '99+' : actions.length;
+      dot.style.display = 'none';
+      headBadgePill.style.display = 'inline-block';
+      headBadgePill.innerText = `${actions.length} Need Input`;
+    } else {
+      badge.style.display = 'none';
+      headBadgePill.style.display = 'none';
+      if (hasRunning) {
+        dot.style.display = 'block';
+      } else {
+        dot.style.display = 'none';
+      }
+    }
+
+    const container = document.getElementById('popover-content');
+    container.innerHTML = '';
+
+    if (actions.length === 0 && ambient.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--text-faint); margin-bottom: 8px;">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+            <polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+          <div class="empty-title">All Caught Up</div>
+          <div class="empty-sub">No pending approvals or active background tasks</div>
+        </div>
+      `;
+      return;
+    }
+
+    // Render Action Deck
+    if (actions.length > 0) {
+      const secTitle = document.createElement('div');
+      secTitle.className = 'deck-section-title action';
+      secTitle.innerHTML = `
+        <span>⚡ Action Required (${actions.length})</span>
+        <span style="font-family: monospace; font-size: 9px; opacity: 0.8;">Priority</span>
+      `;
+      container.appendChild(secTitle);
+
+      actions.forEach((item, idx) => {
+        const card = document.createElement('div');
+        card.className = `action-card ${idx === state.selectedIndex ? 'is-selected' : ''}`;
+        card.id = `card-${item.id}`;
+        card.onclick = () => jumpToThread(item.id);
+
+        card.innerHTML = `
+          <div class="card-top">
+            <div class="card-project">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+              </svg>
+              <span>${item.project}</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="card-badge ${item.subType === 'error' ? 'error' : 'approval'}">${item.badge}</span>
+              <span class="card-time">${item.time}</span>
+            </div>
+          </div>
+          <div class="card-title" title="${item.title}">${item.title}</div>
+          <div class="card-intent">
+            <span class="card-intent-snippet" title="${item.intent}">↳ ${item.intent}</span>
+            <div class="card-actions">
+              ${item.subType === 'approval' ? `
+                <button class="btn-quick-approve" title="Quick Approve (A)" onclick="approveItem('${item.id}', event)">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Approve
+                </button>
+              ` : ''}
+              <button class="btn-jump" title="Open Thread" onclick="jumpToThread('${item.id}'); event.stopPropagation();">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                  <polyline points="15 3 21 3 21 9"/>
+                  <line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // Render Ambient Deck
+    if (ambient.length > 0) {
+      const secTitle = document.createElement('div');
+      secTitle.className = 'deck-section-title ambient';
+      secTitle.innerText = 'Active & Recent';
+      container.appendChild(secTitle);
+
+      ambient.forEach(item => {
+        const row = document.createElement('button');
+        row.className = 'ambient-row';
+        row.onclick = () => jumpToThread(item.id);
+
+        let statusHtml = '';
+        if (item.status === 'working') {
+          statusHtml = `
+            <span class="ambient-status working">
+              <span class="pulse-indicator"></span>
+              Working ${item.timer}
+            </span>
+          `;
+        } else if (item.status === 'queued') {
+          statusHtml = `<span class="ambient-status queued">Queued</span>`;
+        } else {
+          statusHtml = `<span class="ambient-status done">Done</span>`;
+        }
+
+        row.innerHTML = `
+          <div class="ambient-left">
+            <span class="ambient-title" title="${item.title}">${item.title}</span>
+          </div>
+          <div class="ambient-right">
+            ${statusHtml}
+            <span class="ambient-time">${item.time}</span>
+          </div>
+        `;
+        container.appendChild(row);
+      });
+    }
+  }
+
+  function switchView(v) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('is-active'));
+    document.getElementById(`tab-${v}`).classList.add('is-active');
+
+    document.getElementById('view-interactive').style.display = v === 'interactive' ? 'grid' : 'none';
+    document.getElementById('view-comparison').style.display = v === 'comparison' ? 'grid' : 'none';
+    document.getElementById('view-spec').style.display = v === 'spec' ? 'block' : 'none';
+  }
+
+  // Keyboard Shortcuts
+  window.addEventListener('keydown', (e) => {
+    // ⌥⌘A toggle
+    if (e.altKey && (e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'a' || e.code === 'KeyA')) {
+      e.preventDefault();
+      togglePopover();
+      return;
+    }
+
+    if (!state.popoverOpen) return;
+
+    const actions = state.items.filter(i => i.type === 'action');
+
+    // Arrow navigation
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (actions.length > 0) {
+        state.selectedIndex = (state.selectedIndex + 1) % actions.length;
+        render();
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (actions.length > 0) {
+        state.selectedIndex = (state.selectedIndex - 1 + actions.length) % actions.length;
+        render();
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (actions[state.selectedIndex]) {
+        jumpToThread(actions[state.selectedIndex].id);
+      }
+    } else if (e.key.toLowerCase() === 'a' && !e.metaKey && !e.ctrlKey) {
+      // Inline approve selected action
+      if (actions[state.selectedIndex] && actions[state.selectedIndex].subType === 'approval') {
+        e.preventDefault();
+        approveItem(actions[state.selectedIndex].id);
+      }
+    } else if (e.key === 'Escape') {
+      togglePopover();
+    }
+  });
+
+  // Init
+  setScenario('mixed');
+</script>
+
+</body>
+</html>

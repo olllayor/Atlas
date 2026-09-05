@@ -502,9 +502,9 @@
   </ol>
 
   <h3>Remaining gap</h3>
-  <div class="alert alert-yellow">
-    <div class="alert-title">⚠ No preload binding for worktree:remove / worktree:list</div>
-    The IPC channels exist (<code>ipc.ts:49-50</code>) and the main handler exists (<code>conversations.ts:210-222</code>), but there is <strong>no preload binding</strong>. Must add <code>worktree.remove(conversationId, force?)</code> under <code>window.atlasChat</code> in <code>src/preload/index.ts</code> and extend the <code>AtlasChatApi</code> typing.
+  <div class="alert alert-green">
+    <div class="alert-title">✓ Resolved — preload binding added</div>
+    The IPC channels (<code>ipc.ts:49-50</code>), the main handler (<code>conversations.ts</code>), and the preload bindings (<code>src/preload/index.ts</code>: <code>worktree.remove(conversationId, force?)</code> / <code>worktree.list(conversationId)</code> under <code>window.atlasChat</code>, with matching <code>AtlasChatApi</code> typing) are all in place.
   </div>
 
   <h3>Spec location</h3>

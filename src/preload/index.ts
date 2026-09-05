@@ -1,6 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import type { RendererApi } from '../shared/contracts';
+import type {
+  AtlasDeepLink,
+  ChatContextMenuAction,
+  ConversationContextMenuAction,
+  ProjectContextMenuAction,
+  RendererApi,
+  SaveImageRequest,
+  SaveImageResult,
+  ShowChatSelectionMenuRequest,
+  ShowConversationContextMenuRequest,
+  ShowProjectContextMenuRequest,
+  ShowSidebarBackgroundContextMenuRequest,
+  SidebarBackgroundContextMenuAction
+} from '../shared/contracts';
 import { IPC_CHANNELS } from '../shared/ipc';
 
 const api: RendererApi = {
@@ -17,7 +30,39 @@ const api: RendererApi = {
     deployCloudSandbox: () =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsDeployCloudSandbox),
     generateCloudSandboxSecret: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.settingsGenerateCloudSandboxSecret)
+      ipcRenderer.invoke(IPC_CHANNELS.settingsGenerateCloudSandboxSecret),
+    opencode: {
+      get: () => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeGet),
+      update: (patch) => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeUpdate, patch),
+      setPassword: (secret) =>
+        ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeSetPassword, secret),
+      probe: () => ipcRenderer.invoke(IPC_CHANNELS.settingsOpenCodeProbe)
+    }
+  },
+  localAgents: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.localAgentsList),
+    update: (request) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsUpdate, request),
+    probe: (agentId) => ipcRenderer.invoke(IPC_CHANNELS.localAgentsProbe, agentId)
+  },
+  antigravity: {
+    install: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityInstall),
+    installStatus: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityInstallStatus),
+    remove: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityRemove),
+    authStart: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthStart),
+    authComplete: (callbackUrl) =>
+      ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthComplete, callbackUrl),
+    authCancel: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthCancel),
+    authStatus: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthStatus),
+    authLogout: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityAuthLogout),
+    setApiKey: (secret) =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsAntigravitySetApiKey, secret),
+    onInstallProgress: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => listener(payload);
+      ipcRenderer.on(IPC_CHANNELS.antigravityInstallProgress, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.antigravityInstallProgress, handler);
+      };
+    }
   },
   models: {
     list: (options) => ipcRenderer.invoke(IPC_CHANNELS.modelsList, options),
@@ -50,6 +95,7 @@ const api: RendererApi = {
     getStats: () => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetStats),
     delete: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsDelete, conversationId),
     rename: (conversationId, title) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRename, conversationId, title),
+    regenerateTitle: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsRegenerateTitle, conversationId),
     getWorkspace: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsGetWorkspace, conversationId),
     setWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetWorkspace, request),
     resetCloudSandbox: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsResetCloudSandbox, conversationId),
@@ -57,14 +103,33 @@ const api: RendererApi = {
     setDefaultModel: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetDefaultModel, request),
     setPinned: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetPinned, request),
     setArchived: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetArchived, request),
+    setSettled: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetSettled, request),
+    setSnoozed: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSetSnoozed, request),
     searchMessages: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsSearchMessages, request),
     fork: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsFork, request),
     startSide: (request) => ipcRenderer.invoke(IPC_CHANNELS.conversationsStartSide, request),
     listSide: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationsListSide, conversationId),
+    promoteSide: (sideConversationId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.conversationsPromoteSide, sideConversationId),
     removeWorktree: (conversationId, force) =>
       ipcRenderer.invoke(IPC_CHANNELS.worktreeRemove, { conversationId, force }),
     listWorktrees: (conversationId) =>
       ipcRenderer.invoke(IPC_CHANNELS.worktreeList, conversationId)
+  },
+  goals: {
+    set: (conversationId: string, objective: string, mode?: 'replace' | 'edit') =>
+      ipcRenderer.invoke(IPC_CHANNELS.goalsSet, { conversationId, objective, ...(mode ? { mode } : {}) }),
+    pause: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsPause, conversationId),
+    resume: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsResume, conversationId),
+    clear: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsClear, conversationId),
+    get: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.goalsGet, conversationId),
+    onGoalEvent: (listener: (event: import('../shared/contracts').GoalEvent) => void) => {
+      const handler = (_event: unknown, payload: import('../shared/contracts').GoalEvent) => listener(payload);
+      ipcRenderer.on(IPC_CHANNELS.goalsEvent, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.goalsEvent, handler);
+      };
+    }
   },
   projects: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.projectsList),
@@ -73,6 +138,8 @@ const api: RendererApi = {
     delete: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsDelete, projectId),
     reveal: (projectId) => ipcRenderer.invoke(IPC_CHANNELS.projectsReveal, projectId),
     setPinned: (projectId, pinned) => ipcRenderer.invoke(IPC_CHANNELS.projectsSetPinned, projectId, pinned),
+    setAutoPull: (projectId, autoPull) =>
+      ipcRenderer.invoke(IPC_CHANNELS.projectsSetAutoPull, projectId, autoPull),
     listIdes: () => ipcRenderer.invoke(IPC_CHANNELS.projectsListIdes),
     openInIde: (projectId, ideId) => ipcRenderer.invoke(IPC_CHANNELS.projectsOpenInIde, projectId, ideId)
   },
@@ -82,6 +149,7 @@ const api: RendererApi = {
     respondToolApproval: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRespondToolApproval, request),
     getRuntimeState: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetRuntimeState, request),
     getContextUsage: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatGetContextUsage, request),
+    compact: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.chatCompact, conversationId),
     recoverEvents: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatRecoverEvents, request),
     openVisualWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.chatOpenVisualWindow, request),
     subscribe: (listener) => {
@@ -123,6 +191,8 @@ const api: RendererApi = {
     previewTarget: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesPreviewTarget, request),
     openPreviewWindow: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesOpenPreviewWindow, request),
     export: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesExport, request),
+    exportToWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesExportToWorkspace, request),
+    analyzeWorkspace: (request) => ipcRenderer.invoke(IPC_CHANNELS.sitesAnalyzeWorkspace, request),
     openInBrowser: (siteId, versionId) =>
       ipcRenderer.invoke(IPC_CHANNELS.sitesOpenInBrowser, siteId, versionId ?? null)
   },
@@ -168,7 +238,15 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.workspaceInstructionsInit, conversationId),
     openFile: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.workspaceOpenFile, filePath),
+    listEntries: (conversationId: string, options?: { refresh?: boolean }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceListEntries, conversationId, options),
+    readFile: (conversationId: string, relativePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.workspaceReadFile, conversationId, relativePath),
     revealPath: (request) => ipcRenderer.invoke(IPC_CHANNELS.workspaceRevealPath, request)
+  },
+  browser: {
+    discoverServers: () => ipcRenderer.invoke(IPC_CHANNELS.browserDiscoverServers),
+    openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.browserOpenExternal, url)
   },
   git: {
     getState: (conversationId: string) =>
@@ -183,6 +261,8 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.gitCreateBranch, conversationId, name),
     commit: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitCommit, request),
     review: (request) => ipcRenderer.invoke(IPC_CHANNELS.gitReview, request),
+    listReviewTurns: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.gitListReviewTurns, conversationId),
     stage: (conversationId: string, paths: string[]) =>
       ipcRenderer.invoke(IPC_CHANNELS.gitStage, conversationId, paths),
     unstage: (conversationId: string, paths: string[]) =>
@@ -226,7 +306,9 @@ const api: RendererApi = {
     configureAuth: (pluginName: string, credentials: Record<string, string>) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsConfigureAuth, pluginName, credentials),
     checkHealth: (pluginName: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckHealth, pluginName)
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsCheckHealth, pluginName),
+    connectServer: (pluginName: string, serverKey: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsConnectServer, pluginName, serverKey)
   },
   mcpUi: {
     // Returns a descriptor, never markup. See `main/ipc/mcpUi.ts`.
@@ -242,18 +324,31 @@ const api: RendererApi = {
     getSummary: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.fileChangesSummary, conversationId)
   },
+  window: {
+    getFullScreen: () => ipcRenderer.invoke(IPC_CHANNELS.windowGetFullScreen) as Promise<boolean>,
+    /** Fires on every native fullscreen transition. Returns its own unsubscribe. */
+    onFullScreenChange: (listener: (isFullScreen: boolean) => void) => {
+      const handler = (_event: unknown, isFullScreen: boolean) => {
+        listener(isFullScreen);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.windowFullScreenChanged, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.windowFullScreenChanged, handler);
+      };
+    }
+  },
   terminal: {
     getHistory: (conversationId: string, limit?: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.terminalHistory, conversationId, limit),
     record: (conversationId: string, command: string, exitCode?: number | null) =>
       ipcRenderer.invoke(IPC_CHANNELS.terminalRecord, conversationId, command, exitCode),
-    start: (conversationId: string, cols?: number, rows?: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalStart, conversationId, cols, rows),
-    input: (conversationId: string, data: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalInput, conversationId, data),
-    resize: (conversationId: string, cols: number, rows: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.terminalResize, conversationId, cols, rows),
-    kill: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.terminalKill, conversationId),
+    start: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalStart, input),
+    write: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalInput, input),
+    resize: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalResize, input),
+    kill: (input) => ipcRenderer.invoke(IPC_CHANNELS.terminalKill, input),
+    list: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.terminalList, conversationId),
     subscribe: (listener) => {
       const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
         listener(payload);
@@ -263,6 +358,89 @@ const api: RendererApi = {
 
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.terminalOutput, handler);
+      };
+    },
+    subscribeMetadata: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.terminalMetadata, handler);
+      // Subscribing *is* the signal that a panel is mounted: main only pays
+      // for the process-tree poll behind the labels while someone is looking.
+      void ipcRenderer.invoke(IPC_CHANNELS.terminalWatch, true).catch(() => {});
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.terminalMetadata, handler);
+        void ipcRenderer.invoke(IPC_CHANNELS.terminalWatch, false).catch(() => {});
+      };
+    }
+  },
+  jobs: {
+    list: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.jobsList, conversationId),
+    listAll: () => ipcRenderer.invoke(IPC_CHANNELS.jobsListAll),
+    kill: (conversationId: string, jobId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.jobsKill, conversationId, jobId),
+    subscribe: (listener) => {
+      const handler = (_event: unknown, payload: Parameters<typeof listener>[0]) => {
+        listener(payload);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.jobsEvent, handler);
+
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.jobsEvent, handler);
+      };
+    }
+  },
+  subagents: {
+    list: (parentConversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsList, parentConversationId),
+    followup: (parentConversationId: string, childId: string, content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsFollowup, { parentConversationId, childId, content }),
+    interrupt: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsInterrupt, childId),
+    interruptAll: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsInterruptAll, conversationId) as Promise<{ interrupted: number }>,
+    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.subagentsHistory, request),
+    getLiveness: () => ipcRenderer.invoke(IPC_CHANNELS.subagentsLiveness) as Promise<Record<string, 'working' | 'monitoring' | null>>,
+    getComposerState: (childId: string) => ipcRenderer.invoke(IPC_CHANNELS.subagentsComposerState, childId)
+  },
+  deepLink: {
+    onDeepLink: (listener: (link: AtlasDeepLink) => void) => {
+      const handler = (_event: unknown, link: AtlasDeepLink) => listener(link);
+      ipcRenderer.on(IPC_CHANNELS.appDeepLink, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.appDeepLink, handler);
+      };
+    },
+    consumePending: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.deepLinkConsume) as Promise<AtlasDeepLink | null>
+  },
+  contextMenu: {
+    showChatSelection: (request: ShowChatSelectionMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowChatSelection, request) as Promise<ChatContextMenuAction | null>,
+    showConversation: (request: ShowConversationContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowConversation, request) as Promise<ConversationContextMenuAction | null>,
+    showProject: (request: ShowProjectContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowProject, request) as Promise<ProjectContextMenuAction | null>,
+    showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.contextMenuShowSidebarBackground, request) as Promise<SidebarBackgroundContextMenuAction | null>
+  },
+  images: {
+    copy: (dataUrl: string) => ipcRenderer.invoke(IPC_CHANNELS.imagesCopy, dataUrl) as Promise<void>,
+    onCopyRequest: (listener: (src: string) => void) => {
+      const handler = (_event: unknown, src: string) => listener(src);
+      ipcRenderer.on(IPC_CHANNELS.imagesCopyRequest, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.imagesCopyRequest, handler);
+      };
+    },
+    save: (request: SaveImageRequest) => ipcRenderer.invoke(IPC_CHANNELS.imagesSave, request) as Promise<SaveImageResult>,
+    onSaveRequest: (listener: (src: string) => void) => {
+      const handler = (_event: unknown, src: string) => listener(src);
+      ipcRenderer.on(IPC_CHANNELS.imagesSaveRequest, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.imagesSaveRequest, handler);
       };
     }
   }

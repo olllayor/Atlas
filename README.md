@@ -28,6 +28,7 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
 - **OpenRouter Integration** — Real-time model catalog synchronization with free-tier model discovery and parameter controls.
 - **Major Model Providers** — Anthropic Claude, OpenAI, and Google Gemini / GLM.
 - **Custom & Local Endpoints** — Connect any OpenAI-compatible provider, including Ollama, vLLM, LM Studio, or self-hosted inference servers.
+- **OpenCode (Beta)** — Hand a turn to the [OpenCode](https://opencode.ai) agent: it runs its own tools and holds its own credentials, Atlas streams the result into the same transcript. See [docs/opencode.md](docs/opencode.md).
 - **Reasoning & Thinking Tokens** — Real-time streaming and inspectable thought traces for reasoning models (DeepSeek-R1, Claude 3.7 Sonnet, OpenAI o1/o3-mini, Gemini Thinking).
 
 ### 🛠️ Agent Studio & Execution Modes

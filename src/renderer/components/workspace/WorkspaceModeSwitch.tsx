@@ -12,8 +12,8 @@ import {
 
 import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import { TOOL_PERMISSION_MODES, describeToolPermissionMode } from '../../../shared/chatParameters';
-import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
-import { EXECUTION_TARGETS, WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
+import { WORKSPACE_MODES, describeWorkspaceMode } from '../../../shared/workspaceModes';
+import type { WorkspaceMode } from '../../../shared/workspaceModes';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,21 +40,20 @@ type AccessMenuProps = {
   permissionMode?: ToolPermissionMode;
   /** Streaming or a tool-less model: the ladder rows grey out, the modes stay live. */
   permissionDisabled?: boolean;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
+  /** The composer chip is the access door, not the mode door — it skips the
+      mode rows (and the folder row, which belongs to them) entirely. */
+  hideModes?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 };
 
 /**
- * The menu both triggers share: what the agent is (mode), then what it may do
- * (access), the way Codex's /approvals folds approval policy and sandbox scope
- * into one list. One definition so the sidebar heading and the composer chip
- * can never drift apart.
+ * The menu the sidebar heading opens: what the agent is (mode), then what it
+ * may do (access), the way Codex's /approvals folds approval policy and
+ * sandbox scope into one list. The composer chip reuses it with `hideModes`,
+ * so the ladder can never drift apart between the two doors.
  *
  * Two selection idioms sit in it — a right check on the mode rows, Radix's left
  * dot on the ladder — because both are already the app's, and the label plus
@@ -65,17 +64,16 @@ function AccessMenuContent({
   ready,
   permissionMode,
   permissionDisabled,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
+  hideModes,
   onModeChange,
   onPermissionModeChange,
-  onExecutionTargetChange,
   onRequestProject,
 }: AccessMenuProps) {
   return (
     <>
-      {WORKSPACE_MODES.map((entry) => {
+      {!hideModes ? (
+        <>
+          {WORKSPACE_MODES.map((entry) => {
         const isActive = entry.value === mode;
         // Only the *selected* mode can be unready — the alternative has not
         // been asked to run yet, so flagging it here would be a warning about
@@ -105,11 +103,13 @@ function AccessMenuContent({
           </DropdownMenuItem>
         );
       })}
+        </>
+      ) : null}
 
       {/* Sits with the modes rather than the ladder: a folder is what the
           selected mode is missing, not another rung of access. It appears only
           in the state the rows above are already complaining about. */}
-      {!ready && onRequestProject ? (
+      {!hideModes && !ready && onRequestProject ? (
         <>
           <DropdownMenuSeparator className="my-1 bg-border-default" />
           <DropdownMenuItem
@@ -126,7 +126,7 @@ function AccessMenuContent({
           look live and change nothing, so the whole section stays away. */}
       {permissionMode && onPermissionModeChange ? (
         <>
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
+          {!hideModes ? <DropdownMenuSeparator className="my-1.5 bg-border-subtle" /> : null}
           {/* Visual only — Radix does not associate a label with the group, so
               the group carries its own `aria-label` as well. */}
           <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
@@ -160,47 +160,6 @@ function AccessMenuContent({
           </DropdownMenuRadioGroup>
         </>
       ) : null}
-
-      {executionTarget && onExecutionTargetChange ? (
-        <>
-          <DropdownMenuSeparator className="my-1.5 bg-border-subtle" />
-          <DropdownMenuLabel className="px-3 pb-0.5 pt-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
-            Execution target · also in context bar
-          </DropdownMenuLabel>
-          <DropdownMenuRadioGroup
-            aria-label="Execution target"
-            value={executionTarget}
-            onValueChange={(val) => onExecutionTargetChange(val as ExecutionTarget)}
-          >
-            {EXECUTION_TARGETS.map((entry) => {
-              const isDisabled =
-                (entry.value === 'worktree' && !isGitRepo) ||
-                (entry.value === 'cloud' && !cloudSandboxEnabled);
-
-              let tagline = entry.tagline;
-              if (entry.value === 'worktree' && !isGitRepo) {
-                tagline = 'Requires a git repository attached';
-              } else if (entry.value === 'cloud' && !cloudSandboxEnabled) {
-                tagline = 'Enable in Settings → Beta';
-              }
-
-              return (
-                <DropdownMenuRadioItem
-                  key={entry.value}
-                  value={entry.value}
-                  disabled={isDisabled}
-                  className="items-start rounded-md py-2 pr-3"
-                >
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm font-medium text-text-primary">{entry.label}</span>
-                    <span className="text-2xs leading-4 text-text-tertiary">{tagline}</span>
-                  </span>
-                </DropdownMenuRadioItem>
-              );
-            })}
-          </DropdownMenuRadioGroup>
-        </>
-      ) : null}
     </>
   );
 }
@@ -225,10 +184,6 @@ export function WorkspaceModeSwitch({
   permissionMode,
   permissionDisabled,
   onPermissionModeChange,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
-  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
@@ -246,10 +201,6 @@ export function WorkspaceModeSwitch({
   permissionMode?: ToolPermissionMode;
   permissionDisabled?: boolean;
   onPermissionModeChange?: (mode: ToolPermissionMode) => void;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
   /** When Code is selected but unready, renders a "Choose project folder…" row. */
   onRequestProject?: () => void;
 }) {
@@ -323,12 +274,8 @@ export function WorkspaceModeSwitch({
           ready={ready}
           permissionMode={permissionMode}
           permissionDisabled={permissionDisabled}
-          executionTarget={executionTarget}
-          cloudSandboxEnabled={cloudSandboxEnabled}
-          isGitRepo={isGitRepo}
           onModeChange={onChange}
           onPermissionModeChange={onPermissionModeChange}
-          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>
@@ -337,37 +284,31 @@ export function WorkspaceModeSwitch({
 }
 
 /**
- * The composer's door into the same menu.
+ * The composer's door into the access ladder.
  *
- * Not a duplicate control: `Sidebar` drops the heading trigger when the rail
- * collapses, and this is the surviving way to reach either axis. Codex echoes
- * the access level below its chat input for the same reason — the composer is
- * where the consequence lands.
+ * Access-only by design: the mode lives in the sidebar heading, and the
+ * composer is where the consequence lands, so this chip answers "what may it
+ * do on this send" and nothing else. Codex echoes the approval policy below
+ * its chat input for the same reason.
  */
 export function WorkspaceAccessChip({
   mode,
   ready,
   permissionMode,
   disabled,
-  executionTarget,
-  cloudSandboxEnabled,
-  isGitRepo,
+  permissionDisabled,
   onModeChange,
   onPermissionModeChange,
-  onExecutionTargetChange,
   onRequestProject,
 }: {
   mode: WorkspaceMode;
   ready: boolean;
   permissionMode: ToolPermissionMode;
   disabled?: boolean;
-  executionTarget?: ExecutionTarget;
-  cloudSandboxEnabled?: boolean;
-  isGitRepo?: boolean;
+  permissionDisabled?: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onPermissionModeChange: (mode: ToolPermissionMode) => void;
-  onExecutionTargetChange?: (target: ExecutionTarget) => void;
-  /** When Code is selected but unready, renders a "Choose project folder…" row. */
+  /** Unused here (the mode rows are hidden) — kept so both doors share one prop shape. */
   onRequestProject?: () => void;
 }) {
   const state = describeAccessState({ mode, permissionMode, ready });
@@ -386,7 +327,7 @@ export function WorkspaceAccessChip({
               // `group` so the chevron can react to the open state Radix stamps
               // on the button (the SVG itself never gets `data-state`).
               className={cn(
-                'group flex h-9 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-sm font-normal outline-none transition',
+                'group flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-sm font-normal outline-none transition',
                 'focus-visible:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-bg-hover',
                 state.showFullAccessWarning
                   ? 'text-warning-text hover:bg-bg-hover'
@@ -424,12 +365,10 @@ export function WorkspaceAccessChip({
           mode={mode}
           ready={ready}
           permissionMode={permissionMode}
-          executionTarget={executionTarget}
-          cloudSandboxEnabled={cloudSandboxEnabled}
-          isGitRepo={isGitRepo}
+          permissionDisabled={permissionDisabled}
+          hideModes
           onModeChange={onModeChange}
           onPermissionModeChange={onPermissionModeChange}
-          onExecutionTargetChange={onExecutionTargetChange}
           onRequestProject={onRequestProject}
         />
       </DropdownMenuContent>

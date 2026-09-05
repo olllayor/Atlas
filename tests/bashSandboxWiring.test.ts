@@ -58,14 +58,8 @@ test('a background command reports the sandbox but expects no output', async () 
   }
 });
 
-test('escalating out of the sandbox needs approval even in full-access', async () => {
-  const needsApproval = bashTool('full-access')?.needsApproval;
-
-  assert.equal(typeof needsApproval, 'function');
-
-  const approvalFor = needsApproval as (input: { dangerouslyDisableSandbox?: boolean }) => Promise<boolean>;
-  assert.equal(await approvalFor({}), false);
-  assert.equal(await approvalFor({ dangerouslyDisableSandbox: true }), mechanism !== 'none');
+test('full-access runs without pausing, including outside the sandbox', async () => {
+  assert.equal(bashTool('full-access')?.needsApproval, false);
   assert.equal(bashTool('ask')?.needsApproval, true);
 });
 
@@ -85,6 +79,40 @@ test('the bash description matches what the host can enforce', () => {
     assert.match(codeDescription, /OS sandbox/);
     assert.match(codeDescription, /network access is blocked/);
     assert.match(workDescription, /OS sandbox/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the bash description in full-access mode advertises network access', () => {
+  const root = mkdtempSync(join(tmpdir(), 'atlas-bash-describe-fa-'));
+
+  try {
+    const codeDescription = bashTool('full-access', { mode: 'code', root })?.description ?? '';
+
+    if (process.platform === 'win32') {
+      assert.equal(/sandbox/i.test(codeDescription), false);
+      return;
+    }
+
+    assert.match(codeDescription, /OS sandbox/);
+    assert.match(codeDescription, /Network access is enabled/);
+    assert.doesNotMatch(codeDescription, /network access is blocked/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a full-access command executes with network allowed through builtInTools', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'atlas-bash-exec-fa-'));
+
+  try {
+    const tool = bashTool('full-access', { mode: 'code', root }) as {
+      execute: (input: { command: string }) => Promise<{ sandboxNetwork?: string }>;
+    };
+    const result = await tool.execute({ command: 'echo hello' });
+
+    assert.equal(result.sandboxNetwork, 'allow');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

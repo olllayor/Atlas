@@ -5,6 +5,7 @@ import type {
   ChatInputFilePart,
   ChatMessagePart,
   ConversationPage,
+  ConversationGoalView,
   ConversationSummary,
   ConversationStats,
   DiagnosticsSnapshot,
@@ -33,6 +34,8 @@ import {
   sumAttachmentSize,
 } from '../../shared/attachments';
 import { parseMentions } from '../../shared/mentions';
+import { stripAssistantCitations } from '../../shared/citations';
+import type { AssistantCitation, CitedQuoteEntry } from '../../shared/citations';
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TOOL_PERMISSION_MODE,
@@ -45,7 +48,10 @@ import {
   mergeConversationPage,
   reconcileConversationCache
 } from './conversationCache';
-import { notify, notifyError } from '../lib/notify';
+import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
+import { notify, notifyError, repeatingToastId } from '../lib/notify';
+import { hasPendingApprovalInParts } from '../lib/attention';
+import { formatSnoozeClockLabel } from '../lib/snooze';
 import {
   applyMetaEvent,
   applyNoticeEvent,
@@ -81,6 +87,32 @@ export type ComposerAttachmentDraft = {
 /** Stable identity so consumers do not re-render on every empty read. */
 export const EMPTY_COMPOSER_ATTACHMENTS: ComposerAttachmentDraft[] = [];
 
+/**
+ * Cited quotes staged in the composer tray, per conversation. Objects, not
+ * serialized links — the textarea never holds href bytes, so comment edits
+ * rewrite an entry instead of hunting link bytes in the draft string.
+ */
+export type { CitedQuoteEntry };
+
+/** Immutable empty list so selectors return a stable reference when idle. */
+export const EMPTY_COMPOSER_CITATIONS: CitedQuoteEntry[] = [];
+
+/** One queued follow-up as the composer dock shows it. */
+export type QueuedFollowupEntry = {
+  requestId: string;
+  preview: string;
+};
+
+/** Immutable empty list so selectors return a stable reference when idle. */
+export const EMPTY_QUEUED_FOLLOWUPS: QueuedFollowupEntry[] = [];
+
+/**
+ * Stand-in for the loaded-page map, for subscribers that only want it under a
+ * condition. Returning this instead of the live map keeps their selector
+ * result identical across the flushes where the condition is false.
+ */
+export const EMPTY_CONVERSATION_PAGES: Record<string, ConversationPage> = {};
+
 type AppState = {
   bootstrapping: boolean;
   initialized: boolean;
@@ -88,6 +120,7 @@ type AppState = {
   activeView: AppView;
   settingsSection: SettingsSection;
   commandPaletteOpen: boolean;
+  commandPaletteInitialQuery: string | null;
   modelPickerOpen: boolean;
   composerFocused: boolean;
   composerFocusNonce: number;
@@ -126,14 +159,33 @@ type AppState = {
   isLoadingConversationId: string | null;
   selectedConversationId: string | null;
   selectedModelIdByConversation: Record<string, string>;
+  selectedProviderIdByConversation: Record<string, ProviderId>;
   /** Unsent composer text, per conversation. A single global string leaked
    *  half-typed messages into whichever thread you switched to. */
   composerDraftsByConversation: Record<string, string>;
   /** Staged (not yet sent) composer attachments, per conversation. */
   composerAttachmentsByConversation: Record<string, ComposerAttachmentDraft[]>;
+  /** Staged (not yet sent) cited quotes, per conversation. */
+  composerCitationsByConversation: Record<string, CitedQuoteEntry[]>;
   draftsByConversation: Record<string, DraftState | undefined>;
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
+  /**
+   * Follow-ups accepted while a conversation's turn was still running, keyed
+   * by conversation, oldest first. The main process owns the real queue; this
+   * mirrors it just enough for the composer dock to list and cancel entries.
+   * An entry disappears the moment any main-side event carries its requestId —
+   * that is either dispatch (its turn started) or a terminal event.
+   */
+  queuedByConversation: Record<string, QueuedFollowupEntry[]>;
+  /**
+   * The open side chat (C5): an ephemeral parallel transcript hanging off a
+   * parent chat. Null when closed. The side row lives outside every listing;
+   * promoting it is what gives it a sidebar life of its own.
+   */
+  sideChat: { parentId: string; sideId: string } | null;
+  /** Per-conversation persistent objective (/goal), projected from main. */
+  goalsByConversation: Record<string, ConversationGoalView>;
   /** Every folder the user has attached, most recently used first. */
   projects: WorkspaceProject[];
   updateState: AppUpdateSnapshot;
@@ -151,8 +203,26 @@ type AppState = {
   refreshConversationStats: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
+  /**
+   * Assistant turns that finished while their conversation was not the
+   * selected one, per conversation. The attention model (activity popover,
+   * ⌘⌥A) reads this; opening a conversation clears its count.
+   */
+  unreadByConversation: Record<string, number>;
+  markConversationRead: (conversationId: string) => void;
+  markConversationUnread: (conversationId: string) => void;
+  regenerateConversationTitle: (conversationId: string) => Promise<void>;
+  markAllConversationsRead: () => void;
+  /**
+   * Refetches one conversation's page into the cache without touching the
+   * selection or drafts. The subagent composer uses it to pull followup turns
+   * into an open child transcript — child turns run outside the normal
+   * request/stream plumbing, so no push event carries them.
+   */
+  reloadConversationDetail: (conversationId: string) => Promise<void>;
   loadOlderMessages: (conversationId: string) => Promise<void>;
-  createConversation: () => Promise<void>;
+  /** Creates a conversation, opens it, and resolves with the created summary (deep links seed drafts from it). */
+  createConversation: () => Promise<import('../../shared/contracts').ConversationSummary>;
   /** New conversation already bound to a project and set to Code mode. */
   createConversationInProject: (projectId: string) => Promise<void>;
   /**
@@ -160,18 +230,47 @@ type AppState = {
    * away. The original is untouched.
    */
   forkConversation: (conversationId: string) => Promise<void>;
+  /**
+   * Opens the side chat for a conversation (defaulting to the one on screen):
+   * reuses its most recent side chat when one exists, otherwise starts a new
+   * one. The parent's selection never moves.
+   */
+  openSideChat: (parentConversationId?: string) => Promise<void>;
+  /** Closes the side pane. The side row survives, still hidden from listings. */
+  closeSideChat: () => void;
+  /** Promotes the open side chat into a normal conversation and opens it. */
+  promoteSideChat: () => Promise<void>;
+  /** Fetches the conversation's goal projection into the map (null clears it). */
+  loadGoal: (conversationId: string) => Promise<void>;
+  setGoal: (conversationId: string, objective: string, mode?: 'replace' | 'edit') => Promise<ConversationGoalView>;
+  pauseGoal: (conversationId: string) => Promise<void>;
+  resumeGoal: (conversationId: string) => Promise<void>;
+  clearGoal: (conversationId: string) => Promise<void>;
+  /** Idempotent: binds the goalsEvent push exactly once per session. */
+  bindGoalEvents: () => void;
   refreshProjects: () => Promise<void>;
   /** Opens the native folder picker unless a root is supplied. Null when cancelled. */
   attachProject: (options?: { root?: string; conversationId?: string }) => Promise<WorkspaceProject | null>;
   detachProject: (projectId: string) => Promise<void>;
   renameProject: (projectId: string, title: string) => Promise<void>;
   setProjectPinned: (projectId: string, pinned: boolean) => Promise<void>;
+  setProjectAutoPull: (projectId: string, autoPull: boolean) => Promise<void>;
   setConversationPinned: (conversationId: string, pinned: boolean) => Promise<void>;
   /** Hides the chat from the sidebar without destroying it. Reversible. */
   setConversationArchived: (conversationId: string, archived: boolean) => Promise<void>;
+  /** Parks the chat as done (or re-activates it). Settled chats stay listed. */
+  setConversationSettled: (conversationId: string, settled: boolean) => Promise<void>;
+  /** Snoozes until an ISO wake time, or clears the snooze with null. */
+  setConversationSnoozed: (conversationId: string, snoozedUntil: string | null) => Promise<void>;
   setConversationWorkspace: (
     conversationId: string,
-    patch: { mode?: WorkspaceMode; executionTarget?: import('../../shared/workspaceModes').ExecutionTarget; projectId?: string | null }
+    patch: {
+      mode?: WorkspaceMode;
+      executionTarget?: import('../../shared/workspaceModes').ExecutionTarget;
+      projectId?: string | null;
+      /** Commitish a fresh worktree starts from; ignored if one already exists. */
+      worktreeBaseBranch?: string | null;
+    }
   ) => Promise<void>;
   /** Deletes the conversation's git worktree and resets its target to local, with an optimistic list update. */
   removeConversationWorktree: (conversationId: string) => Promise<void>;
@@ -189,6 +288,7 @@ type AppState = {
   closeSites: () => void;
   setSettingsSection: (section: SettingsSection) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setCommandPaletteInitialQuery: (query: string | null) => void;
   setModelPickerOpen: (open: boolean) => void;
   setComposerFocused: (focused: boolean) => void;
   requestComposerFocus: () => void;
@@ -200,18 +300,33 @@ type AppState = {
   setUpdateState: (snapshot: AppUpdateSnapshot) => void;
   checkForUpdates: (options?: { manual?: boolean }) => Promise<void>;
   performUpdatePrimaryAction: () => Promise<void>;
-  setSelectedModel: (conversationId: string, modelId: string) => void;
+  setSelectedModel: (conversationId: string, modelId: string, providerId?: ProviderId) => void;
   setComposerDraft: (conversationId: string, value: string) => void;
   setComposerAttachments: (
     conversationId: string,
     updater: (previous: ComposerAttachmentDraft[]) => ComposerAttachmentDraft[]
   ) => void;
   /**
+   * Stages a cited quote in the conversation's tray. Returns the entry key,
+   * which the comment editor uses to rewrite this exact entry later.
+   */
+  addComposerCitation: (conversationId: string, citation: AssistantCitation) => string;
+  updateComposerCitation: (conversationId: string, key: string, citation: AssistantCitation) => void;
+  removeComposerCitation: (conversationId: string, key: string) => void;
+  setComposerCitations: (
+    conversationId: string,
+    updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]
+  ) => void;
+  /**
    * Clear a thread's composer text and retire the attachments that were
    * actually sent. `sentAttachmentIds` is the snapshot taken when the send
    * began — anything staged afterwards survives.
    */
-  clearComposerDraft: (conversationId: string, sentAttachmentIds?: readonly string[]) => void;
+  clearComposerDraft: (
+    conversationId: string,
+    sentAttachmentIds?: readonly string[],
+    sentCitationKeys?: readonly string[]
+  ) => void;
   selectAdjacentConversation: (direction: 'previous' | 'next') => Promise<void>;
   selectConversationByIndex: (index: number) => Promise<void>;
   sendMessage: (message: {
@@ -227,6 +342,7 @@ type AppState = {
   }) => Promise<void>;
   resendLastUserMessage: () => Promise<void>;
   abortConversation: (conversationId: string) => Promise<void>;
+  cancelQueuedFollowup: (requestId: string) => Promise<void>;
   respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
   deleteConversation: (conversationId: string) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -243,15 +359,53 @@ function getErrorMessage(error: unknown) {
   return 'Unexpected error';
 }
 
-function findCredential(settings: SettingsSummary | null, providerId: ProviderId): ProviderCredentialSummary | null {
-  return settings?.providers.find((provider) => provider.providerId === providerId) ?? null;
+function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSummary, 'id' | 'providerId'>) {
+  return a.id === b.id && a.providerId === b.providerId;
 }
 
-function getModelById(models: ModelSummary[], modelId: string | null) {
+function getModelById(models: ModelSummary[], modelId: string | null, providerId?: ProviderId | null) {
   if (!modelId) {
     return null;
   }
-  return models.find((model) => model.id === modelId) ?? null;
+  if (providerId) {
+    const exact = models.find((model) => !model.archived && model.id === modelId && model.providerId === providerId);
+    if (exact) return exact;
+  }
+  const candidates = models.filter((model) => model.id === modelId);
+  if (candidates.length === 0) return null;
+  const nonArchived = candidates.filter((m) => !m.archived);
+  const pool = nonArchived.length > 0 ? nonArchived : candidates;
+  // Deterministic tie-break: providerId ASC, mirrors DB fallback.
+  let best = pool[0];
+  for (let i = 1; i < pool.length; i++) {
+    if (pool[i].providerId < best.providerId) best = pool[i];
+  }
+  return best;
+}
+
+export function prunePinnedProviders(
+  pins: Record<string, ProviderId>,
+  selections: Record<string, string>,
+  models: ModelSummary[]
+): Record<string, ProviderId> {
+  const alive = new Set(models.filter((m) => !m.archived).map((m) => `${m.providerId}\u0000${m.id}`));
+  let changed = false;
+  const next: Record<string, ProviderId> = {};
+  for (const [conversationId, providerId] of Object.entries(pins)) {
+    const modelId = selections[conversationId];
+    if (!modelId) {
+      changed = true;
+      continue;
+    }
+    if (alive.has(`${providerId}\u0000${modelId}`)) {
+      next[conversationId] = providerId;
+    } else {
+      changed = true;
+    }
+  }
+  // Also drop pins where no selection exists? Already handled.
+  // Identity-stable: return original when nothing moved.
+  return changed ? next : pins;
 }
 
 export function resolveSelectedModelId(
@@ -413,6 +567,21 @@ export function hasArchivedConversations(params: {
   return (params.storedConversationCount ?? 0) > params.liveConversationCount;
 }
 
+export function resolveArchivedConversationsCount(params: {
+  storedConversationCount: number | null;
+  liveConversationCount: number;
+  archivedConversationCount: number;
+  hasLoadedArchived: boolean;
+}): number {
+  if (params.hasLoadedArchived) {
+    return params.archivedConversationCount;
+  }
+  if (params.storedConversationCount != null) {
+    return Math.max(0, params.storedConversationCount - params.liveConversationCount);
+  }
+  return 0;
+}
+
 function collectRendererHeapBytes() {
   if (typeof performance === 'undefined') {
     return null;
@@ -463,6 +632,14 @@ function resolveConversationIdForRequest(
 // =============================================================================
 /** The OS shows one folder picker; a second request while it is up joins the first. */
 let attachProjectInFlight: Promise<WorkspaceProject | null> | null = null;
+/** Module-level once-guard: the goalsEvent push is bound for the app's lifetime. */
+let goalEventsBound = false;
+
+let updatePreferencesSeq = 0;
+
+export const resetUpdatePreferencesSeqForTesting = () => {
+  updatePreferencesSeq = 0;
+};
 
 export const useAppStore = create<AppState>((set, get) => ({
   bootstrapping: true,
@@ -471,6 +648,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeView: 'chat',
   settingsSection: 'general',
   commandPaletteOpen: false,
+  commandPaletteInitialQuery: null,
   modelPickerOpen: false,
   composerFocused: false,
   composerFocusNonce: 0,
@@ -494,11 +672,50 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingConversationId: null,
   selectedConversationId: null,
   selectedModelIdByConversation: {},
+  selectedProviderIdByConversation: {},
   composerDraftsByConversation: {},
   composerAttachmentsByConversation: {},
+  composerCitationsByConversation: {},
   draftsByConversation: {},
   requestToConversation: {},
   runtimeSequenceByConversation: {},
+  queuedByConversation: {},
+  unreadByConversation: {},
+  sideChat: null,
+  goalsByConversation: {},
+  markConversationRead: (conversationId) => {
+    set((current) => {
+      if (!(conversationId in current.unreadByConversation)) return {};
+      const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
+      return { unreadByConversation: rest };
+    });
+  },
+  markConversationUnread: (conversationId) => {
+    set((current) => ({
+      unreadByConversation: {
+        ...current.unreadByConversation,
+        [conversationId]: (current.unreadByConversation[conversationId] ?? 0) + 1 || 1,
+      },
+    }));
+  },
+  regenerateConversationTitle: async (conversationId) => {
+    try {
+      const updated = await window.atlasChat.conversations.regenerateTitle(conversationId);
+      set((current) => ({
+        conversations: current.conversations.map((c) =>
+          c.id === conversationId ? { ...c, title: updated.title } : c
+        ),
+        archivedConversations: current.archivedConversations.map((c) =>
+          c.id === conversationId ? { ...c, title: updated.title } : c
+        ),
+      }));
+    } catch (error) {
+      console.error('Failed to regenerate conversation title', error);
+    }
+  },
+  markAllConversationsRead: () => {
+    set({ unreadByConversation: {} });
+  },
   projects: [],
   updateState: { status: 'idle' },
 
@@ -555,6 +772,22 @@ export const useAppStore = create<AppState>((set, get) => ({
             )
           : null;
 
+      // Resolve provider for the bootstrapped selection so (id, provider) travels together.
+      const bootstrappedModelId =
+        detail?.conversation?.defaultModelId ??
+        chooseDefaultModel(
+          models,
+          detail?.conversation?.defaultProviderId ?? settings.defaultProviderId,
+          settings.chat.lastModelId
+        ) ??
+        defaultModelId;
+      const bootstrappedProviderId = (() => {
+        if (!bootstrappedModelId || !selectedConversationId) return null;
+        const pinned = detail?.conversation?.defaultProviderId ?? null;
+        const model = getModelById(models, bootstrappedModelId, pinned);
+        return model?.providerId ?? pinned ?? settings.defaultProviderId ?? null;
+      })();
+
       set({
         bootstrapping: false,
         initialized: true,
@@ -573,17 +806,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         activitiesByConversation: snapshotPatch?.activitiesByConversation ?? {},
         updateState,
         selectedModelIdByConversation:
-          defaultModelId && selectedConversationId
-            ? {
-                [selectedConversationId]:
-                  detail?.conversation?.defaultModelId ??
-                  chooseDefaultModel(
-                    models,
-                    detail?.conversation?.defaultProviderId ?? settings.defaultProviderId,
-                    settings.chat.lastModelId
-                  ) ??
-                  defaultModelId
-              }
+          bootstrappedModelId && selectedConversationId
+            ? { [selectedConversationId]: bootstrappedModelId }
+            : {},
+        selectedProviderIdByConversation:
+          bootstrappedModelId && bootstrappedProviderId && selectedConversationId
+            ? { [selectedConversationId]: bootstrappedProviderId }
             : {}
       });
 
@@ -610,16 +838,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           current.settings?.chat.lastModelId
         );
 
+        const repointed = repointUnavailableModels(
+          current.selectedModelIdByConversation,
+          models,
+          fallbackModelId
+        );
+        const prunedPins = prunePinnedProviders(
+          current.selectedProviderIdByConversation,
+          repointed,
+          models
+        );
+
         return {
           models,
-          // This reload is how a window learns a provider was disabled or
-          // removed, so it is also where selections pointing into the vanished
-          // provider have to be re-pointed.
-          selectedModelIdByConversation: repointUnavailableModels(
-            current.selectedModelIdByConversation,
-            models,
-            fallbackModelId
-          )
+          selectedModelIdByConversation: repointed,
+          selectedProviderIdByConversation: prunedPins
         };
       });
     } catch {
@@ -633,32 +866,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const models = await window.atlasChat.models.refresh();
       const settings = await window.atlasChat.settings.getSummary();
-      const state = get();
-      const selectedModelId = resolveSelectedModelId(
-        state.selectedConversationId,
-        state.selectedModelIdByConversation,
-        state.conversationDetails,
-        models
-      ) ?? chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
 
       set((current) => {
-        // Every conversation is checked, not just the visible one: a refresh
-        // that drops a provider leaves stale picks behind on the others too,
-        // and they surface as a broken send the moment one is opened.
-        const repointed = repointUnavailableModels(
+        const selectedModelId =
+          resolveSelectedModelId(
+            current.selectedConversationId,
+            current.selectedModelIdByConversation,
+            current.conversationDetails,
+            models
+          ) ?? chooseDefaultModel(models, settings.defaultProviderId, settings.chat.lastModelId);
+
+        const repointedBase = repointUnavailableModels(
           current.selectedModelIdByConversation,
           models,
           selectedModelId
         );
+        const finalSelections =
+          selectedModelId && current.selectedConversationId
+            ? { ...repointedBase, [current.selectedConversationId]: selectedModelId }
+            : repointedBase;
+
+        let nextPins = prunePinnedProviders(current.selectedProviderIdByConversation, finalSelections, models);
+        if (selectedModelId && current.selectedConversationId) {
+          const existingPin = current.selectedProviderIdByConversation[current.selectedConversationId] ?? null;
+          const resolvedModel = getModelById(models, selectedModelId, existingPin);
+          const providerToStore =
+            resolvedModel?.providerId ??
+            current.conversationDetails[current.selectedConversationId!]?.conversation.defaultProviderId ??
+            settings.defaultProviderId ??
+            null;
+          if (providerToStore && nextPins[current.selectedConversationId] !== providerToStore) {
+            nextPins = { ...nextPins, [current.selectedConversationId]: providerToStore };
+          }
+        }
 
         return {
           isRefreshingModels: false,
           models,
           settings,
-          selectedModelIdByConversation:
-            selectedModelId && current.selectedConversationId
-              ? { ...repointed, [current.selectedConversationId]: selectedModelId }
-              : repointed,
+          selectedModelIdByConversation: finalSelections,
+          selectedProviderIdByConversation: nextPins
         };
       });
 
@@ -723,70 +970,134 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     const cachedDetail = cacheState.conversationDetails[conversationId] ?? state.conversationDetails[conversationId];
 
-    set((current) => ({
-      selectedConversationId: conversationId,
-      conversationDetails: cacheState.conversationDetails,
-      inactiveConversationIds: cacheState.inactiveConversationIds,
-      isLoadingConversationId: cachedDetail ? null : conversationId,
-      selectedModelIdByConversation:
-        !current.selectedModelIdByConversation[conversationId]
-          ? {
-              ...current.selectedModelIdByConversation,
-              [conversationId]:
-                cachedDetail?.conversation.defaultModelId ??
-                chooseDefaultModel(
-                  current.models,
-                  cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
-                  current.settings?.chat.lastModelId
-                ) ??
-                ''
-            }
-          : current.selectedModelIdByConversation
-    }));
+    set((current) => {
+      const needsModel = !current.selectedModelIdByConversation[conversationId];
+      const modelId = needsModel
+        ? (cachedDetail?.conversation.defaultModelId ??
+          chooseDefaultModel(
+            current.models,
+            cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+            current.settings?.chat.lastModelId
+          ) ??
+          '')
+        : null;
+      const providerId = (() => {
+        if (!needsModel || !modelId) return null;
+        const pinned = cachedDetail?.conversation.defaultProviderId ?? current.settings?.defaultProviderId ?? null;
+        const m = getModelById(current.models, modelId, pinned);
+        return m?.providerId ?? pinned;
+      })();
+
+      return {
+        selectedConversationId: conversationId,
+        unreadByConversation: current.unreadByConversation[conversationId]
+          ? (() => {
+              const { [conversationId]: _cleared, ...rest } = current.unreadByConversation;
+              return rest;
+            })()
+          : current.unreadByConversation,
+        conversationDetails: cacheState.conversationDetails,
+        inactiveConversationIds: cacheState.inactiveConversationIds,
+        isLoadingConversationId: cachedDetail ? null : conversationId,
+        selectedModelIdByConversation: needsModel && modelId
+          ? { ...current.selectedModelIdByConversation, [conversationId]: modelId }
+          : current.selectedModelIdByConversation,
+        selectedProviderIdByConversation:
+          needsModel && modelId && providerId && !current.selectedProviderIdByConversation[conversationId]
+            ? { ...current.selectedProviderIdByConversation, [conversationId]: providerId }
+            : current.selectedProviderIdByConversation
+      };
+    });
 
     if (cachedDetail) {
       return;
     }
 
     try {
-      const [detail, runtimeState] = await Promise.all([
-        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
-        window.atlasChat.chat.getRuntimeState({ conversationId }).catch(() => null),
-      ]);
-      const activeRuntimeState = runtimeState ?? null;
-      set((current) => ({
-        ...(activeRuntimeState
+      const pageStart = performance.now();
+      const pagePromise = window.atlasChat.conversations
+        .getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE })
+        .then((res) => ({ res, durationMs: performance.now() - pageStart }));
+
+      const runtimeStart = performance.now();
+      const runtimePromise = window.atlasChat.chat
+        .getRuntimeState({ conversationId })
+        .then((res) => ({ res, durationMs: performance.now() - runtimeStart }))
+        .catch(() => ({ res: null, durationMs: performance.now() - runtimeStart }));
+
+      const [pageResult, runtimeResult] = await Promise.all([pagePromise, runtimePromise]);
+      const detail = pageResult.res;
+      const activeRuntimeState = runtimeResult.res;
+
+      if (import.meta.env.DEV) {
+        console.info(
+          `[perf] Cold load conversation ${conversationId}: getPage=${pageResult.durationMs.toFixed(1)}ms (${detail.messages.length} msgs), getRuntimeState=${runtimeResult.durationMs.toFixed(1)}ms`
+        );
+      }
+      set((current) => {
+        const needsModel = !current.selectedModelIdByConversation[conversationId];
+        const modelId = needsModel
+          ? (activeRuntimeState?.conversation?.defaultModelId ??
+            detail.conversation.defaultModelId ??
+            chooseDefaultModel(
+              current.models,
+              activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
+              current.settings?.chat.lastModelId
+            ) ??
+            '')
+          : null;
+        const providerId = (() => {
+          if (!needsModel || !modelId) return null;
+          const pinned =
+            activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId ?? null;
+          const m = getModelById(current.models, modelId, pinned);
+          return m?.providerId ?? pinned;
+        })();
+
+        const basePatch = activeRuntimeState
           ? applyRuntimeSnapshotToStore(current, conversationId, activeRuntimeState, detail)
           : {
               conversationDetails: {
                 ...current.conversationDetails,
-                [conversationId]: detail,
-              },
-            }),
-        isLoadingConversationId:
-          current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
-        selectedModelIdByConversation:
-          !current.selectedModelIdByConversation[conversationId]
-            ? {
-                ...current.selectedModelIdByConversation,
-                [conversationId]:
-                  activeRuntimeState?.conversation?.defaultModelId ??
-                  detail.conversation.defaultModelId ??
-                  chooseDefaultModel(
-                    current.models,
-                    activeRuntimeState?.conversation?.defaultProviderId ?? detail.conversation.defaultProviderId ?? current.settings?.defaultProviderId,
-                    current.settings?.chat.lastModelId
-                  ) ??
-                  ''
+                [conversationId]: detail
               }
-            : current.selectedModelIdByConversation
-      }));
+            };
+
+        return {
+          ...basePatch,
+          isLoadingConversationId:
+            current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId,
+          selectedModelIdByConversation: needsModel && modelId
+            ? { ...current.selectedModelIdByConversation, [conversationId]: modelId }
+            : current.selectedModelIdByConversation,
+          selectedProviderIdByConversation:
+            needsModel && modelId && providerId && !current.selectedProviderIdByConversation[conversationId]
+              ? { ...current.selectedProviderIdByConversation, [conversationId]: providerId }
+              : current.selectedProviderIdByConversation
+        };
+      });
     } catch (error) {
       set((current) => ({
         isLoadingConversationId:
           current.isLoadingConversationId === conversationId ? null : current.isLoadingConversationId
       }));
       notifyError('Could not open the conversation', error);
+    }
+  },
+
+  reloadConversationDetail: async (conversationId) => {
+    try {
+      const page = await window.atlasChat.conversations.getPage(conversationId, {
+        limit: DEFAULT_CONVERSATION_PAGE_SIZE,
+      });
+      set((current) => ({
+        conversationDetails: {
+          ...current.conversationDetails,
+          [conversationId]: mergeConversationPage(current.conversationDetails[conversationId], page)
+        }
+      }));
+    } catch {
+      // A failed refresh keeps the stale transcript; the next poll retries.
     }
   },
 
@@ -844,13 +1155,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createConversation: async () => {
     /*
-      "New chat" means new chat *here*. The project comes from the conversation
-      on screen, not from the main process's remembered id — that only moves on
-      an explicit workspace change, so opening a chat in another folder and
-      hitting the shortcut filed the new chat under the previous folder.
+      "New chat" means new chat *here*. The project and mode come from the
+      conversation on screen, not from the main process's remembered id — that
+      only moves on an explicit workspace change, so opening a chat in another
+      folder and hitting the shortcut filed the new chat under the previous
+      folder.
 
       Reading an unfiled chat states `null`, which is equally deliberate: it
       keeps the next chat unfiled instead of adopting the last project used.
+      Mode rides along for the same reason: a Code project chat spawns the next
+      Code project chat, never an unfiled Work chat that would vanish from the
+      Code sidebar.
     */
     const { conversations, selectedConversationId, activeView } = get();
     const active = activeView === 'chat' && selectedConversationId
@@ -858,13 +1173,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       : null;
 
     const created = await window.atlasChat.conversations.create(
-      active ? { projectId: active.projectId } : undefined
+      active ? { projectId: active.projectId, workspaceMode: active.workspaceMode } : undefined
     );
 
     await get().refreshConversationList();
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       modelPickerOpen: false,
       // Main persists this as the new fallback; mirror it so the cached
       // summary does not report a project the user has moved on from.
@@ -873,6 +1189,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.settings
     }));
     await get().loadConversation(created.id);
+    return created;
   },
 
   createConversationInProject: async (projectId) => {
@@ -883,6 +1200,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       modelPickerOpen: false,
       settings: state.settings
         ? { ...state.settings, chat: { ...state.settings.chat, lastProjectId: created.projectId } }
@@ -898,11 +1216,129 @@ export const useAppStore = create<AppState>((set, get) => ({
       // and the IPC already accepts one.
       const fork = await window.atlasChat.conversations.fork({ conversationId });
       await get().refreshConversationList();
-      set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+      set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
       await get().loadConversation(fork.id);
     } catch (error) {
       notifyError('Could not fork the chat', error);
     }
+  },
+
+  openSideChat: async (parentConversationId) => {
+    const parentId = parentConversationId ?? get().selectedConversationId;
+    if (!parentId) {
+      return;
+    }
+
+    try {
+      const existing = get().sideChat;
+      if (existing?.parentId === parentId) {
+        // Already open on this parent: just make sure its page is fresh.
+        await get().reloadConversationDetail(existing.sideId);
+        return;
+      }
+
+      // Reuse the most recent side chat of this parent before minting another,
+      // or the ⌘⌥S spam leaves a trail of identical hidden rows.
+      const sides = await window.atlasChat.conversations.listSide(parentId);
+      const side = sides[0] ?? (await window.atlasChat.conversations.startSide({ conversationId: parentId }));
+
+      await get().reloadConversationDetail(side.id);
+      set({ sideChat: { parentId, sideId: side.id } });
+    } catch (error) {
+      notifyError('Could not open the side chat', error);
+    }
+  },
+
+  closeSideChat: () => {
+    set({ sideChat: null });
+  },
+
+  promoteSideChat: async () => {
+    const { sideChat } = get();
+    if (!sideChat) {
+      return;
+    }
+
+    try {
+      const promoted = await window.atlasChat.conversations.promoteSide(sideChat.sideId);
+      set({ sideChat: null });
+      if (promoted) {
+        await get().refreshConversationList();
+        await get().loadConversation(sideChat.sideId);
+      } else {
+        notify({ tone: 'error', title: 'Nothing to promote', description: 'This side chat is already a normal conversation.' });
+      }
+    } catch (error) {
+      notifyError('Could not promote the side chat', error);
+    }
+  },
+
+  loadGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.get(conversationId);
+    set((current) => {
+      const next = { ...current.goalsByConversation };
+      if (goal) {
+        next[conversationId] = goal;
+      } else if (conversationId in current.goalsByConversation) {
+        delete next[conversationId];
+      } else {
+        return {};
+      }
+      return { goalsByConversation: next };
+    });
+  },
+
+  setGoal: async (conversationId, objective, mode) => {
+    const goal = await window.atlasChat.goals.set(conversationId, objective, mode);
+    set((current) => ({
+      goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal },
+    }));
+    return goal;
+  },
+
+  pauseGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.pause(conversationId);
+    if (goal) {
+      set((current) => ({ goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal } }));
+    }
+  },
+
+  resumeGoal: async (conversationId) => {
+    const goal = await window.atlasChat.goals.resume(conversationId);
+    if (goal) {
+      set((current) => ({ goalsByConversation: { ...current.goalsByConversation, [conversationId]: goal } }));
+    }
+  },
+
+  clearGoal: async (conversationId) => {
+    await window.atlasChat.goals.clear(conversationId);
+    set((current) => {
+      const { [conversationId]: _cleared, ...rest } = current.goalsByConversation;
+      return { goalsByConversation: rest };
+    });
+  },
+
+  bindGoalEvents: () => {
+    if (goalEventsBound) return;
+    goalEventsBound = true;
+    window.atlasChat.goals.onGoalEvent((event) => {
+      // A rejection that stops the loop without changing goal state (turn cap)
+      // leaves no other trace — surface it here or the user sees silence.
+      if (event.notice) {
+        notify({ tone: 'info', title: '/goal', description: event.notice });
+      }
+      set((current) => {
+        const next = { ...current.goalsByConversation };
+        if (event.goal) {
+          next[event.conversationId] = event.goal;
+        } else if (event.conversationId in current.goalsByConversation) {
+          delete next[event.conversationId];
+        } else {
+          return {};
+        }
+        return { goalsByConversation: next };
+      });
+    });
   },
 
   refreshProjects: async () => {
@@ -910,15 +1346,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   attachProject: async ({ root, conversationId } = {}) => {
-    if (attachProjectInFlight) {
-      return attachProjectInFlight;
+    const needsPicker = !root;
+    // Picker is OS singleton — second opener while picker is up joins first.
+    // Explicit `root` is not a picker, so it must not join.
+    if (needsPicker && attachProjectInFlight) {
+      const picked = await attachProjectInFlight;
+      if (picked && conversationId) {
+        await get().setConversationWorkspace(conversationId, { projectId: picked.id });
+      }
+      return picked;
     }
 
     const run = async (): Promise<WorkspaceProject | null> => {
       const project = await window.atlasChat.projects.create(root ? { root } : undefined);
 
       if (!project) {
-        // The user cancelled the picker. Not an error, and nothing changes.
         return null;
       }
 
@@ -931,18 +1373,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       return project;
     };
 
-    // Every surface fires this as `void attachProject(...)`, so a rejection
-    // here had nowhere to land but the unhandled-rejection handler.
-    attachProjectInFlight = run()
-      .catch((error) => {
-        notifyError('Could not attach the folder', error);
-        return null;
-      })
-      .finally(() => {
-        attachProjectInFlight = null;
-      });
+    if (needsPicker) {
+      attachProjectInFlight = run()
+        .catch((error) => {
+          notifyError('Could not attach the folder', error);
+          return null;
+        })
+        .finally(() => {
+          attachProjectInFlight = null;
+        });
+      return attachProjectInFlight;
+    }
 
-    return attachProjectInFlight;
+    // Non-picker path: no dedupe, each explicit root runs independently.
+    try {
+      return await run();
+    } catch (error) {
+      notifyError('Could not attach the folder', error);
+      return null;
+    }
   },
 
   renameProject: async (projectId, title) => {
@@ -985,6 +1434,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ projects: previous });
       notifyError(pinned ? 'Could not pin the project' : 'Could not unpin the project', error);
+    }
+  },
+
+  setProjectAutoPull: async (projectId, autoPull) => {
+    const previous = get().projects;
+
+    // Optimistic like the pin toggle: the checkbox answers the click, and the
+    // round trip reconciles. A failure rolls back with a toast.
+    set((state) => ({
+      projects: state.projects.map((project) =>
+        project.id === projectId ? { ...project, autoPull } : project
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.projects.setAutoPull(projectId, autoPull);
+      set((state) => ({
+        projects: state.projects.map((project) => (project.id === projectId ? updated : project)),
+      }));
+    } catch (error) {
+      set({ projects: previous });
+      notifyError(
+        autoPull ? 'Could not enable automatic pull' : 'Could not disable automatic pull',
+        error
+      );
     }
   },
 
@@ -1107,6 +1581,110 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  setConversationSettled: async (conversationId, settled) => {
+    // Renderer pre-guard mirrors the main-process check so the failure is
+    // instant. The main-process guard inside `setSettled` is authoritative —
+    // a turn that starts between this check and the IPC call still fails
+    // there and rolls back below.
+    const draft = get().draftsByConversation[conversationId];
+    const conversation = get().conversations.find((entry) => entry.id === conversationId);
+    const running = draft ? draft.status === 'streaming' : conversation?.status === 'running';
+    if (settled && running) {
+      notifyError('Cannot settle a chat while its turn is still running', null);
+      return;
+    }
+
+    const previous = get().conversations;
+    const now = new Date().toISOString();
+
+    // Settling is high-frequency and stays silent — no toast. The Settled
+    // shelf header shows the new count, and un-settling is one hover away.
+    set((state) => ({
+      conversations: state.conversations.map((entry) =>
+        entry.id === conversationId
+          ? {
+              ...entry,
+              settledAt: settled ? (entry.settledAt ?? now) : null,
+              unsettledAt: settled ? null : (entry.settledAt ? now : entry.unsettledAt),
+            }
+          : entry
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.conversations.setSettled({ conversationId, settled });
+      set((state) => ({
+        conversations: state.conversations.map((entry) =>
+          entry.id === conversationId ? updated : entry
+        ),
+      }));
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError(settled ? 'Could not settle the chat' : 'Could not un-settle the chat', error);
+    }
+  },
+
+  setConversationSnoozed: async (conversationId, snoozedUntil) => {
+    // Client-side twin of the main-process invariants so the UI rejects
+    // before a round trip: parseable future wake, and no blocked-on-you work
+    // hidden away. Snooze stays allowed while a turn runs — it only affects
+    // visibility, never the agent.
+    if (snoozedUntil !== null) {
+      const wakeMs = Date.parse(snoozedUntil);
+      if (Number.isNaN(wakeMs) || wakeMs <= Date.now()) {
+        notifyError('Snooze wake time must be in the future', null);
+        return;
+      }
+      const details = get().conversationDetails[conversationId];
+      const liveParts = get().draftsByConversation[conversationId]?.parts;
+      const openParts = details?.messages.flatMap((message) => message.parts ?? []) ?? [];
+      if (hasPendingApprovalInParts(liveParts ?? openParts)) {
+        notifyError('Respond to the pending request before snoozing this chat', null);
+        return;
+      }
+    }
+
+    const previous = get().conversations;
+    const now = new Date().toISOString();
+
+    set((state) => ({
+      conversations: state.conversations.map((entry) =>
+        entry.id === conversationId
+          ? {
+              ...entry,
+              snoozedUntil,
+              snoozedAt: snoozedUntil === null ? null : (entry.snoozedUntil === snoozedUntil ? entry.snoozedAt : now),
+            }
+          : entry
+      ),
+    }));
+
+    try {
+      const updated = await window.atlasChat.conversations.setSnoozed({ conversationId, snoozedUntil });
+      set((state) => ({
+        conversations: state.conversations.map((entry) =>
+          entry.id === conversationId ? updated : entry
+        ),
+      }));
+      // The row vanishes into the (usually collapsed) Snoozed shelf, so the
+      // outcome happens off-screen: confirm it with the wake time, plus Undo.
+      if (snoozedUntil !== null) {
+        const clock = formatSnoozeClockLabel(snoozedUntil);
+        notify({
+          tone: 'success',
+          title: clock ? `Snoozed until ${clock}` : 'Chat snoozed',
+          actionLabel: 'Undo',
+          onAction: () => {
+            void get().setConversationSnoozed(conversationId, null);
+          },
+        });
+      }
+    } catch (error) {
+      set({ conversations: previous });
+      notifyError(snoozedUntil === null ? 'Could not wake the chat' : 'Could not snooze the chat', error);
+    }
+  },
+
   detachProject: async (projectId) => {
     await window.atlasChat.projects.delete(projectId);
     set((state) => ({
@@ -1118,21 +1696,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setConversationWorkspace: async (conversationId, patch) => {
-    const previous = get().conversations;
+    const prevSnapshot = get().conversations.find((c) => c.id === conversationId) ?? null;
 
-    // Optimistic: the mode switch drives visible chrome, and waiting a round
-    // trip to repaint it reads as lag.
-    const applyLocally = (conversation: ConversationSummary) =>
-      conversation.id === conversationId
-        ? {
-            ...conversation,
-            workspaceMode: patch.mode ?? conversation.workspaceMode,
-            executionTarget: patch.executionTarget ?? conversation.executionTarget,
-            projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
-          }
-        : conversation;
-
-    set({ conversations: previous.map(applyLocally) });
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              workspaceMode: patch.mode ?? conversation.workspaceMode,
+              executionTarget: patch.executionTarget ?? conversation.executionTarget,
+              projectId: patch.projectId === undefined ? conversation.projectId : patch.projectId
+            }
+          : conversation
+      )
+    }));
 
     try {
       const workspace = await window.atlasChat.conversations.setWorkspace({ conversationId, ...patch });
@@ -1166,7 +1743,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         await get().refreshProjects();
       }
     } catch (error) {
-      set({ conversations: previous });
+      // Functional revert for the single row, then refresh for truth.
+      if (prevSnapshot) {
+        set((state) => ({
+          conversations: state.conversations.map((c) => (c.id === conversationId ? prevSnapshot : c))
+        }));
+      }
+      void get().refreshConversationList();
       notifyError('Could not update the workspace', error);
     }
   },
@@ -1228,23 +1811,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openSettings: (section = 'general') =>
-    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, modelPickerOpen: false }),
+    set({ activeView: 'settings', settingsSection: section, commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closeSettings: () => set({ activeView: 'chat', modelPickerOpen: false }),
   openLanding: () => set({ activeView: 'landing' }),
   closeLanding: () => set({ activeView: 'chat' }),
-  openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, modelPickerOpen: false }),
+  openSites: () => set({ activeView: 'sites', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   openPlugins: () =>
-    set({ activeView: 'plugins', commandPaletteOpen: false, modelPickerOpen: false }),
+    set({ activeView: 'plugins', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closePlugins: () => set({ activeView: 'chat' }),
   closeSites: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
-  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setCommandPaletteOpen: (open) =>
+    set(open ? { commandPaletteOpen: open } : { commandPaletteOpen: open, commandPaletteInitialQuery: null }),
+  setCommandPaletteInitialQuery: (query) => set({ commandPaletteInitialQuery: query }),
   setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
   setComposerFocused: (focused) => set({ composerFocused: focused }),
   requestComposerFocus: () =>
     set((state) => ({
       activeView: 'chat',
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
       composerFocusNonce: state.composerFocusNonce + 1
     })),
   setActiveCredentialProvider: (providerId) => set({ activeCredentialProviderId: providerId, keyDraft: '' }),
@@ -1291,7 +1877,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updatePreferences: async (patch) => {
+    const seq = ++updatePreferencesSeq;
     const settings = await window.atlasChat.settings.updatePreferences(patch);
+    if (seq !== updatePreferencesSeq) {
+      return;
+    }
     if (typeof patch.showFreeOnlyByDefault !== 'boolean') {
       set({ settings });
       return;
@@ -1352,39 +1942,47 @@ export const useAppStore = create<AppState>((set, get) => ({
     await window.atlasChat.updates.performPrimaryAction();
   },
 
-  setSelectedModel: (conversationId, modelId) => {
-    // The catalog row is the only place the model and its provider are already
-    // paired. `setDefaults` writes both columns, and deriving the provider from
-    // anywhere else is how a model ends up recorded against a provider that
-    // cannot serve it. A model the catalog does not offer is not a selection —
-    // the same rule `resolveSelectedModelId` applies — so it is not written.
-    const model = get().models.find((entry) => entry.id === modelId) ?? null;
+  setSelectedModel: (conversationId, modelId, providerId) => {
+    // Provider-qualified selection: (modelId, providerId) is the real key.
+    // The caller ideally supplies both; fallback resolves the pair via the
+    // catalog so a bare id still lands on a deterministic provider.
+    const state = get();
+    const model = providerId
+      ? getModelById(state.models, modelId, providerId)
+      : getModelById(state.models, modelId);
+    const resolvedProviderId = model?.providerId ?? providerId ?? null;
 
-    set((state) => ({
-      selectedModelIdByConversation: { ...state.selectedModelIdByConversation, [conversationId]: modelId },
-      settings: state.settings
-        ? { ...state.settings, chat: { ...state.settings.chat, lastModelId: modelId } }
-        : state.settings
+    set((current) => ({
+      selectedModelIdByConversation: { ...current.selectedModelIdByConversation, [conversationId]: modelId },
+      selectedProviderIdByConversation: resolvedProviderId
+        ? { ...current.selectedProviderIdByConversation, [conversationId]: resolvedProviderId }
+        : current.selectedProviderIdByConversation,
+      settings: current.settings
+        ? { ...current.settings, chat: { ...current.settings.chat, lastModelId: modelId } }
+        : current.settings
     }));
 
-    // Persisted so the choice survives a restart, not just this session. A
-    // failure here only costs the remembered default, so it stays silent.
-    void window.atlasChat.settings.updatePreferences({ chat: { lastModelId: modelId } }).catch(() => undefined);
+    // No toast: the per-conversation pin below is the one the user is actually
+    // choosing, and it reports for itself. This write is the global fallback
+    // default, so a failure costs the next cold start its remembered model —
+    // worth a log line, not an interruption on every model switch.
+    void window.atlasChat.settings
+      .updatePreferences({ chat: { lastModelId: modelId } })
+      .catch((error) => console.warn('[settings] could not persist last model', error));
 
-    if (!model) {
+    if (!model || !resolvedProviderId) {
+      // No paired catalog row: still remember the bare id globally, but the
+      // per-conversation pair has no provider to persist.
+      if (resolvedProviderId) {
+        void window.atlasChat.conversations
+          .setDefaultModel({ conversationId, providerId: resolvedProviderId, modelId })
+          .catch((error) => notifyError('Could not remember that model for this chat', error));
+      }
       return;
     }
 
-    // The conversation's own model. Until this existed the column was written
-    // only when a message was actually sent, so picking a model and not sending
-    // lost the pick on restart, and the chat fell back to whatever was chosen
-    // last in some other chat.
-    //
-    // Unlike the remembered default above, this failure is visible to the user:
-    // the pick works all session and then silently reverts on restart, which is
-    // exactly the bug this call fixes. It is worth a word.
     void window.atlasChat.conversations
-      .setDefaultModel({ conversationId, providerId: model.providerId, modelId: model.id })
+      .setDefaultModel({ conversationId, providerId: resolvedProviderId, modelId: model.id })
       .catch((error) => notifyError('Could not remember that model for this chat', error));
   },
 
@@ -1414,10 +2012,71 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  clearComposerDraft: (conversationId, sentAttachmentIds) => {
+  addComposerCitation: (conversationId, citation) => {
+    const key = crypto.randomUUID();
+    set((state) => ({
+      composerCitationsByConversation: {
+        ...state.composerCitationsByConversation,
+        [conversationId]: [
+          ...(state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS),
+          { key, citation },
+        ],
+      },
+    }));
+    return key;
+  },
+
+  updateComposerCitation: (conversationId, key, citation) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      if (!previous.some((entry) => entry.key === key)) {
+        return {};
+      }
+
+      return {
+        composerCitationsByConversation: {
+          ...state.composerCitationsByConversation,
+          [conversationId]: previous.map((entry) => (entry.key === key ? { key, citation } : entry)),
+        },
+      };
+    });
+  },
+
+  removeComposerCitation: (conversationId, key) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      const next = previous.filter((entry) => entry.key !== key);
+      if (next.length === previous.length) {
+        return {};
+      }
+
+      const { [conversationId]: _removed, ...rest } = state.composerCitationsByConversation;
+      return {
+        composerCitationsByConversation: next.length ? { ...rest, [conversationId]: next } : rest,
+      };
+    });
+  },
+
+  setComposerCitations: (conversationId, updater) => {
+    set((state) => {
+      const previous = state.composerCitationsByConversation[conversationId] ?? EMPTY_COMPOSER_CITATIONS;
+      const next = updater(previous);
+      if (next === previous) {
+        return {};
+      }
+
+      const { [conversationId]: _removed, ...rest } = state.composerCitationsByConversation;
+      return {
+        composerCitationsByConversation: next.length ? { ...rest, [conversationId]: next } : rest,
+      };
+    });
+  },
+
+  clearComposerDraft: (conversationId, sentAttachmentIds, sentCitationKeys) => {
     set((state) => {
       const { [conversationId]: _text, ...restText } = state.composerDraftsByConversation;
       const { [conversationId]: staged, ...restFiles } = state.composerAttachmentsByConversation;
+      const { [conversationId]: stagedCitations, ...restCitations } = state.composerCitationsByConversation;
       const sent = sentAttachmentIds ? new Set(sentAttachmentIds) : null;
       // Only the files that went out with this send are retired: the send is
       // async, so anything staged while it was in flight must stay put.
@@ -1432,10 +2091,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
+      // Same snapshot rule as files: only the citations that went out retire.
+      // A quote cited while the send was in flight stays staged.
+      const sentKeys = sentCitationKeys ? new Set(sentCitationKeys) : null;
+      const remainingCitations = (stagedCitations ?? []).filter(
+        (entry) => !(sentKeys ? sentKeys.has(entry.key) : true)
+      );
+
       return {
         composerAttachmentsByConversation: remaining.length
           ? { ...restFiles, [conversationId]: remaining }
           : restFiles,
+        composerCitationsByConversation: remainingCitations.length
+          ? { ...restCitations, [conversationId]: remainingCitations }
+          : restCitations,
         composerDraftsByConversation: restText
       };
     });
@@ -1454,7 +2123,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!nextConversation) {
       return;
     }
-    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+    set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
     await get().loadConversation(nextConversation.id);
   },
 
@@ -1463,7 +2132,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!conversation) {
       return;
     }
-    set({ activeView: 'chat', commandPaletteOpen: false, modelPickerOpen: false });
+    set({ activeView: 'chat', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false });
     await get().loadConversation(conversation.id);
   },
 
@@ -1482,11 +2151,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const conversationId = message.conversationId ?? state.selectedConversationId;
     if (!conversationId) {
       throw new Error('No conversation selected.');
-    }
-
-    const draft = state.draftsByConversation[conversationId];
-    if (draft?.status === 'streaming') {
-      return;
     }
 
     const detail =
@@ -1510,8 +2174,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const selectedModel = getModelById(state.models, modelId);
-    const providerId = selectedModel?.providerId ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId;
+    const pinnedProviderId =
+      state.selectedProviderIdByConversation[conversationId] ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId ?? null;
+    const selectedModel = getModelById(state.models, modelId, pinnedProviderId);
+    const providerId = selectedModel?.providerId ?? pinnedProviderId;
     if (!selectedModel || !providerId) {
       notify({ tone: 'error', title: 'Select a valid model before sending' });
       return;
@@ -1540,8 +2206,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const credential = findCredential(state.settings, providerId);
-    if (!credential?.hasSecret) {
+    // One rule for "can this model be sent to", shared with the picker's own
+    // marker: a provider that signs itself in (OpenCode) has no Atlas key to
+    // find, and demanding one refused its every turn before it left the
+    // renderer.
+    if (modelNeedsApiKey(selectedModel, state.settings?.providers)) {
       notify({ tone: 'error', title: 'API key required', description: `Save a ${resolveProviderMetadata(providerId, state.settings?.customProviders ?? []).label} key to use this model` });
       set({ activeCredentialProviderId: providerId });
       return;
@@ -1567,7 +2236,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         modelId,
         messages: [{ role: 'user' as const, content: previewContent, parts: inputParts }],
         enableTools: selectedModel.supportsTools !== false,
-        mentions: parseMentions(trimmed),
+        // Mentions resolve against citation-free text: a literal `@Sites`
+        // inside a quoted citation is assistant speech, not a user opt-in.
+        mentions: parseMentions(stripAssistantCitations(trimmed)),
         temperature: 0.65,
         // Models without a thinking mode ignore this; the adapters gate on the
         // catalog's supportsReasoning before sending anything.
@@ -1578,8 +2249,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           DEFAULT_TOOL_PERMISSION_MODE
       });
     } catch (error) {
-      notifyError('Could not send the message', error);
+      // Ring identity, not a fresh toast per attempt: hammering send while a
+      // provider is down used to stack unbounded toast state (t3code #9592).
+      notifyError('Could not send the message', error, { id: repeatingToastId('send-message') });
       throw error;
+    }
+
+    // The main process queues a message sent while the conversation's turn is
+    // still running; it starts automatically when that turn closes. The draft
+    // below flips to streaming either way — from the user's side "waiting for
+    // its turn" and "streaming" are the same waiting state until tokens land.
+    if (request.queued) {
+      notify({
+        tone: 'info',
+        title: 'Message queued',
+        description: 'It will be sent when the current reply finishes.',
+      });
     }
 
     const now = new Date().toISOString();
@@ -1620,10 +2305,23 @@ export const useAppStore = create<AppState>((set, get) => ({
           providerId,
           modelId,
           parts: [],
-          status: 'streaming',
+          // A queued follow-up is not streaming yet — no tokens exist and the
+          // stop button must not offer to abort a turn that has not started.
+          // The first event for this requestId promotes it (see the reducer).
+          status: request.queued ? 'queued' : 'streaming',
           startedAt: now
         }
       },
+      queuedByConversation:
+        request.queued
+          ? {
+              ...current.queuedByConversation,
+              [conversationId]: [
+                ...(current.queuedByConversation[conversationId] ?? []),
+                { requestId: request.requestId, preview: previewContent }
+              ]
+            }
+          : current.queuedByConversation,
       requestToConversation: { ...current.requestToConversation, [request.requestId]: conversationId },
       conversations: current.conversations
         .map((conversation) =>
@@ -1674,6 +2372,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     await window.atlasChat.chat.abort(draft.requestId);
+  },
+
+  /**
+   * Cancels one queued follow-up before its turn ever starts. The main
+   * process answers with the same `error` event an aborted live stream uses,
+   * so the dock entry prunes itself through the central event path.
+   */
+  cancelQueuedFollowup: async (requestId) => {
+    const state = get();
+    const conversationId = resolveConversationIdForRequest(requestId, state);
+    if (conversationId) {
+      // Optimistic removal — waiting for the IPC round trip would leave a
+      // dead row in the dock for the length of a round trip.
+      set((current) => ({
+        queuedByConversation: {
+          ...current.queuedByConversation,
+          [conversationId]: (current.queuedByConversation[conversationId] ?? []).filter(
+            (entry) => entry.requestId !== requestId
+          )
+        }
+      }));
+    }
+    await window.atlasChat.chat.abort(requestId);
   },
 
   respondToolApproval: async (request) => {
@@ -1749,6 +2470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const previousDetail = state.conversationDetails[conversationId];
     const previousDraft = state.draftsByConversation[conversationId];
     const previousSelectedModel = state.selectedModelIdByConversation[conversationId];
+    const previousSelectedProvider = state.selectedProviderIdByConversation[conversationId];
     const previousSequence = state.runtimeSequenceByConversation[conversationId];
     const previousLoadingOlder = state.isLoadingOlderByConversation[conversationId];
     const previousConversations = state.conversations;
@@ -1760,8 +2482,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [conversationId]: _deletedDetail, ...restDetails } = current.conversationDetails;
       const { [conversationId]: _deletedDraft, ...restDrafts } = current.draftsByConversation;
       const { [conversationId]: _deletedModel, ...restSelectedModels } = current.selectedModelIdByConversation;
+      const { [conversationId]: _deletedProvider, ...restSelectedProviders } = current.selectedProviderIdByConversation;
       const { [conversationId]: _deletedComposerText, ...restComposerText } = current.composerDraftsByConversation;
       const { [conversationId]: deletedComposerFiles, ...restComposerFiles } = current.composerAttachmentsByConversation;
+      const { [conversationId]: _deletedComposerCitations, ...restComposerCitations } =
+        current.composerCitationsByConversation;
       // Staged files hold object URLs; dropping the map alone would leak them.
       for (const file of deletedComposerFiles ?? []) {
         if (file.url.startsWith('blob:')) {
@@ -1787,11 +2512,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         archivedConversations: current.archivedConversations.filter(
           (conversation) => conversation.id !== conversationId
         ),
+        // The side pane hangs off its parent; CASCADE deletes the row, so the
+        // pane must not outlive it either. A deleted *side* id closes it too.
+        sideChat:
+          current.sideChat?.parentId === conversationId || current.sideChat?.sideId === conversationId
+            ? null
+            : current.sideChat,
         conversationDetails: restDetails,
         draftsByConversation: restDrafts,
         selectedModelIdByConversation: restSelectedModels,
+        selectedProviderIdByConversation: restSelectedProviders,
         composerDraftsByConversation: restComposerText,
         composerAttachmentsByConversation: restComposerFiles,
+        composerCitationsByConversation: restComposerCitations,
         runtimeSequenceByConversation: restSequences,
         isLoadingOlderByConversation: restLoadingOlder,
         inactiveConversationIds: current.inactiveConversationIds.filter((id) => id !== conversationId),
@@ -1814,6 +2547,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedModelIdByConversation: previousSelectedModel
           ? { ...current.selectedModelIdByConversation, [conversationId]: previousSelectedModel }
           : current.selectedModelIdByConversation,
+        selectedProviderIdByConversation: previousSelectedProvider
+          ? { ...current.selectedProviderIdByConversation, [conversationId]: previousSelectedProvider }
+          : current.selectedProviderIdByConversation,
         runtimeSequenceByConversation: previousSequence
           ? { ...current.runtimeSequenceByConversation, [conversationId]: previousSequence }
           : current.runtimeSequenceByConversation,
@@ -1822,7 +2558,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : current.isLoadingOlderByConversation,
         conversations: previousConversations,
         archivedConversations: previousArchivedConversations,
-        requestToConversation: previousRequestMap,
+        // Keep current requestToConversation to avoid clobbering concurrent sendMessage inserts.
         selectedConversationId: previousSelectedId
       }));
       notifyError('Could not delete the conversation', error);
@@ -1882,6 +2618,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!state.requestToConversation[event.requestId]) {
       set((current) => ({
         requestToConversation: { ...current.requestToConversation, [event.requestId]: conversationId }
+      }));
+    }
+
+    // Any main-side event naming a queued follow-up retires it from the dock:
+    // a runtime-sync means the turn was dispatched, streaming events mean its
+    // tokens are landing, and error/done mean it finished or died. One check
+    // here covers every path instead of one per branch below.
+    const queuedList = state.queuedByConversation[conversationId];
+    if (queuedList?.some((entry) => entry.requestId === event.requestId)) {
+      set((current) => ({
+        queuedByConversation: {
+          ...current.queuedByConversation,
+          [conversationId]: (current.queuedByConversation[conversationId] ?? []).filter(
+            (entry) => entry.requestId !== event.requestId
+          )
+        }
       }));
     }
 
@@ -1977,6 +2729,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (event.type === 'error') {
+      // A cancelled follow-up never created rows — its draft is still marked
+      // `queued`, which is what distinguishes it from an aborted live turn
+      // (whose partial output must be refetched). Dropping the draft and
+      // returning avoids four IPC roundtrips for a no-op.
+      const cancelTarget = state.draftsByConversation[conversationId];
+      if (
+        event.code === 'aborted' &&
+        cancelTarget &&
+        cancelTarget.requestId === event.requestId &&
+        cancelTarget.status === 'queued'
+      ) {
+        set((s) => {
+          const { [conversationId]: _dropped, ...restDrafts } = s.draftsByConversation;
+          return { draftsByConversation: restDrafts };
+        });
+        return;
+      }
+
       const [page, conversations, conversationStats, diagnostics] = await Promise.all([
         window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
         window.atlasChat.conversations.list(),
@@ -1990,7 +2760,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
         const nextDrafts = { ...s.draftsByConversation };
 
-        if (draft) {
+        // The error names one request. A draft carrying a different request's
+        // id is a queued follow-up still waiting to run — failing turn A must
+        // not mark it failed, let alone clear it.
+        if (draft && draft.requestId === event.requestId) {
           nextDrafts[conversationId] = {
             ...draft,
             status: event.code === 'aborted' ? 'aborted' : 'error',
@@ -2001,7 +2774,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               retryable: event.retryable,
             },
           };
-        } else {
+        } else if (!draft) {
           delete nextDrafts[conversationId];
         }
 
@@ -2036,12 +2809,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     ]);
 
     set((s) => {
-      const { [conversationId]: draft, ...restDrafts } = s.draftsByConversation;
+      const draft = s.draftsByConversation[conversationId];
+      // Same request-scoping as the error branch: a terminal event for turn A
+      // must not drop the queued follow-up's placeholder draft. The follow-up
+      // keeps its own draft until its own terminal event arrives.
+      const { [conversationId]: _droptDraft, ...restDrafts } = s.draftsByConversation;
+      const nextDrafts = draft && draft.requestId === event.requestId ? restDrafts : s.draftsByConversation;
       const { [event.requestId]: _omitted, ...restRequests } = s.requestToConversation;
+
+      // The turn finished somewhere the user is not looking: it is unread.
+      const isBackgroundTurn =
+        conversationId !== s.selectedConversationId &&
+        (!draft || draft.requestId === event.requestId);
+      const unreadByConversation = isBackgroundTurn
+        ? {
+            ...s.unreadByConversation,
+            [conversationId]: (s.unreadByConversation[conversationId] ?? 0) + 1,
+          }
+        : s.unreadByConversation;
 
       return {
         requestToConversation: restRequests,
-        draftsByConversation: restDrafts,
+        draftsByConversation: nextDrafts,
+        unreadByConversation,
         conversationDetails: {
           ...s.conversationDetails,
           [conversationId]: mergeConversationPage(s.conversationDetails[conversationId], page)
@@ -2126,6 +2916,14 @@ export function selectDiagnosticsSummary(state: AppState) {
 
 export function selectCompactedConversationForCache(detail: ConversationPage) {
   return compactConversationPage(detail);
+}
+
+/** The conversation's queued follow-ups, or a stable empty list. */
+export function selectQueuedFollowups(state: AppState, conversationId: string | null): QueuedFollowupEntry[] {
+  if (!conversationId) {
+    return EMPTY_QUEUED_FOLLOWUPS;
+  }
+  return state.queuedByConversation[conversationId] ?? EMPTY_QUEUED_FOLLOWUPS;
 }
 
 // Re-export helper for tests that need to drive the pure reducers directly.

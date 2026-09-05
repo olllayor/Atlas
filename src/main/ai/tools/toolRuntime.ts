@@ -7,13 +7,18 @@ import { constants as fsConstants } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
 import { BoundedCommandOutput } from './commandOutputCap';
+import { SpillingCommandOutput } from './spill/spillingCommandOutput';
+import { buildSpillPreview } from './spill/spillPolicy';
+import { startBackgroundBashJob } from '../jobs/bashJobProducer';
 import type { ContainedFsFailure } from '../../security/containedFs';
 import { containedRead, containedReadBuffer } from '../../security/containedFs';
+import type { ToolPermissionMode } from '../../../shared/chatParameters';
 import type { SandboxPolicy } from './sandbox';
 import {
   buildSandboxedLaunch,
   deriveSandboxPolicy,
   detectSandboxMechanism,
+  getSandboxDenialHint,
   isLikelySandboxDenied,
   isSandboxWrapperFailure,
   markSandboxMechanismUnavailable,
@@ -102,6 +107,13 @@ type CommandResult = {
   /** Set only when the ingest cap dropped content; the text carries its own marker. */
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
+  /**
+   * Set when a stream overflowed the ingest budget and its full content was
+   * persisted to a spill file. The inline text is the bounded head/tail
+   * preview; the complete stream is recoverable at this path via `read_file`.
+   */
+  stdoutSpillPath?: string;
+  stderrSpillPath?: string;
 };
 
 function expandPath(value: string) {
@@ -350,6 +362,13 @@ export function runCommand(
     env?: Record<string, string>;
     /** Per-stream ingest budget; defaults to COMMAND_OUTPUT_BYTE_BUDGET. */
     maxOutputBytes?: number;
+    /**
+     * Optional spill sink factory, one per stream. When provided, a stream
+     * that overflows the ingest budget tees its full content to the sink's
+     * spill file and the result reports its path; when omitted, overflow is
+     * bounded in memory only (the legacy behavior).
+     */
+    spillSink?: () => SpillingCommandOutput;
   } = {}
 ) {
   return new Promise<CommandResult>((resolvePromise, reject) => {
@@ -363,17 +382,29 @@ export function runCommand(
     // Each stream is budgeted on its own, so a noisy stderr cannot squeeze out
     // the stdout the model actually asked for. The decoders keep multi-byte
     // characters intact across chunk boundaries.
-    const stdout = new BoundedCommandOutput(options.maxOutputBytes);
-    const stderr = new BoundedCommandOutput(options.maxOutputBytes);
+    const stdout = options.spillSink
+      ? options.spillSink()
+      : new BoundedCommandOutput(options.maxOutputBytes);
+    const stderr = options.spillSink
+      ? options.spillSink()
+      : new BoundedCommandOutput(options.maxOutputBytes);
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
     let interrupted = false;
     let timeoutId: NodeJS.Timeout | undefined;
+    let killTimeoutId: NodeJS.Timeout | undefined;
 
     if (options.timeoutMs && options.timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         interrupted = true;
         child.kill('SIGTERM');
+        killTimeoutId = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Process may already have exited
+          }
+        }, 3_000);
       }, options.timeoutMs);
     }
 
@@ -389,16 +420,29 @@ export function runCommand(
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+      if (killTimeoutId) {
+        clearTimeout(killTimeoutId);
+      }
       reject(error);
     });
 
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       if (timeoutId) {
         clearTimeout(timeoutId);
+      }
+      if (killTimeoutId) {
+        clearTimeout(killTimeoutId);
       }
 
       stdout.write(stdoutDecoder.end());
       stderr.write(stderrDecoder.end());
+
+      // Flush and close any spill files. `end()` is a no-op for a plain
+      // bounded sink and resolves `undefined` when a stream never overflowed.
+      const [stdoutSpillPath, stderrSpillPath] = await Promise.all([
+        stdout instanceof SpillingCommandOutput ? stdout.end() : undefined,
+        stderr instanceof SpillingCommandOutput ? stderr.end() : undefined
+      ]);
 
       resolvePromise({
         stdout: stdout.toString(),
@@ -406,7 +450,9 @@ export function runCommand(
         code,
         interrupted,
         ...(stdout.truncated ? { stdoutTruncated: true as const } : {}),
-        ...(stderr.truncated ? { stderrTruncated: true as const } : {})
+        ...(stderr.truncated ? { stderrTruncated: true as const } : {}),
+        ...(stdoutSpillPath ? { stdoutSpillPath } : {}),
+        ...(stderrSpillPath ? { stderrSpillPath } : {})
       });
     });
   });
@@ -632,9 +678,10 @@ function decodeDuckDuckGoUrl(rawUrl: string) {
   }
 }
 
-async function fetchText(url: URL | string, init?: RequestInit) {
+async function fetchText(url: URL | string, init?: RequestInit, signal?: AbortSignal) {
   const response = await fetch(url, {
     ...init,
+    signal,
     headers: {
       'User-Agent': 'Atlas/0.1',
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
@@ -666,12 +713,14 @@ export async function webSearchToolExecute(input: {
   query: string;
   allowed_domains?: string[];
   blocked_domains?: string[];
+  /** Fused turn-abort + timeout signal, supplied by the timeout policy. */
+  signal?: AbortSignal;
 }) {
   const startedAt = Date.now();
   const searchUrl = new URL('https://duckduckgo.com/html/');
   searchUrl.searchParams.set('q', input.query);
 
-  const response = await fetchText(searchUrl);
+  const response = await fetchText(searchUrl, undefined, input.signal);
 
   if (!response.ok) {
     throw new Error(`Web search failed with status ${response.status}.`);
@@ -727,9 +776,9 @@ export async function webSearchToolExecute(input: {
   };
 }
 
-async function fetchViaJinaReader(url: string) {
+async function fetchViaJinaReader(url: string, signal?: AbortSignal) {
   const jinaUrl = `https://r.jina.ai/http://${url.replace(/^https?:\/\//, '')}`;
-  const response = await fetchText(jinaUrl);
+  const response = await fetchText(jinaUrl, undefined, signal);
 
   if (!response.ok) {
     throw new Error(`Jina reader failed with status ${response.status}.`);
@@ -802,6 +851,8 @@ function extractRelevantText(text: string, prompt: string) {
 export async function webFetchToolExecute(input: {
   url: string;
   prompt: string;
+  /** Fused turn-abort + timeout signal, supplied by the timeout policy. */
+  signal?: AbortSignal;
 }) {
   const startedAt = Date.now();
   const normalizedUrl = new URL(input.url);
@@ -810,7 +861,7 @@ export async function webFetchToolExecute(input: {
     normalizedUrl.protocol = 'https:';
   }
 
-  let response = await fetchText(normalizedUrl);
+  let response = await fetchText(normalizedUrl, undefined, input.signal);
   const arrayBuffer = await response.arrayBuffer();
   let bytes = arrayBuffer.byteLength;
   let contentType = response.headers.get('content-type') ?? '';
@@ -837,7 +888,7 @@ export async function webFetchToolExecute(input: {
 
   if (looksBlocked) {
     try {
-      const fallback = await fetchViaJinaReader(normalizedUrl.toString());
+      const fallback = await fetchViaJinaReader(normalizedUrl.toString(), input.signal);
       response = fallback.response;
       bytes = Buffer.byteLength(fallback.text, 'utf8');
       contentType = response.headers.get('content-type') ?? 'text/plain';
@@ -879,13 +930,34 @@ async function ensureWorkingDirectoryReadable(cwd: string) {
   await access(dirname(resolve(cwd, '.')), fsConstants.R_OK);
 }
 
+/**
+ * Inline budget for a bash stream whose full content was spilled to disk.
+ * Kept well under the result-level spill threshold (50 KB) — even with BOTH
+ * stdout and stderr spilled — so the generic spill policy passes the result
+ * through untouched instead of writing a second, less-complete spill file on
+ * top of the one the shell layer already wrote.
+ */
+const SPILLED_INLINE_PREVIEW_BYTES = 15_000;
+
+/**
+ * Compact a bounded head/tail preview into a small inline snippet plus a
+ * locator pointing at the spill file that holds the complete stream. The
+ * model keeps enough context to act, and can pull any region back with
+ * `read_file` at the reported path.
+ */
+function compactSpilledOutput(text: string, spillPath: string): string {
+  const { preview } = buildSpillPreview(text, SPILLED_INLINE_PREVIEW_BYTES);
+  const notice = `(Full output stored at: ${spillPath}. Use read_file with offset and limit to inspect it.)`;
+  return preview.length > 0 ? `${preview}\n\n${notice}` : notice;
+}
+
 export async function bashToolExecute(input: {
   command: string;
   timeout?: number;
   description?: string;
   run_in_background?: boolean;
   dangerouslyDisableSandbox?: boolean;
-}, workspace?: ToolWorkspace) {
+}, workspace?: ToolWorkspace, permissionMode?: ToolPermissionMode) {
   if (workspace?.executionTarget === 'cloud') {
     if (!workspace.cloudWorkerUrl) {
       throw new Error(
@@ -923,12 +995,42 @@ export async function bashToolExecute(input: {
   const escalated = Boolean(input.dangerouslyDisableSandbox) && mechanism !== 'none';
   const policy: SandboxPolicy = escalated
     ? { fs: { kind: 'danger-full-access' }, network: 'allow' }
-    : deriveSandboxPolicy(workspace);
+    : deriveSandboxPolicy(workspace, permissionMode);
   const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
 
-  const combinedEnv = { ...process.env, ...(workspace?.env ?? {}), ...launch.env };
+  const combinedEnv = { ...process.env, ...launch.env, ...(workspace?.env ?? {}) };
 
   if (input.run_in_background) {
+    // With a registry the child is a tracked job: captured output, a real
+    // `<kind>-N` id, list/read/kill through the job tools, and teardown when
+    // the conversation goes away. The registry spawn happens inside `start()`
+    // preflight, so a rejected start (full bucket) spawns nothing.
+    if (workspace?.jobRegistry && workspace.conversationId) {
+      const { jobId } = startBackgroundBashJob(workspace.jobRegistry, {
+        command: input.command,
+        description: input.description,
+        launch: { command: launch.command, args: launch.args },
+        cwd,
+        env: combinedEnv,
+        conversationId: workspace.conversationId,
+        onCommandRun: workspace.onCommandRun
+      });
+
+      return {
+        stdout: '',
+        stderr: '',
+        interrupted: false,
+        backgroundTaskId: jobId,
+        noOutputExpected: false,
+        sandbox: launch.mechanism,
+        sandboxNetwork: policy.network,
+        sandboxEscalated: escalated,
+        returnCodeInterpretation: 'backgrounded'
+      };
+    }
+
+    // No registry (tests, default workspace): the legacy detached spawn.
+    // Fire-and-forget by necessity — nothing exists to track it.
     const child = spawn(launch.command, launch.args, {
       cwd,
       env: combinedEnv,
@@ -955,10 +1057,24 @@ export async function bashToolExecute(input: {
     };
   }
 
+  // A stream that overflows the ingest budget tees its full content to a
+  // spill file (when a store is available) so the bounded in-memory preview
+  // stays small yet the complete output is recoverable via `read_file`.
+  const spillStore = workspace?.spillStore;
+  const conversationId = workspace?.conversationId;
+  const spillSink =
+    spillStore && conversationId
+      ? () =>
+          new SpillingCommandOutput({
+            openStream: () => spillStore.openStream({ conversationId, toolName: 'bash' })
+          })
+      : undefined;
+
   const result = await runCommand(launch.command, launch.args, {
     cwd,
-    env: { ...(workspace?.env ?? {}), ...launch.env },
-    timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000))
+    env: { ...launch.env, ...(workspace?.env ?? {}) },
+    timeoutMs: Math.max(100, Math.min(Math.floor(input.timeout ?? 30_000), 120_000)),
+    spillSink
   });
 
   if (isSandboxWrapperFailure(launch.mechanism, result.code, result.stderr)) {
@@ -990,13 +1106,19 @@ export async function bashToolExecute(input: {
   // retry loops. Providing explicit success text gives clear feedback to the model.
   const stdout = isSuccess && !rawStdout.trim() && !rawStderr.trim()
     ? '(Command executed successfully with exit code 0)'
-    : rawStdout;
+    : result.stdoutSpillPath
+      ? compactSpilledOutput(rawStdout, result.stdoutSpillPath)
+      : rawStdout;
+  const stderr = result.stderrSpillPath
+    ? compactSpilledOutput(rawStderr, result.stderrSpillPath)
+    : rawStderr;
   const sandboxDenied =
-    !result.interrupted && isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr);
+    !result.interrupted &&
+    isLikelySandboxDenied(launch.mechanism, result.code, rawStdout, rawStderr, policy.network);
 
   return {
     stdout,
-    stderr: rawStderr,
+    stderr,
     interrupted: result.interrupted,
     sandbox: launch.mechanism,
     sandboxNetwork: policy.network,
@@ -1004,7 +1126,16 @@ export async function bashToolExecute(input: {
     // Additive: the bounded text already carries its own marker, but callers
     // that summarise a run should not have to parse it back out.
     ...(result.stdoutTruncated || result.stderrTruncated ? { outputTruncated: true as const } : {}),
-    ...(sandboxDenied ? { sandboxDenied: true as const, sandboxDenialHint: SANDBOX_DENIAL_HINT } : {}),
+    ...(result.stdoutSpillPath || result.stderrSpillPath
+      ? {
+          outputSpilled: true as const,
+          ...(result.stdoutSpillPath ? { stdoutSpillPath: result.stdoutSpillPath } : {}),
+          ...(result.stderrSpillPath ? { stderrSpillPath: result.stderrSpillPath } : {})
+        }
+      : {}),
+    ...(sandboxDenied
+      ? { sandboxDenied: true as const, sandboxDenialHint: getSandboxDenialHint(policy.network) }
+      : {}),
     returnCodeInterpretation:
       result.interrupted ? 'timed_out' : result.code === 0 ? 'success' : `exit_code_${result.code ?? 'unknown'}`
   };

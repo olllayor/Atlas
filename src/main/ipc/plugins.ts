@@ -7,6 +7,7 @@ import type {
   MarketplacesView,
   PluginActivationEntry,
   PluginCommandSummary,
+  PluginHealthView,
   PluginUpdateView,
   PluginUrlPreview,
   PluginsView
@@ -20,7 +21,7 @@ import type { PluginMarketplaceService } from '../plugins/PluginMarketplaceServi
 import type { PluginOriginStore } from '../plugins/PluginOrigins';
 import type { PluginRegistry } from '../plugins/PluginRegistry';
 import type { PluginUpdateService } from '../plugins/PluginUpdateService';
-import { buildCommandList, buildPluginsView } from '../plugins/pluginViews';
+import { buildCommandList, buildPluginHealth, buildPluginsView } from '../plugins/pluginViews';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
 
@@ -34,6 +35,8 @@ import { assertTrustedSender } from './security';
  * name a directory it was not shown.
  */
 import type { McpSecretStore } from '../secrets/mcpSecrets';
+import type { McpClientManager } from '../ai/mcp/McpClientManager';
+import type { McpServerHealth } from '../ai/mcp/McpClientManager';
 
 export function registerPluginsIpc(deps: {
   registry: PluginRegistry;
@@ -43,12 +46,53 @@ export function registerPluginsIpc(deps: {
   origins: PluginOriginStore;
   activations: PluginActivationStore;
   secrets?: McpSecretStore;
+  /** Present in production; absent where no MCP manager exists. */
+  mcpManager?: Pick<McpClientManager, 'health' | 'authorize'>;
   setEnabled: (name: string, enabled: boolean) => void;
   setAlwaysOn: (name: string, alwaysOn: boolean) => void;
+  /**
+   * The beta switch, read live per call.
+   *
+   * The renderer hides every entry point when this is off, so a gated handler
+   * reaching here means a stale window or a hand-built invoke. Writes refuse;
+   * the quiet reads answer empty, and an off feature's surface reveals nothing.
+   */
+  isEnabled: () => boolean;
 }) {
+  const requireEnabled = (): void => {
+    if (!deps.isEnabled()) {
+      throw new Error('Plugins are a beta feature and are turned off. Enable them in Settings → Beta features.');
+    }
+  };
+
+  /**
+   * Every plugins channel goes through the beta gate, except the reads the
+   * composer makes on every mount.
+   *
+   * list/commands/activation/marketplaces answer empty while the beta is off
+   * instead of throwing: a throw is a rejected handle, an Electron "Error
+   * occurred in handler" line on stderr, and a logger.error per call — per
+   * mount, per chat — for a feature the user simply left off. Writes keep
+   * the gate by construction instead of by remembering.
+   */
+  const QUIET_EMPTY: Record<string, () => unknown> = {
+    [IPC_CHANNELS.pluginsList]: () => ({ root: deps.registry.root, plugins: [], failures: [] }),
+    [IPC_CHANNELS.pluginsCommands]: () => [],
+    [IPC_CHANNELS.pluginsActivation]: () => [],
+    [IPC_CHANNELS.pluginsMarketplaces]: () => ({ marketplaces: [] }),
+  };
+
+  const handle = (channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: never[]) => unknown) =>
+    ipcMain.handle(channel, async (event, ...args) => {
+      const quiet = QUIET_EMPTY[channel];
+      if (quiet && !deps.isEnabled()) return quiet();
+      requireEnabled();
+      return listener(event, ...(args as never[]));
+    });
+
   const view = (): PluginsView => buildPluginsView(deps.registry, deps.origins);
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsList,
     withUserFacingErrors(IPC_CHANNELS.pluginsList, async (event): Promise<PluginsView> => {
       assertTrustedSender(event);
@@ -57,12 +101,13 @@ export function registerPluginsIpc(deps: {
     })
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsInstall,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsInstall,
       async (event, sourceDir: string): Promise<PluginsView> => {
         assertTrustedSender(event);
+        requireEnabled();
 
         const result = deps.installer.install(sourceDir);
 
@@ -82,7 +127,7 @@ export function registerPluginsIpc(deps: {
    * renderer, so the only bundle that can be installed is one the user selected
    * in a native dialog.
    */
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsInstallFromPicker,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsInstallFromPicker,
@@ -112,7 +157,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsUninstall,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsUninstall,
@@ -130,7 +175,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsSetEnabled,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsSetEnabled,
@@ -143,7 +188,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsMarketplaces,
     withUserFacingErrors(IPC_CHANNELS.pluginsMarketplaces, async (event): Promise<MarketplacesView> => {
       assertTrustedSender(event);
@@ -151,7 +196,7 @@ export function registerPluginsIpc(deps: {
     })
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsAddMarketplace,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsAddMarketplace,
@@ -169,7 +214,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsRemoveMarketplace,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsRemoveMarketplace,
@@ -181,7 +226,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsInstallFromMarketplace,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsInstallFromMarketplace,
@@ -201,7 +246,7 @@ export function registerPluginsIpc(deps: {
    * sees is built from the bundle that actually landed — the literal commands,
    * the literal endpoints — rather than from a description its author wrote.
    */
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsPreviewUrl,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsPreviewUrl,
@@ -217,7 +262,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsInstallFromUrl,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsInstallFromUrl,
@@ -247,7 +292,7 @@ export function registerPluginsIpc(deps: {
    * a timer: a background poll would be network the user did not ask for and a
    * heartbeat to every remote they have added.
    */
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsCheckUpdates,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsCheckUpdates,
@@ -258,7 +303,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsUpdate,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsUpdate,
@@ -270,7 +315,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsCommands,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsCommands,
@@ -288,7 +333,7 @@ export function registerPluginsIpc(deps: {
    * this cannot be turned into a way to read an arbitrary file. A disabled or
    * revoked plugin's commands are not in the snapshot and so cannot be reached.
    */
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsCommandBody,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsCommandBody,
@@ -315,7 +360,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsActivation,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsActivation,
@@ -326,7 +371,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsSetActivated,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsSetActivated,
@@ -349,7 +394,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsSetAlwaysOn,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsSetAlwaysOn,
@@ -366,7 +411,7 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsConfigureAuth,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsConfigureAuth,
@@ -381,26 +426,60 @@ export function registerPluginsIpc(deps: {
     )
   );
 
-  ipcMain.handle(
+  handle(
     IPC_CHANNELS.pluginsCheckHealth,
     withUserFacingErrors(
       IPC_CHANNELS.pluginsCheckHealth,
-      async (event, pluginName: string): Promise<{ ok: boolean; toolsCount?: number; error?: string }> => {
+      async (event, pluginName: string): Promise<PluginHealthView> => {
         assertTrustedSender(event);
+
+        if (!deps.mcpManager) {
+          return { ok: false, servers: [], error: 'The MCP manager is not available.' };
+        }
+
         const snapshot = deps.registry.snapshot();
         const plugin = snapshot.plugins.find((p) => p.manifest.name === pluginName)
           ?? snapshot.disabled.find((p) => p.manifest.name === pluginName);
 
-        if (!plugin) {
-          return { ok: false, error: `Plugin "${pluginName}" not found.` };
-        }
-
-        return { ok: true, toolsCount: plugin.skills.length + plugin.commands.length };
+        // Asked for real: each server is connected, `tools/list` is spoken to
+        // it, and its failure record is consulted — the same path a turn's
+        // tool resolution runs, so "ready" here means ready there.
+        return buildPluginHealth(plugin, await deps.mcpManager.health());
       }
     )
   );
 
-  ipcMain.handle(
+  handle(
+    IPC_CHANNELS.pluginsConnectServer,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsConnectServer,
+      async (
+        event,
+        pluginName: string,
+        serverKey: string
+      ): Promise<{ ok: boolean; status?: 'ready' | 'authorization-required'; error?: string }> => {
+        assertTrustedSender(event);
+
+        if (!deps.mcpManager) {
+          return { ok: false, error: 'The MCP manager is not available.' };
+        }
+
+        const serverId = `plugin:${pluginName}:${serverKey}`;
+
+        try {
+          const status = await deps.mcpManager.authorize(serverId);
+          return { ok: status === 'ready', status };
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+    )
+  );
+
+  handle(
     IPC_CHANNELS.pluginsRevealRoot,
     withUserFacingErrors(IPC_CHANNELS.pluginsRevealRoot, async (event): Promise<void> => {
       assertTrustedSender(event);

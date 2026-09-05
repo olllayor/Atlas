@@ -25,7 +25,9 @@ export function PluginInvocationRow({ part }: { part: ChatPluginInvocationPart }
       role="listitem"
       className={cn(
         'flex items-baseline gap-1.5 py-0.5 text-sm leading-relaxed',
-        failed ? 'text-warning-text' : 'text-text-tertiary'
+        // `text-error`, matching tool failures (ToolCell's STATUS_TINT): the
+        // action did not happen. Warning is for "happened, but look at it".
+        failed ? 'text-error' : 'text-text-tertiary'
       )}
     >
       <CubeIcon className="size-3.5 shrink-0 translate-y-0.5" aria-hidden />

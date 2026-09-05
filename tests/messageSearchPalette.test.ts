@@ -211,3 +211,22 @@ test('createPaletteFilter forces server hits through and delegates everything el
   // Low enough that any real match outranks a message row.
   assert.ok(MESSAGE_HIT_SCORE > 0 && MESSAGE_HIT_SCORE < 0.0001);
 });
+
+test('createPaletteFilter strips UUIDs before the fuzzy matcher sees them', () => {
+  const seen: string[] = [];
+  const fallback = (value: string) => {
+    seen.push(value);
+    return 0;
+  };
+  const filter = createPaletteFilter(fallback);
+
+  // Chat rows embed the conversation id for uniqueness; hex fragments like
+  // "beef" or "cafe" must not fuzzy-match queries it has no business
+  // answering. The matcher only ever sees the title.
+  filter('chat:9beef3a2-1caf-4dec-8f0d-2b7e5a1c9d33 Migration notes', 'beef');
+  assert.deepEqual(seen, ['chat:  Migration notes']);
+
+  // Non-id values pass through untouched.
+  filter('New Chat', 'zzz');
+  assert.deepEqual(seen, ['chat:  Migration notes', 'New Chat']);
+});

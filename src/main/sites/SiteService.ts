@@ -10,6 +10,7 @@ import {
   type CreateSiteRequest,
   type SiteDetail,
   type SiteFileInput,
+  type SiteFileMeta,
   type SiteReviewChecklist,
   type SiteSummary,
   type SiteValidationResult,
@@ -228,6 +229,11 @@ export class SiteService {
     const blockingReasons = validation.errors.map((error) =>
       error.path ? `${error.path}: ${error.message}` : error.message
     );
+    if (validation.warnings.length > 0) {
+      blockingReasons.push(
+        `${validation.warnings.length} warning(s) require acknowledgement before publish.`
+      );
+    }
 
     return {
       siteId,
@@ -237,7 +243,7 @@ export class SiteService {
       fileCount: validation.fileCount,
       totalBytes: validation.totalBytes,
       externalHosts,
-      canPublish: validation.ok,
+      canPublish: validation.ok && validation.warnings.length === 0,
       blockingReasons,
     };
   }
@@ -390,6 +396,14 @@ export class SiteService {
   async exportVersionTo(siteId: string, versionId: string, destination: string): Promise<void> {
     await this.store.exportVersionTo(siteId, versionId, destination);
     this.recordEvent(siteId, versionId, 'site.exported', { destination });
+  }
+
+  listFiles(versionId: string): SiteFileMeta[] {
+    return this.repo.listFiles(versionId);
+  }
+
+  async readTextFile(siteId: string, versionId: string, path: string): Promise<string> {
+    return this.store.readSiteTextFile(siteId, versionId, path);
   }
 
   recordEvent(

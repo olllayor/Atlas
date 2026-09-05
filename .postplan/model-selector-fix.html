@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModelSelector fixes: UI spec</title>
+<style>
+  * { box-sizing: border-box; }
+  body { background:#000; color:#fafafa; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif; margin:0; padding:32px 20px 80px; font-size:14px; line-height:1.55; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  h1 { font-size:22px; font-weight:650; margin:0 0 6px; letter-spacing:-0.01em; }
+  h2 { font-size:16px; font-weight:650; margin:34px 0 8px; }
+  h3 { font-size:13px; font-weight:650; margin:18px 0 8px; color:#d4d4d4; text-transform:none; }
+  p, li { color:#d4d4d4; }
+  p.sub { color:#a3a3a3; margin:0 0 18px; max-width:72ch; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:820px){ .grid2{ grid-template-columns:1fr; } }
+  .card { background:#0a0a0a; border:1px solid #262626; border-radius:12px; padding:16px; }
+  .card h3 { margin-top:0; }
+  .tag { display:inline-block; font-size:11px; font-weight:650; padding:2px 8px; border-radius:999px; border:1px solid #333; color:#e5e5e5; background:#141414; margin-bottom:10px; }
+  .tag.rec { border-color:#3b82f6; color:#bfdbfe; }
+  .tag.before { border-color:#7f1d1d; color:#fca5a5; }
+  .menu { background:#141414; border:1px solid #262626; border-radius:10px; padding:6px; width:100%; max-width:340px; }
+  .row { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:6px; font-size:13.5px; white-space:nowrap; }
+  .row:hover, .row.hot { background:#1f1f1f; }
+  .row .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .row.active { background:#1c1c1c; }
+  .chev { margin-left:auto; color:#a3a3a3; flex:none; font-size:14px; }
+  .meta { display:flex; align-items:center; gap:6px; flex:none; }
+  .badge { font-size:10.5px; font-weight:500; background:#222; color:#a3a3a3; border-radius:4px; padding:2px 6px; line-height:16px; }
+  .badge.warn { background:#3a2a12; color:#fbbf24; }
+  .badge.free { background:#222; color:#a3a3a3; }
+  .check { color:#d4d4d4; flex:none; font-size:14px; }
+  .dot { width:6px; height:6px; border-radius:999px; background:#60a5fa; flex:none; }
+  .bad { outline:1px dashed #7f1d1d; outline-offset:-1px; }
+  .note { font-size:12.5px; color:#a3a3a3; margin:10px 0 0; }
+  .note b { color:#e5e5e5; font-weight:600; }
+  .chipbar { display:flex; align-items:center; gap:8px; background:#0a0a0a; border:1px solid #262626; border-radius:10px; padding:10px 12px; max-width:340px; }
+  .chipbar .mname { color:#a3a3a3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .effort { font-size:11.5px; color:#d4d4d4; background:#1f1f1f; border:1px solid #2e2e2e; padding:1px 8px; border-radius:999px; flex:none; }
+  .effort.raw { background:none; border:none; padding:0; color:#a3a3a3; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; background:#141414; border:1px solid #262626; border-radius:6px; padding:1px 6px; color:#e5e5e5; }
+  pre { background:#0d0d0d; border:1px solid #262626; border-radius:10px; padding:12px 14px; overflow:auto; font-size:12px; color:#d4d4d4; }
+  .picker { display:grid; grid-template-columns:150px 1fr; border:1px solid #262626; border-radius:12px; overflow:hidden; max-width:560px; background:#111; }
+  .picker .left { background:#0d0d0d; border-right:1px solid #222; padding:6px; }
+  .picker .right { padding:6px; }
+  .search { width:100%; background:#000; border:1px solid #2e2e2e; color:#fafafa; border-radius:8px; padding:8px 10px; font-size:13px; margin-bottom:6px; }
+  .prov { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:7px; font-size:13px; color:#d4d4d4; }
+  .prov.sel { background:#1f1f1f; color:#fff; }
+  .model { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:7px; font-size:13px; }
+  .model:hover { background:#1c1c1c; }
+  .model .sub { color:#737373; font-size:11.5px; }
+  ul.tight { margin:8px 0; padding-left:20px; }
+  .k { color:#fafafa; font-weight:600; }
+  a { color:#93c5fd; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>ModelSelector fixes: exact UI spec</h1>
+<p class="sub">Three layout bugs plus one structural upgrade. Variants render at real size with real spacing so you can pick A or B by looking, not by imagining. Recommended path at the bottom.</p>
+
+<h2>1. Check plus chevron collision</h2>
+<p>Today the active provider row renders both a check and a submenu chevron. The check sits 8px left of the chevron with nothing anchoring either one. It also marks the wrong thing: the provider group, when selection really belongs to one model inside it.</p>
+
+<div class="grid2">
+<div class="card">
+<span class="tag before">Before (current)</span>
+<div class="menu">
+<div class="row bad"><span class="name">GMI</span><span class="check">✓</span><span class="chev">›</span></div>
+<div class="row"><span class="name">OpenCode</span><span class="meta"><span class="badge">Agent</span></span><span class="chev">›</span></div>
+<div class="row"><span class="name">GLM</span><span class="chev">›</span></div>
+</div>
+<p class="note">Two glyphs compete on the right edge. Eye lands on the check, then slides to the chevron, then gives up.</p>
+</div>
+<div class="card">
+<span class="tag rec">A: recommended</span>
+<h3 style="margin:0 0 10px">Drop provider check, highlight active row</h3>
+<div class="menu">
+<div class="row active"><span class="name">GMI</span><span class="chev">›</span></div>
+<div class="row"><span class="name">OpenCode</span><span class="meta"><span class="badge">Agent</span></span><span class="chev">›</span></div>
+<div class="row"><span class="name">GLM</span><span class="chev">›</span></div>
+</div>
+<p class="note"><b>Rule:</b> selection check lives only on the model row inside the submenu. Provider row shows active state through background fill only. No new glyph, no collision, nothing to maintain.</p>
+</div>
+</div>
+
+<div class="card" style="margin-top:16px">
+<span class="tag">B: alternative</span>
+<h3 style="margin:0 0 10px">Leading dot for active provider</h3>
+<div class="menu" style="max-width:340px">
+<div class="row"><span class="dot"></span><span class="name">GMI</span><span class="chev">›</span></div>
+<div class="row"><span class="name" style="padding-left:14px">OpenCode</span><span class="meta"><span class="badge">Agent</span></span><span class="chev">›</span></div>
+</div>
+<p class="note">Keeps a provider level indicator but moves it to the leading edge, clear of the chevron. Costs 14px indent on every row to keep names aligned. I find A cleaner. B only wins if you need "which provider am I in" visible without opening the submenu, which the chip tooltip already covers.</p>
+</div>
+
+<h2>2. Badge alignment</h2>
+<p>Badges (<code>Agent</code>, <code>No key</code>) sit directly before the chevron with only the row gap separating them. Rows without badges stretch the chevron further right, so the right edge wobbles as you scan.</p>
+<div class="grid2">
+<div class="card">
+<span class="tag before">Before</span>
+<div class="menu">
+<div class="row bad"><span class="name">OpenCode</span><span class="meta"><span class="badge">Agent</span></span><span class="chev">›</span></div>
+<div class="row bad"><span class="name">TokenHarbor</span><span class="meta"><span class="badge warn">No key</span></span><span class="chev">›</span></div>
+<div class="row"><span class="name">GLM</span><span class="chev">›</span></div>
+</div>
+</div>
+<div class="card">
+<span class="tag rec">After: fixed trailing slot</span>
+<div class="menu">
+<div class="row"><span class="name">OpenCode</span><span class="meta"><span class="badge">Agent</span></span><span class="chev">›</span></div>
+<div class="row"><span class="name">TokenHarbor</span><span class="meta"><span class="badge warn">No key</span></span><span class="chev">›</span></div>
+<div class="row"><span class="name">GLM</span><span class="chev">›</span></div>
+</div>
+<p class="note"><b>Exact rule:</b> label is <code>flex-1 truncate</code>. Trailing cluster is <code>ml-auto flex items-center gap-1.5</code> containing badges then chevron. Chevron keeps <code>size-4 text-text-muted</code>, never bare text. Gap between last badge and chevron is 6px fixed, identical on every row whether or not a badge exists.</p>
+</div>
+</div>
+
+<h2>3. Reasoning effort in chip and menu</h2>
+<p>Today the effort renders as bare text after the model name in the same size and color. At a glance <code>MiniMax-M3 On</code> reads like one model name.</p>
+<div class="grid2">
+<div class="card">
+<span class="tag before">Before</span>
+<div class="chipbar"><span class="mname">MiniMax-M3</span><span class="effort raw">On</span></div>
+<p class="note">Same color, same weight, no boundary. Truncation can also eat it since it is not shrink proof in every width.</p>
+<div class="menu" style="margin-top:12px">
+<div class="row"><span class="name">Reasoning effort</span><span style="color:#737373;font-size:12px">On</span><span class="chev">›</span></div>
+</div>
+</div>
+<div class="card">
+<span class="tag rec">After</span>
+<div class="chipbar"><span class="mname">MiniMax-M3</span><span class="effort">On</span></div>
+<p class="note"><b>Exact rule:</b> effort is a pill: <code>shrink-0 rounded-full bg-bg-subtle border px-2 text-2xs text-text-secondary</code>. Never truncates, never merges with the name. Menu row keeps the same pill on the right instead of bare muted text.</p>
+<div class="menu" style="margin-top:12px">
+<div class="row"><span class="name">Reasoning effort</span><span class="meta"><span class="badge">On</span></span><span class="chev">›</span></div>
+</div>
+</div>
+</div>
+
+<h2>4. Structural upgrade: searchable two column picker</h2>
+<p>This replaces fragile flyout submenus. One panel, providers left, models right, filter on top. Type to narrow both columns. No horizontal mouse travel, no accidental submenu swaps.</p>
+<div class="card">
+<span class="tag rec">C: proposed picker</span>
+<div style="margin-bottom:8px"><input class="search" id="q" type="text" placeholder="Search models or providers…" aria-label="Search models"></div>
+<div class="picker" id="picker">
+<div class="left" id="provs">
+<div class="prov sel" data-p="OpenCode">OpenCode</div>
+<div class="prov" data-p="GMI">GMI</div>
+<div class="prov" data-p="GLM">GLM</div>
+<div class="prov" data-p="TokenHarbor">TokenHarbor</div>
+</div>
+<div class="right" id="models">
+<div class="model" data-m="minimax-m3" data-p="GMI"><span class="name">MiniMax-M3 <span class="sub">GMI</span></span><span class="meta"><span class="badge free">Free</span></span><span class="check">✓</span></div>
+<div class="model" data-m="glm-4.6" data-p="GLM"><span class="name">GLM-4.6 <span class="sub">GLM</span></span></div>
+<div class="model" data-m="deepseek-v4" data-p="TokenHarbor"><span class="name">DeepSeek V4 <span class="sub">TokenHarbor</span></span><span class="meta"><span class="badge warn">No key</span></span></div>
+<div class="model" data-m="sonnet" data-p="OpenCode"><span class="name">Sonnet <span class="sub">OpenCode · Agent</span></span><span class="meta"><span class="badge">Agent</span></span></div>
+</div>
+</div>
+<p class="note"><b>Behavior:</b> filter matches model name or provider name, case insensitive. Clicking a provider on the left narrows the right column. Check appears only on the selected model row. Keyboard: up and down move, enter selects, escape closes. Try the search box above, it filters live.</p>
+</div>
+
+<h2>What I recommend</h2>
+<ul class="tight">
+<li><span class="k">Now:</span> ship A plus the badge slot plus the effort pill. Three small edits across <code>ModelSelector.tsx</code> and <code>dropdown-menu.tsx</code>. Screenshot bugs gone.</li>
+<li><span class="k">Next:</span> build picker C behind the same trigger. Reuse <code>buildModelSelectorViewModel</code> groups, add a query state, render two columns instead of <code>DropdownMenuSub</code> trees.</li>
+<li><span class="k">Do not:</span> title case provider names to fix <code>BAI / GMI</code>. Those strings come from user config verbatim. Normalizing them rewrites what the user typed.</li>
+</ul>
+<pre>ModelSelector.tsx
+- remove isActiveProvider check from SubTrigger
+- trailing cluster: &lt;span className="ml-auto flex items-center gap-1.5"&gt; badges + chevron
+- effort chip: rounded-full border pill, shrink-0
+dropdown-menu.tsx
+- SubTrigger chevron: keep, but caller owns ml-auto wrapper so gap is constant</pre>
+
+<script>
+(function(){
+  var q = document.getElementById('q');
+  var models = Array.prototype.slice.call(document.querySelectorAll('#models .model'));
+  var provs = Array.prototype.slice.call(document.querySelectorAll('#provs .prov'));
+  function apply(){
+    var v = (q.value || '').toLowerCase();
+    models.forEach(function(m){
+      var hit = (m.getAttribute('data-m') + ' ' + m.getAttribute('data-p')).toLowerCase().indexOf(v) !== -1;
+      m.style.display = hit ? '' : 'none';
+    });
+    provs.forEach(function(p){
+      var any = models.some(function(m){
+        return m.style.display !== 'none' && m.getAttribute('data-p') === p.getAttribute('data-p');
+      });
+      p.style.display = (!v || any) ? '' : 'none';
+    });
+  }
+  q.addEventListener('input', apply);
+  provs.forEach(function(p){
+    p.addEventListener('click', function(){
+      provs.forEach(function(x){ x.style.removeProperty('background'); });
+      models.forEach(function(m){
+        m.style.display = m.getAttribute('data-p') === p.getAttribute('data-p') ? '' : 'none';
+      });
+    });
+  });
+})();
+</script>
+
+</div>
+</body>
+</html>

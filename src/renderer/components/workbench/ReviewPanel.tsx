@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, RefreshCw } from 'lucide-react';
 
-import type { GitLogEntry } from '../../../shared/contracts';
+import type { GitLogEntry, ReviewTurnSummary } from '../../../shared/contracts';
 import type { ReviewComment, ReviewDiff, ReviewFile, ReviewHunk, ReviewScope } from '../../../shared/review';
 import {
   EMPTY_REVIEW_DIFF,
@@ -79,8 +79,10 @@ export function ReviewPanel({
 }) {
   const [scope, setScope] = useState<ReviewScope>('unstaged');
   const [commit, setCommit] = useState<string | null>(null);
+  const [turnId, setTurnId] = useState<string | null>(null);
   const [diff, setDiff] = useState<ReviewDiff>(EMPTY_REVIEW_DIFF);
   const [log, setLog] = useState<GitLogEntry[]>([]);
+  const [reviewTurns, setReviewTurns] = useState<ReviewTurnSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [comments, setComments] = useState<ReviewComment[]>([]);
@@ -94,18 +96,35 @@ export function ReviewPanel({
     setLoading(true);
 
     try {
-      setDiff(await window.atlasChat.git.review({ conversationId, scope, commit }));
+      setDiff(
+        await window.atlasChat.git.review({ conversationId, scope, commit, turnId })
+      );
     } catch (error) {
       notifyError('Could not read the diff', error);
       setDiff({ ...EMPTY_REVIEW_DIFF, scope });
     } finally {
       setLoading(false);
     }
-  }, [commit, conversationId, scope]);
+  }, [commit, conversationId, scope, turnId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // The turn list is only needed by one scope, and it is a second call.
+  useEffect(() => {
+    if (scope !== 'lastTurn' || !conversationId || !window.atlasChat?.git?.listReviewTurns) {
+      return;
+    }
+
+    window.atlasChat.git
+      .listReviewTurns(conversationId)
+      .then((entries) => {
+        setReviewTurns(entries);
+        setTurnId((current) => current ?? entries.at(-1)?.turnId ?? null);
+      })
+      .catch(() => undefined);
+  }, [conversationId, scope]);
 
   // The commit list is only needed by one scope, and it is a second git call.
   useEffect(() => {
@@ -189,16 +208,20 @@ export function ReviewPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 px-4 pt-2">
         {/* Scope selector. Plain text like the tab bar above it — a second row
-            of pills would read as a competing level of navigation. */}
-        <div role="tablist" aria-label="Review scope" className="flex flex-wrap items-center gap-3">
+            of pills would read as a competing level of navigation. Toggle
+            buttons, not a nested tablist: this selects a filter inside the
+            review panel, and a tab-in-tab is a context AT cannot place. */}
+        <div role="group" aria-label="Review scope" className="flex flex-wrap items-center gap-3">
           {REVIEW_SCOPES.map((entry) => (
             <button
               key={entry.value}
-              role="tab"
               type="button"
-              aria-selected={entry.value === scope}
+              aria-pressed={entry.value === scope}
               title={entry.hint}
-              onClick={() => setScope(entry.value)}
+              onClick={() => {
+                setScope(entry.value);
+                if (entry.value !== 'lastTurn') setTurnId(null);
+              }}
               className={cn(
                 'py-1 text-sm transition-colors',
                 entry.value === scope
@@ -210,6 +233,33 @@ export function ReviewPanel({
             </button>
           ))}
 
+          {/* t3code's numbered per-turn scopes: every checkpointed turn is a
+              real, addressable diff, not just "the last one". */}
+          {scope === 'lastTurn' && reviewTurns.length > 0 ? (
+            <div role="group" aria-label="Turns" className="flex flex-wrap items-center gap-2">
+              {reviewTurns.map((turn) => {
+                const active = turnId ? turn.turnId === turnId : turn.index === reviewTurns.length;
+                return (
+                  <button
+                    key={turn.turnId}
+                    type="button"
+                    aria-pressed={active}
+                    title={`Diff for turn ${turn.index}`}
+                    onClick={() => setTurnId(turn.turnId)}
+                    className={cn(
+                      'rounded-full px-1.5 py-0.5 font-mono text-3xs leading-none transition-colors',
+                      active
+                        ? 'bg-bg-hover text-text-primary'
+                        : 'text-text-faint hover:bg-bg-hover hover:text-text-secondary'
+                    )}
+                  >
+                    {turn.index}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
           <button
             type="button"
             onClick={() => void refresh()}
@@ -217,7 +267,7 @@ export function ReviewPanel({
             className="ml-auto rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
           >
             <RefreshCw
-              className={cn('size-3.5', loading && 'animate-spin motion-reduce:animate-none')}
+              className={cn('size-3.5', loading && 'motion-spin-steps')}
               aria-hidden
             />
           </button>

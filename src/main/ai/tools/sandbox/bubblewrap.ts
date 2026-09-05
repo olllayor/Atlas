@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs';
 
+import { buildSandboxCacheEnv } from './cache';
 import type { SandboxLaunch, SandboxPolicy } from './types';
+
 
 export const BUBBLEWRAP_EXECUTABLE = 'bwrap';
 
@@ -50,11 +52,14 @@ export function buildBubblewrapLaunch(argv: string[], policy: SandboxPolicy): Sa
 
   args.push('--', ...argv);
 
+  const cacheEnv = policy.fs.kind === 'workspace-write' ? buildSandboxCacheEnv() : {};
+
   return {
     command: BUBBLEWRAP_EXECUTABLE,
     args,
     env: {
       ATLAS_SANDBOX: 'bubblewrap',
+      ...cacheEnv,
       ...(policy.network === 'deny' ? { ATLAS_SANDBOX_NETWORK_DISABLED: '1' } : {})
     },
     mechanism: 'bubblewrap'

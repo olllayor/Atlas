@@ -436,6 +436,42 @@ export function finalizeMessageParts(parts: ChatMessagePart[]) {
   });
 }
 
+/** Tool states that already carry a final outcome. */
+function isTerminalToolState(state: ChatToolPart['state']) {
+  return state === 'output-available' || state === 'output-error' || state === 'output-denied';
+}
+
+/**
+ * Finalization for a turn that stopped mid-stream (user abort, restart sweep).
+ *
+ * Text and reasoning keep what was delivered — the sentence the model got
+ * halfway through is real work and stays visible. A tool call that never ran
+ * to completion is closed with a synthetic error instead of being left open:
+ * an interrupted call that still looks pending would render as forever-spinning,
+ * and any future reconstruction of the turn from its parts would see a call
+ * with no result, which no provider accepts.
+ */
+export function finalizeInterruptedParts(parts: ChatMessagePart[]) {
+  return parts.map((part) => {
+    const finalized = finalizeMessageParts([part])[0];
+
+    if (finalized.type === 'tool' && !isTerminalToolState(finalized.state)) {
+      return {
+        ...finalized,
+        state: 'output-error' as const,
+        output: undefined,
+        preliminary: false,
+        errorText:
+          finalized.errorText ??
+          'This call was interrupted before it could complete.',
+        completedAt: finalized.completedAt ?? new Date().toISOString(),
+      };
+    }
+
+    return finalized;
+  });
+}
+
 export function getTextContentFromParts(parts: ChatMessagePart[]) {
   return parts
     .filter((part): part is ChatTextPart => part.type === 'text')

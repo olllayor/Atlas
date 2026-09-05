@@ -61,7 +61,8 @@ test('worktree row unlocks with a git repo, cloud with the beta flag', () => {
 });
 
 test('worktree branch short name follows WorktreeService branch naming', () => {
-  // Must match WorktreeService.provisionWorktree exactly: `atlas/${id.slice(0,8)}`.
+  // Git refs carry the full UUID (`atlas/<id>`, see WorktreeService.provisionWorktree);
+  // this helper is display-only, shortening to `atlas/<first8>` for the chip label.
   assert.equal(
     worktreeBranchShort('3f9ab2c1-1234-5678-90ab-cdef01234567'),
     'atlas/3f9ab2c1'
@@ -71,8 +72,8 @@ test('worktree branch short name follows WorktreeService branch naming', () => {
 });
 
 test('worktree branch short name never editorializes a hyphen inside the first eight', () => {
-  // The id's eighth character is a hyphen here; the label must match what git
-  // checks out (a raw slice), not a hyphen-stripped digest that would diverge.
+  // The id's eighth character is a hyphen here; the label is a raw slice of the
+  // stored ref, not a hyphen-stripped digest that would diverge from it.
   assert.equal(worktreeBranchShort('3f9a-b2c1-1234'), 'atlas/3f9a-b2c');
 });
 

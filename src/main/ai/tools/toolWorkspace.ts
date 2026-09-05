@@ -5,6 +5,8 @@ import { containedWritePath } from '../../security/containedFs';
 import type { ExecutionTarget, WorkspaceMode } from '../../../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, PROTECTED_PROJECT_PATH_NAMES } from '../../../shared/workspaceModes';
 import type { AgentInstructionsResult } from '../../workspace/AgentInstructions';
+import type { BackgroundJobRegistry } from '../jobs/BackgroundJobRegistry';
+import type { SpillStore } from './spill/SpillStore';
 
 /**
  * Where a turn's tools run, resolved in the main process from the conversation
@@ -39,6 +41,34 @@ export type ToolWorkspace = {
   instructions?: AgentInstructionsResult;
   /** Callback fired when the agent runs a shell command, for terminal history. */
   onCommandRun?: (command: { command: string; exitCode: number | null; venue: 'local' | 'cloud' }) => void;
+  /**
+   * The app-wide background-job registry, present when background work is
+   * available. `run_in_background` bash registers its child here, and the
+   * job_output/job_list/job_kill tools read and control it. Absent in tests
+   * and on the default workspace, where background bash degrades to the old
+   * detached fire-and-forget spawn.
+   */
+  jobRegistry?: BackgroundJobRegistry | null;
+  /**
+   * The app-wide spill store, present when spill persistence is available.
+   * Foreground bash tees any stream that overflows the ingest budget to a
+   * spill file here and reports its path, so a large build log stays bounded
+   * in memory yet fully recoverable via `read_file`. Absent in tests and on
+   * the default workspace, where overflow degrades to bounded in-memory
+   * truncation only.
+   */
+  spillStore?: Pick<SpillStore, 'openStream'> | null;
+  /**
+   * Read-only view into the conversation's interactive terminal, present when
+   * the PTY substrate is wired. `terminal_read` snapshots its buffered output;
+   * nothing here can reach the shell's stdin.
+   */
+  terminalReadback?: TerminalReadback | null;
+  /**
+   * Goal-mode seam (`/goal`): present only while the conversation has an
+   * active goal, so `update_goal` is withheld — uncallable — otherwise.
+   */
+  goalTools?: import('./goalTools').GoalToolContext | null;
   /** Callback fired when write_file or edit_file modifies a file */
   onFileChange?: (change: {
     filePath: string;
@@ -61,6 +91,17 @@ export const DEFAULT_TOOL_WORKSPACE: ToolWorkspace = {
   mode: DEFAULT_WORKSPACE_MODE,
   executionTarget: DEFAULT_EXECUTION_TARGET,
   root: null
+};
+
+/**
+ * The subset of PtyService the agent's `terminal_read` tool may touch. A
+ * structural type keeps the tools module free of any node-pty transitive
+ * import, and makes the read-only boundary explicit: there is no write or
+ * signal member to reach for.
+ */
+export type TerminalReadback = {
+  /** Buffered output and liveness for the conversation's shell; null cwd when never spawned. */
+  snapshot(conversationId: string): { alive: boolean; cwd: string | null; scrollback: string };
 };
 
 /**

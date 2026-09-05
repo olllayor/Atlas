@@ -166,9 +166,13 @@ export class ToolExecutionsRepo {
       return [];
     }
 
-    const placeholders = messageIds.map(() => '?').join(', ');
-    const statement = this.db.prepare<unknown[], ToolExecutionRow>(
-      `
+    const CHUNK = 900;
+    const rows: ToolExecutionRow[] = [];
+    for (let i = 0; i < messageIds.length; i += CHUNK) {
+      const chunk = messageIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const statement = this.db.prepare<unknown[], ToolExecutionRow>(
+        `
         SELECT
           id,
           conversation_id,
@@ -196,9 +200,10 @@ export class ToolExecutionsRepo {
         WHERE message_id IN (${placeholders})
         ORDER BY COALESCE(started_at, created_at) ASC, id ASC
       `,
-    );
-
-    return statement.all(...messageIds).map(mapRow);
+      );
+      rows.push(...statement.all(...chunk));
+    }
+    return rows.map(mapRow);
   }
 
   save(input: SaveToolExecutionInput) {

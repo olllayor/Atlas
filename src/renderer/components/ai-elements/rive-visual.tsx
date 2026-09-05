@@ -64,13 +64,6 @@ function parseRiveConfig(content: string): RiveConfig | null {
   return null;
 }
 
-export function detectRiveContent(content: string): boolean {
-  const trimmed = content.trim().toLowerCase();
-  if (trimmed.includes('.riv') || trimmed.includes('rive')) return true;
-  if (trimmed.includes('"src"') && (trimmed.includes('.riv') || trimmed.includes('data:'))) return true;
-  return false;
-}
-
 /**
  * Rive has exactly three input types — Number, Boolean and Trigger (see
  * `StateMachineInputType`). There is no string input, so a string in the config

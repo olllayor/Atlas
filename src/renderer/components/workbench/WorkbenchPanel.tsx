@@ -1,77 +1,97 @@
 /**
- * The right-hand workbench — Codex's diff / terminal / task surfaces.
+ * The right-hand workbench.
  *
- * Codex backs these with a repository, a PTY and an agent fleet. Atlas binds a
- * repository in Code mode (the attached project) and hosts one PTY per
- * conversation; the task list is still this conversation's tool calls rather
- * than a fleet.
+ * The panel holds an ordered list of surfaces rather than a fixed tab bar:
+ * the user opens what they want from the picker, closes what they are done
+ * with, and the strip shows what is open. `rightPanelModel.ts` owns that
+ * model; this file draws it and routes each surface to its panel.
  *
- *   Review   — the repository's diff, by scope, with stage / revert / comment
+ *   Diff     — the repository's diff, by scope, with stage / revert / comment
  *   Git      — branch, working tree, history, and commit
  *   Tasks    — every tool call in the thread with its status
+ *   Agents   — the subagent roster
+ *   Terminal — one shell, or several split beside each other
+ *   Files    — the workspace tree, and a box that searches it
+ *   File     — one file, read-only, opened from the tree
+ *   Browser  — a Chromium guest, for the dev server the agent just started
  *
- * The shell is not here: it is docked along the bottom of the window
- * (`TerminalDock`), the way Codex's desktop app places it, so a diff and a
- * running command are readable at the same time.
- *
- * That keeps the Codex silhouette while remaining honest: each panel says
- * plainly what it is showing and what it is not.
+ * The bottom dock still owns the conversation's primary shell (`term-1`), the
+ * one the agent echoes into. Terminal surfaces are the others: they open
+ * beside a diff rather than under it, and closing the tab kills the shell.
  *
  * Presentation follows `docs/codex-parity/reference-visual-spec.md`:
  * §5's IDE changed-files rows and task/status lists, §6's calm feel —
  * borderless rows, hairline separators only, opacity-based hierarchy.
  */
 
-import { useMemo } from 'react';
-import { Check, X } from 'lucide-react';
+import { Suspense, lazy, useMemo } from 'react';
 
 import type { ChatMessage, ChatToolPart, WorkspaceMode } from '../../../shared/contracts';
 import {
   type ToolCell,
   type ToolCellKind,
-  type ToolCellStatus,
   buildToolCells,
   formatElapsed,
   toolCellStatus,
 } from '../../../shared/toolCellGrammar';
+import { displayBrowserUrl } from '../../../shared/browser';
+import { PRIMARY_TERMINAL_ID, nextTerminalId, terminalLabelFromId } from '../../../shared/terminalIds';
 import { cn } from '../../lib/utils';
+import { useConversationTerminals } from '../../hooks/useConversationTerminals';
+import { useBrowserStore } from '../../stores/useBrowserStore';
+import {
+  terminalGroupKey,
+  useTerminalSplitStore,
+} from '../../stores/useTerminalSplitStore';
+import { useConversationPanel, useRightPanelStore } from '../../stores/useRightPanelStore';
 import { GitPanel } from './GitPanel';
 import { ReviewPanel } from './ReviewPanel';
+import { JobsSection } from './JobsSection';
+import { TaskStatusGlyph } from './TaskStatusGlyph';
+import { BrowserSurface } from './BrowserSurface';
+import { FilesPanel } from './FilesPanel';
+import { FileViewerPanel } from './FileViewerPanel';
+import { fileSurfaceLabel } from './fileTreeModel';
+import { SurfacePicker } from './SurfacePicker';
+import { SurfaceTabStrip } from './SurfaceTabStrip';
+const TerminalSurface = lazy(() => import('./TerminalSurface').then((module) => ({ default: module.TerminalSurface })));
+import {
+  type RightPanelKind,
+  type RightPanelSurface,
+  type SurfaceId,
+  nextOrdinalResourceId,
+  surfaceResourceId,
+} from './rightPanelModel';
+import type { SurfaceContext } from './surfaceRegistry';
+import { terminalLabel } from './terminalsModel';
 
 import { AgentsPanel } from '../agents/AgentsPanel';
 import type { WorkLogEntry } from '../../../shared/contracts';
 import { foldAgents } from '../../lib/agentFold';
+import { useConversationJobs } from '../../hooks/useConversationJobs';
+import { activeJobCount } from '../workspace/jobsChipViewModel';
 
-export type WorkbenchTab = 'review' | 'git' | 'tasks' | 'agents';
-
-/**
- * `modes` decides where a tab is worth showing. Work mode cannot produce a diff
- * or touch a repository, so offering Review and Git there would be tabs where
- * only one can ever have content.
- */
-export const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; modes: WorkspaceMode[] }> = [
-  { id: 'review', label: 'Review', modes: ['code'] },
-  { id: 'git', label: 'Git', modes: ['code'] },
-  { id: 'tasks', label: 'Tasks', modes: ['work', 'code'] },
-  { id: 'agents', label: 'Agents', modes: ['work', 'code'] },
-];
-
-export function workbenchTabsForMode(mode: WorkspaceMode) {
-  return WORKBENCH_TABS.filter((tab) => tab.modes.includes(mode));
-}
-
-type WorkbenchPanelProps = {
+export type WorkbenchPanelProps = {
   conversationId?: string;
   mode: WorkspaceMode;
+  /** A project folder is attached to this conversation and exists on disk. */
+  hasProject: boolean;
   messages: ChatMessage[];
   activities?: WorkLogEntry[];
-  activeTab: WorkbenchTab;
-  onTabChange: (tab: WorkbenchTab) => void;
-  onClose: () => void;
   /** Where the review pane's line comments go when the user sends them. */
   onSendComments?: (text: string) => void;
+  /** ⌘E in a terminal surface: pipe the selection into the composer. */
+  onAddSelectionToPrompt?: (text: string) => void;
   onOpenOutputFile?: (filePath: string) => void;
 };
+
+/**
+ * Browser view state is keyed by conversation *and* view, so `view-1` in one
+ * conversation is not the same page as `view-1` in another.
+ */
+function browserViewKey(conversationId: string, viewId: string): string {
+  return `${conversationId}:${viewId}`;
+}
 
 /** Every tool part in the thread, in order. */
 function collectToolParts(messages: ChatMessage[]): ChatToolPart[] {
@@ -87,66 +107,186 @@ function collectToolParts(messages: ChatMessage[]): ChatToolPart[] {
 export function WorkbenchPanel({
   conversationId,
   mode,
+  hasProject,
   messages,
   activities = [],
-  activeTab,
-  onTabChange,
-  onClose,
   onSendComments,
+  onAddSelectionToPrompt,
   onOpenOutputFile,
 }: WorkbenchPanelProps) {
   const toolParts = useMemo(() => collectToolParts(messages), [messages]);
-  const tabs = useMemo(() => workbenchTabsForMode(mode), [mode]);
-  // Switching a conversation to Work with Review open would otherwise leave a
-  // selected tab that is no longer in the bar.
-  const visibleTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : (tabs[0]?.id ?? 'tasks');
+  // The roster is folded once per activity change, not once per render: it
+  // walks every persisted row in the conversation.
+  const agentCount = useMemo(() => foldAgents(activities).agents.length, [activities]);
 
-  // Only Tasks and Agents carry counts.
-  const counts: Record<WorkbenchTab, number> = {
-    review: 0,
-    git: 0,
-    tasks: toolParts.length,
-    agents: foldAgents(activities).agents.length,
+  const panel = useConversationPanel(conversationId);
+  // Selected one at a time: zustand builds these once, so each is a stable
+  // reference and none of them re-render the panel when the store changes.
+  const openSurface = useRightPanelStore((state) => state.openSurface);
+  const activateSurface = useRightPanelStore((state) => state.activateSurface);
+  const closeSurface = useRightPanelStore((state) => state.closeSurface);
+  const closeOtherSurfaces = useRightPanelStore((state) => state.closeOtherSurfaces);
+  const closeSurfacesToRight = useRightPanelStore((state) => state.closeSurfacesToRight);
+  const closeAllSurfaces = useRightPanelStore((state) => state.closeAllSurfaces);
+  const hidePanel = useRightPanelStore((state) => state.hidePanel);
+  // Read for the tab labels: a browser tab is named by the page it is showing.
+  const browserViews = useBrowserStore((state) => state.byViewId);
+  const forgetBrowserView = useBrowserStore((state) => state.forget);
+  // A terminal tab can hold several shells, so both the tab's name and the
+  // next free id depend on how its panes are arranged.
+  const paneGroups = useTerminalSplitStore((state) => state.byGroupKey);
+  const forgetPaneGroup = useTerminalSplitStore((state) => state.forget);
+
+  const context: SurfaceContext = { conversationId, mode, hasProject, agentCount };
+
+  // Background jobs power the Tasks tab's pulse: live work should read as
+  // alive from the tab strip, not only after opening the tab.
+  const { jobs } = useConversationJobs(conversationId);
+  const runningTools = useMemo(
+    () =>
+      toolParts.some((part) => {
+        const status = toolCellStatus(part.state);
+        return status === 'running' || status === 'awaiting-approval';
+      }),
+    [toolParts]
+  );
+  // Subscribing here is also what pays for the label probe in main, so it
+  // happens once for the whole panel rather than once per terminal surface.
+  const terminals = useConversationTerminals(conversationId);
+  const liveKinds = useMemo(() => {
+    const live = new Set<RightPanelKind>();
+    if (runningTools || activeJobCount(jobs) > 0) live.add('tasks');
+    if (terminals.some((terminal) => terminal.hasRunningSubprocess)) live.add('terminal');
+    return live;
+  }, [runningTools, jobs, terminals]);
+
+  // Without a conversation there is nothing to key surfaces by, so the panel
+  // says so rather than opening a picker whose every card is disabled.
+  if (!conversationId) {
+    return (
+      <div className="flex h-full min-w-0 flex-col bg-bg-base">
+        <EmptyState
+          title="No conversation open"
+          body="The right panel follows a conversation. Open or start one to review its diff, its tasks, and its agents."
+        />
+      </div>
+    );
+  }
+
+  const active = panel.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+
+  /**
+   * Terminal is the one kind the picker cannot open by name: every click is a
+   * *new* shell, so the id is allocated against both the tabs already open and
+   * the shells already running — including the dock's `term-1`, which has no
+   * tab of its own to collide with.
+   */
+  /**
+   * Every shell id this conversation is already using: the ones main knows
+   * about, the dock's primary, and every pane of every open terminal tab —
+   * including panes whose shell has not been spawned yet, which is the case
+   * for a split restored from a previous session.
+   */
+  const takenTerminalIds = () => {
+    const taken = new Set<string>([PRIMARY_TERMINAL_ID]);
+    for (const terminal of terminals) taken.add(terminal.terminalId);
+    for (const surface of panel.surfaces) {
+      if (surface.kind !== 'terminal') continue;
+      const rootId = surfaceResourceId(surface);
+      if (!rootId) continue;
+      taken.add(rootId);
+      for (const paneId of paneGroups[terminalGroupKey(conversationId, rootId)]?.terminalIds ?? []) {
+        taken.add(paneId);
+      }
+    }
+    return [...taken];
+  };
+
+  const openKind = (kind: RightPanelKind) => {
+    if (kind === 'browser') {
+      // Each browser tab owns its own guest, so a new tab is a new id rather
+      // than a second view of the page already open.
+      const open = panel.surfaces
+        .filter((surface) => surface.kind === 'browser')
+        .map((surface) => surfaceResourceId(surface) ?? '');
+      openSurface(conversationId, 'browser', nextOrdinalResourceId('view', open));
+      return;
+    }
+
+    if (kind !== 'terminal') {
+      openSurface(conversationId, kind);
+      return;
+    }
+
+    openSurface(conversationId, 'terminal', nextTerminalId(takenTerminalIds()));
+  };
+
+  /**
+   * A terminal tab *is* its shell, so closing it kills the shell rather than
+   * leaving a process running with nothing on screen able to reach it.
+   */
+  const closeSurfaceAt = (id: SurfaceId) => {
+    const surface = panel.surfaces.find((entry) => entry.id === id);
+    // A terminal tab is its shells: closing it kills every pane rather than
+    // leaving processes running with nothing on screen able to reach them.
+    const rootTerminalId = surface?.kind === 'terminal' ? surfaceResourceId(surface) : null;
+    if (rootTerminalId) {
+      const groupKey = terminalGroupKey(conversationId, rootTerminalId);
+      const paneIds = paneGroups[groupKey]?.terminalIds ?? [rootTerminalId];
+      for (const terminalId of paneIds) {
+        void window.atlasChat.terminal.kill({ conversationId, terminalId }).catch(() => {});
+      }
+      forgetPaneGroup(groupKey);
+    }
+
+    // A closed browser tab should not leave its address behind for the next
+    // one that happens to be allocated the same id.
+    const viewId = surface?.kind === 'browser' ? surfaceResourceId(surface) : null;
+    if (viewId) forgetBrowserView(browserViewKey(conversationId, viewId));
+
+    closeSurface(conversationId, id);
+  };
+
+  /**
+   * A terminal names itself after what it is running and a file after itself;
+   * everything else keeps the registry's label.
+   */
+  const labelFor = (surface: RightPanelSurface) => {
+    if (surface.kind === 'file') {
+      const path = surfaceResourceId(surface);
+      return path ? fileSurfaceLabel(path) : undefined;
+    }
+    if (surface.kind === 'browser') {
+      const viewId = surfaceResourceId(surface);
+      if (!viewId) return undefined;
+      const view = browserViews[browserViewKey(conversationId, viewId)];
+      return view?.title || (view?.url ? displayBrowserUrl(view.url) : undefined);
+    }
+    if (surface.kind !== 'terminal') return undefined;
+    const rootId = surfaceResourceId(surface) ?? PRIMARY_TERMINAL_ID;
+    // A split tab is named after the pane being typed in, not its first one.
+    const activeId =
+      paneGroups[terminalGroupKey(conversationId, rootId)]?.activeTerminalId ?? rootId;
+    return terminalLabel(terminals, activeId, terminalLabelFromId(activeId));
   };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg-base">
-      {/* Plain text tabs — active is text-primary, inactive text-tertiary,
-          no pill, no border under the bar (spec §6: no dividers). */}
-      <div className="flex h-titlebar-height shrink-0 items-center gap-1 px-3">
-        <div role="tablist" aria-label="Workbench" className="flex min-w-0 flex-1 items-center gap-4 px-1">
-          {tabs.map((tab) => {
-            const isActive = tab.id === visibleTab;
-            const count = counts[tab.id];
-
-            return (
-              <button
-                key={tab.id}
-                role="tab"
-                type="button"
-                aria-selected={isActive}
-                onClick={() => onTabChange(tab.id)}
-                className={cn(
-                  'inline-flex items-center gap-1.5 py-1.5 text-sm transition-colors',
-                  isActive ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
-                )}
-              >
-                <span>{tab.label}</span>
-                {count > 0 && <span className="tabular-nums text-text-faint">{count}</span>}
-              </button>
-            );
-          })}
-        </div>
-
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close workbench"
-          className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
-        >
-          <X className="size-4" aria-hidden />
-        </button>
-      </div>
+      <SurfaceTabStrip
+        surfaces={panel.surfaces}
+        activeSurfaceId={panel.activeSurfaceId}
+        context={context}
+        liveKinds={liveKinds}
+        counts={{ tasks: toolParts.length, agents: agentCount, diff: 0, git: 0 }}
+        labelFor={labelFor}
+        onActivate={(id) => activateSurface(conversationId, id)}
+        onOpen={openKind}
+        onClose={closeSurfaceAt}
+        onCloseOthers={(id) => closeOtherSurfaces(conversationId, id)}
+        onCloseToRight={(id) => closeSurfacesToRight(conversationId, id)}
+        onCloseAll={() => closeAllSurfaces(conversationId)}
+        onHidePanel={() => hidePanel(conversationId)}
+      />
 
       {/*
         Review owns its own scroller: the scope selector and the diff-wide
@@ -155,16 +295,60 @@ export function WorkbenchPanel({
       <div
         className={cn(
           'min-h-0 flex-1',
-          visibleTab === 'review' || visibleTab === 'agents' ? 'overflow-hidden' : 'overflow-y-auto scrollbar-auto-hide'
+          active && active.kind !== 'tasks'
+            ? 'overflow-hidden'
+            : 'overflow-y-auto scrollbar-auto-hide'
         )}
         role="tabpanel"
+        id="workbench-panel"
+        aria-labelledby={active ? `workbench-tab-${active.id}` : undefined}
+        tabIndex={0}
       >
-        {visibleTab === 'review' && (
+        {!active && <SurfacePicker context={context} onOpen={openKind} />}
+        {active?.kind === 'diff' && (
           <ReviewPanel conversationId={conversationId} onSendComments={onSendComments} />
         )}
-        {visibleTab === 'git' && <GitPanel conversationId={conversationId} />}
-        {visibleTab === 'tasks' && <TasksTab parts={toolParts} />}
-        {visibleTab === 'agents' && (
+        {active?.kind === 'git' && <GitPanel conversationId={conversationId} />}
+        {active?.kind === 'browser' && (
+          <BrowserSurface
+            key={active.id}
+            viewId={browserViewKey(conversationId, surfaceResourceId(active) ?? 'view-1')}
+          />
+        )}
+        {active?.kind === 'files' && (
+          <FilesPanel
+            conversationId={conversationId}
+            onOpenFile={(relativePath) => openSurface(conversationId, 'file', relativePath)}
+          />
+        )}
+        {active?.kind === 'file' && (
+          <FileViewerPanel
+            // Keyed on the surface so switching between two open files
+            // remounts the reader rather than swapping its content mid-scroll.
+            key={active.id}
+            conversationId={conversationId}
+            relativePath={surfaceResourceId(active) ?? ''}
+          />
+        )}
+        {active?.kind === 'terminal' && (
+          <Suspense fallback={<div className="h-full w-full animate-pulse bg-bg-surface" />}>
+            <TerminalSurface
+              // Keyed so switching tabs gives each shell its own xterm rather
+              // than re-pointing one view at a different PTY.
+              key={active.id}
+              conversationId={conversationId}
+              rootTerminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
+              terminals={terminals}
+              allocateTerminalId={() => nextTerminalId(takenTerminalIds())}
+              onCloseSurface={() => closeSurfaceAt(active.id)}
+              onAddSelectionToPrompt={onAddSelectionToPrompt}
+            />
+          </Suspense>
+        )}
+        {active?.kind === 'tasks' && (
+          <TasksTab parts={toolParts} hasJobs={jobs.length > 0} conversationId={conversationId} />
+        )}
+        {active?.kind === 'agents' && (
           <AgentsPanel
             conversationId={conversationId}
             activities={activities}
@@ -201,58 +385,6 @@ const KIND_LABEL: Record<ToolCellKind, string> = {
   generic: 'Tool',
 };
 
-const STATUS_ARIA_LABEL: Record<ToolCellStatus, string> = {
-  pending: 'Queued',
-  running: 'Running',
-  success: 'Done',
-  failed: 'Failed',
-  'awaiting-approval': 'Awaiting approval',
-};
-
-/**
- * Status glyph vocabulary per the reference status list: spinner ring
- * while running, hollow circle while queued, dim check when done, and the
- * theme's error hue (orange under Codex) on failure.
- */
-function TaskStatusGlyph({ status, className }: { status: ToolCellStatus; className?: string }) {
-  const label = STATUS_ARIA_LABEL[status];
-
-  if (status === 'success') {
-    return <Check role="img" aria-label={label} className={cn('size-3.5 text-text-faint', className)} />;
-  }
-
-  if (status === 'failed') {
-    return <X role="img" aria-label={label} className={cn('size-3.5 text-error', className)} />;
-  }
-
-  if (status === 'running') {
-    return (
-      <span
-        role="img"
-        aria-label={label}
-        className={cn(
-          'size-3 animate-spin rounded-full border-[1.5px] border-text-tertiary border-t-transparent motion-reduce:animate-none',
-          className
-        )}
-      />
-    );
-  }
-
-  // Queued / awaiting approval: hollow circle. Approval borrows the
-  // warning hue so a blocked task is findable without a badge.
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      className={cn(
-        'size-3 rounded-full border-[1.5px]',
-        status === 'awaiting-approval' ? 'border-warning' : 'border-text-faint',
-        className
-      )}
-    />
-  );
-}
-
 function taskStatusText(cell: ToolCell): { text: string; className: string } {
   if (cell.status === 'running') return { text: 'In progress', className: 'text-text-faint' };
   if (cell.status === 'pending') return { text: 'Queued', className: 'text-text-faint' };
@@ -282,10 +414,18 @@ function TaskRow({ cell }: { cell: ToolCell }) {
   );
 }
 
-function TasksTab({ parts }: { parts: ChatToolPart[] }) {
+function TasksTab({
+  parts,
+  hasJobs,
+  conversationId,
+}: {
+  parts: ChatToolPart[];
+  hasJobs: boolean;
+  conversationId?: string;
+}) {
   const cells = useMemo(() => buildToolCells(parts), [parts]);
 
-  if (!cells.length) {
+  if (!cells.length && !hasJobs) {
     return (
       <EmptyState
         title="No agent actions yet"
@@ -310,6 +450,7 @@ function TasksTab({ parts }: { parts: ChatToolPart[] }) {
 
   return (
     <div className="px-4 py-2">
+      <JobsSection conversationId={conversationId} />
       {sections.map((section) => (
         <section key={section.title}>
           <h3 className="pb-1 pt-3 text-sm font-normal text-text-tertiary">{section.title}</h3>
@@ -322,10 +463,4 @@ function TasksTab({ parts }: { parts: ChatToolPart[] }) {
       ))}
     </div>
   );
-}
-
-/** Exposed so the shell can decide whether the workbench is worth opening. */
-export function workbenchHasContent(messages: ChatMessage[]) {
-  const parts = collectToolParts(messages);
-  return parts.length > 0 && parts.some((part) => toolCellStatus(part.state) !== 'pending');
 }

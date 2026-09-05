@@ -100,7 +100,10 @@ export class ModelRegistry {
       });
       refreshedAny = true;
 
-      if (apiKey) {
+      // A catalog served from configuration (custom providers) proves nothing
+      // about the endpoint, so it must not record a validation — only an
+      // adapter that actually reached out may mark a key as working.
+      if (apiKey && provider.capabilities?.catalogRequiresNetwork !== false) {
         this.settingsRepo.updateCredentialStatus(providerId, {
           hasSecret: true,
           status: 'valid',
@@ -122,7 +125,20 @@ export class ModelRegistry {
     }
 
     if (!refreshedAny) {
-      throw new Error('Add a provider API key in settings before refreshing models.');
+      // Three dead ends read differently: nothing configured at all, every
+      // provider skipped before asking (no usable key), and everything asked
+      // failing to answer.
+      if (this.providerIds().length === 0) {
+        throw new Error('Add a provider in Model settings before refreshing models.');
+      }
+
+      if (!sawProviderFailure) {
+        throw new Error('Save an API key for each provider in Model settings, then refresh again.');
+      }
+
+      throw new Error(
+        'Could not reach any configured provider. Check connections and API keys in Model settings.'
+      );
     }
   }
 
@@ -178,6 +194,19 @@ export class ModelRegistry {
       appearance: {
         themeMode: this.settingsRepo.getThemeMode(),
         designTheme: this.settingsRepo.getDesignTheme(),
+        themeId: this.settingsRepo.getThemeId(),
+        themeHalves: this.settingsRepo.getThemeHalves(),
+        glassOpacity: this.settingsRepo.getGlassOpacity(),
+        panelAnimationDurationMs: this.settingsRepo.getPanelAnimationDurationMs(),
+        fontFamilySans: this.settingsRepo.getFontFamilySans(),
+        fontFamilyComposer: this.settingsRepo.getFontFamilyComposer(),
+        fontFamilyCode: this.settingsRepo.getFontFamilyCode(),
+        fontFamilyTerminal: this.settingsRepo.getFontFamilyTerminal(),
+        fontSizeInterface: this.settingsRepo.getFontSizeInterface(),
+        fontSizePrompt: this.settingsRepo.getFontSizePrompt(),
+        fontSizeCode: this.settingsRepo.getFontSizeCode(),
+        fontSizeTerminal: this.settingsRepo.getFontSizeTerminal(),
+        fontSmoothing: this.settingsRepo.getFontSmoothing(),
         uiFontSize: this.settingsRepo.getUiFontSize(),
         codeFontSize: this.settingsRepo.getCodeFontSize(),
         uiFontFamily: this.settingsRepo.getUiFontFamily(),
@@ -205,6 +234,7 @@ export class ModelRegistry {
         // has since been removed or disabled must not be offered as a default.
         lastModelId: this.resolveLastModelId(),
         visualMode: this.settingsRepo.getVisualMode(),
+        compactionThresholdPercent: this.settingsRepo.getCompactionThresholdPercent(),
         cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
         cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
         // Raw token never crosses IPC — keychain holds it, the renderer only
@@ -213,6 +243,8 @@ export class ModelRegistry {
         cloudSandboxHasSecret: this.settingsRepo.hasCloudSandboxWorkerSecret(),
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
+      pluginsBetaEnabled: this.settingsRepo.getPluginsBetaEnabled(),
+      sitesBetaEnabled: this.settingsRepo.getSitesBetaEnabled(),
       modelCatalogLastSyncedAt: catalog.lastSyncedAt,
       modelCatalogStale: !catalog.lastSyncedAt || Date.now() - lastSyncedAt > staleThreshold,
       modelCatalogCount: catalog.count

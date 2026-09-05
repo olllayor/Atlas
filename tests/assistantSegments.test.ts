@@ -185,3 +185,68 @@ test('a message without a plan groups exactly as before', () => {
     ['tools', 'part']
   );
 });
+
+// ── spawn batches (Variant B) ─────────────────────────────────────────────
+
+test('every spawn_agent call in a turn joins one batch segment', () => {
+  const segments = groupAssistantParts([
+    toolPart('s1', 'spawn_agent'),
+    toolPart('b1', 'bash'),
+    toolPart('s2', 'spawn_agent'),
+    toolPart('s3', 'spawn_agent'),
+  ]);
+
+  assert.deepEqual(
+    segments.map((segment) => segment.kind),
+    ['spawn', 'tools']
+  );
+
+  const spawn = segments[0];
+  assert.equal(spawn.kind, 'spawn');
+  if (spawn.kind !== 'spawn') return;
+  assert.deepEqual(
+    spawn.parts.map((part) => part.toolCallId),
+    ['s1', 's2', 's3']
+  );
+});
+
+test('a spawn batch is split out of the fold, not into it', () => {
+  const split = splitAssistantTurn(
+    groupAssistantParts([
+      toolPart('r1', 'read_file'),
+      toolPart('s1', 'spawn_agent'),
+      textPart('t1', 'Four agents are on it.'),
+    ])
+  );
+
+  // The fleet outlives the turn, so its row cannot live inside the collapsed
+  // `Worked for …` block the way the read does.
+  assert.equal(split.spawn.length, 1);
+  assert.deepEqual(
+    split.activity.map((segment) => segment.kind),
+    ['tools']
+  );
+  assert.deepEqual(
+    split.answer.map((segment) => segment.kind),
+    ['part']
+  );
+});
+
+test('a turn whose only tool call is a spawn keeps its reply outside the fold', () => {
+  const split = splitAssistantTurn(
+    groupAssistantParts([toolPart('s1', 'spawn_agent'), textPart('t1', 'Spawned.')])
+  );
+
+  assert.equal(split.spawn.length, 1);
+  assert.deepEqual(split.activity, []);
+  assert.deepEqual(
+    split.answer.map((segment) => segment.kind),
+    ['part']
+  );
+});
+
+test('a spawn waiting on approval still counts as a pending question', () => {
+  const pending: ChatToolPart = { ...toolPart('s1', 'spawn_agent'), state: 'approval-requested' };
+  const segments = groupAssistantParts([pending]);
+  assert.equal(hasPendingApproval(segments), true);
+});

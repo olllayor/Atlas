@@ -176,6 +176,11 @@ export type DetectIdesOptions = {
  * A GUI-launched Electron app inherits Finder's `PATH` — `/usr/bin:/bin` and
  * little else — so the directories every editor's CLI shim actually installs
  * into are searched explicitly rather than trusted to be inherited.
+ *
+ * Exact-duplicate directories are collapsed: repeated PATH entries made every
+ * `findOnPath` candidate stat the same files again per IDE (t3code #9618).
+ * Only exact strings merge — case-distinct spellings still resolve separately,
+ * since filtering those misses real files on case-sensitive volumes.
  */
 export function defaultPathDirs(
   platform: NodeJS.Platform = process.platform,
@@ -185,15 +190,17 @@ export function defaultPathDirs(
   const fromEnv = (env.PATH ?? '').split(delimiter).filter(Boolean);
 
   if (platform === 'win32') {
-    return fromEnv;
+    return [...new Set(fromEnv)];
   }
 
   return [
-    ...fromEnv,
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    '/usr/bin',
-    join(home, '.local', 'bin')
+    ...new Set([
+      ...fromEnv,
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      '/usr/bin',
+      join(home, '.local', 'bin')
+    ])
   ];
 }
 

@@ -25,6 +25,15 @@ const EVENT_CODE_ALIASES: Record<string, string> = {
   Digit7: '7',
   Digit8: '8',
   Digit9: '9',
+  // Letters and zoom keys matched by physical position, so shortcuts keep
+  // working on non-Latin layouts (Cyrillic `KeyC` produces `с` as event.key).
+  KeyC: 'c',
+  KeyF: 'f',
+  KeyJ: 'j',
+  KeyK: 'k',
+  KeyV: 'v',
+  Equal: '=',
+  Minus: '-',
 };
 
 const KEY_ALIASES: Record<string, string> = {

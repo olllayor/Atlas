@@ -7,6 +7,7 @@ import {
   collectChangedFiles,
   formatElapsed,
   parseUnifiedDiff,
+  resolveToolCallPresentation,
   stripShellWrapper,
   truncateHeadTail,
 } from '../src/shared/toolCellGrammar';
@@ -165,6 +166,63 @@ describe('buildToolCells', () => {
     assert.equal(cells[0].verb, 'Running');
     assert.equal(cells[0].status, 'running');
     assert.equal(cells[0].label, 'Running pnpm build');
+  });
+
+  it('labels a settled known tool with its own completed name, not "Called X" (PR #9267)', () => {
+    const cells = buildToolCells([
+      toolPart({ toolName: 'git_commit', input: { message: 'fix: typo' }, output: 'ok' }),
+    ]);
+
+    assert.equal(cells.length, 1);
+    assert.equal(cells[0].label, 'Committed changes');
+    assert.equal(cells[0].verb, 'Committed changes');
+  });
+
+  it('labels a running known tool with its live name', () => {
+    const cells = buildToolCells([
+      toolPart({ toolName: 'site_build', state: 'input-available', input: {} }),
+    ]);
+
+    assert.equal(cells[0].status, 'running');
+    assert.equal(cells[0].label, 'Building site');
+  });
+
+  it('reads action arguments for branch and stash labels', () => {
+    const switched = buildToolCells([
+      toolPart({
+        toolName: 'git_branch',
+        input: { action: 'switch', name: 'feature/x' },
+        output: 'ok',
+      }),
+    ]);
+    assert.equal(switched[0].label, 'Switched to feature/x');
+
+    const stashed = buildToolCells([
+      toolPart({ toolName: 'git_stash', input: { action: 'pop' }, output: 'ok' }),
+    ]);
+    assert.equal(stashed[0].label, 'Restored stashed changes');
+  });
+
+  it('keeps "Called X" for unknown tools and leaves edits alone', () => {
+    const unknown = buildToolCells([toolPart({ toolName: 'frobnicate', output: 'ok' })]);
+    assert.equal(unknown[0].label, 'Called frobnicate');
+
+    const edit = buildToolCells([
+      toolPart({
+        toolName: 'apply_patch',
+        toolType: 'file_change',
+        input: { path: 'src/a.ts' },
+        output: 'ok',
+      }),
+    ]);
+    assert.match(edit[0].label, /Edited/);
+  });
+
+  it('never gives a namespaced MCP tool a built-in friendly name', () => {
+    assert.equal(
+      resolveToolCallPresentation('mcp__github__git_commit', 'settled', {}),
+      null
+    );
   });
 
   it('coalesces consecutive reads into one "Explored N files" cell', () => {

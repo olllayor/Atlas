@@ -148,6 +148,11 @@ export class CustomProviderService {
       this.assertUniqueName(name, existing.id);
     }
 
+    // The old value is kept before the keychain write: if the database step
+    // below fails, the previous secret (or its absence) is what gets restored.
+    const replacingKey = request.apiKey !== undefined;
+    const previousSecret = replacingKey ? await this.deps.keychain.getSecret(existing.id).catch(() => null) : null;
+
     if (request.apiKey !== undefined) {
       const trimmed = request.apiKey.trim();
       if (!trimmed) {
@@ -155,24 +160,41 @@ export class CustomProviderService {
       }
 
       await this.deps.keychain.setSecret(existing.id, trimmed);
-      this.deps.settingsRepo.updateCredentialStatus(existing.id, {
-        hasSecret: true,
-        // A changed key has not been proven to work yet.
-        status: 'unknown',
-        validatedAt: null
-      });
     }
 
-    const record = this.deps.repo.update(existing.id, {
-      name,
-      baseUrl,
-      apiFormat: request.apiFormat,
-      enabled: request.enabled
-    });
+    try {
+      const record = this.deps.repo.update(existing.id, {
+        name,
+        baseUrl,
+        apiFormat: request.apiFormat,
+        enabled: request.enabled
+      });
 
-    await this.afterChange();
+      if (replacingKey) {
+        this.deps.settingsRepo.updateCredentialStatus(existing.id, {
+          hasSecret: true,
+          // A changed key has not been proven to work yet.
+          status: 'unknown',
+          validatedAt: null
+        });
+      }
 
-    return this.decorate(record);
+      await this.afterChange();
+
+      return this.decorate(record);
+    } catch (error) {
+      // Do not leave a new secret behind for a change that never saved; the
+      // provider keeps whatever credential it had before the attempt.
+      if (replacingKey) {
+        if (previousSecret) {
+          await this.deps.keychain.setSecret(existing.id, previousSecret).catch(() => undefined);
+        } else {
+          await this.deps.keychain.deleteSecret(existing.id).catch(() => undefined);
+        }
+      }
+
+      throw error;
+    }
   }
 
   async setModels(request: SetCustomProviderModelsRequest): Promise<CustomProvider> {
@@ -340,6 +362,9 @@ export class CustomProviderService {
   /**
    * Resolves a probe from either a saved provider or the unsaved values in the
    * add-provider form, so the form can be tested before it is committed.
+   *
+   * A missing key is legal: local runtimes need no credential, and the form
+   * advertises exactly that. The probe simply goes out unauthenticated.
    */
   private async resolveProbe(request: DiscoverCustomProviderModelsRequest) {
     const saved = request.providerId ? this.requireRecord(request.providerId) : null;
@@ -351,9 +376,6 @@ export class CustomProviderService {
     }
 
     const apiKey = request.apiKey?.trim() || (saved ? await this.deps.keychain.getSecret(saved.id) : null);
-    if (!apiKey) {
-      throw new CustomProviderValidationError('Enter an API key first.', 'apiKey');
-    }
 
     return { baseUrl, apiFormat, apiKey };
   }

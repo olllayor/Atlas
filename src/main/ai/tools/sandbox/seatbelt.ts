@@ -1,4 +1,6 @@
+import { buildSandboxCacheEnv } from './cache';
 import type { SandboxLaunch, SandboxPolicy, WritableRoot } from './types';
+
 
 /** Hardcoded, never resolved through PATH: the sandbox must not be selectable by the command it confines. */
 export const SEATBELT_EXECUTABLE = '/usr/bin/sandbox-exec';
@@ -162,11 +164,14 @@ export function buildSeatbeltLaunch(argv: string[], policy: SandboxPolicy): Sand
     .filter(Boolean)
     .join('\n');
 
+  const cacheEnv = policy.fs.kind === 'workspace-write' ? buildSandboxCacheEnv() : {};
+
   return {
     command: SEATBELT_EXECUTABLE,
     args: ['-p', fullPolicy, ...params.map(([key, value]) => `-D${key}=${value}`), '--', ...argv],
     env: {
       ATLAS_SANDBOX: 'seatbelt',
+      ...cacheEnv,
       ...(policy.network === 'deny' ? { ATLAS_SANDBOX_NETWORK_DISABLED: '1' } : {})
     },
     mechanism: 'seatbelt'

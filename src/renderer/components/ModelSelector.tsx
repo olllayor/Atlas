@@ -15,21 +15,23 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 
 import type { ReasoningEffort } from '../../shared/chatParameters';
 import { REASONING_EFFORTS, clampReasoningEffort, resolveReasoningEffortMenu } from '../../shared/chatParameters';
 import type { ModelSummary, ProviderCredentialSummary } from '../../shared/contracts';
 import { resolveProviderLabel } from '../../shared/providerMetadata';
 import type { ProviderRef } from './modelSelectorViewModel';
-import { buildModelSelectorViewModel } from './modelSelectorViewModel';
+import { buildModelSelectorViewModel, isSelfManagedProvider } from './modelSelectorViewModel';
 
 type ModelSelectorProps = {
   models: ModelSummary[];
   selectedModelId: string | null;
+  selectedProviderId?: string | null;
   disabled: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, providerId: string) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   /** Needed to label models that belong to a user-configured endpoint. */
@@ -54,9 +56,28 @@ const extractModelName = (modelId: string): string => {
   return parts.length > 1 ? parts.slice(1).join('/') : modelId;
 };
 
+/**
+ * The chip names the model the way a person would, not the way the gateway
+ * does. The catalog's `label` is the human name ("DeepSeek V4 Flash"); a raw
+ * id segment ("DeepSeek-V4-Flash-01:free") is what filled the chip before,
+ * and its length is why the name truncated mid-word. The gateway suffix only
+ * ever marked pricing, which the menu's Free badge already says.
+ */
+const compactChipLabel = (model: ModelSummary): string => {
+  if (model.label && model.label !== model.id) {
+    return model.label;
+  }
+  return extractModelName(model.id).replace(/[:@](free|beta|preview|latest)$/i, '');
+};
+
+function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSummary, 'id' | 'providerId'>) {
+  return a.id === b.id && a.providerId === b.providerId;
+}
+
 export function ModelSelector({
   models,
   selectedModelId,
+  selectedProviderId,
   disabled,
   open,
   onOpenChange,
@@ -73,7 +94,20 @@ export function ModelSelector({
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const providerRefs = customProviders ?? [];
-  const selectedModel = useMemo(() => models.find((m) => m.id === selectedModelId) ?? null, [models, selectedModelId]);
+  const selectedModel = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
 
   const { groups } = useMemo(
     () => buildModelSelectorViewModel({ models, customProviders: providerRefs, credentials, showFreeOnly: false }),
@@ -81,8 +115,8 @@ export function ModelSelector({
   );
 
   const handleSelect = useCallback(
-    (modelId: string) => {
-      onSelect(modelId);
+    (modelId: string, providerId: string) => {
+      onSelect(modelId, providerId);
       onOpenChange(false);
     },
     [onSelect, onOpenChange]
@@ -101,15 +135,26 @@ export function ModelSelector({
     reasoningEffort && effortMenu.length > 0 ? clampReasoningEffort(reasoningEffort, effortMenu) : undefined;
 
   const selectedProviderLabel = selectedModel ? resolveProviderLabel(selectedModel.providerId, providerRefs) : null;
+  // Which OpenCode answered matters once one is also configured as a plain
+  // base-URL provider, and the chip shows no provider name at all.
+  const selectedIsAgent = selectedModel ? isSelfManagedProvider(selectedModel.providerId) : false;
   // Model name only. The provider used to be prefixed here, which spent most of
   // a 240px chip on a word that is the same for every model in the list you
   // just picked from — and truncated the name that actually identifies it. It
   // still names the endpoint in the tooltip, in the menu's group headings, and
   // in the accessible name.
-  const chipLabel = selectedModel ? extractModelName(selectedModel.id) : 'Choose model';
+  const chipLabel = selectedModel ? compactChipLabel(selectedModel) : 'Choose model';
   const effortLabel = effectiveEffort
     ? REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label
     : null;
+  const selectedProviderCount = useMemo(() => {
+    if (!selectedModel) return 0;
+    return new Set(
+      models.filter((m) => !m.archived && m.id === selectedModel.id).map((m) => m.providerId)
+    ).size;
+  }, [models, selectedModel]);
+  const showProviderInChip = selectedProviderCount > 1;
+  const chipDisplayLabel = showProviderInChip && selectedModel ? `${chipLabel} · ${selectedProviderLabel}` : chipLabel;
 
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -124,10 +169,10 @@ export function ModelSelector({
               // the quietest thing in the control row — a tinted chip plus a
               // chevron made the least-changed setting the loudest. Hover and
               // the open state still light the hit area.
-              className="group flex h-9 min-w-0 max-w-[240px] items-center gap-1.5 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="group flex h-8 min-w-0 max-w-[240px] items-center gap-2 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={
                 selectedModel
-                  ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${
+                  ? `Model: ${selectedModel.label} from ${selectedProviderLabel}${selectedIsAgent ? ', run by the agent' : ''}${
                       effortLabel ? `, reasoning effort ${effortLabel}` : ''
                     }. Click to change model.`
                   : 'Choose a model'
@@ -140,15 +185,16 @@ export function ModelSelector({
                     : 'text-text-tertiary'
                 }`}
               >
-                {chipLabel}
+                {chipDisplayLabel}
               </span>
               {/*
-                Dim and shrink-proof: the effort is a qualifier on the name, not
-                part of it, and it must not be the thing that gets truncated
-                away when the name is long.
+                A subtle, compact pill distinguishes reasoning effort from the
+                model name so it is immediately readable at a glance.
               */}
               {effortLabel ? (
-                <span className="shrink-0 text-text-tertiary">{effortLabel}</span>
+                <span className="shrink-0 rounded-full border border-border-subtle bg-bg-subtle px-1.5 py-0.5 text-2xs font-medium text-text-secondary leading-none">
+                  {effortLabel}
+                </span>
               ) : null}
             </button>
           </DropdownMenuTrigger>
@@ -159,7 +205,8 @@ export function ModelSelector({
           // every render. The full id comes along because the chip shows the
           // name with any vendor segment stripped.
           <TooltipContent side="top" className="max-w-[280px]">
-            {selectedProviderLabel} · {selectedModel.id}
+            {selectedProviderLabel}
+            {selectedIsAgent ? ' (agent)' : ''} · {selectedModel.id}
             {effortLabel ? ` · ${effortLabel} reasoning` : ''}
           </TooltipContent>
         ) : null}
@@ -186,31 +233,50 @@ export function ModelSelector({
           </>
         ) : (
           groups.map((group) => {
-            const isActiveProvider = selectedModel != null && group.models.some((m) => m.id === selectedModel.id);
+            const isActiveProvider = selectedModel != null && group.models.some((m) => isSameModel(m, selectedModel));
 
             return (
-              <DropdownMenuSub key={group.label}>
-                <DropdownMenuSubTrigger className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary">
+              <DropdownMenuSub key={group.providerId}>
+                <DropdownMenuSubTrigger
+                  className={cn(
+                    'gap-2 rounded-md px-3 py-2 text-sm text-text-primary',
+                    isActiveProvider && 'bg-bg-subtle font-medium text-text-primary'
+                  )}
+                >
                   <span className="min-w-0 flex-1 truncate">{group.label}</span>
-                  {group.configured ? null : (
-                    <span className="shrink-0 rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
-                      No key
+                  {/*
+                    The same OpenCode can be reached two ways: as this
+                    integration, or as a base-URL provider someone added by
+                    hand. They can even carry the same name, so the one that
+                    runs the turn itself says so.
+                  */}
+                  {(group.selfManaged || !group.configured) && (
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {group.selfManaged ? (
+                        <span className="rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
+                          Agent
+                        </span>
+                      ) : null}
+                      {group.configured ? null : (
+                        <span className="rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
+                          No key
+                        </span>
+                      )}
                     </span>
                   )}
-                  {isActiveProvider ? <Check className="size-4 shrink-0 text-text-secondary" /> : null}
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent
                   className="max-h-[min(420px,60vh)] min-w-[220px] max-w-[300px] overflow-y-auto border-border-default bg-bg-overlay p-1.5"
                   sideOffset={6}
                 >
                   {group.models.map((model) => {
-                    const isSelected = model.id === selectedModelId;
+                    const isSelected = selectedModel != null && isSameModel(model, selectedModel);
                     const shortName = extractModelName(model.id);
 
                     return (
                       <DropdownMenuItem
-                        key={model.id}
-                        onSelect={() => handleSelect(model.id)}
+                        key={`${model.providerId}:${model.id}`}
+                        onSelect={() => handleSelect(model.id, model.providerId)}
                         className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary"
                       >
                         <span className="min-w-0 flex-1 truncate" title={model.id}>
@@ -251,7 +317,7 @@ export function ModelSelector({
             <DropdownMenuSub>
               <DropdownMenuSubTrigger className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary">
                 <span className="min-w-0 flex-1 truncate">Reasoning effort</span>
-                <span className="shrink-0 text-2xs text-text-muted">
+                <span className="shrink-0 rounded-full border border-border-subtle bg-bg-subtle px-1.5 py-0.5 text-2xs font-medium text-text-secondary leading-none">
                   {REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label}
                 </span>
               </DropdownMenuSubTrigger>

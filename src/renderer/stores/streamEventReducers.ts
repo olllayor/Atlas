@@ -9,6 +9,7 @@ import type {
 } from '../../shared/contracts';
 import { applyStreamEventToParts } from '../../shared/messageParts';
 import { applyRuntimeEventToMessageParts, deriveWorkLogEntry, getWorkLogEntryId } from '../../shared/runtimeActivity';
+import type { QueuedFollowupEntry } from './useAppStore';
 
 import {
   getReasoningContentFromParts,
@@ -35,7 +36,7 @@ export type DraftState = {
   providerId: ProviderId;
   modelId: string;
   parts: ChatMessagePart[];
-  status: 'streaming' | 'error' | 'aborted';
+  status: 'queued' | 'streaming' | 'error' | 'aborted';
   errorMessage?: string;
   error?: {
     code?: string;
@@ -64,11 +65,12 @@ export type RuntimeEventFanOut = {
   requestToConversation: Record<string, string>;
   runtimeSequenceByConversation: Record<string, number>;
   activitiesByConversation?: Record<string, WorkLogEntry[]>;
+  queuedByConversation?: Record<string, QueuedFollowupEntry[]>;
 };
 
 export type RuntimeEventFanOutPatch = Partial<Pick<
   RuntimeEventFanOut,
-  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation'
+  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation' | 'queuedByConversation'
 >>;
 
 export type Patch = RuntimeEventFanOutPatch | ((state: RuntimeEventFanOut) => RuntimeEventFanOutPatch | RuntimeEventFanOut);
@@ -128,6 +130,12 @@ export function applyRuntimeSnapshotToStore(
     runtimeSequenceByConversation: {
       ...state.runtimeSequenceByConversation,
       [conversationId]: snapshot.lastSequence,
+    },
+    queuedByConversation: {
+      ...(state.queuedByConversation ?? {}),
+      // The durable fold wins over whatever the live session accumulated: a
+      // restart's snapshot is the only complete view of the waiting line.
+      [conversationId]: snapshot.pendingFollowups ?? [],
     },
   };
 }
@@ -288,6 +296,7 @@ export function applyRecoveredRuntimeEventsToStore(
 const STREAMING_EVENT_TYPES = new Set<StreamEvent['type']>([
   'chunk',
   'reasoning',
+  'task',
   'tool-input-start',
   'tool-input-delta',
   'tool-input-available',
@@ -313,6 +322,57 @@ export function applyStreamingEvent(
     return null;
   }
 
+  if (event.type === 'task') {
+    const draft = state.draftsByConversation[conversationId];
+    const terminal = event.status === 'completed' || event.status === 'failed';
+    const stopped = event.status === 'cancelled' || event.status === 'interrupted';
+    const runtimeEvent: RuntimeEventEnvelope = {
+      eventId: `stream-task:${event.requestId}:${event.taskId}:${event.status}`,
+      conversationId,
+      turnId: event.requestId,
+      requestId: event.requestId,
+      sequence: (state.runtimeSequenceByConversation[conversationId] ?? 0) + 1,
+      occurredAt: new Date().toISOString(),
+      activityType: terminal ? 'task.completed' : stopped ? 'task.updated' : 'task.progress',
+      tone: event.error || event.status === 'failed' ? 'error' : 'info',
+      toolCallId: event.taskId,
+      provider: draft?.providerId ?? 'system',
+      providerEventType: event.type,
+      payload: {
+        taskId: event.taskId,
+        taskType: 'subagent',
+        agentKind: 'agent',
+        toolCallId: event.taskId,
+        title: event.title ?? 'Antigravity subagent',
+        status: event.status,
+        ...(event.summary !== undefined ? { summary: event.summary } : {}),
+        ...(event.error !== undefined ? { error: event.error } : {}),
+      },
+    };
+    const currentActivities = state.activitiesByConversation?.[conversationId] ?? [];
+    const existingActivityId = getWorkLogEntryId(runtimeEvent);
+    const existingIndex = currentActivities.findIndex((activity) => activity.id === existingActivityId);
+    const nextActivity = deriveWorkLogEntry(
+      existingIndex === -1 ? null : currentActivities[existingIndex],
+      runtimeEvent,
+    );
+    if (!nextActivity) {
+      return { activitiesByConversation: state.activitiesByConversation ?? {} };
+    }
+    const nextActivities = [...currentActivities];
+    if (existingIndex === -1) {
+      nextActivities.push(nextActivity);
+    } else {
+      nextActivities[existingIndex] = nextActivity;
+    }
+    return {
+      activitiesByConversation: {
+        ...(state.activitiesByConversation ?? {}),
+        [conversationId]: nextActivities,
+      },
+    };
+  }
+
   const draft = state.draftsByConversation[conversationId];
   const detail = state.conversationDetails[conversationId];
 
@@ -320,9 +380,18 @@ export function applyStreamingEvent(
   const nextDetails = { ...state.conversationDetails };
   let changed = false;
 
-  if (draft) {
+  // Events belong to their own request. While a follow-up sits queued behind
+  // a running turn, the live draft carries the follow-up's id — without this
+  // guard the running turn's deltas would bleed into the queued draft and
+  // render as phantom text over a turn that has not started. The two
+  // conversation-level events carry `conversationId` instead of `requestId`
+  // and are fan-out concerns, not draft content.
+  if (draft && 'requestId' in event && event.requestId === draft.requestId) {
     nextDrafts[conversationId] = {
       ...draft,
+      // Dispatch happened: a queued follow-up receiving its own first event is
+      // streaming now. Streaming drafts stay untouched here.
+      status: draft.status === 'queued' ? 'streaming' : draft.status,
       // Progress retires the notice: whatever it was warning about is over the
       // moment tokens arrive.
       notice: null,
@@ -374,7 +443,9 @@ export function applyNoticeEvent(
   event: Extract<StreamEvent, { type: 'notice' }>,
 ): RuntimeEventFanOutPatch | null {
   const draft = state.draftsByConversation[conversationId];
-  if (!draft) {
+  // Same request-scoping as streaming events: an attempt notice belongs to
+  // the turn it describes, never to a queued follow-up's placeholder draft.
+  if (!draft || event.requestId !== draft.requestId) {
     return null;
   }
 

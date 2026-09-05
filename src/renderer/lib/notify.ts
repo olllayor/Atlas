@@ -23,7 +23,7 @@ function buildToastAction(options: NotifyOptions) {
  * provider returning "400 model `x` does not support image input" showed as
  * "400 model `x` does not supp…" and the actionable part never arrived.
  */
-export function notifyError(title: string, error: unknown) {
+export function notifyError(title: string, error: unknown, options?: { id?: string }) {
   const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   const description = detail.trim();
 
@@ -32,7 +32,23 @@ export function notifyError(title: string, error: unknown) {
     title,
     // Identical strings read as a stutter; the title alone is enough.
     description: description && description !== title ? description : undefined,
+    ...(options?.id !== undefined ? { id: options.id } : {})
   });
+}
+
+/**
+ * Bounded identity ring for failures that fire in bursts (t3code #9592).
+ * Repeated sends while a provider is down used to mint a new toast every
+ * attempt, accumulating hidden toast state and DOM nodes. Rotating through a
+ * small ring of ids keeps a short visible trail while capping retained state.
+ */
+const REPEATING_TOAST_RING_SIZE = 3;
+const repeatingToastCounters = new Map<string, number>();
+
+export function repeatingToastId(key: string): string {
+  const next = (repeatingToastCounters.get(key) ?? 0) % REPEATING_TOAST_RING_SIZE;
+  repeatingToastCounters.set(key, next + 1);
+  return `${key}:${next}`;
 }
 
 export function notify(options: NotifyOptions) {
@@ -45,7 +61,8 @@ export function notify(options: NotifyOptions) {
     // give them an explicit escape hatch, not just click-to-dismiss.
     closeButton: options.tone === 'error' || options.tone === 'warning',
     dismissible: true,
-    action: buildToastAction(options)
+    action: buildToastAction(options),
+    ...(options.id !== undefined ? { id: options.id } : {})
   };
 
   switch (options.tone) {

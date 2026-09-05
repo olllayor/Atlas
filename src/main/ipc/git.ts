@@ -13,6 +13,10 @@ import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
 import type { GitReviewService } from '../workspace/GitReviewService';
 import type { GitStateService } from '../workspace/GitStateService';
+import {
+  maybeAutoPullAfterState,
+  AUTO_PULL_REFRESH_INTERVAL_MS,
+} from '../workspace/projectAutoPull';
 import { describeConversationWorkspace } from '../workspace/conversationWorkspace';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
@@ -29,6 +33,13 @@ export function registerGitIpc(
     ahead: null,
     behind: null
   };
+
+  /**
+   * Last background-pull attempt per root. The status read that triggers the
+   * hook fires on panel opens and branch operations, so without this an
+   * opted-in project would fetch on every one of them.
+   */
+  const lastAutoPullAttempt = new Map<string, number>();
 
   /**
    * The repository this conversation may act on.
@@ -60,7 +71,29 @@ export function registerGitIpc(
   // than the three it used to fan out to.
   const readState = async (root: string): Promise<GitStateSummary> => {
     const { branch, files, ahead, behind } = await gitStateService.getState(root);
-    return { isRepo: true, branch, files, ahead, behind };
+    const state = { isRepo: true, branch, files, ahead, behind };
+
+    // Background pull for opted-in projects. Detached on purpose: the caller
+    // already has its answer, and the next read converges. Throttled per root
+    // so opening the panel cannot turn into a fetch loop; the opt-in lookup
+    // is a cheap indexed read, so non-participants pay almost nothing.
+    const now = Date.now();
+    if (now - (lastAutoPullAttempt.get(root) ?? 0) > AUTO_PULL_REFRESH_INTERVAL_MS) {
+      const project = db.projects.findByRoot(root);
+      if (project?.autoPull) {
+        lastAutoPullAttempt.set(root, now);
+        void maybeAutoPullAfterState({
+          root,
+          behind,
+          isEnabled: true,
+          fetchFirst: true,
+          git: gitStateService,
+          onPulled: (pulledRoot) => console.info(`[projects] automatic pull completed: ${pulledRoot}`),
+        });
+      }
+    }
+
+    return state;
   };
 
   ipcMain.handle(
@@ -156,17 +189,28 @@ export function registerGitIpc(
   );
 
   /**
-   * The commit pair bounding the assistant's most recent completed turn.
+   * The commit pair bounding one checkpointed assistant turn — the newest by
+   * default, or an explicit turn when the review scope list picks one.
    *
    * Read from the checkpoint table rather than from git: only the table knows
    * which refs belong to which turn, and it also records the turns that were
    * *not* captured, which is the difference between "nothing changed" and
    * "this folder is not a repository".
    */
-  const lastTurnRange = (conversationId: string): { from: string; to: string } | null => {
+  const turnRange = (
+    conversationId: string,
+    turnId?: string | null
+  ): { from: string; to: string } | null => {
     const captured = db.workspaceCheckpoints
       .listForConversation(conversationId)
       .filter((entry) => entry.status === 'captured' && entry.kind !== 'undo');
+
+    if (turnId) {
+      const post = captured.find((entry) => entry.kind === 'post' && entry.turnId === turnId);
+      if (!post?.commitSha) return null;
+      const pre = captured.find((entry) => entry.turnId === turnId && entry.kind === 'pre');
+      return pre?.commitSha ? { from: pre.commitSha, to: post.commitSha } : null;
+    }
 
     for (let index = captured.length - 1; index >= 0; index -= 1) {
       const post = captured[index]!;
@@ -184,6 +228,40 @@ export function registerGitIpc(
 
     return null;
   };
+
+  // Every checkpointed, reviewable turn in order — the review scope list's
+  // "Turn N" rows. Only turns with a usable pre/post pair are listed.
+  ipcMain.handle(
+    IPC_CHANNELS.gitListReviewTurns,
+    withUserFacingErrors(IPC_CHANNELS.gitListReviewTurns, async (event, conversationId: string) => {
+      assertTrustedSender(event);
+
+      const workspace = describeConversationWorkspace(db, conversationId);
+      const project = workspace.project;
+      if (!project || !project.exists || !gitStateService.isGitRepo(project.root)) {
+        return [];
+      }
+
+      const captured = db.workspaceCheckpoints
+        .listForConversation(conversationId)
+        .filter((entry) => entry.status === 'captured' && entry.kind !== 'undo');
+
+      const turns: Array<{ turnId: string; createdAt: string }> = [];
+      for (const post of captured) {
+        if (post.kind !== 'post' || !post.commitSha) continue;
+        const pre = captured.find(
+          (entry) => entry.turnId === post.turnId && entry.kind === 'pre'
+        );
+        if (!pre?.commitSha) continue;
+        if (turns.some((entry) => entry.turnId === post.turnId)) continue;
+        turns.push({ turnId: post.turnId, createdAt: post.createdAt });
+      }
+
+      return turns
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((entry, arrayIndex) => ({ ...entry, index: arrayIndex + 1 }));
+    })
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.gitReview,
@@ -208,7 +286,10 @@ export function registerGitIpc(
 
         return gitReviewService.review(project.root, request.scope, {
           commit: request.commit ?? null,
-          range: request.scope === 'lastTurn' ? lastTurnRange(request.conversationId) : null
+          range:
+          request.scope === 'lastTurn'
+            ? turnRange(request.conversationId, request.turnId)
+            : null
         });
       }
     )

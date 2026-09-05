@@ -34,6 +34,7 @@ import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+import { getNormalizedEventKey } from '../../lib/keybindings';
 import { TerminalSearchBar } from './TerminalSearchBar';
 
 export type TerminalPanelHandle = {
@@ -41,12 +42,18 @@ export type TerminalPanelHandle = {
   clear: () => void;
   openSearch: () => void;
   zoom: (direction: 'in' | 'out' | 'reset') => void;
+  /** The active selection, or null. Feeds the "add to prompt" affordance. */
+  getSelectionText: () => string | null;
 };
 
 type TerminalPanelProps = {
   conversationId: string;
+  /** Which of the conversation's shells this view is attached to. */
+  terminalId: string;
   /** Told the shell's real cwd once the PTY answers, for the dock header. */
   onCwd?: (cwd: string) => void;
+  /** ⌘E with a selection: pipe it to the composer as context. */
+  onRequestSelectionPrompt?: () => void;
 };
 
 /**
@@ -149,7 +156,7 @@ function readTheme(element: HTMLElement): ITheme {
 }
 
 export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>(
-  function TerminalPanel({ conversationId, onCwd }, ref) {
+  function TerminalPanel({ conversationId, terminalId, onCwd, onRequestSelectionPrompt }, ref) {
     const hostRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const searchRef = useRef<SearchAddon | null>(null);
@@ -159,6 +166,9 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
     // effect below — that would tear down and re-create the whole terminal.
     const onCwdRef = useRef(onCwd);
     onCwdRef.current = onCwd;
+    // Same story: the xterm key handler is installed once.
+    const onRequestSelectionPromptRef = useRef(onRequestSelectionPrompt);
+    onRequestSelectionPromptRef.current = onRequestSelectionPrompt;
     // Kept in a ref, not in state: the key handler inside the xterm instance
     // is installed once and must read the live value.
     const fontOffsetRef = useRef(0);
@@ -228,6 +238,12 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
         },
         openSearch: () => setSearchOpen(true),
         zoom,
+        getSelectionText: () => {
+          const terminal = terminalRef.current;
+          if (!terminal || !terminal.hasSelection()) return null;
+          const text = terminal.getSelection();
+          return text.trim() ? text : null;
+        },
       }),
       [zoom],
     );
@@ -339,14 +355,16 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       safeFit();
 
       const unsubscribe = window.atlasChat.terminal.subscribe((event) => {
-        if (disposed || event.conversationId !== conversationId) {
+        if (disposed || event.conversationId !== conversationId || event.terminalId !== terminalId) {
           return;
         }
         terminal.write(event.data);
       });
 
       const inputDisposable = terminal.onData((data) => {
-        void window.atlasChat.terminal.input(conversationId, data).catch(() => {});
+        void window.atlasChat.terminal
+          .write({ conversationId, terminalId, data })
+          .catch(() => {});
       });
 
       // Shortcuts the app owns rather than the shell. Everything else — Ctrl-C,
@@ -362,14 +380,20 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
           return true;
         }
 
+        // Matched on `event.code` (via the same normalizer as the app's
+        // keybindings), not `event.key`: on a Cyrillic or Greek layout the
+        // physical C/V/F/K keys produce native characters, and key-based
+        // matching silently killed every one of these shortcuts.
+        const key = getNormalizedEventKey(event);
+
         // ⌘C with a selection copies; without one it must still reach the
         // shell as an interrupt.
-        if (event.key === 'c' && event.metaKey && terminal.hasSelection()) {
+        if (key === 'c' && event.metaKey && terminal.hasSelection()) {
           void navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
           return false;
         }
 
-        if (event.key === 'v' && event.metaKey) {
+        if (key === 'v' && event.metaKey) {
           void navigator.clipboard
             .readText()
             .then((text) => {
@@ -379,27 +403,36 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
           return false;
         }
 
-        if (event.key === 'f' && event.metaKey) {
+        if (key === 'f' && event.metaKey) {
           setSearchOpen(true);
           return false;
         }
 
-        if (event.key === 'k' && event.metaKey) {
+        if (key === 'k' && event.metaKey) {
           terminal.clear();
           return false;
         }
 
-        if (event.key === '=' || event.key === '+') {
+        // Selection → composer context (t3code's terminal_context gesture).
+        if (key === 'e' && event.metaKey && onRequestSelectionPromptRef.current) {
+          if (terminal.hasSelection()) {
+            onRequestSelectionPromptRef.current();
+            return false;
+          }
+          // No selection: let ⌘E fall through untouched.
+        }
+
+        if (key === '=' || key === '+') {
           zoom('in');
           return false;
         }
 
-        if (event.key === '-') {
+        if (key === '-') {
           zoom('out');
           return false;
         }
 
-        if (event.key === '0') {
+        if (key === '0') {
           zoom('reset');
           return false;
         }
@@ -410,7 +443,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       // Start after the first fit so the shell is spawned with the size it will
       // actually be drawn at — otherwise the first prompt wraps at 80 columns.
       void window.atlasChat.terminal
-        .start(conversationId, terminal.cols, terminal.rows)
+        .start({ conversationId, terminalId, cols: terminal.cols, rows: terminal.rows })
         .then((result) => {
           if (disposed) return;
           if (result.scrollback) {
@@ -430,7 +463,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
       const observer = new ResizeObserver(() => {
         safeFit();
         void window.atlasChat.terminal
-          .resize(conversationId, terminal.cols, terminal.rows)
+          .resize({ conversationId, terminalId, cols: terminal.cols, rows: terminal.rows })
           .catch(() => {});
       });
       observer.observe(host);
@@ -473,12 +506,13 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, TerminalPanelProps>
         // while the user reads the transcript. It is killed when the
         // conversation is deleted or the app quits.
         try {
+          terminal.reset();
           terminal.dispose();
         } catch {
           // Same reasoning: never let teardown take the view with it.
         }
       };
-    }, [applyType, conversationId, zoom]);
+    }, [applyType, conversationId, terminalId, zoom]);
 
     return (
       <div className="atlas-terminal relative flex h-full min-h-0 flex-col">

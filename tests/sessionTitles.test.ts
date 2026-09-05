@@ -3,6 +3,9 @@ import { test } from 'node:test';
 
 import {
   SESSION_TITLE_MAX_LENGTH,
+  buildThreadTitleDigest,
+  buildThreadTitlePrompt,
+  buildThreadTitleRegenerationPrompt,
   deriveTitleFromUserMessage,
   isPlaceholderSessionTitle,
   sanitizeGeneratedTitle
@@ -48,6 +51,15 @@ test('local fallback names a session from the opening message', () => {
   );
 });
 
+test('local fallback converts citations to quote text and drops href bytes', () => {
+  const link =
+    '[Assistant quote](atlas-citation://v1/conv-1/msg-1?text=Database%20connection%20timeout&start=0&end=27&prefix=&suffix=)';
+  assert.equal(
+    deriveTitleFromUserMessage(`Investigate: ${link}`),
+    'Investigate: Database connection timeout'
+  );
+});
+
 test('local fallback takes the first sentence when it stands alone', () => {
   assert.equal(
     deriveTitleFromUserMessage('Fix the login bug. It throws on expired tokens and I cannot reproduce it.'),
@@ -81,4 +93,70 @@ test('long output truncates on a word boundary within the cap', () => {
   // Cut lands between words, not mid-word.
   assert.notEqual(long[result!.length], undefined);
   assert.equal(long[result!.length], ' ');
+});
+
+test('title prompt asks for a durable subject-and-outcome title', () => {
+  const prompt = buildThreadTitlePrompt({
+    userMessage: 'Review this PR that adds reconnect retries',
+    assistantReply: 'Added exponential backoff.'
+  });
+
+  assert.ok(prompt.system.includes('recognize this chat session weeks later'));
+  assert.ok(prompt.system.includes('Title the subject and outcome. Discard incidental instructions.'));
+  assert.ok(prompt.system.includes('Name the product change, not the mock, plan, report, branch, or PR'));
+  assert.ok(prompt.system.includes('3-8 words, fewer than 40 characters.'));
+  assert.ok(!prompt.system.includes('restate it verbatim'));
+  assert.ok(prompt.message.includes('User message:'));
+  assert.ok(prompt.message.includes('Assistant reply:'));
+});
+
+test('regeneration prompt carries the previous title and demands a different one', () => {
+  const prompt = buildThreadTitleRegenerationPrompt({
+    thread: 'User: reconnect fails\n\nAssistant: fixed backoff',
+    previousTitle: 'Investigate reconnect regressions'
+  });
+
+  assert.ok(prompt.system.includes('Generate a new title'));
+  assert.ok(prompt.system.includes('"Investigate reconnect regressions"'));
+  assert.ok(
+    prompt.system.includes(
+      'Capture the current durable subject and outcome across the whole thread, not merely its initial request or latest step.'
+    )
+  );
+  assert.ok(prompt.system.includes('Return a different title from the previous title.'));
+  assert.ok(prompt.message.startsWith('Thread contents:'));
+});
+
+test('digest keeps short threads whole', () => {
+  const digest = buildThreadTitleDigest([
+    { role: 'user', text: 'Fix login' },
+    { role: 'assistant', text: 'Done' }
+  ]);
+
+  assert.equal(digest, 'User: Fix login\n\nAssistant: Done');
+});
+
+test('digest keeps the opening exchange and the tail, marking the omission', () => {
+  const entries = Array.from({ length: 10 }, (_, index) => ({
+    role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+    text: `message ${index}`
+  }));
+  const digest = buildThreadTitleDigest(entries);
+
+  assert.ok(digest.includes('User: message 0'));
+  assert.ok(digest.includes('Assistant: message 1'));
+  assert.ok(digest.includes('[earlier messages omitted]'));
+  assert.ok(digest.includes('message 9'));
+  assert.ok(!digest.includes('message 4'));
+});
+
+test('digest drops blanks and empty input', () => {
+  assert.equal(buildThreadTitleDigest([]), '');
+  assert.equal(
+    buildThreadTitleDigest([
+      { role: 'user', text: '   ' },
+      { role: 'assistant', text: 'Real answer' }
+    ]),
+    'Assistant: Real answer'
+  );
 });

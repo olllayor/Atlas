@@ -136,7 +136,10 @@ export class PluginMarketplaceService {
    * removed on purpose stays removed rather than coming back every launch.
    */
   installDefaults(): void {
-    const resolvedAll = this.marketplaces.resolveAll();
+    // Available checkouts only: a built-in git marketplace whose checkout has
+    // never been fetched must not turn startup into a 77 MB clone. It has no
+    // defaults to install until the user has opened the directory anyway.
+    const resolvedAll = this.marketplaces.resolveAvailable();
 
     // Startup already resolves every marketplace here, so this is where the
     // revocation list is picked up for the session — before anything installs.
@@ -218,6 +221,15 @@ export class PluginMarketplaceService {
     const materialized = this.marketplaces.materialize(resolved.root, entry);
 
     try {
+      // The directory card refuses this earlier for a `local` entry, but the
+      // card's judgement cannot see a git entry's bundle — it has not been
+      // fetched yet. The install is the place the refusal must bind for every
+      // source kind, or a connector-only bundle lands as a row that can never
+      // do anything.
+      if (!readPluginCapability(materialized.path).usable) {
+        throw new Error('This plugin provides no skills or tools that Atlas can run.');
+      }
+
       const result = this.installer.install(materialized.path, {
         // Recorded so the update check knows what to re-fetch, and so a scoped
         // revocation can tell this copy from one installed elsewhere.
@@ -280,6 +292,14 @@ export class PluginMarketplaceService {
 
       if (!probe.ok) {
         throw new Error(probe.error);
+      }
+
+      // Same refusal a catalogue install makes: a bundle whose only component
+      // is a connector installs cleanly and then sits there forever, because
+      // Atlas has no connector broker. Refused while the checkout is still at
+      // hand rather than published and stranded.
+      if (!readPluginCapability(fetched.path).usable) {
+        throw new Error('This plugin provides no skills or tools that Atlas can run.');
       }
 
       const revoked = this.blocklist?.check(probe.plugin.manifest.name, probe.plugin.manifest.version);

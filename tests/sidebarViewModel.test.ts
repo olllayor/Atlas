@@ -4,17 +4,55 @@ import test from 'node:test';
 import type {
   ConversationChangeStats,
   ConversationSummary,
+  ModelSummary,
   WorkspaceProject,
 } from '../src/shared/contracts';
 import {
   buildSidebarConversationItems,
+  filterSidebarItemsByMode,
   formatChangeCount,
   formatConversationChangeStats,
   formatHomeRelativePath,
+  formatSettledSectionLabel,
+  groupSidebarConversationItems,
+  isWorkChat,
+  parseScopeProjectId,
+  resolveModelDisplayLabel,
+  resolveScopeProjectId,
+  resolveSidebarRowVariant,
   sortProjectsByPin,
   splitPinnedSidebarItems,
   type SidebarConversationItem,
 } from '../src/renderer/components/sidebarViewModel';
+
+function modelSummary(overrides: Partial<ModelSummary> & Pick<ModelSummary, 'id'>): ModelSummary {
+  return {
+    providerId: 'openrouter',
+    label: overrides.id,
+    contextWindow: null,
+    isFree: false,
+    supportsVision: null,
+    supportsDocumentInput: null,
+    supportsTools: null,
+    archived: false,
+    ...overrides,
+  } as ModelSummary;
+}
+
+test('names a model from the catalog rather than from its id', () => {
+  const catalog = [modelSummary({ id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' })];
+  assert.equal(resolveModelDisplayLabel('deepseek/deepseek-v4-flash', catalog), 'DeepSeek V4 Flash');
+});
+
+test('falls back to the id segment when the catalog carries no separate label', () => {
+  const catalog = [modelSummary({ id: 'vendor/some-model:free', label: 'vendor/some-model:free' })];
+  assert.equal(resolveModelDisplayLabel('vendor/some-model:free', catalog), 'some-model');
+});
+
+test('says nothing about a model the catalog does not know', () => {
+  assert.equal(resolveModelDisplayLabel('vendor/retired-model', []), null);
+  assert.equal(resolveModelDisplayLabel(null, []), null);
+});
 
 test('collapses a macOS home prefix to ~', () => {
   assert.equal(formatHomeRelativePath('/Users/ada/Code/Projects/Atlas'), '~/Code/Projects/Atlas');
@@ -49,13 +87,15 @@ function stats(
   return { fileCount, linesAdded, linesRemoved };
 }
 
-function item(id: string, pinnedAt: string | null): SidebarConversationItem {
+function item(id: string, pinnedAt: string | null, projectId: string | null = null): SidebarConversationItem {
   return {
     id,
-    projectId: null,
+    projectId,
     isRunning: false,
     isFailed: false,
     status: 'idle',
+    attention: 'idle',
+    unreadCount: 0,
     primaryLabel: id,
     secondaryLabel: null,
     timestampLabel: null,
@@ -64,6 +104,10 @@ function item(id: string, pinnedAt: string | null): SidebarConversationItem {
     modelId: null,
     changeStats: stats(0),
     pinnedAt,
+    settledAt: null,
+    unsettledAt: null,
+    snoozedUntil: null,
+    snoozedAt: null,
   };
 }
 
@@ -221,4 +265,94 @@ test('sorting projects by pin does not mutate the input', () => {
   const input = [project('a', null), project('b', '2026-01-01T00:00:00.000Z')];
   sortProjectsByPin(input);
   assert.deepEqual(input.map((entry) => entry.id), ['a', 'b']);
+});
+
+test('row variant selection: archived resolves to slim, every other section to card', () => {
+  assert.equal(resolveSidebarRowVariant('archived'), 'slim');
+  assert.equal(resolveSidebarRowVariant({ archived: true }), 'slim');
+  assert.equal(resolveSidebarRowVariant('pinned'), 'card');
+  assert.equal(resolveSidebarRowVariant('project'), 'card');
+  assert.equal(resolveSidebarRowVariant('recents'), 'card');
+  assert.equal(resolveSidebarRowVariant({ archived: false }), 'card');
+  assert.equal(resolveSidebarRowVariant({}), 'card');
+  assert.equal(resolveSidebarRowVariant(undefined), 'card');
+});
+
+test('Settled header label: collapsed renders count, expanded does not, neither renders trailing space', () => {
+  // Collapsed with count renders count
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 5 }), 'Settled (5)');
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 1 }), 'Settled (1)');
+
+  // Expanded with count renders bare label without count
+  assert.equal(formatSettledSectionLabel({ expanded: true, count: 5 }), 'Settled');
+
+  // With count 0 or negative, collapsed and expanded render clean Settled without count
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: 0 }), 'Settled');
+  assert.equal(formatSettledSectionLabel({ expanded: true, count: 0 }), 'Settled');
+  assert.equal(formatSettledSectionLabel({ expanded: false, count: -1 }), 'Settled');
+
+  // Verify no trailing space in any branch
+  assert.ok(!formatSettledSectionLabel({ expanded: false, count: 0 }).endsWith(' '));
+  assert.ok(!formatSettledSectionLabel({ expanded: true, count: 5 }).endsWith(' '));
+  assert.ok(!formatSettledSectionLabel({ expanded: false, count: 5 }).endsWith(' '));
+});
+
+test('work chats are folderless chats; code mode shows projects only', () => {
+  const work = item('work', null, null);
+  const project = item('code', null, 'p1');
+
+  assert.equal(isWorkChat(work), true);
+  assert.equal(isWorkChat(project), false);
+
+  assert.deepEqual(
+    filterSidebarItemsByMode([work, project], 'work').map((entry) => entry.id),
+    ['work']
+  );
+  assert.deepEqual(
+    filterSidebarItemsByMode([work, project], 'code').map((entry) => entry.id),
+    ['code']
+  );
+});
+
+test('work inbox groups by rolling recency windows', () => {
+  const now = Date.parse('2026-09-04T12:00:00.000Z');
+  const at = (iso: string) => ({ ...item(iso, null), timestampMs: Date.parse(iso) });
+
+  const groups = groupSidebarConversationItems(
+    [
+      at('2026-09-04T08:00:00.000Z'),
+      at('2026-09-03T08:00:00.000Z'),
+      at('2026-08-30T08:00:00.000Z'),
+      at('2026-08-10T08:00:00.000Z'),
+      at('2026-06-01T08:00:00.000Z'),
+    ],
+    now
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.label),
+    ['Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'June']
+  );
+});
+
+test('parseScopeProjectId accepts bare ids and rejects everything else', () => {
+  assert.equal(parseScopeProjectId('proj-1'), 'proj-1');
+  assert.equal(parseScopeProjectId(null), null);
+  assert.equal(parseScopeProjectId(''), null);
+  assert.equal(parseScopeProjectId(undefined), null);
+  assert.equal(parseScopeProjectId(42), null);
+  assert.equal(parseScopeProjectId({}), null);
+});
+
+test('resolveScopeProjectId keeps the scope until the project list has loaded', () => {
+  // Projects arrive after mount: clearing while the list is still empty would
+  // drop the restored scope every launch.
+  assert.equal(resolveScopeProjectId('proj-1', [], false), 'proj-1');
+  assert.equal(resolveScopeProjectId(null, [], false), null);
+});
+
+test('resolveScopeProjectId falls back to all projects when the project is gone', () => {
+  assert.equal(resolveScopeProjectId('proj-1', ['proj-1', 'proj-2'], true), 'proj-1');
+  assert.equal(resolveScopeProjectId('proj-gone', ['proj-1', 'proj-2'], true), null);
+  assert.equal(resolveScopeProjectId(null, ['proj-1'], true), null);
 });

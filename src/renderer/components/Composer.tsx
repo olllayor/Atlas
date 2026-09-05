@@ -1,4 +1,4 @@
-import { ArrowUp, ImagePlus, Loader2, Paperclip, Plus, Square } from 'lucide-react';
+import { ArrowUp, ImagePlus, Paperclip, Plus, Square } from 'lucide-react';
 import { nanoid } from 'nanoid';
 import {
   memo,
@@ -28,8 +28,13 @@ import {
 } from '../../shared/attachments';
 import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParameters';
 import { planImageDownscale } from '../../shared/imageDownscale';
+import { cn } from '../lib/utils';
+import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
+import { CitationTray } from './CitationTray';
+import type { CitedQuoteEntry } from '../../shared/citations';
+import { AtlasLoader } from './ui/atlas-loader';
+import { useAppStore } from '../stores/useAppStore';
 import type {
-  ConversationDetail,
   CustomProvider,
   ModelSummary,
   ProviderCredentialSummary,
@@ -85,6 +90,8 @@ export type ComposerAttachment = {
 export type ComposerMessage = {
   text: string;
   files: ComposerAttachment[];
+  /** Staged cited quotes; merged into text as links at send time. */
+  citations: CitedQuoteEntry[];
 };
 
 export type ComposerProps = {
@@ -93,17 +100,32 @@ export type ComposerProps = {
   isStreaming: boolean;
   models: ModelSummary[];
   selectedModelId: string | null;
+  selectedProviderId?: string | null;
   modelPickerOpen: boolean;
   composerFocusNonce: number;
-  detail: ConversationDetail | null;
-  draft: DraftStateLike | null;
+  /**
+   * The open conversation, by id. The composer only ever needed the id off the
+   * page object, and the page is replaced on every stream flush — taking the id
+   * keeps the composer off the token path.
+   */
+  conversationId: string | null;
+  /**
+   * Turn identity of the in-flight request, or null when nothing is streaming.
+   * Together these are the whole of what the composer read from the live draft:
+   * the meter keys off the turn, never off its tokens.
+   */
+  draftRequestId: string | null;
+  draftStatus: DraftStateLike['status'] | null;
   /** Staged files for the *current* conversation; owned by the store. */
   attachments: ComposerAttachment[];
   onAttachmentsChange: (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => void;
+  /** Staged cited quotes for the *current* conversation; owned by the store. */
+  citations: CitedQuoteEntry[];
+  onCitationsChange: (updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]) => void;
   onChange: (value: string) => void;
   onSend: (message: ComposerMessage) => Promise<void> | void;
   onAbort: () => void;
-  onSelectModel: (modelId: string) => void;
+  onSelectModel: (modelId: string, providerId?: string) => void;
   onModelPickerOpenChange: (open: boolean) => void;
   onComposerFocusChange: (focused: boolean) => void;
   onRefreshModels?: () => void;
@@ -113,6 +135,7 @@ export type ComposerProps = {
   defaultFreeOnly?: boolean;
   onManageProviders?: () => void;
   reasoningEffort: ReasoningEffort;
+  /** Read by the context meter: read-only threads carry no tool tokens. */
   toolPermissionMode: ToolPermissionMode;
   /**
    * The other half of the access chip. The composer does not own the mode — the
@@ -126,7 +149,18 @@ export type ComposerProps = {
   onRequestProject?: () => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onToolPermissionModeChange: (value: ToolPermissionMode) => void;
+  /**
+   * Receives built-in slash command names (`compact`, `review`…). A draft that
+   * is exactly one of them is consumed as an action instead of sent.
+   */
+  onSlashAction?: (name: string, args?: string) => void;
   onOpenGallery: () => void;
+  /**
+   * How many follow-ups are waiting to run in this conversation. Drives the
+   * placeholder: while a turn is live, the empty composer should teach the
+   * queue rather than sit silent about where the next message will land.
+   */
+  queuedCount?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -482,10 +516,13 @@ export function Composer({
   selectedModelId,
   modelPickerOpen,
   composerFocusNonce,
-  detail,
-  draft,
+  conversationId,
+  draftRequestId,
+  draftStatus,
   attachments: stagedAttachments,
   onAttachmentsChange,
+  citations: stagedCitations,
+  onCitationsChange,
   onChange,
   onSend,
   onAbort,
@@ -506,7 +543,10 @@ export function Composer({
   onRequestProject,
   onReasoningEffortChange,
   onToolPermissionModeChange,
+  onSlashAction,
   onOpenGallery,
+  selectedProviderId,
+  queuedCount = 0,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isComposing, setIsComposing] = useState(false);
@@ -517,10 +557,20 @@ export function Composer({
   const [scrollEdges, setScrollEdges] = useState({ bottom: false, top: false });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === selectedModelId) ?? null,
-    [models, selectedModelId],
-  );
+  const selectedModel = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
 
   // The same capability check the send path runs, applied to a single incoming
   // file so it can be refused before it is ever staged.
@@ -585,7 +635,13 @@ export function Composer({
   });
   // The two pickers cannot both be open: a mention needs an `@` and a command
   // only ever triggers on a `/` in the first column.
-  const commands = useCommandAutocomplete({ value, onChange, textareaRef, disabled });
+  const commands = useCommandAutocomplete({
+    value,
+    onChange,
+    textareaRef,
+    disabled,
+    onBuiltinCommand: onSlashAction,
+  });
 
   const syncPickerCarets = useCallback(() => {
     mentions.syncCaret();
@@ -718,14 +774,15 @@ export function Composer({
 
     const candidates = models.filter(
       (model) =>
-        model.id !== selectedModelId &&
+        !(model.id === selectedModelId && model.providerId === selectedProviderId) &&
         !model.archived &&
         !getAttachmentCapabilityError(model, attachments.files),
     );
 
     return candidates.find((model) => model.supportsVision === true) ?? candidates[0] ?? null;
-  }, [attachments.files, models, selectedModelId, unsupportedReason]);
-  const hasSubmittableContent = Boolean(value.trim()) || attachments.files.length > 0;
+  }, [attachments.files, models, selectedModelId, selectedProviderId, unsupportedReason]);
+  const hasSubmittableContent =
+    Boolean(value.trim()) || attachments.files.length > 0 || stagedCitations.length > 0;
   const canSend = hasSubmittableContent && !disabled && !unsupportedReason && !isSubmitting;
 
   const submit = useCallback(async () => {
@@ -734,6 +791,30 @@ export function Composer({
     if (!canSend || isStreaming || isSubmitting) {
       return;
     }
+
+    /*
+      A draft that is exactly a built-in command (`/compact`, `/review`…) is a
+      control action, not a message (t3code's standalone-command parse). It is
+      consumed here — cleared, executed, never sent — while plugin templates
+      keep their insert-as-text behavior.
+    */
+    if (!attachments.files.length && onSlashAction) {
+      // Arg-taking commands (/goal <objective>) parse first; the rest keep
+      // the exact-invocation grammar so trailing text fails loudly.
+      const invocation = parseStandaloneCommandWithArgs(value);
+      if (invocation) {
+        onChange('');
+        onSlashAction(invocation.name, invocation.args || undefined);
+        return;
+      }
+      const builtin = parseStandaloneSlashCommand(value);
+      if (builtin) {
+        onChange('');
+        onSlashAction(builtin.name);
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     setAttachmentError(null);
 
@@ -763,13 +844,13 @@ export function Composer({
 
       // Clearing the draft is the caller's job: it knows which conversation
       // the send belonged to, which may no longer be the selected one.
-      await onSend({ files, text: value });
+      await onSend({ files, text: value, citations: stagedCitations });
     } catch {
       // Keep the input so the user can retry.
     } finally {
       setIsSubmitting(false);
     }
-  }, [attachments, canSend, isStreaming, isSubmitting, onSend, value]);
+  }, [attachments, canSend, isStreaming, isSubmitting, onSend, onSlashAction, onChange, value, stagedCitations]);
 
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashStopHint = useCallback(() => {
@@ -906,18 +987,23 @@ export function Composer({
    * in-flight request's prompt is already fixed); it changes when a request
    * starts or finishes, which is exactly when history has grown.
    */
-  const turnKey = `${draft?.requestId ?? 'idle'}:${draft?.status ?? 'none'}`;
+  const turnKey = `${draftRequestId ?? 'idle'}:${draftStatus ?? 'none'}`;
+  const settingsThreshold = useAppStore((state) => state.settings?.chat.compactionThresholdPercent ?? 85);
+  const updatePreferences = useAppStore((state) => state.updatePreferences);
+  const [compactNonce, setCompactNonce] = useState(0);
+  const contextTurnKey = `${turnKey}:${compactNonce}:${settingsThreshold}`;
 
   const contextUsage = useContextUsage({
-    conversationId: detail?.conversation?.id ?? null,
+    conversationId,
     modelId: selectedModel?.id ?? null,
+    providerId: selectedModel?.providerId ?? selectedProviderId ?? null,
     enableTools: selectedModel != null && selectedModel.supportsTools !== false,
     toolPermissionMode,
     // What is typed but unsent counts toward the next prompt; what is streaming
     // back does not, since the request that produced it is already sent.
-    pendingText: draft ? '' : value,
+    pendingText: draftStatus ? '' : value,
     pendingAttachments,
-    turnKey,
+    turnKey: contextTurnKey,
   });
 
   const contextStats = useMemo(() => {
@@ -936,10 +1022,31 @@ export function Composer({
         inputTokens: contextUsage.lastTurn?.inputTokens ?? undefined,
         outputTokens: contextUsage.lastTurn?.outputTokens ?? undefined,
         reasoningTokens: contextUsage.lastTurn?.reasoningTokens ?? undefined,
+        cachedInputTokens: contextUsage.lastTurn?.cachedInputTokens ?? undefined,
       },
       breakdown: contextUsage,
+      compactionThresholdPercent: settingsThreshold ?? contextUsage.compactionThresholdPercent ?? 85,
+      compactionThresholdTokens: contextUsage.compactionThresholdTokens ?? null,
     };
-  }, [contextUsage, tokenLensModelId]);
+  }, [contextUsage, settingsThreshold, tokenLensModelId]);
+
+  const handleCompactionThresholdChange = useCallback(
+    (next: number) => {
+      void updatePreferences({ chat: { compactionThresholdPercent: next } });
+    },
+    [updatePreferences]
+  );
+
+  const handleCompactNow = useCallback(() => {
+    if (!conversationId) return;
+    void window.atlasChat.chat
+      .compact(conversationId)
+      .then(() => {
+        // Refresh meter immediately so the forced compaction's sticky boundary is visible.
+        setCompactNonce((nonce) => nonce + 1);
+      })
+      .catch(() => undefined);
+  }, [conversationId]);
 
   const sendTooltip = isStreaming
     ? 'Stop generating · Esc'
@@ -975,9 +1082,14 @@ export function Composer({
         the gap this layout exists to remove. With none, the slab's own top
         edge is where the transcript stops, and a message scrolling past it
         goes behind the slab rather than halting short of it.
+
+        Below it is the opposite case: the slab sits off the window edge so it
+        reads as an object resting on the page rather than a strip welded to
+        the frame. The transcript reserves that space along with the rest of
+        the dock, so the gap costs nothing at the top.
       */}
-      <div className="px-5 pb-3 lg:px-6">
-        <div className="mx-auto max-w-content-max">
+      <div className="px-4 pb-7 lg:px-5">
+        <div className="mx-auto max-w-composer">
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
             aria-label="Upload files"
@@ -995,7 +1107,7 @@ export function Composer({
           />
 
           {/* The Codex slab: opaque, superellipse-rounded, borderless, shadowless. */}
-          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-2.5 pt-3">
+          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-3 pt-4">
             {isDropTarget ? (
               <div
                 aria-hidden="true"
@@ -1025,6 +1137,15 @@ export function Composer({
               </div>
             ) : null}
 
+            {/* Cited quotes staged as tray objects above the textarea. The
+                draft string never holds serialized links, so the text the
+                user edits stays readable. Removing a chip drops its entry;
+                links serialize only at send time. */}
+            <CitationTray
+              entries={stagedCitations}
+              onRemove={(key) => onCitationsChange((previous) => previous.filter((entry) => entry.key !== key))}
+            />
+
             {footerMessage ? (
               <div
                 aria-live="polite"
@@ -1042,7 +1163,7 @@ export function Composer({
                 {capableModelSwitch ? (
                   <button
                     type="button"
-                    onClick={() => onSelectModel(capableModelSwitch.id)}
+                    onClick={() => onSelectModel(capableModelSwitch.id, capableModelSwitch.providerId)}
                     className="cursor-pointer rounded-sm underline decoration-dotted underline-offset-2 transition hover:text-text-primary"
                   >
                     Switch to {capableModelSwitch.label}
@@ -1124,20 +1245,30 @@ export function Composer({
                 aria-autocomplete="list"
                 // "Do anything", not "Message…": the composer drives tools and
                 // file edits, not just chat, and the reference names the
-                // capability rather than the widget.
-                placeholder={disabled ? 'Select or start a conversation' : 'Do anything'}
+                // capability rather than the widget. While a turn is live the
+                // placeholder becomes the one sentence this state needs — the
+                // next message will not start a second stream, it will queue.
+                placeholder={
+                  disabled
+                    ? 'Select or start a conversation'
+                    : isStreaming
+                      ? queuedCount > 0
+                        ? 'Queued — add another, or Esc to stop'
+                        : 'Atlas is replying — your message will queue'
+                      : 'Do anything'
+                }
                 // Bare textarea per spec §4: no inner bg, border, or focus ring —
                 // the slab itself is the only chrome.
-                className="max-h-composer-max-height min-h-6 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                className="max-h-composer-max-height min-h-12 w-full resize-none border-0 bg-transparent px-0 py-1 text-md leading-6 text-text-primary shadow-none outline-none ring-0 placeholder:text-text-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                 style={textareaMask ? { maskImage: textareaMask, WebkitMaskImage: textareaMask } : undefined}
                 name="message"
               />
             </div>
 
             {/* Control row: plain glyph buttons left, model chip + send right.
-                `-mx-1.5` pulls the round buttons out so their glyphs land on the
-                same 18px inset as the text above them. */}
-            <div className="-mx-1.5 flex items-center gap-0.5 pt-1.5">
+                `-mx-1` pulls the 32px round buttons out so their glyphs land on
+                the same 18px inset as the text above them. */}
+            <div className="-mx-1 flex items-center gap-0.5 pt-1.5">
               <DropdownMenu>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1145,7 +1276,7 @@ export function Composer({
                       <button
                         type="button"
                         aria-label="Add to message"
-                        className="group flex size-9 shrink-0 items-center justify-center rounded-full text-text-secondary transition hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+                        className="group flex size-8 shrink-0 items-center justify-center rounded-full text-text-secondary transition hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Plus className="size-4" strokeWidth={1.75} />
                       </button>
@@ -1213,6 +1344,10 @@ export function Composer({
                     breakdown={contextStats.breakdown}
                     usage={contextStats.usage}
                     modelId={contextStats.modelId}
+                    compactionThresholdPercent={contextStats.compactionThresholdPercent}
+                    compactionThresholdTokens={contextStats.compactionThresholdTokens}
+                    onCompactionThresholdChange={handleCompactionThresholdChange}
+                    onCompactNow={handleCompactNow}
                   >
                     <ContextTrigger />
                     <ContextContent>
@@ -1228,12 +1363,13 @@ export function Composer({
                 <ModelSelector
                   models={models}
                   selectedModelId={selectedModelId}
+                  selectedProviderId={selectedProviderId}
                   disabled={isStreaming}
                   open={modelPickerOpen}
                   onOpenChange={onModelPickerOpenChange}
-                  onSelect={(modelId) => {
+                  onSelect={(modelId, providerId) => {
                     onModelPickerOpenChange(false);
-                    onSelectModel(modelId);
+                    onSelectModel(modelId, providerId);
                   }}
                   onRefresh={onRefreshModels}
                   isRefreshing={isRefreshingModels}
@@ -1263,14 +1399,23 @@ export function Composer({
                         if (!canSend) return;
                         void submit();
                       }}
-                      className="ml-1.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse transition hover:bg-bg-button-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-bg-button"
+                      className={cn(
+                        'ml-1.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-bg-button text-text-inverse shadow-sm transition-all duration-150 ease-out hover:bg-bg-button-hover motion-reduce:transition-colors',
+                        // Press physics only when the button can actually act.
+                        // It uses aria-disabled rather than `disabled` so its
+                        // tooltip stays reachable, which means the `enabled:`
+                        // variant is always on — the gate has to be canSend.
+                        canSend
+                          ? 'hover:scale-105 active:scale-95 active:shadow-none'
+                          : 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50'
+                      )}
                     >
                       {isStreaming ? (
                         <Square className="size-3 fill-current" />
                       ) : isSubmitting ? (
-                        <Loader2 className="size-4.5 animate-spin" strokeWidth={2} />
+                        <AtlasLoader size="sm" className="size-4 text-text-inverse" />
                       ) : (
-                        <ArrowUp className="size-4.5" strokeWidth={2.25} />
+                        <ArrowUp className="size-4" strokeWidth={2.25} />
                       )}
                     </button>
                   </TooltipTrigger>

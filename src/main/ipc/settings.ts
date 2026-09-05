@@ -1,13 +1,15 @@
 import { BrowserWindow, ipcMain } from 'electron/main';
 
 import { IPC_CHANNELS } from '../../shared/ipc';
-import type { ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
+import type { OpenCodeSettings, ProviderId, SettingsUpdateRequest } from '../../shared/contracts';
 import { isVisualMode } from '../../shared/visualIntent';
 import type { ModelRegistry } from '../ai/core/ModelRegistry';
+import type { OpenCodeController } from '../ai/providers/opencode/openCodeController';
 import {
   OPAQUE_WINDOW_BACKGROUND,
   VIBRANT_WINDOW_BACKGROUND,
   syncNativeTheme,
+  syncWindowChrome,
 } from '../bootstrap/createWindow';
 import type { SettingsRepo } from '../db/repositories/settingsRepo';
 import type { KeychainStore } from '../secrets/keychain';
@@ -18,9 +20,59 @@ type SettingsIpcDeps = {
   settingsRepo: SettingsRepo;
   modelRegistry: ModelRegistry;
   keychain: KeychainStore;
+  /** Absent when the OpenCode integration was not wired (tests, headless). */
+  opencode?: OpenCodeController;
 };
 
-export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: SettingsIpcDeps) {
+export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, opencode }: SettingsIpcDeps) {
+  function requireOpenCode(): OpenCodeController {
+    if (!opencode) {
+      throw new Error('The OpenCode integration is not available in this build.');
+    }
+    return opencode;
+  }
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeGet,
+    withUserFacingErrors(IPC_CHANNELS.settingsOpenCodeGet, async (event) => {
+      assertTrustedSender(event);
+      return requireOpenCode().getStatusView();
+    })
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeUpdate,
+    withUserFacingErrors(
+      IPC_CHANNELS.settingsOpenCodeUpdate,
+      async (event, patch: Partial<OpenCodeSettings>) => {
+        assertTrustedSender(event);
+        return requireOpenCode().updateSettings(patch ?? {});
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeSetPassword,
+    withUserFacingErrors(
+      IPC_CHANNELS.settingsOpenCodeSetPassword,
+      async (event, secret: string | null) => {
+        assertTrustedSender(event);
+        const controller = requireOpenCode();
+        // Never echoed back: the renderer only ever learns that one is stored.
+        await controller.setServerPassword(secret);
+        return controller.getStatusView();
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.settingsOpenCodeProbe,
+    withUserFacingErrors(IPC_CHANNELS.settingsOpenCodeProbe, async (event) => {
+      assertTrustedSender(event);
+      return requireOpenCode().probe();
+    })
+  );
+
   ipcMain.handle(
     IPC_CHANNELS.settingsGetSummary,
     withUserFacingErrors(IPC_CHANNELS.settingsGetSummary, (event) => {
@@ -72,6 +124,14 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
         settingsRepo.setShowFreeOnlyByDefault(patch.showFreeOnlyByDefault);
       }
 
+      if (typeof patch?.pluginsBetaEnabled === 'boolean') {
+        settingsRepo.setPluginsBetaEnabled(patch.pluginsBetaEnabled);
+      }
+
+      if (typeof patch?.sitesBetaEnabled === 'boolean') {
+        settingsRepo.setSitesBetaEnabled(patch.sitesBetaEnabled);
+      }
+
       if (appearancePatch?.themeMode) {
         settingsRepo.setThemeMode(appearancePatch.themeMode);
         // Keeps the vibrancy material on the same appearance as the page.
@@ -80,6 +140,58 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
 
       if (appearancePatch?.designTheme) {
         settingsRepo.setDesignTheme(appearancePatch.designTheme);
+      }
+
+      if (typeof appearancePatch?.themeId === 'string') {
+        settingsRepo.setThemeId(appearancePatch.themeId);
+      }
+
+      if (appearancePatch && 'themeHalves' in appearancePatch) {
+        settingsRepo.setThemeHalves(appearancePatch.themeHalves ?? null);
+      }
+
+      if (typeof appearancePatch?.glassOpacity === 'number') {
+        settingsRepo.setGlassOpacity(appearancePatch.glassOpacity);
+      }
+
+      if (typeof appearancePatch?.panelAnimationDurationMs === 'number') {
+        settingsRepo.setPanelAnimationDurationMs(appearancePatch.panelAnimationDurationMs);
+      }
+
+      if (typeof appearancePatch?.fontFamilySans === 'string') {
+        settingsRepo.setFontFamilySans(appearancePatch.fontFamilySans);
+      }
+
+      if (typeof appearancePatch?.fontFamilyComposer === 'string') {
+        settingsRepo.setFontFamilyComposer(appearancePatch.fontFamilyComposer);
+      }
+
+      if (typeof appearancePatch?.fontFamilyCode === 'string') {
+        settingsRepo.setFontFamilyCode(appearancePatch.fontFamilyCode);
+      }
+
+      if (typeof appearancePatch?.fontFamilyTerminal === 'string') {
+        settingsRepo.setFontFamilyTerminal(appearancePatch.fontFamilyTerminal);
+      }
+
+      if (typeof appearancePatch?.fontSizeInterface === 'number') {
+        settingsRepo.setFontSizeInterface(appearancePatch.fontSizeInterface);
+      }
+
+      if (typeof appearancePatch?.fontSizePrompt === 'number') {
+        settingsRepo.setFontSizePrompt(appearancePatch.fontSizePrompt);
+      }
+
+      if (typeof appearancePatch?.fontSizeCode === 'number') {
+        settingsRepo.setFontSizeCode(appearancePatch.fontSizeCode);
+      }
+
+      if (typeof appearancePatch?.fontSizeTerminal === 'number') {
+        settingsRepo.setFontSizeTerminal(appearancePatch.fontSizeTerminal);
+      }
+
+      if (typeof appearancePatch?.fontSmoothing === 'boolean') {
+        settingsRepo.setFontSmoothing(appearancePatch.fontSmoothing);
       }
 
       if (typeof appearancePatch?.uiFontSize === 'number') {
@@ -121,10 +233,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       if (typeof appearancePatch?.translucentSidebar === 'boolean') {
         settingsRepo.setTranslucentSidebar(appearancePatch.translucentSidebar);
 
-        // Best-effort live apply. A fresh window still renders it better:
-        // `visualEffectState: 'active'` is a construction-time option with no
-        // setter, so a window switched on mid-session desaturates its material
-        // whenever it loses focus until the next launch.
+        // Live apply. The window was constructed with `visualEffectState:
+        // 'active'` regardless of the setting, so the vibrancy created here
+        // carries the same always-active material a restart would have made —
+        // this used to need a restart for exactly that reason.
         if (process.platform === 'darwin') {
           for (const window of BrowserWindow.getAllWindows()) {
             window.setVibrancy(appearancePatch.translucentSidebar ? 'sidebar' : null);
@@ -132,6 +244,28 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
               appearancePatch.translucentSidebar ? VIBRANT_WINDOW_BACKGROUND : OPAQUE_WINDOW_BACKGROUND
             );
           }
+        }
+      }
+
+      // Native frame follows the theme: background + overlay controls re-resolve
+      // on mode/design/custom-color changes (system flips arrive via
+      // nativeTheme 'updated' in index.ts).
+      if (
+        appearancePatch?.themeMode ||
+        appearancePatch?.designTheme ||
+        (appearancePatch && 'backgroundColor' in appearancePatch) ||
+        (appearancePatch && 'foregroundColor' in appearancePatch) ||
+        typeof appearancePatch?.translucentSidebar === 'boolean'
+      ) {
+        const chromeState = {
+          themeMode: settingsRepo.getThemeMode(),
+          designTheme: settingsRepo.getDesignTheme(),
+          backgroundColor: settingsRepo.getThemeColor('backgroundColor'),
+          foregroundColor: settingsRepo.getThemeColor('foregroundColor'),
+          translucentSidebar: settingsRepo.getTranslucentSidebar(),
+        };
+        for (const window of BrowserWindow.getAllWindows()) {
+          syncWindowChrome(window, chromeState);
         }
       }
 
@@ -190,6 +324,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain }: S
       // Validated here rather than trusted: the renderer supplies this value.
       if (isVisualMode(patch?.chat?.visualMode)) {
         settingsRepo.setVisualMode(patch.chat.visualMode);
+      }
+
+      if (typeof patch?.chat?.compactionThresholdPercent === 'number' && Number.isFinite(patch.chat.compactionThresholdPercent)) {
+        settingsRepo.setCompactionThresholdPercent(patch.chat.compactionThresholdPercent);
       }
 
       return modelRegistry.getSettingsSummary();

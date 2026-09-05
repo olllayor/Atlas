@@ -160,3 +160,57 @@ test('a new chat opens on the model the user last picked', async () => {
   ] as never;
   assert.equal(chooseDefaultModel(archived, null, 'gateway/stale'), 'gateway/cheap-free');
 });
+
+test('OpenCode models group under their own name and never ask for an API key', () => {
+  const viewModel = buildModelSelectorViewModel({
+    models: [
+      model('opencode/claude-opus-4-7', { providerId: 'opencode', label: 'Claude Opus 4.7' }),
+      model('gpt-5', { providerId: 'custom:openai' })
+    ],
+    customProviders: [{ id: 'custom:openai', name: 'OpenAI' }],
+    credentials: [credential('custom:openai', true)],
+    showFreeOnly: false
+  });
+
+  const opencode = viewModel.groups.find((group) => group.label === 'OpenCode');
+  assert.ok(opencode, 'OpenCode group is present');
+  // opencode signs itself in, so it counts as configured without a stored key.
+  assert.equal(opencode.configured, true);
+  assert.equal(modelNeedsApiKey(opencode.models[0]!, [credential('custom:openai', true)]), false);
+});
+
+test('the integration and a same-named endpoint stay separate, and the agent one says so', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      model('opencode/mimo', { providerId: 'opencode' }),
+      // Someone pointed a plain base-URL provider at their OpenCode server and
+      // named it the same thing. Same heading, nothing else in common.
+      model('mimo', { providerId: 'custom:oc' })
+    ],
+    customProviders: [{ id: 'custom:oc', name: 'OpenCode' }],
+    credentials: [credential('custom:oc', true)],
+    showFreeOnly: false
+  });
+
+  assert.equal(view.groups.length, 2, 'grouped by provider, not by display name');
+  const agent = view.groups.find((group) => group.providerId === 'opencode');
+  const endpoint = view.groups.find((group) => group.providerId === 'custom:oc');
+  assert.ok(agent && endpoint);
+  assert.equal(agent.label, 'OpenCode');
+  assert.equal(endpoint.label, 'OpenCode');
+  assert.equal(agent.selfManaged, true);
+  assert.equal(endpoint.selfManaged, false);
+  // Neither is missing a key: one holds its own, the other has one saved.
+  assert.equal(agent.configured, true);
+  assert.equal(endpoint.configured, true);
+});
+
+test('the send gate exempts a provider that signs itself in', () => {
+  // Exactly what the composer asks before starting a turn (`useAppStore`):
+  // OpenCode holds its own credentials, so there is no Atlas key to save and
+  // the turn must not be refused for the lack of one.
+  const credentials = [credential('custom:one', true), credential('custom:two', false)];
+
+  assert.equal(modelNeedsApiKey(model('opencode/mimo', { providerId: 'opencode' }), credentials), false);
+  assert.equal(modelNeedsApiKey(model('m', { providerId: 'custom:two' }), credentials), true);
+});

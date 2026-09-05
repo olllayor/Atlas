@@ -521,6 +521,43 @@ export type ExportSiteResult = {
   format: SiteExportFormat;
 };
 
+export type DetectedPackage = {
+  name: string;
+  category: "icons" | "styling" | "animation" | "components" | "utility";
+  installed: boolean;
+  version?: string;
+};
+
+export type WorkspaceProjectAnalysis = {
+  projectRoot: string;
+  projectTitle: string;
+  packageJsonFound: boolean;
+  packageManager: "npm" | "pnpm" | "yarn" | "bun";
+  defaultExportSubpath: string;
+  detectedPackages: DetectedPackage[];
+  missingPackages: string[];
+  installCommand: string;
+};
+
+export type AnalyzeWorkspaceRequest = {
+  siteId: string;
+  versionId?: string | null;
+  projectRoot: string;
+};
+
+export type ExportSiteToWorkspaceRequest = {
+  siteId: string;
+  versionId?: string | null;
+  projectRoot: string;
+  subpath: string;
+};
+
+export type ExportSiteToWorkspaceResult = {
+  destination: string;
+  writtenFiles: string[];
+  totalBytes: number;
+};
+
 export type OpenSitePreviewRequest = {
   siteId: string;
   versionId?: string | null;

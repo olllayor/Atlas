@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
+import type { ToolPermissionMode } from '../../../../shared/chatParameters';
 import type { ToolWorkspace } from '../toolWorkspace';
 import { buildBubblewrapLaunch } from './bubblewrap';
 import { computeWritableRoots } from './policy';
 import { buildSeatbeltLaunch, SEATBELT_EXECUTABLE } from './seatbelt';
-import type { SandboxLaunch, SandboxMechanism, SandboxPolicy } from './types';
+import type { SandboxLaunch, SandboxMechanism, SandboxNetworkPolicy, SandboxPolicy } from './types';
 
 let mechanismProbe: Promise<SandboxMechanism> | null = null;
 
@@ -79,22 +80,31 @@ export function markSandboxMechanismUnavailable() {
 }
 
 /**
- * The sandbox policy for a turn, derived from the workspace and nothing else.
+ * The sandbox policy for a turn, derived from the workspace and permission mode.
  *
- * `ToolPermissionMode` is deliberately absent. It is the approval axis, and
- * `full-access` means "stop asking", not "remove the walls" — letting it reach
- * this function would collapse two independent controls into one. `read-only`
- * never gets here at all, because bash is withheld from that tool set entirely.
+ * `full-access` now enables network access in addition to bypassing the approval
+ * ladder. This allows commands like `npx postplan upload` to work in full-access
+ * mode without requiring `dangerouslyDisableSandbox`. The filesystem sandbox
+ * (write confinement) still applies — only the network restriction is lifted.
+ *
+ * `read-only` never gets here at all, because bash is withheld from that tool set
+ * entirely.
  */
-export function deriveSandboxPolicy(workspace: ToolWorkspace | undefined): SandboxPolicy {
+export function deriveSandboxPolicy(
+  workspace: ToolWorkspace | undefined,
+  permissionMode?: ToolPermissionMode
+): SandboxPolicy {
+  // Full-access mode enables network access while keeping filesystem sandbox intact
+  const network: SandboxNetworkPolicy = permissionMode === 'full-access' ? 'allow' : 'deny';
+
   if (workspace?.mode === 'code' && workspace.root) {
     return {
       fs: { kind: 'workspace-write', writableRoots: computeWritableRoots(workspace.root) },
-      network: 'deny'
+      network
     };
   }
 
-  return { fs: { kind: 'read-only' }, network: 'deny' };
+  return { fs: { kind: 'read-only' }, network };
 }
 
 /**
@@ -127,6 +137,8 @@ export function buildSandboxedLaunch(
   return buildBubblewrapLaunch(argv, policy);
 }
 
-export { isLikelySandboxDenied, isSandboxWrapperFailure, SANDBOX_DENIAL_HINT } from './denial';
+export { buildSandboxCacheEnv, getSandboxCacheDir } from './cache';
+export { getSandboxDenialHint, isLikelySandboxDenied, isSandboxWrapperFailure, SANDBOX_DENIAL_HINT } from './denial';
 export { computeWritableRoots } from './policy';
 export * from './types';
+

@@ -1,18 +1,43 @@
 import { AlertCircle, Bookmark, Check, Copy, Expand } from 'lucide-react';
-import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Component,
+  Suspense,
+  lazy,
+  type ErrorInfo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import type { ChatPartState, VisualThemeTokens } from '../../../shared/contracts';
 import { detectRequiredLibraries } from '../../../shared/visualParser';
 import { buildVisualSrcDoc } from '../../../shared/visualDocument';
 import { chartJs, d3Js } from '../../visual/bundles';
 import { detectDiagramSpec } from '../../../shared/diagramSpec';
-import { InteractiveDiagram } from './interactive-diagram';
-import { detectRiveContent, RiveVisual } from './rive-visual';
+import { detectRiveContent } from './riveContent';
 import { useClipboard } from '../../hooks/useClipboard';
 import { SlotLabel } from '../ui/slot-label';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import { AtlasLoader } from '../ui/atlas-loader';
 import { notify } from '../../lib/notify';
 import { cn } from '../../lib/utils';
+
+/*
+  The two heaviest renderers a visual can ask for, split out of the entry chunk.
+  A diagram pulls in the flow-graph library and its layout engine; a Rive block
+  pulls in the WebGL2 runtime. Most transcripts contain neither, and the choice
+  is made from the visual's own content, so the import can wait until one
+  actually arrives.
+*/
+const InteractiveDiagram = lazy(() =>
+  import('./interactive-diagram').then((module) => ({ default: module.InteractiveDiagram }))
+);
+const RiveVisual = lazy(() =>
+  import('./rive-visual').then((module) => ({ default: module.RiveVisual }))
+);
 
 type VisualBlockProps = {
   visualId: string;
@@ -92,6 +117,18 @@ export function readThemeTokens(): VisualThemeTokens {
     errorBorder: read('--error-border', 'rgba(244, 63, 94, 0.2)'),
     errorText: read('--error-text', '#fecdd3'),
   };
+}
+
+/**
+ * Placeholder while a diagram or Rive chunk loads. Sized like the block it is
+ * standing in for so the transcript does not jump when the real one lands.
+ */
+function VisualRendererFallback() {
+  return (
+    <div className="flex h-48 items-center justify-center text-xs text-text-muted">
+      <AtlasLoader size="sm" />
+    </div>
+  );
 }
 
 export function VisualBlock({ visualId, content, state, title, className }: VisualBlockProps) {
@@ -335,7 +372,7 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
         {isStreaming ? (
           <div className="flex h-52 w-full items-center justify-center">
             <div className="flex flex-col items-center gap-2">
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-border border-t-text-muted" />
+              <AtlasLoader size="md" real />
               <span className="text-sm text-text-muted">Building visual...</span>
             </div>
           </div>
@@ -368,13 +405,17 @@ export function VisualBlock({ visualId, content, state, title, className }: Visu
           // diagram paints its surface as an inline style, which a class
           // cannot override — so the card lost only its border and read as a
           // borderless slab floating in the transcript.
-          <InteractiveDiagram content={trimmedContent} title={title} hideChrome className="my-0" />
+          <Suspense fallback={<VisualRendererFallback />}>
+            <InteractiveDiagram content={trimmedContent} title={title} hideChrome className="my-0" />
+          </Suspense>
         ) : isRive ? (
-          <RiveVisual
-            content={trimmedContent}
-            title={title}
-            className="border-0 bg-transparent"
-          />
+          <Suspense fallback={<VisualRendererFallback />}>
+            <RiveVisual
+              content={trimmedContent}
+              title={title}
+              className="border-0 bg-transparent"
+            />
+          </Suspense>
         ) : (
           <div className="relative">
             <iframe

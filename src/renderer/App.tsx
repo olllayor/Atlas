@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import {
@@ -6,36 +15,84 @@ import {
   designThemeSupportsLight,
   resolveAppliedThemeMode,
 } from '../shared/contracts';
-import type { AppUpdateSnapshot, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
+import { applyThemePalette, resolveEffectiveTheme } from './lib/themePalette';
+import type { AppUpdateSnapshot, AtlasDeepLink, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
 import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
 import { DEFAULT_EXECUTION_TARGET, DEFAULT_WORKSPACE_MODE, isWorkspaceModeReady, shouldPromptForProject } from '../shared/workspaceModes';
 import { resolveProviderMetadata } from '../shared/providerMetadata';
+import {
+  deriveAttentionState,
+  hasPendingApprovalInParts,
+  pickNextAttentionConversation,
+} from './lib/attention';
+import { countRunningAgents } from './lib/agentActivity';
+import { sameLivenessMap, type LivenessState } from './lib/livenessMap';
+import { liveJobCountFor } from './lib/jobActivity';
+import { useConversationJobSummaries } from './hooks/useConversationJobSummaries';
+import { useDraftSummaries } from './hooks/useDraftSummaries';
 import { POSTHOG_EVENTS } from '../shared/posthog';
-import { ChatWindow } from './components/ChatWindow';
+import { ChatWindowSlot } from './components/ChatWindowSlot';
 import { CommandPalette } from './components/CommandPalette';
+import { formatExplainPrompt, formatMarkdownQuote, sanitizeSearchQuery } from './lib/contextMenu';
+import { mergeCitationsIntoMessage, type AssistantCitation } from '../shared/citations';
 import { ChatComposerSlot } from './components/ChatComposerSlot';
+import { SubagentComposer } from './components/subagents/SubagentComposer';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { RendererErrorBoundary } from './components/RendererErrorBoundary';
-import { buildUsageSummary, SettingsWorkspace } from './components/SettingsWorkspace';
-import { SitesWorkspace } from './components/sites/SitesWorkspace';
-import { PluginsWorkspace } from './components/plugins/PluginsWorkspace';
+import { SideChatPane } from './components/side/SideChatPane';
+/*
+  Route-level code splitting. None of these is on the path to a first paint of
+  a chat: three are full-screen views the user has to navigate to, the terminal
+  only mounts once the dock is opened, and the gallery is a modal. Static
+  imports put all of them — settings' two thousand lines, xterm and its four
+  addons, the sites and plugins workspaces — in the entry chunk that every cold
+  start parses before anything is on screen.
+*/
+const SettingsWorkspaceRoute = lazy(() =>
+  import('./components/settings/SettingsWorkspaceRoute').then((module) => ({
+    default: module.SettingsWorkspaceRoute,
+  }))
+);
+const SitesWorkspace = lazy(() =>
+  import('./components/sites/SitesWorkspace').then((module) => ({ default: module.SitesWorkspace }))
+);
+const PluginsWorkspace = lazy(() =>
+  import('./components/plugins/PluginsWorkspace').then((module) => ({
+    default: module.PluginsWorkspace,
+  }))
+);
 import { Sidebar } from './components/Sidebar';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
-import { WorkbenchPanel, type WorkbenchTab } from './components/workbench/WorkbenchPanel';
+import type { RightPanelKind } from './components/workbench/rightPanelModel';
+import { WorkbenchPanelSlot } from './components/workbench/WorkbenchPanelSlot';
+import { useConversationPanel, useRightPanelStore } from './stores/useRightPanelStore';
 import { WorkspaceContextBar } from './components/workspace/WorkspaceContextBar';
-import { TerminalDock } from './components/workbench/TerminalDock';
+const TerminalDock = lazy(() =>
+  import('./components/workbench/TerminalDock').then((module) => ({ default: module.TerminalDock }))
+);
 import { OpenInIdeButton } from './components/workspace/OpenInIdeButton';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { TerminalToggle, WorkbenchToggle, WorkspaceModeSwitch } from './components/workspace/WorkspaceModeSwitch';
 import { useMeasuredHeight } from './hooks/useMeasuredHeight';
-import { usePersistentFlag, useResizablePanel } from './hooks/useResizablePanel';
+import { usePersistentFlag, useResizablePanel, useViewportWidth } from './hooks/useResizablePanel';
+import { useIsFullScreen } from './hooks/useIsFullScreen';
+import { computeColumns } from './lib/columns';
+import { useSubagentComposerState } from './hooks/useSubagentComposerState';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
-import { VisualGallery } from './components/ai-elements/visual-gallery';
+const VisualGallery = lazy(() =>
+  import('./components/ai-elements/visual-gallery').then((module) => ({
+    default: module.VisualGallery,
+  }))
+);
 import { AtlasToaster } from './components/ui/sonner';
-import { TooltipProvider } from './components/ui/tooltip';
-import { XAILandingPage } from './components/XAILandingPage';
+import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip';
+const XAILandingPage = lazy(() =>
+  import('./components/XAILandingPage').then((module) => ({ default: module.XAILandingPage }))
+);
+import { AtlasLoader } from './components/ui/atlas-loader';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
 import {
   isEditableTarget,
@@ -49,13 +106,27 @@ import { buildSidebarConversationItems } from './components/sidebarViewModel';
 import { captureEvent, identifyUser, setTelemetryEnabled as setRendererTelemetryEnabled, syncTelemetryStatus } from './lib/posthog';
 import { prewarmMessageRendering } from './lib/messageRendering';
 import { notify, notifyError } from './lib/notify';
+import { copyImageSrc } from './lib/copyImage';
+import { saveImageSrc } from './lib/saveImage';
 import { isMacPlatform } from './lib/platform';
-import { buildThemeOverrides } from './lib/themeOverrides';
+import { applyAppearanceContrast, buildThemeOverrides } from './lib/themeOverrides';
+import { syncBrowserChromeTheme } from './lib/browserChrome';
+import { stampTranslucentSidebar } from './lib/translucentSidebar';
+import { applyAppearanceFontVariables } from "./lib/appearanceFonts";
+import {
+  persistCachedTheme,
+  persistCachedFonts,
+  THEME_MODE_STORAGE_KEY,
+  DESIGN_THEME_STORAGE_KEY,
+  THEME_ID_STORAGE_KEY,
+} from './lib/earlyThemeStamp';
 import { runViewTransition } from './lib/viewTransitions';
 import { cn } from './lib/utils';
 import {
   EMPTY_COMPOSER_ATTACHMENTS,
+  EMPTY_CONVERSATION_PAGES,
   hasArchivedConversations,
+  resolveArchivedConversationsCount,
   selectDiagnosticsSummary,
   selectLoadedConversationMetrics,
   useAppStore,
@@ -67,14 +138,16 @@ import {
 // titleBarOverlay).
 const isMacLike = isMacPlatform;
 
+// Hold-to-reveal for sidebar shortcut badges (⌘B / ⌘N / ⌘1-9). Long enough
+// that a quick ⌘K / ⌘S never flashes the list, short enough that an
+// intentional hold still feels instant.
+const SIDEBAR_SHORTCUT_HINT_DELAY_MS = 500;
+
 function LoadingScreen() {
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="flex items-center gap-2 text-text-muted">
-        <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+      <div className="flex flex-col items-center gap-3 text-text-muted">
+        <AtlasLoader size="lg" real className="h-14 w-14" />
         <span className="text-sm">Loading…</span>
       </div>
     </div>
@@ -146,6 +219,8 @@ export default function App() {
   // Sidebar collapse and width persist: both used to be volatile React
   // state, so every restart reset the layout.
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentFlag('atlas.sidebar.collapsed', false);
+  /** Fullscreen hides the traffic lights, so the chrome insets kept for them go. */
+  const isFullScreen = useIsFullScreen();
   const sidebarResize = useResizablePanel({
     storageKey: 'atlas.sidebar.width',
     defaultWidth: 284,
@@ -156,8 +231,27 @@ export default function App() {
   // The composer floats over the transcript; this is how the transcript
   // learns how much room to leave for it.
   const composerDock = useMeasuredHeight<HTMLDivElement>();
-  const [workbenchOpen, setWorkbenchOpen] = usePersistentFlag('atlas.workbench.open', false);
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('review');
+  /*
+    The right panel's surfaces belong to a conversation, not to the window, so
+    the layout reads the panel for whichever one is selected. Subscribed here
+    rather than taken from the store slice read further down, because the width
+    solver below runs before that slice exists.
+  */
+  const panelConversationId = useAppStore((state) => state.selectedConversationId);
+  const rightPanel = useConversationPanel(panelConversationId ?? undefined);
+  const workbenchOpen = rightPanel.isOpen;
+  /** Opens the panel on one surface, for whichever conversation is selected. */
+  const openRightPanelSurface = useCallback((kind: RightPanelKind) => {
+    const conversationId = useAppStore.getState().selectedConversationId;
+    if (!conversationId) return;
+    useRightPanelStore.getState().openSurface(conversationId, kind);
+  }, []);
+  /** Shows the panel without choosing a surface; the picker takes it from there. */
+  const showRightPanel = useCallback(() => {
+    const conversationId = useAppStore.getState().selectedConversationId;
+    if (!conversationId) return;
+    useRightPanelStore.getState().showPanel(conversationId);
+  }, []);
   const workbenchResize = useResizablePanel({
     storageKey: 'atlas.workbench.width',
     defaultWidth: 420,
@@ -182,6 +276,26 @@ export default function App() {
    */
   const terminalRestoreHeightRef = useRef<number | null>(null);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
+
+  /*
+    Concession-chain solver (dsh port): the workbench yields before the
+    transcript ever drops below CENTER_MIN, and closes entirely under real
+    pressure — derived only, so re-widening the window restores it. The
+    sidebar never concedes; center absorbs any final deficit.
+  */
+  const viewportWidth = useViewportWidth();
+  const solvedColumns = useMemo(
+    () =>
+      computeColumns(
+        viewportWidth,
+        sidebarCollapsed ? 0 : sidebarResize.width,
+        workbenchOpen ? workbenchResize.width : 0
+      ),
+    [viewportWidth, sidebarCollapsed, sidebarResize.width, workbenchOpen, workbenchResize.width]
+  );
+  /** Solver closed the workbench to protect the transcript — keep it mounted at zero (state survives) but hide its handle. */
+  const workbenchDerivedClosed = workbenchOpen && solvedColumns.details === 0;
+
   const toggleTerminalExpanded = useCallback(() => {
     setTerminalExpanded((current) => {
       if (current) {
@@ -229,6 +343,7 @@ export default function App() {
     activeView,
     settingsSection,
     commandPaletteOpen,
+    commandPaletteInitialQuery,
     modelPickerOpen,
     composerFocused,
     composerFocusNonce,
@@ -244,12 +359,17 @@ export default function App() {
     isLoadingArchivedConversations,
     hasLoadedArchivedConversations,
     loadArchivedConversations,
-    conversationDetails,
     isLoadingOlderByConversation,
     isLoadingConversationId,
     selectedConversationId,
+    unreadByConversation,
+    markConversationUnread,
+    markConversationRead,
+    regenerateConversationTitle,
+    queuedByConversation,
     selectedModelIdByConversation,
-    draftsByConversation,
+    selectedProviderIdByConversation,
+    goalsByConversation,
     conversationStats,
     diagnostics,
     updateState,
@@ -262,6 +382,7 @@ export default function App() {
     closeSettings,
     setSettingsSection,
     setCommandPaletteOpen,
+    setCommandPaletteInitialQuery,
     setModelPickerOpen,
     setComposerFocused,
     requestComposerFocus,
@@ -296,8 +417,11 @@ export default function App() {
     detachProject,
     renameProject,
     setProjectPinned,
+    setProjectAutoPull,
     setConversationPinned,
     setConversationArchived,
+    setConversationSettled,
+    setConversationSnoozed,
     setConversationWorkspace,
     setConversationToolPermissionMode,
     removeConversationWorktree,
@@ -311,6 +435,7 @@ export default function App() {
       activeView: state.activeView,
       settingsSection: state.settingsSection,
       commandPaletteOpen: state.commandPaletteOpen,
+      commandPaletteInitialQuery: state.commandPaletteInitialQuery,
       modelPickerOpen: state.modelPickerOpen,
       composerFocused: state.composerFocused,
       composerFocusNonce: state.composerFocusNonce,
@@ -326,18 +451,30 @@ export default function App() {
       isLoadingArchivedConversations: state.isLoadingArchivedConversations,
       hasLoadedArchivedConversations: state.hasLoadedArchivedConversations,
       loadArchivedConversations: state.loadArchivedConversations,
-      conversationDetails: state.conversationDetails,
       conversationStats: state.conversationStats,
       diagnostics: state.diagnostics,
       isLoadingOlderByConversation: state.isLoadingOlderByConversation,
       isLoadingConversationId: state.isLoadingConversationId,
       selectedConversationId: state.selectedConversationId,
+      unreadByConversation: state.unreadByConversation,
+      markConversationUnread: state.markConversationUnread,
+      markConversationRead: state.markConversationRead,
+      regenerateConversationTitle: state.regenerateConversationTitle,
+      queuedByConversation: state.queuedByConversation,
       selectedModelIdByConversation: state.selectedModelIdByConversation,
+      selectedProviderIdByConversation: state.selectedProviderIdByConversation,
       // `composerDraftsByConversation` / `composerAttachmentsByConversation` are
       // deliberately absent: they change on every keystroke, and this selector
       // is shallow-compared, so subscribing to them here re-rendered the whole
       // window per character. `ChatComposerSlot` reads them instead.
-      draftsByConversation: state.draftsByConversation,
+      //
+      // `draftsByConversation` and `conversationDetails` are absent for the
+      // same reason one flush later: the stream reducer replaces both on every
+      // 33ms batch, so subscribing here re-rendered the whole window ~30 times
+      // a second for the length of every response. `ChatWindowSlot`,
+      // `ChatComposerSlot` and `WorkbenchPanelSlot` read them where they are
+      // actually rendered; App keeps only the turn-level scalars below.
+      goalsByConversation: state.goalsByConversation,
       updateState: state.updateState,
       bootstrap: state.bootstrap,
       refreshModels: state.refreshModels,
@@ -348,6 +485,7 @@ export default function App() {
       closeSettings: state.closeSettings,
       setSettingsSection: state.setSettingsSection,
       setCommandPaletteOpen: state.setCommandPaletteOpen,
+      setCommandPaletteInitialQuery: state.setCommandPaletteInitialQuery,
       setModelPickerOpen: state.setModelPickerOpen,
       setComposerFocused: state.setComposerFocused,
       requestComposerFocus: state.requestComposerFocus,
@@ -384,18 +522,168 @@ export default function App() {
       detachProject: state.detachProject,
       renameProject: state.renameProject,
       setProjectPinned: state.setProjectPinned,
+      setProjectAutoPull: state.setProjectAutoPull,
       setConversationPinned: state.setConversationPinned,
       setConversationArchived: state.setConversationArchived,
+      setConversationSettled: state.setConversationSettled,
+      setConversationSnoozed: state.setConversationSnoozed,
       setConversationWorkspace: state.setConversationWorkspace,
       setConversationToolPermissionMode: state.setConversationToolPermissionMode,
       removeConversationWorktree: state.removeConversationWorktree,
     }))
   );
+  /*
+    Turn-level draft state for the sidebar rows. Never the tokens: see
+    `projectDraftSummaries`.
+  */
+  const draftSummaries = useDraftSummaries();
+  /*
+    Settings reports how much transcript is resident, which means reading the
+    page map — the same map the stream reducer replaces on every flush. Reading
+    it only while Settings is open keeps that subscription off the chat path,
+    where the map is invisible anyway.
+  */
+  const settingsConversationPages = useAppStore((state) =>
+    state.activeView === 'settings' ? state.conversationDetails : EMPTY_CONVERSATION_PAGES
+  );
   const loadedMetrics = useAppStore(useShallow(selectLoadedConversationMetrics));
   const diagnosticsSummary = useAppStore(useShallow(selectDiagnosticsSummary));
 
-  const activeConversation = selectedConversationId ? conversationDetails[selectedConversationId] ?? null : null;
-  const activeDraft = selectedConversationId ? draftsByConversation[selectedConversationId] ?? null : null;
+  /*
+    Two scalars instead of the whole page. `conversationDetails` is replaced on
+    every stream flush, so reading the object here re-rendered App per token;
+    the title and "has any messages" are what App itself renders, and both hold
+    still for the length of a turn. The page object goes to the components that
+    actually draw it (`ChatWindowSlot`, `ChatComposerSlot`, `WorkbenchPanelSlot`).
+  */
+  const activeConversationTitle = useAppStore((state) =>
+    selectedConversationId
+      ? state.conversationDetails[selectedConversationId]?.conversation.title ?? null
+      : null
+  );
+  const conversationStarted = useAppStore((state) =>
+    selectedConversationId
+      ? (state.conversationDetails[selectedConversationId]?.messages.length ?? 0) > 0
+      : false
+  );
+  /**
+   * The context strip above the composer is pre-flight chrome — folder,
+   * execution target, branch, PR, all there to aim the first message. Once
+   * the conversation has history it collapses to its minimal form (jobs and
+   * plugin-tool chips only): the chips that remain are ones with no other
+   * home, and the slab below gets the composer row to itself.
+   */
+
+
+  /**
+   * Back/forward through the conversations visited this session — the Codex
+   * titlebar's arrows. A browser-history shape, not a stack: picking an item
+   * from the middle truncates everything forward of it, and the buttons
+   * simply enable and disable at the two ends. `navLock` marks the one
+   * selection change that a back/forward click itself causes, so restoring
+   * position does not re-push the entry it is restoring.
+   */
+  /*
+    Latches on the first gallery open so the modal's chunk is fetched on demand
+    but the dialog is not torn out from under its own exit animation.
+  */
+  const galleryEverOpenedRef = useRef(false);
+  if (galleryOpen) galleryEverOpenedRef.current = true;
+  const galleryMounted = galleryOpen || galleryEverOpenedRef.current;
+
+  const [navigation, setNavigation] = useState<{ history: string[]; index: number }>({
+    history: [],
+    index: -1,
+  });
+  const navLockRef = useRef(false);
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    if (navLockRef.current) {
+      navLockRef.current = false;
+      return;
+    }
+    setNavigation((current) => {
+      const history = current.history.slice(0, current.index + 1);
+      if (history[history.length - 1] === selectedConversationId) {
+        return current;
+      }
+      history.push(selectedConversationId);
+      return { history, index: history.length - 1 };
+    });
+  }, [selectedConversationId]);
+
+  const navigateConversationHistory = useCallback(
+    (direction: -1 | 1) => {
+      setNavigation(({ history, index }) => {
+        const nextIndex = index + direction;
+        if (nextIndex < 0 || nextIndex >= history.length) {
+          return { history, index };
+        }
+        const target = history[nextIndex];
+        if (target !== selectedConversationId) {
+          navLockRef.current = true;
+          void loadConversation(target).catch(() => {
+            // A dead target (deleted mid-session) must not leave the lock
+            // latched — that would silently swallow the next real push.
+            navLockRef.current = false;
+          });
+        }
+        return { history, index: nextIndex };
+      });
+    },
+    [loadConversation, selectedConversationId]
+  );
+  const canNavigateBack = navigation.index > 0;
+  const canNavigateForward = navigation.index < navigation.history.length - 1;
+  /*
+    Status only, for the same reason: the draft object is replaced per token,
+    its status is not. Everything that renders draft *content* reads the draft
+    itself, one level down.
+  */
+  const activeDraftStatus = useAppStore((state) =>
+    selectedConversationId ? state.draftsByConversation[selectedConversationId]?.status ?? null : null
+  );
+  const isActiveDraftStreaming = activeDraftStatus === 'streaming';
+
+  /**
+   * Composer takeover (plan §3.5). A subagent conversation must not send
+   * through the ordinary chat path — one-shot children are execution records
+   * and continuable children only accept parent-authorized followups — so
+   * the whole composer is swapped for the subagent slab below.
+   */
+  const subagentTakeover = useSubagentComposerState(selectedConversationId);
+  const reloadConversationDetail = useAppStore((state) => state.reloadConversationDetail);
+
+  const sendSubagentFollowup = useCallback(
+    async (text: string) => {
+      if (!selectedConversationId) return;
+      // Read live: the callback must not re-create when the page object is
+      // replaced mid-stream, and this field never changes within a session.
+      const parentId =
+        useAppStore.getState().conversationDetails[selectedConversationId]?.conversation
+          .sideOfConversationId ?? null;
+      if (!parentId) {
+        notify({ tone: 'error', title: 'Parent conversation unavailable', description: 'This session can no longer accept messages' });
+        return;
+      }
+      await window.atlasChat.subagents.followup(parentId, selectedConversationId, text);
+      // The turn runs outside the request/stream plumbing, so pull the
+      // accepted message in; the hook's sync poll carries the rest.
+      void reloadConversationDetail(selectedConversationId);
+    },
+    [reloadConversationDetail, selectedConversationId]
+  );
+
+  const stopSubagent = useCallback(() => {
+    if (!selectedConversationId) return;
+    captureEvent(POSTHOG_EVENTS.MESSAGE_ABORTED);
+    void window.atlasChat.subagents.interrupt(selectedConversationId).then(() => {
+      void useAppStore.getState().reloadConversationDetail(selectedConversationId);
+    });
+  }, [selectedConversationId]);
   /**
    * A session nobody has spoken in yet — no stored turns and no draft in
    * flight. Same test the transcript uses to decide it should show the
@@ -406,6 +694,7 @@ export default function App() {
   const isLoadingConversation =
     selectedConversationId != null && isLoadingConversationId === selectedConversationId;
   const selectedModelId = selectedConversationId ? selectedModelIdByConversation[selectedConversationId] ?? null : null;
+  const selectedProviderId = selectedConversationId ? selectedProviderIdByConversation[selectedConversationId] ?? null : null;
 
   // Mode and project are per conversation, not per window: two threads on two
   // repos are the normal case, and a global switch would silently retarget the
@@ -445,16 +734,22 @@ export default function App() {
   // Lives here rather than in the switcher because the mode is a property of
   // the open conversation, and the switcher itself now renders inside the
   // sidebar, which has no idea which conversation that is.
+  //
+  // Permission is a fixed function of mode — Work asks, Code runs with full
+  // access — so the switch writes both axes at once. There is no separate
+  // access UI; the approval ladder still gates at runtime, just not by hand.
   const handleWorkspaceModeChange = useCallback(
     (mode: WorkspaceMode) => {
       if (!selectedConversationId) return;
       captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: mode });
       void setConversationWorkspace(selectedConversationId, { mode });
+      const permission: ToolPermissionMode = mode === 'code' ? 'full-access' : 'ask';
+      void setConversationToolPermissionMode(selectedConversationId, permission);
       // Code is the mode with a panel worth seeing; opening it on the switch
       // saves the second click without locking the two together — the toggle
       // still wins afterwards.
       if (mode === 'code') {
-        setWorkbenchOpen(true);
+        showRightPanel();
         // The gate becomes a flow: Code with no folder at all asks for one on
         // the spot, the way Codex's directory picker does. The mode commit
         // above is not conditional on the answer — cancelling leaves Code
@@ -466,8 +761,26 @@ export default function App() {
         }
       }
     },
-    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setWorkbenchOpen]
+    [activeProject, requestProjectForConversation, selectedConversationId, setConversationWorkspace, setConversationToolPermissionMode, showRightPanel]
   );
+  /**
+   * Mode-gated creation: a new chat from the Code sidebar stays inside the
+   * open project (mode `code`, not the global default), so it never lands in
+   * the Work list as an unfiled chat. Code with no project at all still
+   * creates first, then asks for a folder — cancelling leaves the gate, never
+   * a silent unfiled Code chat.
+   */
+  const handleCreateConversation = useCallback(() => {
+    if (workspaceMode === 'code' && activeProject) {
+      void createConversationInProject(activeProject.id);
+      return;
+    }
+    void createConversation().then((created) => {
+      if (workspaceMode === 'code' && created && !created.projectId) {
+        void requestProjectForConversation(created.id, 'mode-switch');
+      }
+    });
+  }, [activeProject, createConversation, createConversationInProject, requestProjectForConversation, workspaceMode]);
   const handleExecutionTargetChange = useCallback(
     (target: ExecutionTarget) => {
       if (!selectedConversationId) return;
@@ -475,6 +788,101 @@ export default function App() {
     },
     [selectedConversationId, setConversationWorkspace]
   );
+  /** Codex's "from develop": provision the worktree off an explicit branch. */
+  const handleWorktreeFromBranch = useCallback(
+    (branch: string) => {
+      if (!selectedConversationId) return;
+      void setConversationWorkspace(selectedConversationId, {
+        executionTarget: 'worktree',
+        worktreeBaseBranch: branch,
+      });
+    },
+    [selectedConversationId, setConversationWorkspace]
+  );
+
+  /*
+    Built-in slash commands — control actions, never prompt text. Each one is a
+    verb the app already knows; the grammar just gives it a keyboard-reachable
+    name inside the composer.
+  */
+  const handleSlashAction = useEffectEvent((name: string, args?: string) => {
+    const live = useAppStore.getState();
+    const conversationId = live.selectedConversationId;
+    switch (name) {
+      case 'model':
+        live.setModelPickerOpen(true);
+        break;
+      case 'review':
+        openRightPanelSurface('diff');
+        break;
+      case 'fork':
+        if (conversationId) void live.forkConversation(conversationId);
+        break;
+      case 'plan': {
+        const current =
+          live.conversations.find((conversation) => conversation.id === conversationId)
+            ?.workspaceMode ?? DEFAULT_WORKSPACE_MODE;
+        if (conversationId) {
+          void live.setConversationWorkspace(conversationId, {
+            mode: current === 'code' ? 'work' : 'code',
+          });
+        }
+        break;
+      }
+      case 'compact':
+        if (conversationId) {
+          window.atlasChat.chat.compact(conversationId).catch(() => {});
+          notify({
+            tone: 'info',
+            title: 'Compacting on next message',
+            description: 'Older turns will be compressed when you send.',
+          });
+        }
+        break;
+      case 'goal': {
+        if (!conversationId) break;
+        const text = (args ?? '').trim();
+        if (!text) {
+          void live.loadGoal(conversationId);
+          notify({ tone: 'info', title: '/goal', description: 'Usage: /goal <objective> · /goal pause · resume · clear' });
+          break;
+        }
+        const sub = text.split(/\s+/)[0]?.toLowerCase();
+        if (sub === 'pause') {
+          void live.pauseGoal(conversationId);
+        } else if (sub === 'resume') {
+          void live.resumeGoal(conversationId);
+        } else if (sub === 'clear') {
+          void live.clearGoal(conversationId);
+        } else if (sub === 'edit') {
+          const replacement = text.slice(('edit'.length + 1)).trim();
+          if (replacement) {
+            // Edit mode: same goal row, counters kept — mirrors the dock's save.
+            live.setGoal(conversationId, replacement, 'edit').catch((error) => {
+              notifyError('/goal edit failed', error);
+            });
+          } else {
+            notify({ tone: 'info', title: '/goal edit', description: 'Usage: /goal edit <new objective>' });
+          }
+        } else {
+          void live.setGoal(conversationId, text);
+          notify({ tone: 'info', title: 'Goal set', description: 'The agent keeps working toward it across turns. /goal pause stops the loop.' });
+        }
+        break;
+      }
+      case 'side':
+        // One command, two jobs by state: nothing open → open the side chat
+        // for this conversation; a pane is up → promote it into a real chat.
+        if (live.sideChat?.parentId === conversationId) {
+          void live.promoteSideChat();
+        } else {
+          void live.openSideChat();
+        }
+        break;
+      default:
+        break;
+    }
+  });
   const handleRemoveWorktree = useCallback(() => {
     if (!selectedConversationId) return;
     void removeConversationWorktree(selectedConversationId);
@@ -491,6 +899,29 @@ export default function App() {
    * The card owns the "Undone" state, so success is silent here — only the
    * outcomes the user cannot see from the transcript get a toast.
    */
+  /*
+    The transcript's row callbacks are `useCallback`-stable because `MessageRow`
+    is memoised on them: recreated inline, every unrelated App render (a
+    settings toggle, a sidebar rename) would invalidate every visible row.
+  */
+  const openWorkbenchReview = useCallback(() => {
+    openRightPanelSurface('diff');
+  }, [openRightPanelSurface]);
+  const openWorkbenchAgents = useCallback(() => {
+    openRightPanelSurface('agents');
+  }, [openRightPanelSurface]);
+  const handleRespondToolApproval = useCallback(
+    (request: Parameters<typeof respondToolApproval>[0]) => respondToolApproval(request),
+    [respondToolApproval]
+  );
+  const handleRetryLastMessage = useCallback(() => {
+    void resendLastUserMessage();
+  }, [resendLastUserMessage]);
+  const handleLoadOlderMessages = useCallback(
+    (conversationId: string) => loadOlderMessages(conversationId),
+    [loadOlderMessages]
+  );
+
   const handleUndoTurnEdits = useCallback(
     async (toolCallIds: string[]) => {
       const conversationId = selectedConversationId;
@@ -528,6 +959,12 @@ export default function App() {
     },
     [selectedConversationId]
   );
+  // What the main process detected about that folder — project type, framework,
+  // configured env keys. Fetched, not derived: it comes from the filesystem.
+  const { context: projectContext, refresh: refreshProjectContext } = useWorkspaceContext(
+    selectedConversationId,
+    activeProject?.id ?? null,
+  );
   // With no conversation open there is nothing to write the rung onto, so it
   // becomes the preference every later conversation starts from.
   const handleToolPermissionModeChange = useCallback(
@@ -539,12 +976,6 @@ export default function App() {
       }
     },
     [selectedConversationId, setConversationToolPermissionMode, updatePreferences]
-  );
-  // What the main process detected about that folder — project type, framework,
-  // configured env keys. Fetched, not derived: it comes from the filesystem.
-  const { context: projectContext, refresh: refreshProjectContext } = useWorkspaceContext(
-    selectedConversationId,
-    activeProject?.id ?? null,
   );
 
   /**
@@ -564,10 +995,74 @@ export default function App() {
     },
     [requestComposerFocus, selectedConversationId, setComposerDraft]
   );
-  const selectedModelSummary = useMemo(
-    () => (selectedModelId ? models.find((m) => m.id === selectedModelId) ?? null : null),
-    [models, selectedModelId]
+
+  const handleQuoteInPrompt = useCallback(
+    (text: string) => {
+      if (!selectedConversationId) return;
+      const quote = formatMarkdownQuote(text);
+      if (!quote) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(selectedConversationId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${quote}` : quote);
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
   );
+
+  const handleExplainSelection = useCallback(
+    (text: string) => {
+      if (!selectedConversationId) return;
+      const prompt = formatExplainPrompt(text);
+      if (!prompt) return;
+      const current = useAppStore.getState().composerDraftsByConversation[selectedConversationId] ?? '';
+      setComposerDraft(selectedConversationId, current.trim() ? `${current.replace(/\s+$/, '')}\n\n${prompt}` : prompt);
+      requestComposerFocus();
+    },
+    [requestComposerFocus, selectedConversationId, setComposerDraft]
+  );
+
+  const handleCiteCitation = useCallback(
+    (citation: AssistantCitation) => {
+      if (!selectedConversationId) return '';
+      const key = useAppStore.getState().addComposerCitation(selectedConversationId, citation);
+      requestComposerFocus();
+      return key;
+    },
+    [requestComposerFocus, selectedConversationId]
+  );
+
+  const handleCiteCommentChange = useCallback(
+    (key: string, next: AssistantCitation) => {
+      if (!selectedConversationId || !key) return;
+      useAppStore.getState().updateComposerCitation(selectedConversationId, key, next);
+    },
+    [selectedConversationId]
+  );
+
+  const handleSearchInWorkspace = useCallback(
+    (text: string) => {
+      const query = sanitizeSearchQuery(text);
+      if (!query) return;
+      setModelPickerOpen(false);
+      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      setCommandPaletteInitialQuery(query);
+      setCommandPaletteOpen(true);
+    },
+    [captureEvent, setCommandPaletteInitialQuery, setCommandPaletteOpen, setModelPickerOpen]
+  );
+  const selectedModelSummary = useMemo(() => {
+    if (!selectedModelId) return null;
+    if (selectedProviderId) {
+      const exact = models.find((m) => !m.archived && m.id === selectedModelId && m.providerId === selectedProviderId);
+      if (exact) return exact;
+    }
+    const cands = models.filter((m) => m.id === selectedModelId);
+    if (cands.length === 0) return null;
+    const active = cands.filter((m) => !m.archived);
+    const pool = active.length > 0 ? active : cands;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) if (pool[i].providerId < best.providerId) best = pool[i];
+    return best;
+  }, [models, selectedModelId, selectedProviderId]);
   // `!== false`, not `Boolean(...)`: unknown means nobody has said, and the
   // request is allowed to carry tools until a provider refuses them.
   const hasModelTools = selectedModelSummary != null && selectedModelSummary.supportsTools !== false;
@@ -578,31 +1073,168 @@ export default function App() {
   );
   const appearance = settings?.appearance ?? DEFAULT_SETTINGS_APPEARANCE;
   const themeMode = appearance.themeMode;
+  const [livenessMap, setLivenessMap] = useState<Map<string, LivenessState>>(new Map());
+  // Whole-window background-job rollups: sidebar rows, the bell, and ⌘⌥A all
+  // project this one map, so no surface can disagree about liveness.
+  const jobSummaries = useConversationJobSummaries();
+  useEffect(() => {
+    let cancelled = false;
+    // The poll runs twice a second for the life of the window, so a broken
+    // liveness channel would print thousands of identical lines. Reported once
+    // per mount: enough to see it, quiet enough to keep the console usable.
+    let reportedFailure = false;
+    const fetchLiveness = async () => {
+      try {
+        const map = await window.atlasChat.subagents.getLiveness();
+        if (cancelled) return;
+        // Same reading as last time is the normal case for a poll this
+        // frequent. Keeping the previous Map means no state change, so the
+        // window stays still instead of re-rendering twice a second at rest.
+        const next = new Map(Object.entries(map));
+        setLivenessMap((previous) => (sameLivenessMap(previous, next) ? previous : next));
+      } catch (error) {
+        if (cancelled || reportedFailure) return;
+        reportedFailure = true;
+        console.warn('[liveness] poll failed; agent activity may look stale', error);
+      }
+    };
+    void fetchLiveness();
+    const unsub = window.atlasChat.chat.subscribe((event) => {
+      if (event?.type === 'runtime-sync') void fetchLiveness();
+    });
+    const interval = setInterval(() => void fetchLiveness(), 2000);
+    return () => {
+      cancelled = true;
+      unsub();
+      clearInterval(interval);
+    };
+  }, []);
+
+  /*
+    `atlas://` deep links (t3code pattern): one subscription folds a route
+    into whatever store actions already exist. Live reads via getState — the
+    handler must not go stale on conversation switches.
+  */
+  useEffect(() => {
+    const foldDeepLink = (link: AtlasDeepLink) => {
+      const live = useAppStore.getState();
+      switch (link.kind) {
+        case 'chat':
+          if (link.conversationId) {
+            void live.loadConversation(link.conversationId);
+            if (link.prompt) {
+              live.setComposerDraft(link.conversationId, link.prompt);
+            }
+          } else if (link.prompt) {
+            // createConversation resolves with the new summary; seed its draft
+            // once, after the single create (never create twice per link).
+            void live.createConversation().then((conversation) => {
+              if (conversation) {
+                useAppStore.getState().setComposerDraft(conversation.id, link.prompt!);
+              }
+            });
+          } else {
+            void live.createConversation();
+          }
+          break;
+        case 'settings':
+          // The grammar already rejects unknown sections; the cast narrows the
+          // shared string type to the renderer's union.
+          runViewTransition(() => openSettings((link.section ?? 'general') as Parameters<typeof openSettings>[0]));
+          break;
+        case 'plugins':
+          live.openPlugins();
+          break;
+        case 'sites':
+          if (!(live.settings?.sitesBetaEnabled ?? false)) break;
+          live.openSites();
+          break;
+      }
+    };
+    // A link that arrived before this subscription existed (cold start) was
+    // parked in main; pull it once so the first launch still lands.
+    void window.atlasChat.deepLink?.consumePending?.().then((pending) => {
+      if (pending) foldDeepLink(pending);
+    });
+    const off = window.atlasChat.deepLink?.onDeepLink(foldDeepLink);
+    return off;
+  }, []);
+
+  /*
+    /goal projections: bind the push channel once, and refresh the visible
+    conversation's projection whenever the selection moves.
+  */
+  useEffect(() => {
+    useAppStore.getState().bindGoalEvents();
+  }, []);
+  // Native image menu: main forwards the source, this side fetches the bytes
+  // (only the renderer can read `blob:` URLs) and answers through images.copy.
+  useEffect(() => {
+    const off = window.atlasChat.images?.onCopyRequest?.((src) => {
+      void copyImageSrc(src);
+    });
+    return off;
+  }, []);
+  // Native image menu, save half: same fetch, answered through images.save,
+  // which shows the save dialog in the main process.
+  useEffect(() => {
+    const off = window.atlasChat.images?.onSaveRequest?.((src) => {
+      void saveImageSrc(src);
+    });
+    return off;
+  }, []);
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    void useAppStore.getState().loadGoal(selectedConversationId);
+  }, [selectedConversationId]);
+
   const sidebarItems = useMemo(
     () =>
       buildSidebarConversationItems({
         conversations,
-        draftsByConversation,
+        draftsByConversation: draftSummaries,
         now: nowMs,
+        livenessByConversation: livenessMap,
+        jobSummariesByConversation: jobSummaries,
+        unreadByConversation,
+        queuedByConversation,
+        goalsByConversation,
       }),
-    [conversations, draftsByConversation, nowMs]
+    [
+      conversations,
+      draftSummaries,
+      nowMs,
+      livenessMap,
+      jobSummaries,
+      unreadByConversation,
+      queuedByConversation,
+      goalsByConversation,
+    ]
   );
   /**
    * Archived chats get the same row view model as live ones — they are the same
    * rows with different verbs, and building them a second way would drift.
-   * `draftsByConversation` still applies: an archived chat keeps its in-memory
+   * The draft summary still applies: an archived chat keeps its in-memory
    * transcript, so a row can legitimately report the turn it was on.
    */
   const archivedSidebarItems = useMemo(
     () =>
       buildSidebarConversationItems({
         conversations: archivedConversations,
-        draftsByConversation,
+        draftsByConversation: draftSummaries,
         now: nowMs,
+        livenessByConversation: livenessMap,
+        unreadByConversation,
       }),
-    [archivedConversations, draftsByConversation, nowMs]
+    [archivedConversations, draftSummaries, nowMs, livenessMap, unreadByConversation, goalsByConversation]
   );
   const hasArchivedChats = hasArchivedConversations({
+    storedConversationCount: conversationStats?.storedConversationCount ?? null,
+    liveConversationCount: conversations.length,
+    archivedConversationCount: archivedConversations.length,
+    hasLoadedArchived: hasLoadedArchivedConversations,
+  });
+  const archivedCount = resolveArchivedConversationsCount({
     storedConversationCount: conversationStats?.storedConversationCount ?? null,
     liveConversationCount: conversations.length,
     archivedConversationCount: archivedConversations.length,
@@ -680,11 +1312,12 @@ export default function App() {
         disabled:
           ((definition.command === 'sidebar.toggle' || definition.command === 'terminal.toggle') &&
             activeView !== 'chat') ||
-          (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || activeDraft?.status === 'streaming')) ||
+          (definition.command === 'models.openSwitcher' && (activeView !== 'chat' || !selectedConversationId || isActiveDraftStreaming)) ||
           ((definition.command === 'conversation.previous' || definition.command === 'conversation.next') &&
             !selectedConversationId) ||
           ((definition.command === 'workspace.mode.toggle' || definition.command === 'workspace.project.attach') &&
-            (activeView !== 'chat' || !selectedConversationId)),
+            (activeView !== 'chat' || !selectedConversationId)) ||
+          (definition.command === 'plugins.open' && !(settings?.pluginsBetaEnabled ?? false)),
         section: definition.section,
         shortcutLabel: shortcutLabelForCommand(resolvedKeybindings, definition.command, {
           context: keybindingContext,
@@ -695,7 +1328,7 @@ export default function App() {
         // matches what people type, not only the command's own wording.
         keywords: definition.keywords,
       })),
-    [activeDraft?.status, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
+    [isActiveDraftStreaming, activeView, keybindingContext, resolvedKeybindings, selectedConversationId, shortcutPlatform]
   );
   /**
    * The sidebar's "Search" row opens the palette, so the palette has to offer
@@ -733,7 +1366,13 @@ export default function App() {
 
     if (command === 'app.commandPalette.toggle') {
       live.setModelPickerOpen(false);
-      captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      if (!livePaletteOpen) {
+        // Normal open, not search-in-workspace: drop any stale selection query
+        // left behind (e.g. palette closed via a store path that bypassed
+        // onOpenChange before the close-clearing fix).
+        live.setCommandPaletteInitialQuery(null);
+        captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
+      }
       live.setCommandPaletteOpen(!livePaletteOpen);
       return;
     }
@@ -771,7 +1410,7 @@ export default function App() {
       captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'workspaceMode', value: next });
       void live.setConversationWorkspace(liveSelectedConversationId, { mode: next });
       if (next === 'code') {
-        setWorkbenchOpen(true);
+        showRightPanel();
         // The shortcut is the same switch, so it owes the same prompt.
         const summary = live.conversations.find((conversation) => conversation.id === liveSelectedConversationId) ?? null;
         const project = summary?.projectId
@@ -791,6 +1430,31 @@ export default function App() {
       }
 
       setTerminalOpen((current) => !current);
+      return;
+    }
+
+    if (command === 'workbench.review.open') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      openRightPanelSurface('diff');
+      return;
+    }
+
+    if (command === 'chat.side.toggle') {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat') {
+        return;
+      }
+
+      // Open when closed, close when open — the pane is the state.
+      if (live.sideChat) {
+        live.closeSideChat();
+      } else {
+        void live.openSideChat();
+      }
       return;
     }
 
@@ -825,6 +1489,9 @@ export default function App() {
     }
 
     if (command === 'plugins.open') {
+      if (!(settings?.pluginsBetaEnabled ?? false)) {
+        return;
+      }
       live.setCommandPaletteOpen(false);
       runViewTransition(() => {
         live.openPlugins();
@@ -863,6 +1530,33 @@ export default function App() {
       live.setCommandPaletteOpen(false);
       live.setModelPickerOpen(false);
       void live.selectAdjacentConversation('next');
+      return;
+    }
+
+    if (command === 'conversation.nextAttention') {
+      live.setCommandPaletteOpen(false);
+      live.setModelPickerOpen(false);
+      const attentionItems = live.conversations.map((conversation) => {
+        const draft = live.draftsByConversation[conversation.id];
+        return {
+          id: conversation.id,
+          level: deriveAttentionState({
+            draftStatus: draft?.status,
+            hasPendingApproval: hasPendingApprovalInParts(draft?.parts),
+            backgroundLiveness: livenessMap.get(conversation.id) ?? null,
+            backgroundJobsLive: liveJobCountFor(jobSummaries, conversation.id),
+            conversationStatus: conversation.status,
+            queuedFollowups: live.queuedByConversation[conversation.id]?.length ?? 0,
+            unreadCount: live.unreadByConversation[conversation.id] ?? 0,
+            hasActiveGoal: live.goalsByConversation[conversation.id]?.status === 'active',
+          }),
+          timestampMs: Date.parse(conversation.updatedAt) || null,
+        };
+      });
+      const targetId = pickNextAttentionConversation(attentionItems, live.selectedConversationId);
+      if (targetId) {
+        void live.loadConversation(targetId);
+      }
       return;
     }
 
@@ -964,28 +1658,49 @@ export default function App() {
     }
   }, [activeView, hasCredential]);
 
+  const lastAppliedThemeSignatureRef = useRef<string>('');
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const applyTheme = () => {
-      // Clamped against the design theme: `default` and `xai` have no light
-      // palette, and `color-scheme: light` under them turned native controls
-      // white while every app surface stayed dark.
       const resolved = resolveAppliedThemeMode(themeMode, appearance.designTheme, mediaQuery.matches);
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.style.colorScheme = resolved;
+      const effectiveThemeId = resolveEffectiveTheme(appearance.themeId, resolved, appearance.themeHalves);
+      const translucent = appearance.translucentSidebar && isMacLike;
+      const signature = `${themeMode}|${appearance.designTheme}|${effectiveThemeId}|${resolved}|${translucent}|${appearance.glassOpacity ?? 100}`;
+      if (lastAppliedThemeSignatureRef.current === signature) return;
+      lastAppliedThemeSignatureRef.current = signature;
+
+      persistCachedTheme(themeMode, appearance.designTheme, effectiveThemeId);
+      const root = document.documentElement;
+      root.classList.add('no-transitions');
+      root.dataset.designTheme = appearance.designTheme;
+      root.dataset.theme = resolved;
+      root.classList.toggle('dark', resolved === 'dark');
+      root.style.colorScheme = resolved;
+      applyThemePalette(effectiveThemeId, resolved);
+      if (typeof appearance.glassOpacity === 'number') {
+        root.style.setProperty('--glass-opacity', `${appearance.glassOpacity}%`);
+      }
+      void root.offsetHeight;
+      requestAnimationFrame(() => root.classList.remove('no-transitions'));
+      syncBrowserChromeTheme({ translucent });
     };
 
     applyTheme();
     mediaQuery.addEventListener('change', applyTheme);
 
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === THEME_MODE_STORAGE_KEY || event.key === DESIGN_THEME_STORAGE_KEY || event.key === THEME_ID_STORAGE_KEY) {
+        lastAppliedThemeSignatureRef.current = '';
+        applyTheme();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
     return () => {
       mediaQuery.removeEventListener('change', applyTheme);
+      window.removeEventListener('storage', handleStorage);
     };
-  }, [themeMode, appearance.designTheme]);
-
-  useEffect(() => {
-    document.documentElement.dataset.designTheme = appearance.designTheme;
-  }, [appearance.designTheme]);
+  }, [themeMode, appearance.designTheme, appearance.themeId, appearance.themeHalves, appearance.glassOpacity, appearance.translucentSidebar, isMacLike]);
 
   useEffect(() => {
     document.documentElement.dataset.borderRadius = appearance.borderRadius;
@@ -993,6 +1708,9 @@ export default function App() {
 
   // Color overrides ride on top of the design theme as inline custom
   // properties; removing an override falls straight back to the theme value.
+  // Contrast numbers stamp alongside (the ladder answers them live), and the
+  // ladder gate tells the per-surface twins in styles.css when a derivation
+  // exists — neutral ships render exactly as authored.
   const appliedOverrideKeysRef = useRef<string[]>([]);
   useEffect(() => {
     const root = document.documentElement;
@@ -1009,14 +1727,20 @@ export default function App() {
     }
 
     appliedOverrideKeysRef.current = Object.keys(overrides);
+    applyAppearanceContrast(root, appearance.contrast);
+    root.dataset.contrastLadder = '--text-secondary' in overrides ? 'on' : 'off';
+    // Read-back after the stamp above: getComputedStyle forces a sync
+    // recalculation, so the frame follows the page in the same task.
+    syncBrowserChromeTheme({ translucent: appearance.translucentSidebar && isMacLike });
   }, [appearance]);
 
   // Vibrancy is a macOS window material. Off macOS the window stays opaque, so
   // a see-through sidebar would blend into a hardcoded window colour instead of
-  // the desktop — the setting is stored but never stamped there.
+  // the desktop — the setting is stored but never stamped there. The stamp also
+  // mirrors to localStorage, which main.tsx reads synchronously on the next
+  // launch so the first frame is already glass.
   useEffect(() => {
-    document.documentElement.dataset.translucentSidebar =
-      appearance.translucentSidebar && isMacLike ? 'true' : 'false';
+    stampTranslucentSidebar(appearance.translucentSidebar && isMacLike);
   }, [appearance.translucentSidebar]);
 
   useEffect(() => {
@@ -1036,56 +1760,125 @@ export default function App() {
   }, [appearance.reduceMotion]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty('--ui-font-size', `${appearance.uiFontSize}px`);
-    root.style.setProperty('--code-font-size', `${appearance.codeFontSize}px`);
-    root.style.setProperty('--font-ui-family', buildFontFamilyValue(appearance.uiFontFamily, '--font-ui-system'));
-    root.style.setProperty('--font-code-mono', buildFontFamilyValue(appearance.codeFontFamily, '--font-mono-system'));
-  }, [appearance.codeFontFamily, appearance.codeFontSize, appearance.uiFontFamily, appearance.uiFontSize]);
+    applyAppearanceFontVariables(document.documentElement, appearance);
+    persistCachedFonts({
+      panelAnimationDurationMs: appearance.panelAnimationDurationMs,
+      fontFamilySans: appearance.fontFamilySans,
+      fontFamilyComposer: appearance.fontFamilyComposer,
+      fontFamilyCode: appearance.fontFamilyCode,
+      fontFamilyTerminal: appearance.fontFamilyTerminal,
+      fontSizeInterface: appearance.fontSizeInterface,
+      fontSizePrompt: appearance.fontSizePrompt,
+      fontSizeCode: appearance.fontSizeCode,
+      fontSizeTerminal: appearance.fontSizeTerminal,
+      fontSmoothing: appearance.fontSmoothing,
+    });
+  }, [
+    appearance.panelAnimationDurationMs,
+    appearance.fontFamilySans,
+    appearance.fontFamilyComposer,
+    appearance.fontFamilyCode,
+    appearance.fontFamilyTerminal,
+    appearance.fontSizeInterface,
+    appearance.fontSizePrompt,
+    appearance.fontSizeCode,
+    appearance.fontSizeTerminal,
+    appearance.fontSmoothing,
+    appearance.codeFontFamily,
+    appearance.codeFontSize,
+    appearance.uiFontFamily,
+    appearance.uiFontSize,
+  ]);
 
-  const activitiesByConversation = useAppStore((state) => state.activitiesByConversation);
-  const activeActivities = selectedConversationId
-    ? (activitiesByConversation[selectedConversationId] ?? [])
-    : [];
+  /*
+    The activity log is rewritten on every stream flush (a text delta folds
+    into a `message.*` entry), so subscribing to the log here put App on the
+    token path. All App does with it is notice when the first agent starts, so
+    it subscribes to that count instead — a number, which holds still between
+    the events that actually matter.
+  */
+  const runningAgentsCount = useAppStore((state) =>
+    countRunningAgents(
+      selectedConversationId ? state.activitiesByConversation[selectedConversationId] : undefined
+    )
+  );
 
   const prevRunningAgentsCountRef = useRef(0);
   useEffect(() => {
-    const runningAgentsCount = activeActivities.filter((a) => {
-      const isAgent = a.payload?.agentKind === 'agent';
-      return isAgent && (a.status === 'running' || a.status === 'pending_approval');
-    }).length;
-
     if (runningAgentsCount > 0 && prevRunningAgentsCountRef.current === 0) {
-      setWorkbenchTab('agents');
-      setWorkbenchOpen(true);
+      openRightPanelSurface('agents');
     }
     prevRunningAgentsCountRef.current = runningAgentsCount;
-  }, [activeActivities]);
+  }, [openRightPanelSurface, runningAgentsCount]);
+
+  // Badges (⌘B / ⌘N / ⌘1-9) appear only while the modifier is held, and only
+  // after a short hold so a quick ⌘K / ⌘S never flashes the whole sidebar.
+  const shortcutHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shortcutHintsVisibleRef = useRef(false);
 
   useEffect(() => {
+    const clearShortcutHintTimer = () => {
+      if (shortcutHintTimerRef.current) {
+        clearTimeout(shortcutHintTimerRef.current);
+        shortcutHintTimerRef.current = null;
+      }
+    };
+
+    const hideShortcutHints = () => {
+      clearShortcutHintTimer();
+      shortcutHintsVisibleRef.current = false;
+      setShowConversationJumpHints(false);
+      setShowNewChatShortcutHint(false);
+      setShowSidebarToggleShortcutHint(false);
+    };
+
+    const scheduleShortcutHints = (wantsJump: boolean, wantsNewChat: boolean, wantsToggle: boolean) => {
+      if (!wantsJump && !wantsNewChat && !wantsToggle) {
+        hideShortcutHints();
+        return;
+      }
+      // Already on screen: sync immediately (covers keybinding/context swaps mid-hold).
+      if (shortcutHintsVisibleRef.current) {
+        setShowConversationJumpHints(wantsJump);
+        setShowNewChatShortcutHint(wantsNewChat);
+        setShowSidebarToggleShortcutHint(wantsToggle);
+        return;
+      }
+      // A hold fires repeat keydowns; one pending timer is enough.
+      if (shortcutHintTimerRef.current) {
+        return;
+      }
+      shortcutHintTimerRef.current = setTimeout(() => {
+        shortcutHintTimerRef.current = null;
+        shortcutHintsVisibleRef.current = true;
+        setShowConversationJumpHints(wantsJump);
+        setShowNewChatShortcutHint(wantsNewChat);
+        setShowSidebarToggleShortcutHint(wantsToggle);
+      }, SIDEBAR_SHORTCUT_HINT_DELAY_MS);
+    };
+
+    const readHintWants = (event: KeyboardEvent) => ({
+      jump: shouldShowConversationJumpHints(event, resolvedKeybindings, {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+      newChat: shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      }),
+      toggle: shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
+        context: keybindingContext,
+        platform: shortcutPlatform
+      })
+    });
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) {
         return;
       }
 
-      setShowConversationJumpHints(
-        shouldShowConversationJumpHints(event, resolvedKeybindings, {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowNewChatShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowSidebarToggleShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
+      const wants = readHintWants(event);
+      scheduleShortcutHints(wants.jump, wants.newChat, wants.toggle);
 
       const command = resolveShortcutCommand(event, resolvedKeybindings, {
         context: keybindingContext,
@@ -1106,30 +1899,12 @@ export default function App() {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      setShowConversationJumpHints(
-        shouldShowConversationJumpHints(event, resolvedKeybindings, {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowNewChatShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'chat.new', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
-      setShowSidebarToggleShortcutHint(
-        shouldShowShortcutHintForCommand(event, resolvedKeybindings, 'sidebar.toggle', {
-          context: keybindingContext,
-          platform: shortcutPlatform
-        })
-      );
+      const wants = readHintWants(event);
+      scheduleShortcutHints(wants.jump, wants.newChat, wants.toggle);
     };
 
     const onWindowBlur = () => {
-      setShowConversationJumpHints(false);
-      setShowNewChatShortcutHint(false);
-      setShowSidebarToggleShortcutHint(false);
+      hideShortcutHints();
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -1137,6 +1912,7 @@ export default function App() {
     window.addEventListener('blur', onWindowBlur);
 
     return () => {
+      clearShortcutHintTimer();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onWindowBlur);
@@ -1151,19 +1927,19 @@ export default function App() {
   const content =
     activeView === 'landing' ? (
       <XAILandingPage onBackToApp={() => closeLanding()} />
-    ) : activeView === 'sites' ? (
+    ) : activeView === 'sites' && (settings?.sitesBetaEnabled ?? false) ? (
       <SitesWorkspace onBack={() => runViewTransition(() => closeSites())} />
     ) : activeView === 'settings' ? (
-      <SettingsWorkspace
+      <SettingsWorkspaceRoute
         settings={settings}
         updateState={updateState}
-        usageSummary={buildUsageSummary({
+        usageInputs={{
           settings,
-          conversationPages: conversationDetails,
+          conversationPages: settingsConversationPages,
           conversationStats,
           diagnostics,
           rendererHeapBytes: diagnosticsSummary.rendererHeapBytes,
-        })}
+        }}
         isRefreshingModels={isRefreshingModels}
         activeSection={settingsSection}
         shortcutPlatform={shortcutPlatform}
@@ -1258,6 +2034,7 @@ export default function App() {
           items={sidebarItems}
           archivedItems={archivedSidebarItems}
           hasArchivedChats={hasArchivedChats}
+          archivedCount={archivedCount}
           isLoadingArchivedChats={isLoadingArchivedConversations}
           projects={projects}
           selectedConversationId={selectedConversationId}
@@ -1275,9 +2052,12 @@ export default function App() {
           showConversationJumpHints={showConversationJumpHints}
           conversationJumpLabelById={conversationJumpLabelById}
           onSelect={(id) => void loadConversation(id)}
-          onCreate={() => void createConversation()}
+          onCreate={handleCreateConversation}
           onDelete={(id) => void deleteConversation(id)}
           onRename={(id, title) => void renameConversation(id, title)}
+          onRegenerateTitle={(id) => void regenerateConversationTitle(id)}
+          onMarkUnread={(id) => markConversationUnread(id)}
+          onMarkRead={(id) => markConversationRead(id)}
           onOpenSettings={(section) => runViewTransition(() => openSettings(section))}
           onAttachProject={() => {
             void attachProject();
@@ -1289,15 +2069,23 @@ export default function App() {
           onForkConversation={(id) => void forkConversation(id)}
           onSetConversationPinned={(id, pinned) => void setConversationPinned(id, pinned)}
           onArchiveConversation={(id) => void setConversationArchived(id, true)}
+          onSetConversationSettled={(id, settled) => void setConversationSettled(id, settled)}
+          onSetConversationSnoozed={(id, snoozedUntil) => void setConversationSnoozed(id, snoozedUntil)}
           onRestoreConversation={(id) => void setConversationArchived(id, false)}
           onLoadArchivedChats={() => void loadArchivedConversations()}
           onSetProjectPinned={(projectId, pinned) => void setProjectPinned(projectId, pinned)}
           onOpenLanding={() => openLanding()}
           workspaceMode={workspaceMode}
-          onOpenSites={() => runViewTransition(() => openSites())}
+          onOpenSites={() => {
+            if (!(settings?.sitesBetaEnabled ?? false)) return;
+            runViewTransition(() => openSites());
+          }}
           onOpenPlugins={() => runViewTransition(() => openPlugins())}
+          showSites={settings?.sitesBetaEnabled ?? false}
+          showPlugins={settings?.pluginsBetaEnabled ?? false}
           onOpenSearch={() => {
             setModelPickerOpen(false);
+            setCommandPaletteInitialQuery(null);
             captureEvent(POSTHOG_EVENTS.COMMAND_PALETTE_OPENED);
             setCommandPaletteOpen(true);
           }}
@@ -1311,13 +2099,9 @@ export default function App() {
               disabled={!selectedConversationId}
               variant="heading"
               permissionMode={toolPermissionMode}
-              permissionDisabled={activeDraft?.status === 'streaming'}
-              executionTarget={executionTarget}
-              cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
-              isGitRepo={Boolean(activeProject?.exists && activeProject?.isGitRepository)}
+              permissionDisabled={isActiveDraftStreaming}
               onChange={handleWorkspaceModeChange}
               onPermissionModeChange={handleToolPermissionModeChange}
-              onExecutionTargetChange={handleExecutionTargetChange}
               onRequestProject={
                 selectedConversationId
                   ? () => void requestProjectForConversation(selectedConversationId, 'mode-menu')
@@ -1326,6 +2110,7 @@ export default function App() {
             />
           }
           width={sidebarResize.width}
+          translucent={appearance.translucentSidebar && isMacLike}
         />
 
         {/* Resizing is meaningless while the rail is collapsed. */}
@@ -1333,7 +2118,7 @@ export default function App() {
           <PanelResizeHandle
             ariaLabel="Resize sidebar"
             isResizing={sidebarResize.isResizing}
-            width={sidebarResize.width}
+          width={solvedColumns.sidebar}
             minWidth={sidebarResize.minWidth}
             maxWidth={sidebarResize.maxWidth}
             onPointerDown={sidebarResize.onPointerDown}
@@ -1357,7 +2142,10 @@ export default function App() {
             the catalogue and stayed focusable behind it; stacking order is the
             wrong tool for "this view is not the chat".
           */}
-          {activeView === 'plugins' ? (
+          {/* The beta switch is checked here as well as in the sidebar: a
+              window sitting on the plugins view while the flag turns off falls
+              back to the chat rather than squatting on a hidden feature. */}
+          {activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
             <PluginsWorkspace />
           ) : (
             <>
@@ -1377,18 +2165,65 @@ export default function App() {
               'titlebar-overlay-safe relative grid h-titlebar-height shrink-0 grid-cols-[1fr_auto] items-center gap-3 px-5',
               // With the 56px collapsed rail, macOS traffic lights (x:16, ~70px
               // wide) end ~30px into this bar; inset the title clear of them.
-              sidebarCollapsed && isMacLike && 'pl-12'
+              // Fullscreen hides the lights, so the inset would be dead space.
+              sidebarCollapsed && isMacLike && !isFullScreen && 'pl-12'
             )}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
-            {/* Title + streaming badge are inert text: they drag the window. */}
+            {/* Title + streaming badge are inert text: they drag the window.
+                The back/forward pair before them is the session's conversation
+                history — the same controls the Codex titlebar carries. */}
             <div className="flex min-w-0 items-center gap-2.5">
-              {activeConversation?.conversation ? (
-                <h2 className="truncate text-md font-medium text-text-primary">
-                  {activeConversation.conversation.title}
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => navigateConversationHistory(-1)}
+                      disabled={!canNavigateBack}
+                      aria-label="Go back"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                      className="flex size-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <ArrowLeft className="size-4" strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Back</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => navigateConversationHistory(1)}
+                      disabled={!canNavigateForward}
+                      aria-label="Go forward"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                      className="flex size-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <ArrowRight className="size-4" strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Forward</TooltipContent>
+                </Tooltip>
+              </div>
+              {activeConversationTitle ? (
+                <h2 className="flex min-w-0 items-center gap-1.5 truncate text-md">
+                  {activeProject ? (
+                    <>
+                      <span className="shrink-0 truncate font-normal text-text-tertiary">
+                        {activeProject.title}
+                      </span>
+                      <span aria-hidden className="shrink-0 font-normal text-text-faint">
+                        /
+                      </span>
+                    </>
+                  ) : null}
+                  <span className="truncate font-medium text-text-primary">
+                    {activeConversationTitle}
+                  </span>
                 </h2>
               ) : null}
-              {activeDraft?.status === 'streaming' ? (
+              {isActiveDraftStreaming ? (
                 <span
                   className="inline-flex items-center gap-1.5 text-2xs text-text-muted"
                   role="status"
@@ -1424,7 +2259,13 @@ export default function App() {
                   platform: shortcutPlatform,
                 })}
               />
-              <WorkbenchToggle open={workbenchOpen} onToggle={setWorkbenchOpen} />
+              <WorkbenchToggle
+                open={workbenchOpen}
+                onToggle={() => {
+                  if (!panelConversationId) return;
+                  useRightPanelStore.getState().togglePanel(panelConversationId);
+                }}
+              />
             </div>
           </div>
 
@@ -1447,7 +2288,10 @@ export default function App() {
             // rather than briefly reserving 0px and jumping.
             style={
               composerDock.height > 0
-                ? ({ '--composer-dock-height': `${composerDock.height}px` } as React.CSSProperties)
+                ? ({
+                    '--composer-dock-height': `${composerDock.height}px`,
+                    '--composer-height': `${composerDock.height}px`,
+                  } as React.CSSProperties)
                 : undefined
             }
           >
@@ -1458,28 +2302,26 @@ export default function App() {
               to start a new chat, since the transcript is what crashed.
             */}
             <RendererErrorBoundary resetKey={selectedConversationId}>
-              <ChatWindow
-                detail={activeConversation}
-                draft={activeDraft}
+              <ChatWindowSlot
+                conversationId={selectedConversationId}
                 hasCredential={hasCredential}
                 isLoadingConversation={isLoadingConversation}
                 isLoadingOlder={isLoadingOlder}
                 onOpenSettings={() => runViewTransition(() => openSettings())}
                 onSuggestionClick={appendToComposer}
-                onLoadOlderMessages={(conversationId) => loadOlderMessages(conversationId)}
-                onRespondToolApproval={(request) => respondToolApproval(request)}
-                onRetryLastMessage={() => void resendLastUserMessage()}
-                onReviewChanges={() => {
-                  setWorkbenchOpen(true);
-                  setWorkbenchTab('review');
-                }}
+                onLoadOlderMessages={handleLoadOlderMessages}
+                onRespondToolApproval={handleRespondToolApproval}
+                onRetryLastMessage={handleRetryLastMessage}
+                onReviewChanges={openWorkbenchReview}
                 onUndoChanges={handleUndoTurnEdits}
-                onOpenAgentsPanel={() => {
-                  setWorkbenchOpen(true);
-                  setWorkbenchTab('agents');
-                }}
+                onOpenAgentsPanel={openWorkbenchAgents}
                 hasTools={hasModelTools}
                 projectName={activeProject?.exists ? activeProject.title : null}
+                onQuoteInPrompt={handleQuoteInPrompt}
+                onExplainSelection={handleExplainSelection}
+                onSearchInWorkspace={handleSearchInWorkspace}
+                onCiteCitation={handleCiteCitation}
+                onCiteCommentChange={handleCiteCommentChange}
               />
             </RendererErrorBoundary>
 
@@ -1498,8 +2340,10 @@ export default function App() {
                 executionTarget={executionTarget}
                 worktreeRoot={activeWorktreeRoot}
                 cloudSandboxEnabled={settings?.chat.cloudSandboxEnabled}
+                minimal={conversationStarted}
                 onOpenSettings={() => runViewTransition(() => openSettings('beta'))}
                 onExecutionTargetChange={handleExecutionTargetChange}
+                onWorktreeFromBranch={handleWorktreeFromBranch}
                 onRemoveWorktree={handleRemoveWorktree}
                 project={activeProject}
                 projects={projects}
@@ -1523,6 +2367,9 @@ export default function App() {
                 onReveal={(projectId) => {
                   void window.atlasChat.projects.reveal(projectId);
                 }}
+                onToggleAutoPull={(projectId, autoPull) => {
+                  void setProjectAutoPull(projectId, autoPull);
+                }}
                 onRevealTarget={(target) => {
                   if (!selectedConversationId) return;
                   void window.atlasChat.workspace.revealPath({
@@ -1532,16 +2379,22 @@ export default function App() {
                 }}
               />
 
-              <ChatComposerSlot
-                conversationId={selectedConversationId}
-                disabled={!selectedConversationId}
-                isStreaming={activeDraft?.status === 'streaming'}
+              {subagentTakeover.mode !== 'normal' ? (
+                <SubagentComposer
+                  takeover={subagentTakeover}
+                  onSend={sendSubagentFollowup}
+                  onStop={stopSubagent}
+                />
+              ) : (
+                <ChatComposerSlot
+                  conversationId={selectedConversationId}
+                  disabled={!selectedConversationId}
+                onSlashAction={handleSlashAction}
                 models={models}
                 selectedModelId={selectedModelId}
+                selectedProviderId={selectedProviderId}
                 modelPickerOpen={modelPickerOpen}
                 composerFocusNonce={composerFocusNonce}
-                detail={activeConversation}
-                draft={activeDraft}
                 onSend={(message) => {
                   const conversationId = selectedConversationId;
                   captureEvent(POSTHOG_EVENTS.MESSAGE_SENT, {
@@ -1549,8 +2402,15 @@ export default function App() {
                     fileCount: message.files?.length ?? 0,
                   });
                   const sentAttachmentIds = message.files.map((file) => file.id);
+                  const sentCitationKeys = message.citations.map((entry) => entry.key);
+                  // Tray citations serialize here, at the boundary: the draft
+                  // text the user edited never held link bytes.
+                  const text = mergeCitationsIntoMessage(
+                    message.text,
+                    message.citations.map((entry) => entry.citation),
+                  );
                   return sendMessage({
-                    text: message.text,
+                    text,
                     files: message.files,
                     // Pin the thread: the composer awaits a blob→dataURL pass
                     // before calling us, so the selection may have moved on.
@@ -1559,7 +2419,7 @@ export default function App() {
                     // Only a successful send clears the thread's draft; a failure
                     // leaves the text (and files) in place to retry.
                     if (conversationId) {
-                      clearComposerDraft(conversationId, sentAttachmentIds);
+                      clearComposerDraft(conversationId, sentAttachmentIds, sentCitationKeys);
                     }
                   });
                 }}
@@ -1569,10 +2429,10 @@ export default function App() {
                     void abortConversation(selectedConversationId);
                   }
                 }}
-                onSelectModel={(modelId) => {
+                onSelectModel={(modelId, providerId) => {
                   if (selectedConversationId) {
                     captureEvent(POSTHOG_EVENTS.MODEL_SELECTED, { modelId });
-                    setSelectedModel(selectedConversationId, modelId);
+                    setSelectedModel(selectedConversationId, modelId, providerId);
                   }
                 }}
                 onModelPickerOpenChange={setModelPickerOpen}
@@ -1596,7 +2456,8 @@ export default function App() {
                 onReasoningEffortChange={(reasoningEffort) => void updatePreferences({ chat: { reasoningEffort } })}
                 onToolPermissionModeChange={handleToolPermissionModeChange}
                 onOpenGallery={() => setGalleryOpen(true)}
-              />
+                />
+              )}
             </div>
           </div>
 
@@ -1620,10 +2481,24 @@ export default function App() {
                 onReset={terminalResize.reset}
               />
               <RendererErrorBoundary resetKey={selectedConversationId}>
+                {/* xterm and its addons ride in the dock's chunk; the dock only
+                    mounts once someone opens the terminal. */}
+                <Suspense fallback={null}>
                 <TerminalDock
                   conversationId={selectedConversationId ?? undefined}
-                  workspacePath={activeProject?.exists ? activeProject.root : null}
+                  // First-paint cwd must mirror main's spawn rule (worktree
+                  // target resolves to the worktree, not the project root);
+                  // the PTY's report corrects it afterwards if they differ.
+                  workspacePath={
+                    activeProject?.exists
+                      ? activeConversationSummary?.executionTarget === 'worktree' &&
+                          activeWorktreeRoot
+                        ? activeWorktreeRoot
+                        : activeProject.root
+                      : null
+                  }
                   onClose={() => setTerminalOpen(false)}
+                  onAddSelectionToPrompt={appendToComposer}
                   expanded={terminalExpanded}
                   onToggleExpanded={toggleTerminalExpanded}
                   shortcutLabel={shortcutLabelForCommand(resolvedKeybindings, 'terminal.toggle', {
@@ -1633,6 +2508,7 @@ export default function App() {
                   className="shrink-0"
                   style={{ height: terminalResize.width }}
                 />
+                </Suspense>
               </RendererErrorBoundary>
             </>
           )}
@@ -1642,37 +2518,45 @@ export default function App() {
 
         {workbenchOpen && (
           <>
-            <PanelResizeHandle
-              ariaLabel="Resize workbench"
-              isResizing={workbenchResize.isResizing}
-              width={workbenchResize.width}
-              minWidth={workbenchResize.minWidth}
-              maxWidth={workbenchResize.maxWidth}
-              onPointerDown={workbenchResize.onPointerDown}
-              onKeyDown={workbenchResize.onKeyDown}
-              onReset={workbenchResize.reset}
-            />
+            {/* Derived-closed: pane stays mounted at zero so its state
+                survives, but the handle would be a dead control. */}
+            {!workbenchDerivedClosed && (
+              <PanelResizeHandle
+                ariaLabel="Resize workbench"
+                isResizing={workbenchResize.isResizing}
+                width={solvedColumns.details}
+                minWidth={workbenchResize.minWidth}
+                maxWidth={workbenchResize.maxWidth}
+                onPointerDown={workbenchResize.onPointerDown}
+                onKeyDown={workbenchResize.onKeyDown}
+                onReset={workbenchResize.reset}
+              />
+            )}
             <aside
               className="shrink-0 overflow-hidden border-l border-border-default"
-              style={{ width: workbenchResize.width }}
+              style={{ width: workbenchDerivedClosed ? 0 : solvedColumns.details }}
               aria-label="Workbench"
+              aria-hidden={workbenchDerivedClosed || undefined}
+              inert={workbenchDerivedClosed || undefined}
             >
               <RendererErrorBoundary resetKey={selectedConversationId}>
-                <WorkbenchPanel
+                <WorkbenchPanelSlot
                   conversationId={selectedConversationId ?? undefined}
                   mode={workspaceMode}
-                  messages={activeConversation?.messages ?? []}
-                  activities={activeActivities}
-                  activeTab={workbenchTab}
-                  onTabChange={setWorkbenchTab}
-                  onClose={() => setWorkbenchOpen(false)}
+                  hasProject={Boolean(activeProject?.exists)}
                   onSendComments={appendToComposer}
+                  onAddSelectionToPrompt={appendToComposer}
                   onOpenOutputFile={(filePath) => void window.atlasChat.workspace.openFile(filePath)}
                 />
               </RendererErrorBoundary>
             </aside>
           </>
         )}
+
+        {/* The side chat (C5): a parallel transcript beside the main one.
+            A sibling of the main panel rather than a child, so it spans the
+            full window height and the chat's internal layout is untouched. */}
+        <SideChatPane />
       </div>
     );
 
@@ -1682,20 +2566,40 @@ export default function App() {
       <CommandPalette
         items={commandPaletteItems}
         conversations={commandPaletteConversations}
+        initialQuery={commandPaletteInitialQuery}
         onSelectConversation={(id) => void loadConversation(id)}
-        onOpenChange={setCommandPaletteOpen}
+        onOpenChange={(open) => {
+          setCommandPaletteOpen(open);
+          if (!open) {
+            setCommandPaletteInitialQuery(null);
+          }
+        }}
         onSelect={runCommand}
         open={commandPaletteOpen}
       />
-      <VisualGallery
+      {/*
+        Mounted on first open and kept mounted after that: mounting it eagerly
+        would load the chunk during boot for a modal most sessions never open,
+        and unmounting it on close would cut the dialog's exit animation.
+      */}
+      {galleryMounted ? (
+        <Suspense fallback={null}>
+          <VisualGallery
         isOpen={galleryOpen}
         onClose={() => setGalleryOpen(false)}
         onSelect={(visual) => {
           setGalleryOpen(false);
           appendToComposer(visual.content);
         }}
-      />
-      {content}
+          />
+        </Suspense>
+      ) : null}
+      {/*
+        One boundary for every route-level chunk. The chat shell is not lazy, so
+        this only ever shows while a full-screen view (settings, sites, plugins,
+        landing) is being fetched — a few milliseconds from local disk.
+      */}
+      <Suspense fallback={<LoadingScreen />}>{content}</Suspense>
     </TooltipProvider>
   );
 }

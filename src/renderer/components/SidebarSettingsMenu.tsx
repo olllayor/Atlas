@@ -166,7 +166,10 @@ export function SidebarSettingsMenu({
   const triggerButton = (
     <button
       type="button"
-      aria-label={collapsed ? 'Settings and more' : 'More actions'}
+      // The badge is colour-only visually; the accessible name carries it.
+      aria-label={
+        (collapsed ? 'Settings and more' : 'More actions') + (showBadge ? ' — update available' : '')
+      }
       aria-haspopup="menu"
       className={cn(
         'relative flex shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary',
@@ -203,7 +206,7 @@ export function SidebarSettingsMenu({
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
           <GearIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span className="truncate text-md font-normal">Settings</span>
+          <span className="truncate text-md font-medium">Settings</span>
         </button>
       ) : null}
 
@@ -298,7 +301,7 @@ export function SidebarSettingsMenu({
             className="px-3 text-sm"
           >
             <ReloadIcon
-              className={`h-4 w-4 text-[var(--text-muted)] ${isRefreshingModels ? 'animate-spin' : ''}`}
+              className={`h-4 w-4 text-[var(--text-muted)] ${isRefreshingModels ? 'motion-spin-steps' : ''}`}
             />
             <span>{isRefreshingModels ? 'Refreshing catalog…' : 'Refresh model catalog'}</span>
           </DropdownMenuItem>
@@ -313,7 +316,7 @@ export function SidebarSettingsMenu({
           >
             <UpdateIcon
               className={`h-4 w-4 text-[var(--text-muted)] ${
-                updateState.status === 'checking' ? 'animate-spin' : ''
+                updateState.status === 'checking' ? 'motion-spin-steps' : ''
               }`}
             />
             <span>{getUpdateLabel(updateState)}</span>

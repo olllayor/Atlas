@@ -10,6 +10,7 @@ import {
   normalizeModelInputs,
   normalizeProviderName
 } from '../src/shared/customProviders.js';
+import { resolveProviderLabel, resolveProviderMetadata } from '../src/shared/providerMetadata.js';
 
 test('normalizeBaseUrl keeps the API root and drops a pasted completion path', () => {
   assert.equal(normalizeBaseUrl('https://api.example.com/v1'), 'https://api.example.com/v1');
@@ -91,4 +92,24 @@ test('formatContextWindow renders the badge shown next to each model', () => {
   assert.equal(formatContextWindow(128), '128');
   assert.equal(formatContextWindow(null), null);
   assert.equal(formatContextWindow(0), null);
+});
+
+test('resolveProviderLabel resolves configured names, known provider labels, and fallbacks', () => {
+  // Custom configured provider uses verbatim name
+  assert.equal(
+    resolveProviderLabel('custom:my-id', [{ id: 'custom:my-id', name: 'My Custom Provider' }]),
+    'My Custom Provider'
+  );
+
+  // OpenCode integration
+  assert.equal(resolveProviderLabel('opencode'), 'OpenCode');
+
+  // Known standard provider IDs resolve to human-readable names
+  assert.equal(resolveProviderLabel('anthropic'), 'Anthropic');
+  assert.equal(resolveProviderLabel('openai'), 'OpenAI');
+  assert.equal(resolveProviderLabel('openrouter'), 'OpenRouter');
+  assert.equal(resolveProviderLabel('deepseek'), 'DeepSeek');
+
+  // Removed custom provider fallback
+  assert.equal(resolveProviderLabel('custom:deleted'), 'Removed provider');
 });

@@ -4,8 +4,12 @@ import { IPC_CHANNELS } from '../../shared/ipc';
 import type {
   CreateSiteRequest,
   DeleteSiteFileRequest,
+  AnalyzeWorkspaceRequest,
   ExportSiteRequest,
   ExportSiteResult,
+  ExportSiteToWorkspaceRequest,
+  ExportSiteToWorkspaceResult,
+  WorkspaceProjectAnalysis,
   OpenSitePreviewRequest,
   PublishSiteRequest,
   ReadSiteFileRequest,
@@ -201,6 +205,28 @@ export function registerSitesIpc({
       async (event, request: ExportSiteRequest): Promise<ExportSiteResult> => {
         assertTrustedSender(event);
         return exporter.export(windowOf(event), request);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.sitesExportToWorkspace,
+    withUserFacingErrors(
+      IPC_CHANNELS.sitesExportToWorkspace,
+      async (event, request: ExportSiteToWorkspaceRequest): Promise<ExportSiteToWorkspaceResult> => {
+        assertTrustedSender(event);
+        return exporter.exportToWorkspace(request);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.sitesAnalyzeWorkspace,
+    withUserFacingErrors(
+      IPC_CHANNELS.sitesAnalyzeWorkspace,
+      async (event, request: AnalyzeWorkspaceRequest): Promise<WorkspaceProjectAnalysis> => {
+        assertTrustedSender(event);
+        return exporter.analyzeWorkspace(request);
       }
     )
   );

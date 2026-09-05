@@ -4,6 +4,8 @@ import { countDiffLines } from './repositories/fileChangesRepo';
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
@@ -18,8 +20,10 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
 );
 
 CREATE TABLE IF NOT EXISTS model_cache (
-  model_id TEXT PRIMARY KEY,
+  -- Scoped to the provider: two endpoints serving the same model id are two
+  -- catalog entries, not one overwriting the other.
   provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
   label TEXT NOT NULL,
   context_window INTEGER,
   is_free INTEGER NOT NULL DEFAULT 0,
@@ -34,7 +38,8 @@ CREATE TABLE IF NOT EXISTS model_cache (
   max_output_tokens INTEGER,
   supports_temperature INTEGER NOT NULL DEFAULT 1,
   supports_reasoning INTEGER NOT NULL DEFAULT 0,
-  reasoning_efforts TEXT
+  reasoning_efforts TEXT,
+  PRIMARY KEY (provider_id, model_id)
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
@@ -82,6 +87,7 @@ CREATE TABLE IF NOT EXISTS messages (
   input_tokens INTEGER,
   output_tokens INTEGER,
   reasoning_tokens INTEGER,
+  cached_input_tokens INTEGER,
   latency_ms INTEGER,
   error_code TEXT,
   created_at TEXT NOT NULL
@@ -200,6 +206,49 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
 ON conversation_turns (conversation_id, created_at);
+
+-- Durable rolling summaries of compacted older turns. The fingerprint ties a
+-- row to the exact older-turn content it summarises; a stale fingerprint means
+-- the history moved on and the row must be recomputed. The status column is
+-- the crash lock for the async model-generated pass: a row left in 'building'
+-- after a crash is ignored by readers and retried by the next refresh, so a
+-- mid-flight failure is detectable instead of silently corrupting the cache.
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL,
+  rolling_summary TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'heuristic',
+  status TEXT NOT NULL DEFAULT 'ready',
+  updated_at TEXT NOT NULL
+);
+
+-- One persistent objective per conversation (/goal), plan
+-- docs/superpowers/plans/2026-08-26-goal-mode.md. The partial unique index
+-- below is the "one live goal" rule: cleared rows stay as history, and at most
+-- one row per conversation may hold any other status. The revision column is
+-- the stale update guard (Codex's goal_id protection): transitions carry the
+-- revision they were decided against, so a slow writer cannot clobber a
+-- replacement.
+CREATE TABLE IF NOT EXISTS conversation_goals (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  blocker_kind TEXT,
+  blocker_note TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  turn_cap INTEGER NOT NULL DEFAULT 25,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  last_progress_turn INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_goals_active
+ON conversation_goals (conversation_id)
+WHERE status NOT IN ('cleared');
 
 -- Git snapshots bracketing each turn, so a turn's edits can be shown as one
 -- diff and undone as one act. The status column records the skipped cases (no
@@ -454,7 +503,10 @@ CREATE TABLE IF NOT EXISTS projects (
   last_used_at TEXT,
   -- Same reasoning as conversations.pinned_at above: a timestamp, so the pinned
   -- section keeps a stable order of its own, independent of recency.
-  pinned_at TEXT
+  pinned_at TEXT,
+  -- Opt-in background pull of the default branch. Off for existing rows, so an
+  -- upgrade never starts moving a checkout the user did not ask to track.
+  auto_pull INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_last_used
@@ -504,6 +556,34 @@ CREATE TABLE IF NOT EXISTS terminal_history (
 
 CREATE INDEX IF NOT EXISTS idx_terminal_history_conversation
 ON terminal_history (conversation_id, started_at);
+
+-- Resume cursor for the OpenCode provider: which opencode session backs this
+-- conversation, the directory it was created against, and the transport that
+-- owns it. Both runtimes share opencode's session storage, so a cursor must
+-- never resume across transports: an SDK id would resolve over ACP and graft
+-- the wrong runtime onto the chat. A move forks (SDK) or forks (ACP).
+CREATE TABLE IF NOT EXISTS opencode_sessions (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  transport TEXT NOT NULL DEFAULT 'sdk',
+  updated_at TEXT NOT NULL
+);
+
+-- Same cursor, for every other local agent driven over ACP (Claude Code, …).
+-- Kept apart from opencode_sessions rather than bolted onto it: opencode's
+-- cursor carries transport/version semantics none of these share, and a
+-- session id is only ever meaningful to the agent that issued it — hence the
+-- composite key.
+CREATE TABLE IF NOT EXISTS local_agent_sessions (
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  directory TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, agent_id)
+);
 `;
 
 export function applySchema(database: SqliteDatabase) {
@@ -531,8 +611,34 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE messages ADD COLUMN reasoning_tokens INTEGER');
   }
 
+  // Provider-reported prompt-cache hits (dsh's `cacheReadTokens` bucket).
+  // NULL means the provider said nothing about caching for that turn; a real
+  // zero is stored as 0. The distinction is what keeps an unreported provider
+  // from faking a 0% hit rate in the stats.
+  if (!columns.includes('cached_input_tokens')) {
+    database.exec('ALTER TABLE messages ADD COLUMN cached_input_tokens INTEGER');
+  }
+
   if (!columns.includes('response_messages_json')) {
     database.exec('ALTER TABLE messages ADD COLUMN response_messages_json TEXT');
+  }
+
+  const opencodeSessionColumns = database
+    .prepare<
+      [],
+      {
+        name: string;
+      }
+    >('PRAGMA table_info(opencode_sessions)')
+    .all()
+    .map((column) => column.name);
+
+  if (opencodeSessionColumns.length > 0 && !opencodeSessionColumns.includes('schema_version')) {
+    database.exec('ALTER TABLE opencode_sessions ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1');
+  }
+
+  if (opencodeSessionColumns.length > 0 && !opencodeSessionColumns.includes('transport')) {
+    database.exec("ALTER TABLE opencode_sessions ADD COLUMN transport TEXT NOT NULL DEFAULT 'sdk'");
   }
 
   const toolExecutionColumns = database
@@ -652,6 +758,14 @@ export function applySchema(database: SqliteDatabase) {
     database.exec('ALTER TABLE conversations ADD COLUMN worktree_root TEXT');
   }
 
+  // Migration: sticky Sites opt-in. Once a conversation mentions @Sites its
+  // toolset stays registered for the rest of the conversation, so the tool
+  // catalog stops toggling per message (prompt-cache stability). Existing rows
+  // read back as not opted in, which matches the old per-mention behaviour.
+  if (!conversationColumns.includes('sites_opt_in')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN sites_opt_in INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Migration: pin and archive. Both default to NULL, so every existing
   // conversation reads back as unpinned and unarchived — nothing disappears
   // from the sidebar on upgrade.
@@ -661,6 +775,30 @@ export function applySchema(database: SqliteDatabase) {
 
   if (!conversationColumns.includes('archived_at')) {
     database.exec('ALTER TABLE conversations ADD COLUMN archived_at TEXT');
+  }
+
+  // Migration: settle/snooze lifecycle. All four default to NULL, so every
+  // existing conversation reads back as active and never-snoozed — the
+  // sidebar shows exactly what it showed before upgrade.
+  // settled_at: when the chat was parked as done (NULL = active).
+  // unsettled_at: when it last re-entered the active list; anchors sidebar
+  // ordering so an unsettled chat surfaces at the top instead of sinking.
+  // snoozed_until/snoozed_at: wake time and when the snooze was set (NULL pair
+  // = never snoozed). Wakes are derived from the clock, never scheduled.
+  if (!conversationColumns.includes('settled_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN settled_at TEXT');
+  }
+
+  if (!conversationColumns.includes('unsettled_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN unsettled_at TEXT');
+  }
+
+  if (!conversationColumns.includes('snoozed_until')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN snoozed_until TEXT');
+  }
+
+  if (!conversationColumns.includes('snoozed_at')) {
+    database.exec('ALTER TABLE conversations ADD COLUMN snoozed_at TEXT');
   }
 
   // Migration: fork and side-conversation provenance. All three default to
@@ -688,12 +826,33 @@ export function applySchema(database: SqliteDatabase) {
     );
   }
 
+  // S1 — continuable subagent provenance. Reuses side_of_conversation_id as
+  // parent FK (subagent IS a side conversation with origin marker). New columns
+  // only distinguish it from an ephemeral tangent.
+  if (!conversationColumns.includes('origin')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN origin TEXT");
+  }
+  if (!conversationColumns.includes('subagent_mode')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN subagent_mode TEXT");
+  }
+  if (!conversationColumns.includes('subagent_label')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN subagent_label TEXT");
+  }
+  if (!conversationColumns.includes('delegation_depth')) {
+    database.exec("ALTER TABLE conversations ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0");
+  }
+
   // Created here rather than in SCHEMA above: SCHEMA runs before the migration
   // block, so on an existing database the column this indexes does not exist
   // yet and the CREATE INDEX would abort the whole script.
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_side_of
     ON conversations (side_of_conversation_id);
+  `);
+  // Batched hasChildren lookup: WHERE origin='subagent' AND side_of_conversation_id IN (...)
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_subagent_parent
+    ON conversations (side_of_conversation_id) WHERE origin = 'subagent';
   `);
 
   // Migration: pinned projects. `projects` is younger than the migration block
@@ -705,6 +864,13 @@ export function applySchema(database: SqliteDatabase) {
 
   if (projectColumns.length > 0 && !projectColumns.includes('pinned_at')) {
     database.exec('ALTER TABLE projects ADD COLUMN pinned_at TEXT');
+  }
+
+  // Migration: opt-in automatic pull of the default branch. Defaults to 0, so
+  // existing projects read back as opted out — an upgrade never starts moving
+  // a checkout on its own.
+  if (projectColumns.length > 0 && !projectColumns.includes('auto_pull')) {
+    database.exec('ALTER TABLE projects ADD COLUMN auto_pull INTEGER NOT NULL DEFAULT 0');
   }
 
   // Migration: precomputed diff line counts. Both default to 0, so rows written
@@ -944,6 +1110,76 @@ export function applySchema(database: SqliteDatabase) {
     database
       .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
       .run('migrations.toolSupportTriState', 'done');
+  }
+
+  // Migration: the model cache becomes scoped to its provider.
+  //
+  // `model_id` alone was the primary key, so two endpoints exposing the same
+  // model id — Ollama and LM Studio both serving `llama3`, two gateways with
+  // `gpt-4o` — fought over one row: every refresh let the last writer steal
+  // it, and the prune step then archived it back out from under them. The
+  // copy is 1:1 because the old key guaranteed no duplicates; nothing is
+  // dropped or rewritten.
+  if (!settingsKeys.includes('migrations.modelCacheProviderScope')) {
+    const run = () => {
+      database.exec(`
+        ALTER TABLE model_cache RENAME TO model_cache_pre_provider_scope;
+
+        CREATE TABLE model_cache (
+          provider_id TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          context_window INTEGER,
+          is_free INTEGER NOT NULL DEFAULT 0,
+          supports_vision INTEGER,
+          supports_document_input INTEGER,
+          supports_tools INTEGER,
+          archived INTEGER NOT NULL DEFAULT 0,
+          last_synced_at TEXT NOT NULL,
+          last_seen_free_at TEXT,
+          max_output_tokens INTEGER,
+          supports_temperature INTEGER NOT NULL DEFAULT 1,
+          supports_reasoning INTEGER NOT NULL DEFAULT 0,
+          reasoning_efforts TEXT,
+          PRIMARY KEY (provider_id, model_id)
+        );
+
+        INSERT INTO model_cache (
+          provider_id, model_id, label, context_window, is_free,
+          supports_vision, supports_document_input, supports_tools, archived,
+          last_synced_at, last_seen_free_at, max_output_tokens,
+          supports_temperature, supports_reasoning, reasoning_efforts
+        )
+        SELECT
+          provider_id, model_id, label, context_window, is_free,
+          supports_vision, supports_document_input, supports_tools, archived,
+          last_synced_at, last_seen_free_at, max_output_tokens,
+          supports_temperature, supports_reasoning, reasoning_efforts
+        FROM model_cache_pre_provider_scope;
+
+        DROP TABLE model_cache_pre_provider_scope;
+      `);
+      database
+        .prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)')
+        .run('migrations.modelCacheProviderScope', 'done');
+    };
+    // better-sqlite3 has transaction; node:sqlite (tests/alt builds) does not.
+    // Use it when present for atomicity, otherwise fall back to manual BEGIN.
+    const tx = (database as unknown as { transaction?: (fn: () => void) => () => void }).transaction;
+    if (typeof tx === 'function') {
+      (tx.call(database, run) as () => void)();
+    } else {
+      database.exec('BEGIN');
+      try {
+        run();
+        database.exec('COMMIT');
+      } catch (e) {
+        try {
+          database.exec('ROLLBACK');
+        } catch {}
+        throw e;
+      }
+    }
   }
 
   // Migration: backfill the diff line counts for rows written before the two

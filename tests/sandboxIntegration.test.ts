@@ -108,7 +108,7 @@ test('seatbelt allows /dev/null and reads outside the root', { skip: notSeatbelt
   }
 });
 
-test('seatbelt blocks outbound network', { skip: notSeatbelt }, async () => {
+test('seatbelt blocks outbound network in default ask mode', { skip: notSeatbelt }, async () => {
   const root = makeProject({ withGit: true });
 
   try {
@@ -123,6 +123,51 @@ test('seatbelt blocks outbound network', { skip: notSeatbelt }, async () => {
     assert.notEqual(result.returnCodeInterpretation, 'success');
     assert.equal(result.sandboxNetwork, 'deny');
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('seatbelt allows outbound network in full-access mode', { skip: notSeatbelt }, async () => {
+  const root = makeProject({ withGit: true });
+
+  try {
+    const hasCurl = await run('command -v curl', codeWorkspace(root));
+
+    if (hasCurl.returnCodeInterpretation !== 'success') {
+      return;
+    }
+
+    const result = await bashToolExecute(
+      { command: 'curl -sS --max-time 5 https://example.com', timeout: TIMEOUT_MS },
+      codeWorkspace(root),
+      'full-access'
+    );
+
+    assert.equal(result.returnCodeInterpretation, 'success');
+    assert.equal(result.sandboxNetwork, 'allow');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('seatbelt still confines writes in full-access mode', { skip: notSeatbelt }, async () => {
+  const root = makeProject({ withGit: true });
+  const outside = join(homedir(), `atlas-sandbox-denied-fa-${process.pid}.txt`);
+
+  try {
+    const result = await bashToolExecute(
+      { command: `touch '${outside}'`, timeout: TIMEOUT_MS },
+      codeWorkspace(root),
+      'full-access'
+    );
+
+    assert.notEqual(result.returnCodeInterpretation, 'success');
+    assert.equal(existsSync(outside), false);
+    assert.equal(result.sandboxDenied, true);
+    assert.match(result.sandboxDenialHint ?? '', /dangerouslyDisableSandbox/);
+    assert.doesNotMatch(result.sandboxDenialHint ?? '', /network access is blocked/);
+  } finally {
+    rmSync(outside, { force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -164,3 +209,24 @@ test('the escalation flag runs the command unwrapped', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('seatbelt provides writable scratch cache directory for package managers', { skip: notSeatbelt }, async () => {
+  const root = makeProject({ withGit: true });
+
+  try {
+    const result = await bashToolExecute(
+      {
+        command:
+          'node -e "const fs = require(\'fs\'); fs.writeFileSync(process.env.npm_config_cache + \'/test.txt\', \'ok\'); console.log(\'wrote-ok\')"'
+      },
+      codeWorkspace(root),
+      'full-access'
+    );
+
+    assert.equal(result.returnCodeInterpretation, 'success');
+    assert.match(result.stdout, /wrote-ok/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

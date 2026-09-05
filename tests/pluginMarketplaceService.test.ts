@@ -166,6 +166,100 @@ test('sweeping when nothing has ever been checked out is a no-op', (t) => {
   assert.equal(marketplaces.sweepCheckouts(), 0);
 });
 
+/** A git repo holding a one-plugin marketplace, committed so it can be cloned. */
+function gitMarketplaceFixture(root: string, version: string) {
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(join(root, '.agents', 'plugins'), { recursive: true });
+  mkdirSync(join(root, 'plugins', 'solo', '.codex-plugin'), { recursive: true });
+  write(
+    join(root, 'plugins', 'solo', '.codex-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'solo', version, description: 'd' })
+  );
+  write(join(root, 'plugins', 'solo', 'skills', 'go', 'SKILL.md'), ['---', 'name: go', 'description: Do the thing.', '---', 'Body.'].join('\n'));
+  write(
+    join(root, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'catalogue',
+      plugins: [{ name: 'solo', version, source: { source: 'local', path: './plugins/solo' } }]
+    })
+  );
+
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'pipe' });
+  execFileSync('git', ['add', '-A'], { cwd: root, stdio: 'pipe' });
+  execFileSync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--quiet', '-m', version],
+    { cwd: root, stdio: 'pipe' }
+  );
+}
+
+test('a built-in git marketplace is cached between resolves; a user one is not', (t) => {
+  const { dir, marketplaces } = setup(t);
+  const repoDir = join(dir, 'fixture-repo');
+  gitMarketplaceFixture(repoDir, '1.0.0');
+
+  const builtIn = {
+    name: 'openai-curated',
+    source: { kind: 'git' as const, url: repoDir, ref: null },
+    builtIn: true
+  };
+
+  const first = marketplaces.resolve(builtIn);
+  assert.equal(first.error, null);
+  assert.equal(first.catalog?.entries[0]?.version, '1.0.0');
+
+  // The remote moves. A cached built-in keeps serving what it cloned; a
+  // user-added marketplace over the same URL sees the move, because its
+  // freshness model is re-clone-on-every-resolve.
+  gitMarketplaceFixture(repoDir, '2.0.0');
+
+  const cached = marketplaces.resolve(builtIn);
+  assert.equal(catalogVersion(cached), '1.0.0', 'built-in serves its checkout');
+
+  const live = marketplaces.resolve({ name: 'live-market', source: { kind: 'git', url: repoDir, ref: null } });
+  assert.equal(catalogVersion(live), '2.0.0', 'user marketplace re-clones');
+});
+
+function catalogVersion(resolved: ReturnType<MarketplaceRegistry['resolve']>): string | null {
+  return resolved.catalog?.entries[0]?.version ?? null;
+}
+
+test('expiring built-in checkouts removes only those', (t) => {
+  const { dir, marketplaces, records } = setup(t);
+  const checkouts = join(dir, 'checkouts');
+
+  records().push({ name: 'live-market', source: { kind: 'git', url: 'https://example.test/r.git', ref: null } });
+  const lister = () => [
+    { name: 'openai-curated', source: { kind: 'git' as const, url: 'https://example.test/o.git', ref: null }, builtIn: true },
+    ...records()
+  ];
+  const scoped = new MarketplaceRegistry(lister, checkouts);
+
+  mkdirSync(join(checkouts, 'openai-curated', '.git'), { recursive: true });
+  mkdirSync(join(checkouts, 'live-market', '.git'), { recursive: true });
+
+  assert.equal(scoped.expireBuiltInCheckouts(), 1);
+  assert.deepEqual(readdirSync(checkouts), ['live-market']);
+  assert.equal(scoped.expireBuiltInCheckouts(), 0, 'already gone');
+});
+
+test('a startup resolve skips a built-in git marketplace with no checkout', (t) => {
+  const { dir, marketplaces, records } = setup(t);
+
+  records().push({ name: 'live-market', source: { kind: 'git', url: 'https://example.test/r.git', ref: null } });
+  mkdirSync(join(dir, 'checkouts', 'live-market', '.git'), { recursive: true });
+  // The built-in has never been cloned: resolving it would be the 77 MB first
+  // fetch, and startup must not pay that.
+  const lister = () => [
+    { name: 'openai-curated', source: { kind: 'git' as const, url: 'https://example.test/o.git', ref: null }, builtIn: true },
+    ...records()
+  ];
+  const scoped = new MarketplaceRegistry(lister, join(dir, 'checkouts'));
+
+  const resolved = scoped.resolveAvailable();
+  assert.deepEqual(resolved.map((entry) => entry.record.name), ['live-market']);
+});
+
 test('installing from a catalogue goes through the same validation as a folder', (t) => {
   const { dir, service, plugins } = setup(t);
   service.add({ name: 'demo-market', source: { kind: 'path', path: marketplaceDir(dir, 'demo-market', ['alpha']) } });
@@ -329,6 +423,36 @@ test('an entry that would install and do nothing says so instead', (t) => {
     /no skills or tools/
   );
   assert.equal(entries.find((e) => e.name === 'remote')?.blocked, null, 'unfetched is not judged');
+});
+
+test('a connector-only entry is refused at install, not just in its card', (t) => {
+  // The card's judgement cannot see a git entry's bundle before it is fetched,
+  // so the install itself must carry the refusal — the button being disabled
+  // is presentation, and presentation is exactly what a service caller skips.
+  const { dir, service, plugins } = setup(t);
+  const root = marketplaceDir(dir, 'demo-market', ['alpha']);
+
+  write(
+    join(root, 'plugins', 'connector-only', '.codex-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'connector-only', version: '1.0.0', description: 'Connector' })
+  );
+  write(join(root, 'plugins', 'connector-only', '.app.json'), JSON.stringify({ apps: {} }));
+  write(
+    join(root, '.agents', 'plugins', 'marketplace.json'),
+    JSON.stringify({
+      name: 'demo-market',
+      plugins: [
+        { name: 'alpha', source: { source: 'local', path: './plugins/alpha' } },
+        { name: 'connector-only', source: { source: 'local', path: './plugins/connector-only' } }
+      ]
+    })
+  );
+
+  service.add({ name: 'demo-market', source: { kind: 'path', path: root } });
+
+  assert.throws(() => service.install('demo-market', 'connector-only'), /no skills or tools/);
+  const snapshot = plugins.snapshot();
+  assert.equal(snapshot.plugins.length + snapshot.disabled.length, 0, 'nothing landed');
 });
 
 test('what the app ships installs itself, once, and only from a built-in source', (t) => {

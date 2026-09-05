@@ -52,6 +52,15 @@ type CodeHighlighter = {
 const MAX_HIGHLIGHT_CACHE_SIZE = 120;
 const highlightCache = new Map<string, HighlightResult | null>();
 
+/**
+ * Files larger than this bypass Shiki tokenization and render as plain text.
+ * A 1,000-line file produces ~10,000 token spans and 10,000 inline style
+ * objects, which freezes the renderer thread and spikes memory footprint.
+ * Bypassing Shiki for large files preserves responsiveness and caps DOM count.
+ */
+const MAX_HIGHLIGHT_LINES = 800;
+const MAX_HIGHLIGHT_CHARS = 40_000;
+
 // Lazily import the streamdown code highlighter. Importing the module eagerly
 // pulls in all 700+ shiki language grammars as static data, which is the
 // single largest contributor to the renderer bundle. Keeping the import
@@ -269,10 +278,22 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
     };
   }, [language]);
 
+  const isTooLargeForHighlighting = useMemo(() => {
+    if (code.length > MAX_HIGHLIGHT_CHARS) return true;
+    let newlines = 0;
+    for (let i = 0; i < code.length; i++) {
+      if (code.charCodeAt(i) === 10) {
+        newlines++;
+        if (newlines >= MAX_HIGHLIGHT_LINES) return true;
+      }
+    }
+    return false;
+  }, [code]);
+
   useEffect(() => {
     let cancelled = false;
 
-    if (isIncomplete || !resolvedLanguage) {
+    if (isIncomplete || !resolvedLanguage || isTooLargeForHighlighting) {
       setHighlighted(null);
       return () => {
         cancelled = true;
@@ -352,9 +373,10 @@ export function CodeBlock({ code, language, isIncomplete = false, className }: C
           {languageLabel && (
             <span className="font-code-sans text-2xs font-normal lowercase tracking-[0.04em] text-text-faint">
               {languageLabel}
+              {isTooLargeForHighlighting && ' (plain text)'}
             </span>
           )}
-          {isIncomplete && <span className="text-2xs text-text-faint">Streaming</span>}
+          {isIncomplete && <span className="text-2xs text-text-muted">Streaming</span>}
         </div>
 
         {/*

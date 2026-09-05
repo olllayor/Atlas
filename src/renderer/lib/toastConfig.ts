@@ -25,6 +25,12 @@ export type NotifyOptions = {
   description?: string;
   actionLabel?: string;
   onAction?: () => void;
+  /**
+   * Stable sonner identity. Toasts sharing an id replace each other instead
+   * of stacking, which bounds retained toast state for failures that fire
+   * repeatedly (t3code #9592). Absent means a fresh toast every call.
+   */
+  id?: string;
 };
 
 /** A toast the user is expected to act on must outlive a glance. */

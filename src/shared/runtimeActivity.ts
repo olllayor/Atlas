@@ -1,4 +1,5 @@
 import type {
+  ActivityTone,
   ActivityType,
   CanonicalToolType,
   ChatMessagePart,
@@ -82,6 +83,14 @@ export function getWorkLogEntryId(event: RuntimeEventEnvelope) {
    */
   if (event.activityType.startsWith('task.') && typeof event.payload.taskId === 'string') {
     return `task:${event.payload.taskId}`;
+  }
+
+  if (event.activityType === 'subagent.descriptor' && typeof event.payload.agentId === 'string') {
+    return `subagent:${event.payload.agentId}`;
+  }
+  if (event.activityType === 'subagent.descriptor') {
+    const d = (event.payload.subagentDescriptor as Record<string, unknown> | undefined)?.agentId;
+    if (typeof d === 'string') return `subagent:${d}`;
   }
 
   return `activity:${event.eventId}`;
@@ -321,7 +330,12 @@ function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEve
     previous?.title ??
     titleCase(pickString(event.payload.taskType) ?? 'task');
 
-  const summary = pickString(event.payload.summary) ?? pickString(event.payload.description) ?? previous?.summary ?? null;
+  const summary =
+    pickString(event.payload.summary) ??
+    pickString(event.payload.description) ??
+    pickString(event.payload.error) ??
+    previous?.summary ??
+    null;
 
   let status: WorkLogEntryStatus;
   let isFinal: boolean;
@@ -363,9 +377,101 @@ function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEve
   };
 }
 
+/**
+ * Goal-mode lifecycle rows (/goal). Each event is an instantaneous marker with
+ * its own row — nothing recurs per turn except `continuation.admitted`, which
+ * is deliberately silent (the turn counter chip already shows that heartbeat;
+ * one transcript row per outer turn would be noise). `intent.requested` is
+ * silent too: it is superseded by the committed `completed`/`blocked` row at
+ * settle, and a rejected claim is worth nothing after the fact.
+ */
+function deriveGoalWorkLogEntry(event: RuntimeEventEnvelope): WorkLogEntry | null {
+  const reason = typeof event.payload.reason === 'string' ? event.payload.reason : null;
+
+  const base = {
+    id: getWorkLogEntryId(event),
+    conversationId: event.conversationId,
+    turnId: event.turnId,
+    requestId: event.requestId,
+    messageId: event.messageId ?? null,
+    activityType: event.activityType,
+    tone: 'info' as ActivityTone,
+    toolType: null,
+    toolCallId: null,
+    approvalId: null,
+    title: '',
+    summary: reason,
+    status: 'completed' as WorkLogEntry['status'],
+    sequence: event.sequence,
+    isFinal: true,
+    payload: event.payload,
+    createdAt: event.occurredAt,
+    updatedAt: event.occurredAt,
+  };
+
+  switch (event.activityType) {
+    case 'goal.created':
+      return { ...base, title: 'Goal set' };
+    case 'goal.edited':
+      return { ...base, title: 'Goal edited' };
+    case 'goal.resumed':
+      return { ...base, title: 'Goal resumed' };
+    case 'goal.cleared':
+      return { ...base, title: 'Goal cleared' };
+    case 'goal.paused':
+      return event.payload.cause === 'stalled'
+        ? { ...base, title: 'Goal stalled out', summary: 'Too many consecutive turns without verifiable progress.' }
+        : { ...base, title: 'Goal paused' };
+    case 'goal.completed':
+      return { ...base, title: 'Goal completed', summary: reason };
+    case 'goal.blocked': {
+      const kind = typeof event.payload.blockerKind === 'string' ? event.payload.blockerKind : null;
+      return {
+        ...base,
+        title: kind ? `Goal blocked (${kind})` : 'Goal blocked',
+        summary: reason,
+        tone: 'error',
+        status: 'error',
+      };
+    }
+    // The one rejection that stops the loop without any other visible state:
+    // the goal stays active but waits forever unless the human knows why.
+    case 'goal.continuation.rejected':
+      if (event.payload.reason !== 'turn_cap_reached') return null;
+      return {
+        ...base,
+        title: 'Goal turn cap reached',
+        summary: 'The goal stays active but waits: send a message or /goal resume to continue.',
+      };
+    default:
+      // goal.intent.requested and goal.continuation.admitted stay out of the
+      // transcript for the reasons above.
+      return null;
+  }
+}
+
 export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEventEnvelope): WorkLogEntry | null {
   if (event.activityType.startsWith('task.')) {
     return deriveTaskWorkLogEntry(previous, event);
+  }
+  if (event.activityType === 'subagent.descriptor') {
+    // Descriptor is durable identity, not a timeline row — keep it queryable but hidden from main work log.
+    // Return null so the activity list does not render it; it lives in runtime_events for catalog reads.
+    return null;
+  }
+  if (event.activityType === 'request.header') {
+    // Envelope telemetry, not work: rendering it would put a "Request Header"
+    // row between the user's message and the answer for every single turn.
+    return null;
+  }
+  if (event.activityType.startsWith('turn.followup_')) {
+    // Durable-queue bookkeeping. The waiting state is rendered by the
+    // composer's queued dock; a "Followup Queued" row inside the transcript
+    // would say it twice.
+    return null;
+  }
+  if (event.activityType.startsWith('goal.')) {
+    return deriveGoalWorkLogEntry(event);
   }
 
   const title =
@@ -640,4 +746,57 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
   }
 
   return applyStreamEventToParts(parts, legacy);
+}
+
+/**
+ * Drops `tool.updated` events that are superseded by a subsequent `tool.completed`
+ * within the same turn for the same toolCallId.
+ *
+ * Modeled after t3code PR #8368: in-flight intermediate tool updates (e.g. streaming
+ * bash output, partial diffs, progress updates) are purely ephemeral in-flight state;
+ * once the completion arrives, the completion row is a full superset. Dropping superseded
+ * updates on recovery/load eliminates unnecessary IPC traffic and renderer reducer runs.
+ */
+export function dropSupersededToolUpdatedEvents<T extends {
+  activityType: ActivityType | string;
+  turnId?: string | null;
+  toolCallId?: string | null;
+  payload?: Record<string, unknown> | null;
+}>(events: ReadonlyArray<T>): T[] {
+  const completionIndicesByKey = new Map<string, number[]>();
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!;
+    if (event.activityType !== "tool.completed") {
+      continue;
+    }
+    const toolCallId = event.toolCallId ?? (event.payload?.toolCallId as string | undefined) ?? null;
+    if (!toolCallId) {
+      continue;
+    }
+    const key = `${event.turnId ?? ""}\0${toolCallId}`;
+    const indices = completionIndicesByKey.get(key);
+    if (indices) {
+      indices.push(index);
+    } else {
+      completionIndicesByKey.set(key, [index]);
+    }
+  }
+
+  if (completionIndicesByKey.size === 0) {
+    return [...events];
+  }
+
+  return events.filter((event, index) => {
+    if (event.activityType !== "tool.updated") {
+      return true;
+    }
+    const toolCallId = event.toolCallId ?? (event.payload?.toolCallId as string | undefined) ?? null;
+    if (!toolCallId) {
+      return true;
+    }
+    const key = `${event.turnId ?? ""}\0${toolCallId}`;
+    const indices = completionIndicesByKey.get(key);
+    return !indices?.some((completionIndex) => completionIndex > index);
+  });
 }

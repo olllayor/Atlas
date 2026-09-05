@@ -1,7 +1,7 @@
 /**
  * T3 — Client fold for Subagent Activity and Roster (`docs/plans/agents/03-agents-panel-and-quiet-timeline.md`).
  *
- * A pure function over persisted activities (`WorkLogEntry[]`) folding them into an `AgentPanelModel`.
+ * A pure function over persisted activities (`WorkLogEntry[]`) folding them into an `AgentPanelModel``.
  * Pure TypeScript — zero React or DOM dependencies for complete testability.
  */
 
@@ -23,10 +23,14 @@ export type RuntimeAgent = {
   error: string | null;
   outputFile: string | null;
   parentAgentId: string | null;
+  /** Spawn tool call that created this agent — how a CTA pins its batch membership. */
+  parentToolCallId: string | null;
   recentActivity: ReadonlyArray<{ at: string; summary: string }>; // ring buffer, cap 6
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+  toolCount: number;
+  reasoningEffort: string | null;
 };
 
 export type AgentPanelModel = {
@@ -64,6 +68,19 @@ export function isActiveAgentStatus(s: RuntimeTaskStatus): boolean {
 export function isBackgroundTaskActivity(entry: WorkLogEntry): boolean {
   const kind = getWorkLogAgentKind(entry);
   return kind !== 'agent';
+}
+
+/** Format tokens cleanly with k / M suffixes matching the design specs (e.g. 636k, 1.2M). */
+export function formatTokens(total: number): string {
+  if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(1)}M`;
+  if (total >= 10_000) {
+    const roundedK = Math.round(total / 1000);
+    // 999_500+ would round to "1000k" — roll over to megabytes instead.
+    if (roundedK >= 1000) return `${(total / 1_000_000).toFixed(1)}M`;
+    return `${roundedK}k`;
+  }
+  if (total >= 1_000) return `${(total / 1000).toFixed(1)}k`;
+  return total.toLocaleString();
 }
 
 function truncateSummary(text: string, maxLen = 180): string {
@@ -106,7 +123,7 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     }
 
     const payload = entry.payload ?? {};
-    const agentId = (payload.agentId as string | undefined) ?? (payload.taskId as string | undefined) ?? entry.id;
+    const agentId = (payload.agentId as string | undefined) ?? (payload.taskId as string | undefined) ?? entry.agentId ?? entry.id;
     if (!agentId) continue;
 
     const reportedStatus: RuntimeTaskStatus =
@@ -125,8 +142,29 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     const incomingOutputFile = (payload.outputFile as string | undefined) ?? null;
     const incomingRole = (payload.role as string | undefined) ?? null;
     const incomingModel = (payload.model as string | undefined) ?? null;
+    // Never invent an effort level: the emitter rarely sends one (linkage
+    // carries `effort`, older rows `reasoningEffort`/`priority`), so unknown
+    // stays null and the UI hides the segment instead of printing "high".
+    const incomingReasoningEffort =
+      (payload.effort as string | undefined) ??
+      (payload.reasoningEffort as string | undefined) ??
+      (payload.priority as string | undefined) ??
+      null;
+    const usageToolUses =
+      incomingUsage && typeof incomingUsage.toolUses === 'number' ? incomingUsage.toolUses : 0;
+    const explicitToolCount = Math.max(
+      typeof payload.toolCount === 'number' ? payload.toolCount : 0,
+      typeof payload.toolCallCount === 'number' ? payload.toolCallCount : 0,
+      usageToolUses
+    );
+    const isToolCallEvent = entry.activityType.startsWith('tool.') || entry.toolCallId != null || entry.toolType != null;
     const incomingTitle = entry.title || (payload.title as string | undefined) || `Agent ${agentId}`;
     const parentAgentId = (payload.parentAgentId as string | undefined) ?? null;
+    const parentToolCallId =
+      entry.parentToolCallId ??
+      (payload.parentToolCallId as string | undefined) ??
+      (payload.toolCallId as string | undefined) ??
+      null;
     const timestamp = entry.updatedAt || entry.createdAt || (entry as any).occurredAt || new Date().toISOString();
 
     const existing = agentMap.get(agentId);
@@ -148,10 +186,13 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
           error: null,
           outputFile: incomingOutputFile,
           parentAgentId,
+          parentToolCallId,
           recentActivity: pushActivityRing([], timestamp, incomingProgress ?? 'Task started'),
           startedAt: timestamp,
           completedAt: null,
           updatedAt: timestamp,
+          toolCount: Math.max(explicitToolCount, isToolCallEvent ? 1 : 0),
+          reasoningEffort: incomingReasoningEffort,
         };
         agentMap.set(agentId, agent);
       } else {
@@ -172,10 +213,13 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             result: null, // clear previous run's result on reactivation
             error: null,  // clear previous run's error on reactivation
             outputFile: incomingOutputFile ?? existing.outputFile,
+            parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
             recentActivity: pushActivityRing(existing.recentActivity, timestamp, incomingProgress ?? 'Task restarted'),
             startedAt: timestamp,
             completedAt: null,
             updatedAt: timestamp,
+            toolCount: Math.max(existing.toolCount, explicitToolCount),
+            reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
           };
           agentMap.set(agentId, agent);
         } else {
@@ -186,8 +230,11 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
             title: existing.title || incomingTitle,
             role: existing.role ?? incomingRole,
             model: existing.model ?? incomingModel,
+            parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
             startedAt: existing.startedAt ? (timestamp < existing.startedAt ? timestamp : existing.startedAt) : timestamp,
             updatedAt: timestamp,
+            toolCount: Math.max(existing.toolCount, explicitToolCount),
+            reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
           };
           agentMap.set(agentId, agent);
         }
@@ -213,10 +260,13 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
         error: incomingError,
         outputFile: incomingOutputFile,
         parentAgentId,
+        parentToolCallId,
         recentActivity: pushActivityRing([], timestamp, incomingProgress ?? incomingResult ?? 'Activity logged'),
         startedAt: timestamp,
         completedAt: isTerminal ? timestamp : null,
         updatedAt: timestamp,
+        toolCount: Math.max(explicitToolCount, isToolCallEvent ? 1 : 0),
+        reasoningEffort: incomingReasoningEffort,
       };
       agentMap.set(agentId, agent);
       continue;
@@ -235,6 +285,10 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
       : existing.completedAt;
 
     const mergedUsage = mergeTaskUsage(existing.usage ?? undefined, incomingUsage) ?? null;
+    const updatedToolCount = Math.max(
+      existing.toolCount + (isToolCallEvent ? 1 : 0),
+      explicitToolCount
+    );
 
     const updatedAgent: RuntimeAgent = {
       ...existing,
@@ -248,18 +302,24 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
       result: alreadyTerminal ? (existing.result ?? incomingResult) : (incomingResult ?? existing.result),
       error: alreadyTerminal ? (existing.error ?? incomingError) : (incomingError ?? existing.error),
       outputFile: existing.outputFile ?? incomingOutputFile,
+      parentToolCallId: existing.parentToolCallId ?? parentToolCallId,
       recentActivity: incomingProgress
         ? pushActivityRing(existing.recentActivity, timestamp, incomingProgress)
         : existing.recentActivity,
       completedAt,
       updatedAt: timestamp,
+      toolCount: updatedToolCount,
+      reasoningEffort: incomingReasoningEffort ?? existing.reasoningEffort,
     };
 
     agentMap.set(agentId, updatedAgent);
   }
 
-  // Convert map to bounded list (max 100 agents)
-  const agents = Array.from(agentMap.values()).slice(0, 100);
+  // Convert map to bounded list (max 100 agents). Insertion order is
+  // first-seen order, so keep the newest rows — dropping the tail would hide
+  // the latest fan-out behind the earliest one.
+  const allAgents = Array.from(agentMap.values());
+  const agents = allAgents.length > 100 ? allAgents.slice(allAgents.length - 100) : allAgents;
 
   const activeAgents = agents.filter((a) => isActiveAgentStatus(a.status));
   const settledAgents = agents.filter((a) => !isActiveAgentStatus(a.status));
@@ -271,5 +331,59 @@ export function foldAgents(activities: readonly WorkLogEntry[]): AgentPanelModel
     activeAgents,
     settledAgents,
     totalTokens,
+  };
+}
+
+/**
+ * The agents a single spawn batch owns, in roster order.
+ *
+ * Membership is pinned by the spawn tool call: agent ids are minted as
+ * `${parentToolCallId}:${index}` (`subagentTasks.agentIdFor`), and every task
+ * payload repeats the linkage, so a batch can be named without the transcript
+ * having to keep its own list. Rows persisted before the linkage existed match
+ * on the id prefix instead.
+ */
+export function selectBatchAgents(
+  agents: readonly RuntimeAgent[],
+  toolCallIds: readonly string[]
+): RuntimeAgent[] {
+  if (toolCallIds.length === 0) return [];
+  const owned = new Set(toolCallIds);
+  return agents.filter(
+    (agent) =>
+      (agent.parentToolCallId != null && owned.has(agent.parentToolCallId)) ||
+      toolCallIds.some((id) => agent.id.startsWith(`${id}:`))
+  );
+}
+
+/** Batch counters the Spawn CTA reads. `elapsedMs` is the longest live run. */
+export function summarizeBatch(agents: readonly RuntimeAgent[], nowMs: number) {
+  let active = 0;
+  let idle = 0;
+  let totalTokens = 0;
+  let elapsedMs = 0;
+
+  for (const agent of agents) {
+    if (isActiveAgentStatus(agent.status)) active += 1;
+    // Idle is neither live nor done: counted separately so the UI can name it
+    // instead of folding it into `settled` and printing a completion mark
+    // (t3code #9616). `settled` keeps its non-live meaning for existing readers.
+    else if (agent.status === 'idle') idle += 1;
+    totalTokens += agent.usage?.totalTokens ?? 0;
+    const started = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
+    if (!Number.isNaN(started)) {
+      const end = agent.completedAt ? Date.parse(agent.completedAt) : nowMs;
+      const duration = Math.max(0, (Number.isNaN(end) ? nowMs : end) - started);
+      if (duration > elapsedMs) elapsedMs = duration;
+    }
+  }
+
+  return {
+    total: agents.length,
+    active,
+    idle,
+    settled: agents.length - active,
+    totalTokens,
+    elapsedMs,
   };
 }

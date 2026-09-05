@@ -1,6 +1,7 @@
 import type { ProviderId } from './contracts';
 import type { CustomProvider } from './customProviders';
 import { isCustomProviderId } from './customProviders';
+import { findLocalAgent } from './localAgents';
 
 export type ProviderMetadata = {
   id: ProviderId;
@@ -10,6 +11,21 @@ export type ProviderMetadata = {
   configuredLabel: string;
   needsAttentionLabel: string;
   savedLabel: string;
+};
+
+const KNOWN_PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google',
+  openrouter: 'OpenRouter',
+  deepseek: 'DeepSeek',
+  ollama: 'Ollama',
+  groq: 'Groq',
+  mistral: 'Mistral',
+  together: 'Together AI',
+  xai: 'xAI',
+  cohere: 'Cohere',
+  perplexity: 'Perplexity',
 };
 
 function buildProviderMetadata(providerId: ProviderId, name: string): ProviderMetadata {
@@ -35,6 +51,19 @@ export function resolveProviderMetadata(
   const configured = customProviders.find((provider) => provider.id === providerId);
   if (configured) {
     return buildProviderMetadata(providerId, configured.name);
+  }
+
+  // Local agents are not saved endpoints — they are their own integrations,
+  // with their own credentials — so their display names come from the catalog
+  // rather than the table. (OpenCode is one of them.)
+  const localAgent = findLocalAgent(providerId);
+  if (localAgent) {
+    return buildProviderMetadata(providerId, localAgent.label);
+  }
+
+  const known = KNOWN_PROVIDER_LABELS[providerId.toLowerCase()];
+  if (known) {
+    return buildProviderMetadata(providerId, known);
   }
 
   // A provider that was deleted, or a legacy id from before the migration.

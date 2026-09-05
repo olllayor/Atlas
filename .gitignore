@@ -1,9 +1,11 @@
 .opencode/
+.zcode/
 .kilo/
 node_modules
 dist
 out
 dist-tests
+dist-harness
 release
 .DS_Store
 *.log
@@ -30,3 +32,6 @@ skills/
 
 # Mimosa security-hook session state and scan baselines
 .mimosa/
+
+# Local perf dumps and test profiles
+.tmp/

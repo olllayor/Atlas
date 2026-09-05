@@ -1,27 +1,32 @@
 import type { ApprovalDecision } from '../../../shared/contracts';
 
-type PendingApproval = {
+export type CanonicalToolType = 'shell' | 'filesystem' | 'network' | 'mcp' | 'custom';
+
+export type PendingApproval = {
   approvalId: string;
-  toolCallId: string;
-  conversationId: string;
+  toolCallId?: string;
   toolName?: string;
-  toolType?: string | null;
-  reason?: string;
+  // Widened: ChatEngine stores the shared contracts vocabulary
+  // (`command_execution`, …) while tests use the short form
+  // (`shell`, …). The controller never branches on it.
+  toolType?: string;
+  conversationId: string;
   sessionScopeKey?: string | null;
+  reason?: string;
 };
 
-type ApprovalResponse = {
+export type ApprovalResponse = {
   approvalId: string;
   decision: ApprovalDecision;
   reason?: string;
 };
 
 /**
- * Holds pending tool approvals and records "always allow for this session"
- * grants.
+ * Owns pending tool approval state for live requests and grants made during this
+ * session (`accept_for_session`).
  *
- * Semantics that callers (and the UI copy) must not drift from:
- * - A grant is **conversation-scoped**: `accept_for_session` records the scope
+ * Rules:
+ * - A grant is keyed by `(conversationId, sessionScopeKey)`. `t3code` scopes a
  *   key only against the conversation that granted it, never any other.
  * - A grant is **per-runtime-session and ephemeral**: it lives in an in-memory
  *   `Map` and is forgotten on restart. This is a deliberate privacy posture —
@@ -49,6 +54,16 @@ export class ToolApprovalController {
 
   getPendingApproval(requestId: string, approvalId: string) {
     return this.pendingByRequest.get(requestId)?.get(approvalId) ?? null;
+  }
+
+  getPendingApprovals(requestId: string): PendingApproval[] {
+    const map = this.pendingByRequest.get(requestId);
+    return map ? Array.from(map.values()) : [];
+  }
+
+  hasPendingApprovals(requestId: string): boolean {
+    const map = this.pendingByRequest.get(requestId);
+    return map ? map.size > 0 : false;
   }
 
   clearRequest(requestId: string) {

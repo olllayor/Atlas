@@ -4,8 +4,12 @@ import type { MentionId } from './mentions';
 import type {
   CreateSiteRequest,
   DeleteSiteFileRequest,
+  AnalyzeWorkspaceRequest,
   ExportSiteRequest,
   ExportSiteResult,
+  ExportSiteToWorkspaceRequest,
+  ExportSiteToWorkspaceResult,
+  WorkspaceProjectAnalysis,
   OpenSitePreviewRequest,
   PublishSiteRequest,
   ReadSiteFileRequest,
@@ -27,6 +31,19 @@ export type ProviderId = string;
 export type * from './sites';
 export type * from './mentions';
 export type * from './customProviders';
+export * from './opencodeSettings';
+export * from './localAgents';
+import type {
+  OpenCodeProbeResult,
+  OpenCodeSettings,
+  OpenCodeStatusView
+} from './opencodeSettings';
+import type {
+  LocalAgentId,
+  LocalAgentProbeResult,
+  LocalAgentStatusView,
+  LocalAgentUpdateRequest
+} from './localAgents';
 export type * from './chatParameters';
 export type * from './workspaceModes';
 export type * from './planTool';
@@ -59,6 +76,11 @@ export type WorkspaceProject = {
   lastUsedAt: string | null;
   /** When the project was pinned, or null. Pinned projects sort above the rest. */
   pinnedAt: string | null;
+  /**
+   * Opt-in: keep the default branch current with a background fast-forward
+   * pull at launch. Off unless the user enables it per project.
+   */
+  autoPull: boolean;
 };
 
 export type CreateWorkspaceProjectRequest = {
@@ -109,6 +131,47 @@ export type AgentInstructionsSummary = {
   truncated: boolean;
 };
 
+/**
+ * One row of a workspace listing. Directories are derived from the file paths
+ * rather than walked separately: the index is a flat list, and the tree the
+ * panel draws is built from it in the renderer.
+ */
+export type WorkspaceEntry = {
+  /** Workspace-relative, forward-slashed, no leading `./`. */
+  path: string;
+  kind: 'file' | 'directory';
+};
+
+export type WorkspaceEntriesResult = {
+  entries: WorkspaceEntry[];
+  /** The repository is larger than the index cap; the listing is a prefix. */
+  truncated: boolean;
+};
+
+/** Why a file could not be shown. Each maps to a sentence the panel can print. */
+export type WorkspaceFileFailure =
+  | 'no-workspace'
+  | 'outside-root'
+  | 'not-found'
+  | 'not-a-file'
+  | 'binary'
+  | 'read-failed';
+
+export type WorkspaceFileResult =
+  | {
+      ok: true;
+      relativePath: string;
+      contents: string;
+      byteLength: number;
+      /** Read stopped at the byte cap; the tail is not shown. */
+      truncated: boolean;
+    }
+  | { ok: false; relativePath: string; failure: WorkspaceFileFailure };
+
+import type { DiscoveredServer } from './browser';
+
+export type { DiscoveredServer };
+
 export type ProjectContextInfo = {
   project: WorkspaceProject | null;
   projectType: ProjectTypeInfo;
@@ -157,6 +220,8 @@ export type GitStateSummary = {
 import type { AtlasPluginOptions } from './plugins';
 
 export type PluginServerSummary = {
+  /** The server's key inside its bundle — the `key` in `plugin:<name>:<key>`. */
+  key: string;
   name: string;
   transport: McpTransportKind;
   /** The literal command that will run, or the literal endpoint reached. */
@@ -214,6 +279,29 @@ export type PluginCommandSummary = {
   name: string;
   description: string;
   argumentHint: string;
+};
+
+/**
+ * What one of a plugin's MCP servers reported when actually asked.
+ *
+ * `ready` means a real connection succeeded and `tools/list` answered —
+ * not that the manifest looks plausible.
+ */
+export type PluginServerHealth = {
+  key: string;
+  name: string;
+  status: 'ready' | 'failed' | 'disabled';
+  toolCount: number;
+  error: string | null;
+};
+
+export type PluginHealthView = {
+  /** Every declared server is ready — or the plugin declares none. */
+  ok: boolean;
+  /** A plugin with no MCP servers is healthy by definition; skills need none. */
+  servers: PluginServerHealth[];
+  /** Set only when the check itself could not run. */
+  error: string | null;
 };
 
 export type PluginLifecycleState =
@@ -419,6 +507,16 @@ export type GitReviewRequest = {
   conversationId: string;
   scope: ReviewScope;
   commit?: string | null;
+  /** With `scope: 'lastTurn'`, an explicit checkpointed turn instead of the newest. */
+  turnId?: string | null;
+};
+
+/** One checkpointed, reviewable turn — a row in the review scope list. */
+export type ReviewTurnSummary = {
+  turnId: string;
+  /** Chronological, oldest first; "Turn N" labels derive from this. */
+  index: number;
+  createdAt: string;
 };
 
 /**
@@ -516,6 +614,8 @@ export type TerminalOutputKind = 'stdout' | 'stderr' | 'exit' | 'agent';
 
 export type TerminalOutputEvent = {
   conversationId: string;
+  /** Which of the conversation's shells produced this. */
+  terminalId: string;
   data: string;
   kind: TerminalOutputKind;
 };
@@ -525,6 +625,99 @@ export type TerminalStartResult = {
   /** Output produced before this panel attached, so a re-mount isn't blank. */
   scrollback: string;
   reused: boolean;
+};
+
+export type TerminalSessionStatus = 'running' | 'exited';
+
+/**
+ * One shell, as the tab strip sees it. `label` is computed in main from the
+ * shell's child process, so a tab renames itself to whatever it is running
+ * without the renderer polling for it.
+ */
+export type TerminalSummary = {
+  conversationId: string;
+  terminalId: string;
+  cwd: string;
+  status: TerminalSessionStatus;
+  pid: number | null;
+  exitCode: number | null;
+  hasRunningSubprocess: boolean;
+  label: string;
+};
+
+/**
+ * How the strip learns about shells it did not open: another window's, one
+ * that exited on its own, one whose label changed.
+ */
+export type TerminalMetadataEvent =
+  | { type: 'snapshot'; conversationId: string; terminals: TerminalSummary[] }
+  | { type: 'upsert'; terminal: TerminalSummary }
+  | { type: 'remove'; conversationId: string; terminalId: string };
+
+/** Every terminal call names both the conversation and which of its shells. */
+export type TerminalRef = {
+  conversationId: string;
+  terminalId: string;
+};
+
+/**
+ * The renderer's projection of one background job — the registry's snapshot
+ * shape, duplicated here so the renderer never imports main-process modules.
+ */
+export type JobStatusView = 'running' | 'stopping' | 'completed' | 'killed' | 'failed';
+
+export type JobSnapshotView = {
+  /** The registry-issued id (`<kind>-N`). */
+  id: string;
+  kind: string;
+  label: string;
+  conversationId: string;
+  status: JobStatusView;
+  /** Kind-specific detail ('exit code: 3'), present once supplied. */
+  detail?: string;
+  /** Epoch ms when the job was registered. */
+  startedAt: number;
+  /** Epoch ms when the job settled; absent while `running`/`stopping`. */
+  finishedAt?: number;
+  /**
+   * Last lines of a live stream job's output — UI preview only, never
+   * consumed from the model's `job_output` cursor. Absent once settled.
+   */
+  tail?: string[];
+};
+
+/** Pushed to every window when a job is registered or settles. */
+export type JobEvent = {
+  type: 'started' | 'done';
+  snapshot: JobSnapshotView;
+};
+
+/** The conversation's persistent objective (`/goal`), projected for the renderer. */
+export type ConversationGoalView = {
+  id: string;
+  conversationId: string;
+  objective: string;
+  status: 'active' | 'paused_user' | 'paused_stalled' | 'complete' | 'blocked' | 'cleared';
+  blockerKind?:
+    | 'user_decision'
+    | 'missing_authority'
+    | 'external_state'
+    | 'environment_contradiction'
+    | 'unverifiable_requirement';
+  blockerNote?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  turnCount: number;
+  turnCap: number;
+};
+
+/** Goal lifecycle pushes: state transitions plus continuation decisions. */
+export type GoalEvent = {
+  type: 'updated';
+  conversationId: string;
+  goal: ConversationGoalView | null;
+  /** Set on continuation rejections so the UI can explain a silent stop. */
+  notice?: string;
 };
 
 /** Subset of WorktreeService's WorktreeInfo the renderer is allowed to see. */
@@ -557,6 +750,11 @@ export type SetConversationWorkspaceRequest = {
   executionTarget?: ExecutionTarget;
   /** `null` detaches the project; omit to leave it unchanged. */
   projectId?: string | null;
+  /**
+   * Commitish a fresh worktree starts from (Codex's "from develop" flow).
+   * Ignored when a worktree already exists for this conversation.
+   */
+  worktreeBaseBranch?: string | null;
 };
 import type {
   CreateCustomProviderRequest,
@@ -828,6 +1026,10 @@ export type ContextUsageSnapshot = {
   keptTurnCount: number;
   /** True when the prompt exceeds the usable budget and may be rejected. */
   overflow: boolean;
+  /** Token threshold at which compaction fires; null when window unknown. Derived as (max - reservedOutput - floor) * ratio. */
+  compactionThresholdTokens: number | null;
+  /** Ratio used for this snapshot, in [0.5,0.95]. */
+  compactionThresholdPercent?: number;
   /**
    * Provider accounting for the most recent completed turn, for cost display.
    *
@@ -840,12 +1042,29 @@ export type ContextUsageSnapshot = {
     inputTokens: number | null;
     outputTokens: number | null;
     reasoningTokens: number | null;
+    cachedInputTokens?: number | null;
+  } | null;
+  /**
+   * Conversation-wide prompt-cache accounting from provider reports. Null
+   * while no turn has reported a cache figure — a provider that stays silent
+   * about caching must not read as 0%.
+   */
+  cache: {
+    /** Total billed input across reported turns, cache hits included. */
+    inputTokens: number;
+    /** Cache-hit tokens, summed over reported turns. */
+    cachedInputTokens: number;
+    /** Turns included in the sums. */
+    reportedTurns: number;
+    /** Cache hits over billed input, as a fraction; null when unmeasurable. */
+    hitRate: number | null;
   } | null;
 };
 
 export type GetContextUsageRequest = {
   conversationId: string;
   modelId: string;
+  providerId?: ProviderId;
   enableTools?: boolean;
   toolPermissionMode?: ToolPermissionMode;
   mentions?: MentionId[];
@@ -879,30 +1098,29 @@ export type ProviderCredentialSummary = {
 };
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type DesignTheme = 'codex' | 'default' | 'xai' | 'cursor';
+export type DesignTheme = 'atlas' | 'codex' | 'default' | 'xai' | 'cursor';
 
-export const DESIGN_THEMES: readonly DesignTheme[] = ['codex', 'default', 'xai', 'cursor'];
+export const DESIGN_THEMES: readonly DesignTheme[] = ['atlas', 'codex', 'default', 'xai', 'cursor'];
 
 export function isDesignTheme(value: unknown): value is DesignTheme {
   return typeof value === 'string' && (DESIGN_THEMES as readonly string[]).includes(value);
 }
 
 /**
- * Design themes that actually ship a light palette.
+ * Design themes that ship both a light and a dark palette.
  *
- * `themes/codex.css` carries a `[data-theme='light']` block and `cursor.css` is
- * authored light-first with a dark override; `default.css` and `xai.css` define
- * one dark palette and nothing else. Light mode used to be offered for all four
- * regardless, so picking it under those two set `color-scheme: light` — which
- * repaints native form controls, scrollbars and autofill white — while every
- * app surface stayed dark. The result was white-on-white text in inputs.
- *
- * The list is the single source of truth for both halves of the fix: the
- * settings picker refuses to offer Light for a theme that has none, and
- * `resolveAppliedThemeMode` clamps anything already stored (or arriving from
- * `system`) back to dark.
+ * Every shipped theme is in this list: `codex` carries an explicit light
+ * block, `cursor` is authored light-first with a dark override, and
+ * `default`/`xai` gained light blocks once their dark-only palettes kept
+ * `system` users on light OSes pinned to dark. The list stays as the single
+ * source of truth so a future dark-only theme gets the same clamping that
+ * used to protect these five — `resolveAppliedThemeMode` refuses to paint
+ * light under a theme with no light palette (which used to mean white-on-
+ * white inputs: `color-scheme: light` repainted native controls while every
+ * app surface stayed dark), and the settings picker greys Light out with an
+ * explanation instead of offering a mode that cannot be honoured.
  */
-export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['codex', 'cursor'];
+export const DESIGN_THEMES_WITH_LIGHT: readonly DesignTheme[] = ['atlas', 'codex', 'cursor', 'default', 'xai'];
 
 export function designThemeSupportsLight(theme: DesignTheme): boolean {
   return (DESIGN_THEMES_WITH_LIGHT as readonly string[]).includes(theme);
@@ -935,7 +1153,7 @@ export function isReduceMotionMode(value: unknown): value is ReduceMotionMode {
 }
 
 export const CONTRAST_MIN = 0;
-export const CONTRAST_MAX = 100;
+export const CONTRAST_MAX = 200;
 /** Neutral midpoint: derived tokens render exactly as the theme authored them. */
 export const CONTRAST_DEFAULT = 50;
 
@@ -957,6 +1175,26 @@ export function normalizeThemeColor(value: unknown): ThemeColorOverride {
   return trimmed;
 }
 
+export const MIN_PANEL_ANIMATION_DURATION_MS = 0;
+export const MAX_PANEL_ANIMATION_DURATION_MS = 400;
+export const DEFAULT_PANEL_ANIMATION_DURATION_MS = 50;
+
+export const MIN_INTERFACE_FONT_SIZE = 12;
+export const MAX_INTERFACE_FONT_SIZE = 20;
+export const DEFAULT_INTERFACE_FONT_SIZE = 16;
+
+export const MIN_PROMPT_FONT_SIZE = 12;
+export const MAX_PROMPT_FONT_SIZE = 20;
+export const DEFAULT_PROMPT_FONT_SIZE = 14;
+
+export const MIN_CODE_FONT_SIZE = 10;
+export const MAX_CODE_FONT_SIZE = 18;
+export const DEFAULT_CODE_FONT_SIZE = 13;
+
+export const MIN_TERMINAL_FONT_SIZE = 8;
+export const MAX_TERMINAL_FONT_SIZE = 20;
+export const DEFAULT_TERMINAL_FONT_SIZE = 12;
+
 export const UI_FONT_SIZE_MIN = 13;
 export const UI_FONT_SIZE_MAX = 18;
 export const UI_FONT_SIZE_DEFAULT = 15;
@@ -967,11 +1205,33 @@ export const CODE_FONT_SIZE_DEFAULT = 13;
 
 export const DEFAULT_BORDER_RADIUS: BorderRadiusMode = 'theme-default';
 
+export const GLASS_OPACITY_MIN = 0;
+export const GLASS_OPACITY_MAX = 100;
+export const GLASS_OPACITY_DEFAULT = 100;
+
+export type ThemeHalvesPreference = {
+  light?: string | null;
+  dark?: string | null;
+} | null;
+
 export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy' | 'beta';
 
 export type SettingsAppearanceSummary = {
   themeMode: ThemeMode;
   designTheme: DesignTheme;
+  themeId: string;
+  themeHalves: ThemeHalvesPreference;
+  glassOpacity: number;
+  panelAnimationDurationMs: number;
+  fontFamilySans: string;
+  fontFamilyComposer: string;
+  fontFamilyCode: string;
+  fontFamilyTerminal: string;
+  fontSizeInterface: number;
+  fontSizePrompt: number;
+  fontSizeCode: number;
+  fontSizeTerminal: number;
+  fontSmoothing: boolean;
   uiFontSize: number;
   codeFontSize: number;
   uiFontFamily: FontFamilyOverride;
@@ -998,7 +1258,20 @@ export type SettingsAppearanceSummary = {
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   themeMode: 'dark',
-  designTheme: 'codex',
+  designTheme: 'atlas',
+  themeId: 'default',
+  themeHalves: null,
+  glassOpacity: GLASS_OPACITY_DEFAULT,
+  panelAnimationDurationMs: DEFAULT_PANEL_ANIMATION_DURATION_MS,
+  fontFamilySans: '',
+  fontFamilyComposer: '',
+  fontFamilyCode: '',
+  fontFamilyTerminal: '',
+  fontSizeInterface: DEFAULT_INTERFACE_FONT_SIZE,
+  fontSizePrompt: DEFAULT_PROMPT_FONT_SIZE,
+  fontSizeCode: DEFAULT_CODE_FONT_SIZE,
+  fontSizeTerminal: DEFAULT_TERMINAL_FONT_SIZE,
+  fontSmoothing: true,
   uiFontSize: UI_FONT_SIZE_DEFAULT,
   codeFontSize: CODE_FONT_SIZE_DEFAULT,
   uiFontFamily: null,
@@ -1032,6 +1305,8 @@ export type SettingsChatSummary = {
   lastModelId: string | null;
   /** When the assistant is allowed to answer with an inline visual. */
   visualMode: VisualMode;
+  /** Compaction pressure threshold percent, 50..95, default 85. */
+  compactionThresholdPercent: number;
   /** Whether the experimental Cloud Sandbox execution target is enabled. */
   cloudSandboxEnabled: boolean;
   /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
@@ -1053,6 +1328,10 @@ export type SettingsSummary = {
   keyboard: SettingsKeyboardSummary;
   chat: SettingsChatSummary;
   showFreeOnlyByDefault: boolean;
+  /** The plugin system is a beta feature and ships switched off. */
+  pluginsBetaEnabled: boolean;
+  /** Sites is a beta feature and ships switched off; off means invisible. */
+  sitesBetaEnabled: boolean;
   modelCatalogLastSyncedAt: string | null;
   modelCatalogStale: boolean;
   modelCatalogCount: number;
@@ -1107,6 +1386,29 @@ export type ConversationSummary = {
    * with `includeArchived`.
    */
   archivedAt: string | null;
+  /**
+   * When the chat was parked as done, or null. Settled is not archived: the
+   * chat stays in the default listing and renders in the sidebar's Settled
+   * shelf. Null means active.
+   */
+  settledAt: string | null;
+  /**
+   * When the chat last re-entered the active list (explicit unsettle or new
+   * user activity after settling), or null. Anchors sidebar ordering so an
+   * unsettled chat surfaces at the top instead of sinking back to its
+   * creation slot. Cleared on settle.
+   */
+  unsettledAt: string | null;
+  /**
+   * When a snooze wakes the chat, or null. Snooze is an overlay on the active
+   * lifecycle, not a destination: a snoozed chat stays active in the model
+   * and is only suppressed from the inbox until this time passes or the chat
+   * demands attention. Wakes are derived from the clock — nothing fires on
+   * the server when the time passes.
+   */
+  snoozedUntil: string | null;
+  /** When the current snooze was set, or null when never snoozed. */
+  snoozedAt: string | null;
   /** The conversation this one was forked from, or null. Provenance only. */
   forkOfConversationId: string | null;
   /** The event-log watermark the fork was cut at. Null when there was none. */
@@ -1165,8 +1467,30 @@ export type ConversationDetail = {
     projectId: string | null;
     pinnedAt: string | null;
     archivedAt: string | null;
+    sideOfConversationId?: string | null;
+    origin?: string | null;
+    subagentMode?: string | null;
+    subagentLabel?: string | null;
+    delegationDepth?: number | null;
   };
   messages: ChatMessage[];
+};
+
+/**
+ * What a subagent conversation's composer is allowed to do (plan §3.5).
+ *
+ * Null when the conversation is not a subagent at all — the ordinary chat
+ * path applies. `parentAvailable` is the exact-parent authority check the
+ * followup path enforces, surfaced here so the composer can say why it is
+ * read-only before the user types into a dead end. `running` reflects live
+ * activation state only; a cold child with no activation reports false even
+ * though its history is intact.
+ */
+export type SubagentComposerState = {
+  isSubagent: true;
+  mode: 'one-shot' | 'continuable';
+  parentAvailable: boolean;
+  running: boolean;
 };
 
 export type CreateConversationRequest = {
@@ -1221,6 +1545,17 @@ export type SetConversationArchivedRequest = {
   archived: boolean;
 };
 
+export type SetConversationSettledRequest = {
+  conversationId: string;
+  settled: boolean;
+};
+
+export type SetConversationSnoozedRequest = {
+  conversationId: string;
+  /** ISO wake time. Null clears the snooze (wake now). */
+  snoozedUntil: string | null;
+};
+
 export type SearchMessagesRequest = {
   /**
    * Raw user input. It is never handed to the search engine as written — see
@@ -1232,6 +1567,12 @@ export type SearchMessagesRequest = {
   limit?: number;
   /** Mirrors `ListConversationsRequest`: archived chats are out of sight until asked for. */
   includeArchived?: boolean;
+  /**
+   * Restrict hits to one project's conversations. Null/omitted searches
+   * everything. Unfiled conversations (`project_id IS NULL`) never match a
+   * project filter.
+   */
+  projectId?: string | null;
 };
 
 /**
@@ -1321,6 +1662,13 @@ export type ChatStartRequest = {
 
 export type ChatStartResponse = {
   requestId: string;
+  /**
+   * True when the conversation already had a turn in flight and this message
+   * was accepted as a follow-up instead of starting its own turn. The main
+   * process will start it when the current one closes; the renderer keeps the
+   * composer usable and shows the message as sent.
+   */
+  queued?: boolean;
 };
 
 export type VisualThemeTokens = {
@@ -1474,6 +1822,12 @@ export type StreamMetaEvent = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  /**
+   * Provider-reported prompt-cache hit tokens. Absent when the provider does
+   * not report them; never 0-by-default, so a missing value cannot fake a
+   * 0% hit rate.
+   */
+  cachedInputTokens?: number;
   latencyMs?: number;
 };
 
@@ -1502,6 +1856,16 @@ export type StreamNoticeEvent = {
   /** One sentence, already written for a reader. */
   message: string;
   level: 'info' | 'warning';
+};
+
+export type StreamTaskEvent = {
+  type: 'task';
+  requestId: string;
+  taskId: string;
+  status: RuntimeTaskStatus;
+  title?: string;
+  summary?: string;
+  error?: string;
 };
 
 /**
@@ -1621,6 +1985,7 @@ export type StreamEvent =
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamNoticeEvent
+  | StreamTaskEvent
   | StreamDoneEvent
   | RuntimeSyncEvent
   | StreamConversationTitleEvent;
@@ -1638,10 +2003,48 @@ export type ActivityType =
   | 'runtime.error'
   | 'turn.started'
   | 'turn.completed'
+  /**
+   * Durable follow-up queue lifecycle. The queue itself lives in memory, but
+   * every transition is an append-only event so a restart can fold the log
+   * back into the same waiting line (dsh's durable-inbox pattern):
+   *
+   * - `queued`: a message was accepted behind a running turn.
+   * - `started`: the deferred turn was created and dispatched.
+   * - `cancelled`: the user withdrew it before dispatch.
+   *
+   * Pending = queued minus started minus cancelled, per conversation, in
+   * sequence order.
+   */
+  | 'turn.followup_queued'
+  | 'turn.followup_started'
+  | 'turn.followup_cancelled'
+  /**
+   * Envelope snapshot taken immediately before a provider call: model, sizes,
+   * and content hashes of the system prompt and history tail. Comparing these
+   * across turns shows whether the request prefix stayed stable — the thing
+   * provider-side prompt caches pay on. Purely observational.
+   */
+  | 'request.header'
   | 'task.started'
   | 'task.progress'
   | 'task.updated'
-  | 'task.completed';
+  | 'task.completed'
+  | 'subagent.descriptor'
+  /**
+   * Goal-mode lifecycle (/goal). Same durable-log pattern as the followup
+   * queue: every transition is append-only, so the transcript's activity
+   * stream is the audit trail and nothing needs a second store.
+   */
+  | 'goal.created'
+  | 'goal.edited'
+  | 'goal.paused'
+  | 'goal.resumed'
+  | 'goal.cleared'
+  | 'goal.intent.requested'
+  | 'goal.completed'
+  | 'goal.blocked'
+  | 'goal.continuation.admitted'
+  | 'goal.continuation.rejected';
 
 export type ActivityTone = 'tool' | 'approval' | 'info' | 'error';
 
@@ -1710,6 +2113,33 @@ export type TaskAgentLinkage = {
   outputFile?: string;
   /** Provider-synthesized rows that belong only in the Agents surface. */
   timelineBypass?: boolean;
+};
+
+export const SUBAGENT_DESCRIPTOR_VERSION = 1;
+
+export type SubagentMode = 'one-shot' | 'continuable';
+
+export interface SubagentDescriptor {
+  readonly version: typeof SUBAGENT_DESCRIPTOR_VERSION;
+  readonly mode: SubagentMode;
+  readonly provider: string;
+  readonly label: string;
+  readonly agentId: string;
+  readonly parentConversationId: string;
+  readonly delegationDepth: number;
+  readonly model?: string;
+  readonly toolFilter?: readonly string[];
+}
+
+export type SubagentListEntry = {
+  readonly childConversationId: string;
+  readonly mode: SubagentMode;
+  readonly label: string;
+  readonly hasChildren: boolean;
+  readonly status: 'running' | 'inactive';
+  readonly delegationDepth: number;
+  readonly parentConversationId: string;
+  readonly createdAt: string;
 };
 
 export type RuntimeEventEnvelope = {
@@ -1824,6 +2254,17 @@ export type RuntimeStateSnapshot = {
   pendingApprovals: ApprovalRequestRecord[];
   providerSession: RuntimeProviderSession | null;
   latestCheckpoint: RuntimeCheckpointSummary | null;
+  /**
+   * Follow-ups waiting behind a running turn, folded from the durable queue
+   * events (pending = queued − started − cancelled). Lets the renderer's
+   * queued dock survive its own restart instead of only the main process.
+   */
+  pendingFollowups: PendingFollowup[];
+};
+
+export type PendingFollowup = {
+  requestId: string;
+  preview: string;
 };
 
 export type RuntimeStateRequest = {
@@ -1905,9 +2346,24 @@ export type DiagnosticsSnapshot = {
 
 export type SettingsUpdateRequest = {
   showFreeOnlyByDefault?: boolean;
+  pluginsBetaEnabled?: boolean;
+  sitesBetaEnabled?: boolean;
   appearance?: {
     themeMode?: ThemeMode;
     designTheme?: DesignTheme;
+    themeId?: string;
+    themeHalves?: ThemeHalvesPreference;
+    glassOpacity?: number;
+    panelAnimationDurationMs?: number;
+    fontFamilySans?: string;
+    fontFamilyComposer?: string;
+    fontFamilyCode?: string;
+    fontFamilyTerminal?: string;
+    fontSizeInterface?: number;
+    fontSizePrompt?: number;
+    fontSizeCode?: number;
+    fontSizeTerminal?: number;
+    fontSmoothing?: boolean;
     uiFontSize?: number;
     codeFontSize?: number;
     uiFontFamily?: FontFamilyOverride;
@@ -1935,6 +2391,7 @@ export type SettingsUpdateRequest = {
     lastProjectId?: string | null;
     lastModelId?: string | null;
     visualMode?: VisualMode;
+    compactionThresholdPercent?: number;
     cloudSandboxEnabled?: boolean;
     cloudSandboxWorkerUrl?: string | null;
     cloudSandboxWorkerSecret?: string | null;
@@ -1989,6 +2446,26 @@ export type AppUpdateSnapshot =
       checkedAt: string;
     };
 
+/** One parsed `atlas://` route, forwarded main → renderer. */
+export type AtlasDeepLink =
+  | { kind: 'chat'; conversationId?: string; prompt?: string }
+  | { kind: 'settings'; section?: string }
+  | { kind: 'plugins' }
+  | { kind: 'sites' };
+
+export type SaveImageRequest = {
+  /** Image `data:` URL — the renderer reads every source, main only decodes. */
+  dataUrl: string;
+  /** Suggested file name for the save dialog. */
+  filename: string;
+};
+
+export type SaveImageResult = {
+  saved: boolean;
+  /** Absolute path written, when the user picked one. */
+  path?: string;
+};
+
 export type RendererApi = {
   settings: {
     getSummary: () => Promise<SettingsSummary>;
@@ -1998,6 +2475,14 @@ export type RendererApi = {
     testCloudSandbox: (url?: string, secret?: string) => Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
     deployCloudSandbox: () => Promise<{ success: boolean; url?: string; secret?: string; error?: string }>;
     generateCloudSandboxSecret: () => Promise<string>;
+    /** Deep OpenCode integration (Beta). Absent settings read back as defaults. */
+    opencode: {
+      get: () => Promise<OpenCodeStatusView>;
+      update: (patch: Partial<OpenCodeSettings>) => Promise<OpenCodeStatusView>;
+      /** Empty or null clears the stored password. */
+      setPassword: (secret: string | null) => Promise<OpenCodeStatusView>;
+      probe: () => Promise<OpenCodeProbeResult>;
+    };
   };
   models: {
     list: (options?: ListModelsOptions) => Promise<ModelSummary[]>;
@@ -2008,6 +2493,42 @@ export type RendererApi = {
      * can re-fetch instead of showing the pre-change snapshot.
      */
     subscribe: (listener: () => void) => () => void;
+  };
+  /**
+   * Local coding agents (OpenCode, Claude Code, …): CLIs already on the
+   * machine that sign themselves in. No keys, so they get their own surface
+   * rather than joining the endpoint list.
+   */
+  localAgents: {
+    list: () => Promise<LocalAgentStatusView[]>;
+    update: (request: LocalAgentUpdateRequest) => Promise<LocalAgentStatusView[]>;
+    probe: (agentId: LocalAgentId) => Promise<LocalAgentProbeResult>;
+  };
+  /**
+   * Google Antigravity via the official ACP agent: managed install plus the
+   * per-instance OAuth flow. Mirrors t3code PR #9348's `provider.auth.*` and
+   * `provider.install.*` RPCs.
+   */
+  antigravity: {
+    install: () => Promise<{ version: string; executablePath: string; harnessPath: string }>;
+    installStatus: () => Promise<{
+      installed: boolean;
+      installing: boolean;
+      runtime: { version: string; executablePath: string; harnessPath: string } | null;
+    }>;
+    remove: () => Promise<{ removed: boolean }>;
+    authStart: () => Promise<{ state: string; authorizationUrl?: string; expiresAt?: string; flowId?: string; message?: string }>;
+    authComplete: (callbackUrl: string) => Promise<{ state: string; message?: string }>;
+    authCancel: () => Promise<{ state: string }>;
+    authStatus: () => Promise<{ state: string; authorizationUrl?: string; expiresAt?: string; flowId?: string; message?: string }>;
+    authLogout: () => Promise<{ state: string }>;
+    /** Stored in the OS keychain; null clears it. */
+    setApiKey: (secret: string | null) => Promise<{ saved?: boolean; cleared?: boolean }>;
+    onInstallProgress: (listener: (progress: {
+      phase: string;
+      downloadedBytes: number;
+      totalBytes: number | null;
+    }) => void) => () => void;
   };
   providers: {
     list: () => Promise<CustomProvider[]>;
@@ -2028,6 +2549,7 @@ export type RendererApi = {
     getStats: () => Promise<ConversationStats>;
     delete: (conversationId: string) => Promise<void>;
     rename: (conversationId: string, title: string) => Promise<ConversationSummary>;
+    regenerateTitle: (conversationId: string) => Promise<ConversationSummary>;
     getWorkspace: (conversationId: string) => Promise<ConversationWorkspace>;
     setWorkspace: (request: SetConversationWorkspaceRequest) => Promise<ConversationWorkspace>;
     resetCloudSandbox: (conversationId: string) => Promise<{ success: boolean; error?: string }>;
@@ -2042,6 +2564,18 @@ export type RendererApi = {
     setPinned: (request: SetConversationPinnedRequest) => Promise<ConversationSummary>;
     setArchived: (request: SetConversationArchivedRequest) => Promise<ConversationSummary>;
     /**
+     * Parks the chat as done (or re-activates it). Settled chats stay in the
+     * default listing and render in the sidebar's Settled shelf. Resolves to
+     * the updated row.
+     */
+    setSettled: (request: SetConversationSettledRequest) => Promise<ConversationSummary>;
+    /**
+     * Snoozes the chat until an ISO wake time, or clears the snooze with null.
+     * Snooze suppresses the chat from the inbox; the wake is derived from the
+     * clock, nothing fires when it passes. Resolves to the updated row.
+     */
+    setSnoozed: (request: SetConversationSnoozedRequest) => Promise<ConversationSummary>;
+    /**
      * A new conversation seeded with this one's history. The original is not
      * written to. Resolves to the fork's row.
      */
@@ -2053,6 +2587,12 @@ export type RendererApi = {
     startSide: (request: StartSideConversationRequest) => Promise<ConversationSummary>;
     /** The side conversations of one chat. They appear in no other listing. */
     listSide: (conversationId: string) => Promise<ConversationSummary[]>;
+    /**
+     * Turns a side chat into a normal conversation (it joins the sidebar and
+     * outlives its parent). False when the id is not a promotable side chat —
+     * subagent rows share the same link column and are refused.
+     */
+    promoteSide: (sideConversationId: string) => Promise<boolean>;
     /**
      * Deletes this conversation's git worktree and resets its execution target
      * to local. No-op when the conversation has no worktree.
@@ -2078,6 +2618,7 @@ export type RendererApi = {
     delete: (projectId: string) => Promise<void>;
     reveal: (projectId: string) => Promise<void>;
     setPinned: (projectId: string, pinned: boolean) => Promise<WorkspaceProject>;
+    setAutoPull: (projectId: string, autoPull: boolean) => Promise<WorkspaceProject>;
     /** Editors installed on this machine, in preference order. Empty when none were found. */
     listIdes: () => Promise<DetectedIde[]>;
     /** Opens the project folder in `ideId`, or in the preferred editor when omitted. */
@@ -2089,6 +2630,8 @@ export type RendererApi = {
     respondToolApproval: (request: ToolApprovalResponseRequest) => Promise<void>;
     getRuntimeState: (request: RuntimeStateRequest) => Promise<RuntimeStateSnapshot>;
     getContextUsage: (request: GetContextUsageRequest) => Promise<ContextUsageSnapshot>;
+    /** Forces the next turn to re-split history from zero (manual /compact). */
+    compact: (conversationId: string) => Promise<void>;
     recoverEvents: (request: RecoverEventsRequest) => Promise<RecoverEventsResponse>;
     openVisualWindow: (request: OpenVisualWindowRequest) => Promise<void>;
     subscribe: (listener: (event: StreamEvent) => void) => () => void;
@@ -2120,6 +2663,8 @@ export type RendererApi = {
     previewTarget: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
     openPreviewWindow: (request: OpenSitePreviewRequest) => Promise<SitePreviewTarget>;
     export: (request: ExportSiteRequest) => Promise<ExportSiteResult>;
+    exportToWorkspace: (request: ExportSiteToWorkspaceRequest) => Promise<ExportSiteToWorkspaceResult>;
+    analyzeWorkspace: (request: AnalyzeWorkspaceRequest) => Promise<WorkspaceProjectAnalysis>;
     openInBrowser: (siteId: string, versionId?: string | null) => Promise<string>;
   };
   diagnostics: {
@@ -2146,12 +2691,33 @@ export type RendererApi = {
     initInstructions: (conversationId: string) => Promise<void>;
     openFile: (filePath: string) => Promise<void>;
     /**
+     * Every file the conversation's workspace holds, as one flat list. The
+     * renderer builds the tree and filters it locally: at the index cap that
+     * is one call rather than one per expanded folder.
+     */
+    listEntries: (
+      conversationId: string,
+      options?: { refresh?: boolean }
+    ) => Promise<WorkspaceEntriesResult>;
+    /** One file's text, jailed to the conversation's workspace root. */
+    readFile: (conversationId: string, relativePath: string) => Promise<WorkspaceFileResult>;
+    /**
      * Reveals a conversation's working location in the OS file manager. The
      * renderer names a *target* ('project' | 'worktree'), never a raw path —
      * the main process resolves and validates the path against the
      * conversation's own workspace before opening it.
      */
     revealPath: (request: { conversationId: string; target: 'project' | 'worktree' }) => Promise<void>;
+  };
+  browser: {
+    /**
+     * Local servers currently serving a page, for the Browser surface's empty
+     * state. Bounded and cached in main; an empty list means nothing is
+     * listening, not that discovery failed.
+     */
+    discoverServers: () => Promise<DiscoveredServer[]>;
+    /** Hands the page the surface is showing to the user's real browser. */
+    openExternal: (url: string) => Promise<void>;
   };
   git: {
     getState: (conversationId: string) => Promise<GitStateSummary>;
@@ -2161,6 +2727,7 @@ export type RendererApi = {
     createBranch: (conversationId: string, name: string) => Promise<GitStateSummary>;
     commit: (request: GitCommitRequest) => Promise<string>;
     review: (request: GitReviewRequest) => Promise<ReviewDiff>;
+    listReviewTurns: (conversationId: string) => Promise<ReviewTurnSummary[]>;
     stage: (conversationId: string, paths: string[]) => Promise<void>;
     unstage: (conversationId: string, paths: string[]) => Promise<void>;
     revert: (conversationId: string, paths: string[]) => Promise<void>;
@@ -2214,7 +2781,12 @@ export type RendererApi = {
     ) => Promise<PluginsView>;
     checkHealth: (
       pluginName: string
-    ) => Promise<{ ok: boolean; toolsCount?: number; error?: string }>;
+    ) => Promise<PluginHealthView>;
+    /** Runs the OAuth consent flow for one of a plugin's remote servers. */
+    connectServer: (
+      pluginName: string,
+      serverKey: string
+    ) => Promise<{ ok: boolean; status?: 'ready' | 'authorization-required'; error?: string }>;
   };
   mcpUi: {
     /**
@@ -2233,14 +2805,163 @@ export type RendererApi = {
     accept: (changeId: string) => Promise<FileChangeRecord>;
     getSummary: (conversationId: string) => Promise<FileChangeSummary>;
   };
+  window: {
+    /** Whether this window is in native fullscreen right now. */
+    getFullScreen: () => Promise<boolean>;
+    /** Fires on every native fullscreen transition. Returns its own unsubscribe. */
+    onFullScreenChange: (listener: (isFullScreen: boolean) => void) => () => void;
+  };
   terminal: {
     getHistory: (conversationId: string, limit?: number) => Promise<TerminalHistoryEntry[]>;
     record: (conversationId: string, command: string, exitCode?: number | null) => Promise<TerminalHistoryEntry>;
-    /** Spawns the conversation's shell, or attaches to the running one. */
-    start: (conversationId: string, cols?: number, rows?: number) => Promise<TerminalStartResult>;
-    input: (conversationId: string, data: string) => Promise<void>;
-    resize: (conversationId: string, cols: number, rows: number) => Promise<void>;
-    kill: (conversationId: string) => Promise<void>;
+    /** Spawns the named shell, or attaches to it when it is already running. */
+    start: (input: TerminalRef & { cols?: number; rows?: number }) => Promise<TerminalStartResult>;
+    write: (input: TerminalRef & { data: string }) => Promise<void>;
+    resize: (input: TerminalRef & { cols: number; rows: number }) => Promise<void>;
+    kill: (input: TerminalRef) => Promise<void>;
+    /** Every shell this conversation currently owns, oldest first. */
+    list: (conversationId: string) => Promise<TerminalSummary[]>;
     subscribe: (listener: (event: TerminalOutputEvent) => void) => () => void;
+    /**
+     * Status and label changes. Subscribing also tells main that something is
+     * watching, which is what starts the process-tree poll behind the labels;
+     * unsubscribing stops it.
+     */
+    subscribeMetadata: (listener: (event: TerminalMetadataEvent) => void) => () => void;
+  };
+  jobs: {
+    /** Snapshots of every job the conversation owns, registration order. */
+    list: (conversationId: string) => Promise<JobSnapshotView[]>;
+    /** Snapshots of every job across all conversations, registration order. */
+    listAll: () => Promise<JobSnapshotView[]>;
+    /** Request cancellation of one job; resolves with the updated snapshot. */
+    kill: (conversationId: string, jobId: string) => Promise<JobSnapshotView>;
+    /** Push channel for job registration and settlement. */
+    subscribe: (listener: (event: JobEvent) => void) => () => void;
+  };
+  subagents: {
+    list: (parentConversationId: string) => Promise<Array<{ id: string; title: string; mode: string | null; label: string | null }>>;
+    followup: (parentConversationId: string, childId: string, content: string) => Promise<string>;
+    interrupt: (childId: string) => Promise<{ accepted: true }>;
+    /** Stops every live agent in a conversation, leaving the parent turn alone. */
+    interruptAll: (conversationId: string) => Promise<{ interrupted: number }>;
+    getHistory: (request: { parentConversationId: string; childId: string; mode?: string | null }) => Promise<ConversationDetail>;
+    getLiveness: () => Promise<Record<string, 'working' | 'monitoring' | null>>;
+    /** Composer takeover input: is this conversation a subagent, and can it still be driven? */
+    getComposerState: (childId: string) => Promise<SubagentComposerState | null>;
+  };
+  goals: {
+    /** Creates or replaces the conversation's goal; `edit` rewrites the live row in place (same id, counters kept). */
+    set: (conversationId: string, objective: string, mode?: 'replace' | 'edit') => Promise<ConversationGoalView>;
+    pause: (conversationId: string) => Promise<ConversationGoalView>;
+    resume: (conversationId: string) => Promise<ConversationGoalView>;
+    /** Deletes the goal; resolves null when there was nothing to clear. */
+    clear: (conversationId: string) => Promise<ConversationGoalView | null>;
+    get: (conversationId: string) => Promise<ConversationGoalView | null>;
+    onGoalEvent: (listener: (event: GoalEvent) => void) => () => void;
+  };
+  deepLink: {
+    /** `atlas://` routes, forwarded from the main process. */
+    onDeepLink: (listener: (link: AtlasDeepLink) => void) => () => void;
+    /**
+     * A link that arrived before any window could receive events (cold-start
+     * `open-url` on macOS, argv on Windows/Linux). Pulled once by the
+     * renderer's first subscription; null when there is nothing parked.
+     */
+    consumePending: () => Promise<AtlasDeepLink | null>;
+  };
+  contextMenu?: {
+    showChatSelection: (request: ShowChatSelectionMenuRequest) => Promise<ChatContextMenuAction | null>;
+    showConversation: (request: ShowConversationContextMenuRequest) => Promise<ConversationContextMenuAction | null>;
+    showProject: (request: ShowProjectContextMenuRequest) => Promise<ProjectContextMenuAction | null>;
+    showSidebarBackground: (request?: ShowSidebarBackgroundContextMenuRequest) => Promise<SidebarBackgroundContextMenuAction | null>;
+  };
+  images: {
+    /** Writes an image to the clipboard. `dataUrl` must be image data. */
+    copy: (dataUrl: string) => Promise<void>;
+    /**
+     * Fires when the native image menu asks for a copy. The renderer fetches
+     * the bytes (it alone can read `blob:` URLs) and answers via `copy`.
+     */
+    onCopyRequest: (listener: (src: string) => void) => () => void;
+    /** Writes image bytes to a user-chosen file. Returns whether it saved. */
+    save: (request: SaveImageRequest) => Promise<SaveImageResult>;
+    /**
+     * Fires when the native image menu asks for a save. The renderer fetches
+     * the bytes (it alone can read `blob:` URLs) and answers via `save`.
+     */
+    onSaveRequest: (listener: (src: string) => void) => () => void;
   };
 };
+
+export type ShowChatSelectionMenuRequest = {
+  selectionText: string;
+  hasActiveConversation: boolean;
+  /** Href of the anchor under the cursor, if the selection touches a link. */
+  linkURL?: string | null;
+};
+
+export type ChatContextMenuAction =
+  | { action: 'quote-in-prompt'; text: string }
+  | { action: 'cite-in-prompt'; text: string }
+  | { action: 'explain-selection'; text: string }
+  | { action: 'search-in-workspace'; text: string };
+
+export type ConversationSnoozePreset = {
+  id: string;
+  label: string;
+  whenLabel: string;
+  snoozedUntil: string;
+};
+
+export type ShowConversationContextMenuRequest = {
+  conversationId: string;
+  conversationTitle?: string;
+  isArchived: boolean;
+  isPinned: boolean;
+  isSettled: boolean;
+  isSnoozed: boolean;
+  isUnread?: boolean;
+  hasProject?: boolean;
+  snoozePresets?: readonly ConversationSnoozePreset[];
+  canFork: boolean;
+  canRename: boolean;
+};
+
+export type ConversationContextMenuAction =
+  | { action: 'restore'; conversationId: string }
+  | { action: 'toggle-pin'; conversationId: string }
+  | { action: 'toggle-settled'; conversationId: string }
+  | { action: 'wake'; conversationId: string }
+  | { action: 'snooze'; conversationId: string; snoozedUntil: string }
+  | { action: 'rename'; conversationId: string }
+  | { action: 'regenerate-title'; conversationId: string }
+  | { action: 'mark-unread'; conversationId: string }
+  | { action: 'mark-read'; conversationId: string }
+  | { action: 'project-settings'; conversationId: string }
+  | { action: 'archive'; conversationId: string }
+  | { action: 'fork'; conversationId: string }
+  | { action: 'delete'; conversationId: string };
+
+export type ShowProjectContextMenuRequest = {
+  projectId: string;
+  projectTitle: string;
+  projectExists: boolean;
+  isPinned: boolean;
+  canRename: boolean;
+};
+
+export type ProjectContextMenuAction =
+  | { action: 'new-chat'; projectId: string }
+  | { action: 'toggle-pin'; projectId: string }
+  | { action: 'rename'; projectId: string }
+  | { action: 'reveal'; projectId: string }
+  | { action: 'remove'; projectId: string };
+
+export type ShowSidebarBackgroundContextMenuRequest = {
+  hasActiveProject?: boolean;
+};
+
+export type SidebarBackgroundContextMenuAction =
+  | { action: 'new-chat' }
+  | { action: 'attach-project' };

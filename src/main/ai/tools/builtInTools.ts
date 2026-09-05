@@ -30,7 +30,8 @@ import {
   githubPrCreateToolExecute,
   githubPrStatusToolExecute
 } from './githubTools';
-import { detectSandboxMechanism } from './sandbox';
+import { createSessionSearchTools } from './sessionSearchTools';
+import type { SessionSearchSource } from './sessionSearchTools';
 import {
   bashToolExecute,
   globToolExecute,
@@ -82,7 +83,7 @@ export function describeToolPermissionsForPrompt(mode: ToolPermissionMode) {
   }
 
   if (mode === 'full-access') {
-    return 'Full-access mode is active: every tool runs immediately without asking the user first.';
+    return 'Full-access mode is active: every tool runs immediately without asking the user first. Network access is enabled for shell commands.';
   }
 
   return 'Shell commands and web fetches pause for the user to approve before they run.';
@@ -181,7 +182,12 @@ export function describeAgentInstructionsForPrompt(instructions: AgentInstructio
  * call something that was never in its tool set.
  */
 import { createAgentTools, type SubagentContext } from './agentTools';
+import { createSubagentControlTools, type SubagentControlContext } from './subagentControlTools';
+import { createJobTools } from './jobTools';
+import { createTerminalTools } from './terminalTools';
+import { createGoalTools } from './goalTools';
 import type { SubagentRuntime } from '../agents/SubagentRuntime';
+import type { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
 
 export type { SubagentContext };
 
@@ -191,12 +197,57 @@ export function createBuiltInTools(
   mode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
   workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
   subagentRuntime?: SubagentRuntime,
-  subagentContext?: SubagentContext
+  subagentContext?: SubagentContext,
+  /**
+   * The past-conversation search seam for `session_search`. Optional so every
+   * existing call site is unchanged; the tool is omitted when absent.
+   */
+  sessionSearch?: SessionSearchSource | null,
+  continuationManager?: SubagentContinuationManager | null,
+  subagentControlContext?: SubagentControlContext | null
 ) {
   const agentTools = createAgentTools(subagentRuntime, subagentContext);
+  const controlTools =
+    continuationManager && subagentControlContext
+      ? createSubagentControlTools(continuationManager, subagentControlContext)
+      : continuationManager
+        ? createSubagentControlTools(continuationManager, subagentContext ? { conversationId: subagentContext.conversationId } : undefined)
+        : {};
+  // Job-control tools exist only where the substrate does: a registry and a
+  // conversation to fence them to. Read-only mode withholds them below along
+  // with the other side-effecting tools.
+  const jobTools =
+    workspace.jobRegistry && workspace.conversationId
+      ? createJobTools(workspace.jobRegistry, workspace.conversationId)
+      : {};
+  // Read-only terminal visibility exists only where the PTY substrate is
+  // wired; like the job tools it is fenced to the calling conversation.
+  const terminalTools =
+    workspace.terminalReadback && workspace.conversationId
+      ? createTerminalTools(workspace.terminalReadback, workspace.conversationId)
+      : {};
+  // update_goal exists only while a goal is active: withheld means uncallable,
+  // so the model cannot mint goal state the runtime never created. Paused and
+  // terminal rows stay in the table as history — they must not re-arm the tool.
+  const goalTools =
+    workspace.goalTools &&
+    workspace.conversationId &&
+    workspace.goalTools.getActive(workspace.conversationId)?.status === 'active'
+      ? createGoalTools(workspace.goalTools, workspace.conversationId)
+      : {};
+  // Recall over past sessions exists only where the search source does; the
+  // project filter rides the workspace so "project only" means this project.
+  const sessionSearchTools = sessionSearch
+    ? createSessionSearchTools(sessionSearch, { projectId: workspace.projectId ?? null })
+    : {};
   const all = {
     ...(extraTools ?? {}),
     ...agentTools,
+    ...controlTools,
+    ...jobTools,
+    ...terminalTools,
+    ...goalTools,
+    ...sessionSearchTools,
     ...buildCodeTools(workspace),
     read_file: tool({
       description:
@@ -245,30 +296,46 @@ export function createBuiltInTools(
       strict: true,
       execute: (input: Parameters<typeof globToolExecute>[0]) => globToolExecute(input, workspace)
     }),
-    web_search: tool({
-      description:
-        'Search the web for current information. Use this when the answer depends on recent documentation, current events, or live web pages.',
-      inputSchema: z.object({
-        query: z.string().trim().min(2).describe('Search query'),
-        allowed_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Only include results from these domains'),
-        blocked_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Exclude results from these domains')
+    web_search: {
+      ...tool({
+        description:
+          'Search the web for current information. Use this when the answer depends on recent documentation, current events, or live web pages.',
+        inputSchema: z.object({
+          query: z.string().trim().min(2).describe('Search query'),
+          allowed_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Only include results from these domains'),
+          blocked_domains: z.array(z.string().trim().min(1)).max(20).optional().describe('Exclude results from these domains')
+        }),
+        strict: true,
+        execute: (
+          input: Parameters<typeof webSearchToolExecute>[0],
+          execOptions?: { abortSignal?: AbortSignal }
+        ) => webSearchToolExecute({ ...input, signal: execOptions?.abortSignal })
       }),
-      strict: true,
-      execute: webSearchToolExecute
-    }),
-    web_fetch: tool({
-      description:
-        'Fetch a URL and extract text content relevant to the provided prompt. Use this after web search when you need page content, not just links.',
-      needsApproval: true,
-      inputSchema: z.object({
-        url: z.string().trim().url().describe('Fully qualified URL to fetch'),
-        prompt: z.string().trim().min(1).describe('What information should be extracted from the page')
+      // Cooperative budget enforced by the timeout policy: the execute above
+      // forwards the fused abort signal to fetch, so a hung search is cut at
+      // 60s instead of blocking the turn until the stream watchdog. Declared
+      // outside tool() because the SDK's Tool type has no timeoutMs field.
+      timeoutMs: 60_000
+    },
+    web_fetch: {
+      ...tool({
+        description:
+          'Fetch a URL and extract text content relevant to the provided prompt. Use this after web search when you need page content, not just links.',
+        needsApproval: true,
+        inputSchema: z.object({
+          url: z.string().trim().url().describe('Fully qualified URL to fetch'),
+          prompt: z.string().trim().min(1).describe('What information should be extracted from the page')
+        }),
+        strict: true,
+        execute: (
+          input: Parameters<typeof webFetchToolExecute>[0],
+          execOptions?: { abortSignal?: AbortSignal }
+        ) => webFetchToolExecute({ ...input, signal: execOptions?.abortSignal })
       }),
-      strict: true,
-      execute: webFetchToolExecute
-    }),
+      timeoutMs: 60_000
+    },
     bash: tool({
-      description: describeBashTool(workspace),
+      description: describeBashTool(workspace, mode),
       needsApproval: true,
       inputSchema: z.object({
         command: z.string().trim().min(1).describe('Shell command to execute'),
@@ -283,7 +350,7 @@ export function createBuiltInTools(
           )
       }),
       strict: true,
-      execute: (input: Parameters<typeof bashToolExecute>[0]) => bashToolExecute(input, workspace)
+      execute: (input: Parameters<typeof bashToolExecute>[0]) => bashToolExecute(input, workspace, mode)
     }),
     get_current_time: tool({
       description: 'Get the current local date, time, and timezone.',
@@ -387,25 +454,41 @@ export function createBuiltInTools(
  * and every result carries the mechanism actually applied so a Linux host
  * without bubblewrap is still reported honestly at the point it matters.
  */
-function describeBashTool(workspace: ToolWorkspace) {
+function describeBashTool(workspace: ToolWorkspace, mode?: ToolPermissionMode) {
+  const backgroundLine = workspace.jobRegistry
+    ? 'Set run_in_background: true to start a long-running command as a tracked background job: it returns a job id, and you can read its output with job_output, list jobs with job_list, and stop one with job_kill.'
+    : 'Set run_in_background: true to detach a long-running command; its output is not captured.';
+
   if (process.platform === 'win32') {
     return workspace.mode === 'code'
-      ? 'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, linters, and git.'
+      ? `Run a shell command with the attached project folder as the working directory. Use it for builds, tests, linters, and git. ${backgroundLine}`
       : 'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.';
   }
 
+  const networkBlocked = mode !== 'full-access';
+
   if (workspace.mode === 'code') {
+    const networkSentence = networkBlocked
+      ? 'writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.'
+      : 'writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only. Network access is enabled.';
+    const gitSentence = networkBlocked
+      ? 'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.'
+      : 'Shell git commands can read the repository and access the network, but cannot write to .git — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.';
+
     return [
       'Run a shell command with the attached project folder as the working directory. Use it for builds, tests, and linters.',
-      'Commands run inside an OS sandbox: writes are confined to the project folder, /tmp and $TMPDIR, with .git and .atlas read-only, and network access is blocked.',
-      'Shell git commands can read the repository but not write it, and the sandbox blocks the network — use the git_ tools to commit, branch, stash, or push, and github_pr_create to open a pull request.',
-      'Each result reports the sandbox that was applied.'
+      `Commands run inside an OS sandbox: ${networkSentence}`,
+      gitSentence,
+      'Each result reports the sandbox that was applied.',
+      backgroundLine
     ].join(' ');
   }
 
   return [
     'Run a read-only shell command for inspection. Work mode rejects commands that would modify files; switch the conversation to Code mode for that.',
-    'Commands run inside an OS sandbox with no writable paths and no network access.'
+    networkBlocked
+      ? 'Commands run inside an OS sandbox with no writable paths and no network access.'
+      : 'Commands run inside an OS sandbox with no writable paths. Network access is enabled.'
   ].join(' ');
 }
 
@@ -548,27 +631,11 @@ function buildCodeTools(workspace: ToolWorkspace): ToolSet {
 }
 
 /**
- * Leaving the sandbox is the one thing full-access does not cover.
- *
- * `full-access` means "stop asking", which is a statement about the approval
- * ladder, not about the kernel boundary. Running a command with the sandbox
- * removed is a different and larger act than running it inside one, so it keeps
- * its own prompt in every mode; the flag is the model's way to *ask*, never to
- * decide. Every other bash call still runs without pausing.
- */
-const bashNeedsApproval = async (input: { dangerouslyDisableSandbox?: boolean }) => {
-  if (input?.dangerouslyDisableSandbox !== true) {
-    return false;
-  }
-
-  // On a host with no mechanism there is no sandbox to step out of, so the flag
-  // changes nothing and asking about it would be theatre.
-  return (await detectSandboxMechanism()) !== 'none';
-};
-
-/**
  * Read-only drops the side-effecting tools; full-access clears the approval
- * flags so nothing pauses. `ask` is the shape the tools are declared in.
+ * flags so nothing pauses — including `dangerouslyDisableSandbox`.
+ * The user explicitly chose the high-risk mode ("All tools run without
+ * asking"), so an escalated bash call runs without a second prompt.
+ * `ask` is the shape the tools are declared in.
  */
 function applyToolPermissionMode<T extends Record<string, unknown>>(tools: T, mode: ToolPermissionMode): T {
   if (mode === 'ask') {
@@ -587,7 +654,7 @@ function applyToolPermissionMode<T extends Record<string, unknown>>(tools: T, mo
       // Same tool, approval flag cleared, so it executes without pausing.
       result[name] = {
         ...(definition as Record<string, unknown>),
-        needsApproval: name === 'bash' ? bashNeedsApproval : false
+        needsApproval: false
       };
       continue;
     }

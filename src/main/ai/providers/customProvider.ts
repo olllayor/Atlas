@@ -27,8 +27,16 @@ const VALIDATE_TIMEOUT_MS = 20_000;
  * Anthropic authenticates with `x-api-key` and requires a version header; the
  * OpenAI-shaped formats use a bearer token. Getting this wrong is the single
  * most common reason a hand-configured endpoint returns 401.
+ *
+ * An absent key sends no credential at all rather than an empty one: local
+ * runtimes (Ollama, LM Studio, vLLM) are probed without a key, and an empty
+ * bearer token can itself trip stricter gateways.
  */
-export function buildAuthHeaders(apiFormat: CustomProviderApiFormat, apiKey: string): Record<string, string> {
+export function buildAuthHeaders(apiFormat: CustomProviderApiFormat, apiKey?: string | null): Record<string, string> {
+  if (!apiKey) {
+    return { 'Content-Type': 'application/json' };
+  }
+
   if (apiFormat === 'anthropic-messages') {
     return {
       'x-api-key': apiKey,
@@ -128,7 +136,8 @@ export function parseDiscoveredModels(apiFormat: CustomProviderApiFormat, payloa
 export type CustomProviderProbe = {
   baseUrl: string;
   apiFormat: CustomProviderApiFormat;
-  apiKey: string;
+  /** Absent for keyless endpoints — local runtimes and open gateways. */
+  apiKey?: string | null;
 };
 
 /** Shared by the settings "test connection" action and by model discovery. */
@@ -170,7 +179,10 @@ export class CustomProviderAdapter implements ProviderAdapter {
   readonly capabilities: ProviderCapabilities = {
     // The configured model list is the catalog; no network call, no key needed.
     requiresApiKeyForCatalog: false,
-    returnsCompleteCatalog: true
+    returnsCompleteCatalog: true,
+    // listModels reads configuration, so its success says nothing about the
+    // endpoint or the key — only an explicit validation may mark one valid.
+    catalogRequiresNetwork: false
   };
 
   private readonly getClient: (apiKey: string) => LanguageModelFactory;

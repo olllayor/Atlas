@@ -19,12 +19,20 @@ import { useSyncExternalStore } from 'react';
  */
 
 /** First card of a run: long enough that a pointer crossing rows opens nothing. */
-export const SIDEBAR_HOVER_CARD_OPEN_DELAY_MS = 320;
+export const SIDEBAR_HOVER_CARD_OPEN_DELAY_MS = 500;
 
 /** How long after the last card closes the next one still opens instantly. */
 export const SIDEBAR_HOVER_CARD_SKIP_WINDOW_MS = 400;
 
-export const SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS = 120;
+/**
+ * An intentional floor during the skip window.
+ * 0ms causes cards to rapidly flash and mix together during fast mouse sweeps.
+ * 200ms is short enough to feel responsive when resting on an item, but
+ * filters out quick pointer transit over rows.
+ */
+export const SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS = 200;
+
+export const SIDEBAR_HOVER_CARD_CLOSE_DELAY_MS = 0;
 
 type TimerHandle = unknown;
 
@@ -42,7 +50,7 @@ const realTimers: HoverCardDelayTimers = {
 };
 
 export type SidebarHoverCardDelayStore = {
-  /** The value to hand Radix as `openDelay`: 0 inside the skip window. */
+  /** The value to hand Radix as `openDelay`: 0 or skipOpenDelayMs inside the skip window. */
   getOpenDelay: () => number;
   subscribe: (listener: () => void) => () => void;
   /** Call from `onOpenChange` when a card opens; opens the skip window. */
@@ -53,10 +61,12 @@ export type SidebarHoverCardDelayStore = {
 
 export function createSidebarHoverCardDelayStore({
   openDelayMs = SIDEBAR_HOVER_CARD_OPEN_DELAY_MS,
+  skipOpenDelayMs = 0,
   skipWindowMs = SIDEBAR_HOVER_CARD_SKIP_WINDOW_MS,
   timers = realTimers,
 }: {
   openDelayMs?: number;
+  skipOpenDelayMs?: number;
   skipWindowMs?: number;
   timers?: HoverCardDelayTimers;
 } = {}): SidebarHoverCardDelayStore {
@@ -89,7 +99,7 @@ export function createSidebarHoverCardDelayStore({
   };
 
   return {
-    getOpenDelay: () => (skipping ? 0 : openDelayMs),
+    getOpenDelay: () => (skipping ? skipOpenDelayMs : openDelayMs),
 
     subscribe(listener) {
       listeners.add(listener);
@@ -135,7 +145,11 @@ export function createSidebarHoverCardDelayStore({
   };
 }
 
-const sidebarHoverCardDelay = createSidebarHoverCardDelayStore();
+const sidebarHoverCardDelay = createSidebarHoverCardDelayStore({
+  openDelayMs: SIDEBAR_HOVER_CARD_OPEN_DELAY_MS,
+  skipOpenDelayMs: SIDEBAR_HOVER_CARD_SKIP_OPEN_DELAY_MS,
+  skipWindowMs: SIDEBAR_HOVER_CARD_SKIP_WINDOW_MS,
+});
 
 export function useSidebarHoverCardDelay() {
   return useSyncExternalStore(

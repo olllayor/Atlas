@@ -1,15 +1,19 @@
-import { sign as signApplication } from "@electron/osx-sign";
+import { sign as signApplication } from '@electron/osx-sign';
 
 /**
- * Custom macOS sign hook for electron-builder, opt-in for signed builds via
- * `pnpm package:signed` (see package.json). Signs files with matching
- * options together instead of spawning one `codesign` process per file —
- * port of pingdotgg/t3code#8093, which measured codesign calls dropping ~80%.
- *
- * Deliberately NOT wired into the default `package` script: @electron/osx-sign
- * v2 requires a real certificate identity and throws when none exists, while
- * unsigned local builds rely on electron-builder's default ad-hoc path.
+ * Electron Builder normally starts one `codesign` process per file. Grouping
+ * files with identical signing options keeps the signing result the same
+ * while substantially reducing process-spawn overhead.
  */
 export default async function sign(options) {
-  await signApplication({ ...options, batchCodesignCalls: true });
+  // Electron Builder calls a configured hook even when signing is disabled.
+  // Preserve its normal unsigned-build behavior.
+  if (!options.identity) {
+    return;
+  }
+
+  await signApplication({
+    ...options,
+    batchCodesignCalls: true,
+  });
 }

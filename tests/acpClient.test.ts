@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import type { ChildProcess } from 'node:child_process';
 
-import { AcpClient, AcpError } from '../src/main/ai/acp/acpClient.js';
+import { AcpClient, AcpError, type AcpSessionInfo } from '../src/main/ai/acp/acpClient.js';
 
 class FakeStdin {
   readonly lines: string[] = [];
@@ -66,13 +66,17 @@ class FakeChild extends EventEmitter {
   }
 }
 
-function answerInitialize(child: FakeChild, requestId: number): void {
+function answerInitialize(
+  child: FakeChild,
+  requestId: number,
+  agentCapabilities: unknown = { sessionCapabilities: { resume: {} } }
+): void {
   child.emitFrame({
     jsonrpc: '2.0',
     id: requestId,
     result: {
       protocolVersion: 1,
-      agentCapabilities: { sessionCapabilities: { resume: {} } },
+      agentCapabilities,
       authMethods: [{ id: 'opencode-login' }],
       agentInfo: { name: 'OpenCode', version: '1.18.27' }
     }
@@ -105,12 +109,21 @@ test('a binary that does not exist fails the start instead of crashing the proce
 
 function startHarness(
   onWrite?: (line: string, child: FakeChild) => void,
-  options: { spawnTimeoutMs?: number } = {}
+  options: {
+    spawnTimeoutMs?: number;
+    onConfigOptionsUpdated?: (info: AcpSessionInfo) => void;
+    onStderr?: (chunk: string) => void | Promise<void>;
+    agentCapabilities?: unknown;
+  } = {}
 ): { client: AcpClient; child: () => FakeChild } {
   let current: FakeChild | null = null;
   const client = new AcpClient({
     cwd: '/proj',
     ...(options.spawnTimeoutMs !== undefined ? { spawnTimeoutMs: options.spawnTimeoutMs } : {}),
+    ...(options.onConfigOptionsUpdated
+      ? { onConfigOptionsUpdated: options.onConfigOptionsUpdated }
+      : {}),
+    ...(options.onStderr ? { onStderr: options.onStderr } : {}),
     childFactory: () => {
       const child = new FakeChild(onWrite ? (line) => onWrite(line, child) : undefined);
       current = child;
@@ -118,7 +131,7 @@ function startHarness(
       setImmediate(() => {
         const init = child.stdin.frames().find((frame) => frame.method === 'initialize');
         if (typeof init?.id === 'number') {
-          answerInitialize(child, init.id);
+          answerInitialize(child, init.id, options.agentCapabilities);
         }
       });
       return child as unknown as ChildProcess;
@@ -157,6 +170,24 @@ test('start times out when the agent stays silent', async () => {
 
   await assert.rejects(client.start(), /Timed out.*handshake/);
   assert.ok(current);
+});
+
+test('stderr handler failures reject the in-flight handshake', async () => {
+  const client = new AcpClient({
+    cwd: '/proj',
+    onStderr: () => {
+      throw new Error('browser helper failed');
+    },
+    childFactory: () => {
+      const child = new FakeChild();
+      setImmediate(() => {
+        child.stderr.emit('data', Buffer.from('browser helper output\n'));
+      });
+      return child as unknown as ChildProcess;
+    }
+  });
+
+  await assert.rejects(client.start(), /browser helper failed/);
 });
 
 test('createSession parses the model catalog from config options', async () => {
@@ -198,6 +229,25 @@ test('createSession parses the model catalog from config options', async () => {
   const params = child().stdin.frames().find((frame) => frame.method === 'session/new')
     ?.params as Record<string, unknown>;
   assert.equal(params.cwd, '/proj');
+  await client.shutdown();
+});
+
+test('config option notifications refresh the catalog, including an empty catalog', async () => {
+  const updates: AcpSessionInfo[] = [];
+  const { client, child } = startHarness(undefined, {
+    onConfigOptionsUpdated: (info) => updates.push(info)
+  });
+  await client.start();
+  child().emitFrame({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: 'ses_1',
+      update: { sessionUpdate: 'config_option_update', configOptions: [] }
+    }
+  });
+  await flush();
+  assert.deepEqual(updates, [{ sessionId: 'ses_1', models: [], currentModel: null }]);
   await client.shutdown();
 });
 
@@ -391,7 +441,15 @@ test('writes, terminals, and unknown methods are refused with codes', async () =
           [12, 'terminal/create'],
           [13, 'frob/nicate']
         ] as const) {
-          agent.emitFrame({ jsonrpc: '2.0', id, method, params: {} });
+          agent.emitFrame({
+            jsonrpc: '2.0',
+            id,
+            method,
+            params:
+              method === 'fs/write_text_file'
+                ? { sessionId: 'ses_1', path: '/proj/file.txt', content: 'x' }
+                : {}
+          });
         }
         agent.emitFrame({
           jsonrpc: '2.0',
@@ -616,6 +674,24 @@ test('authenticate passes the method id through untouched', async () => {
     .stdin.frames()
     .find((frame) => frame.method === 'authenticate');
   assert.deepEqual(sent?.params, { methodId: 'opencode-login' });
+  await client.shutdown();
+});
+
+test('logout requires the advertised capability and sends the ACP request', async () => {
+  const { client, child } = startHarness((line, agent) => {
+    const frame = JSON.parse(line) as Record<string, unknown>;
+    if (frame.method === 'logout') {
+      setImmediate(() => agent.emitFrame({ jsonrpc: '2.0', id: frame.id, result: {} }));
+    }
+  }, {
+    agentCapabilities: { auth: { logout: true } }
+  });
+
+  await client.logout();
+  const sent = child()
+    .stdin.frames()
+    .find((frame) => frame.method === 'logout');
+  assert.deepEqual(sent?.params, {});
   await client.shutdown();
 });
 

@@ -3,14 +3,185 @@ import test from 'node:test';
 
 import type { ModelMessage } from 'ai';
 
-import { AcpAgentAdapter, type AcpDriverClient } from '../src/main/ai/acp/AcpAgentAdapter.js';
+import {
+  AcpAgentAdapter,
+  classifyAntigravitySubagentToolCall,
+  type AcpDriverClient
+} from '../src/main/ai/acp/AcpAgentAdapter.js';
 import type { OpenCodeSessionStore } from '../src/main/ai/providers/opencode/OpenCodeAgentAdapter.js';
 import type { AcpSessionInfo } from '../src/main/ai/acp/acpClient.js';
 
 /** The agent under test: any ACP CLI; Claude Code is the one Atlas ships with. */
 const AGENT = { providerId: 'claude-code', agentLabel: 'Claude Code' } as const;
+const ANTIGRAVITY_AGENT = { providerId: 'antigravity', agentLabel: 'Antigravity' } as const;
 
 const USER_TURN: ModelMessage[] = [{ role: 'user', content: 'ship it' }];
+
+test('Antigravity native subagent detection excludes MCP calls', () => {
+  assert.equal(
+    classifyAntigravitySubagentToolCall({ title: 'Running start_subagent', toolKind: 'other' }),
+    'subagent'
+  );
+  assert.equal(
+    classifyAntigravitySubagentToolCall({
+      title: 'Running start_subagent',
+      meta: { is_mcp_tool_call: true }
+    }),
+    'mcp'
+  );
+  assert.equal(
+    classifyAntigravitySubagentToolCall({ title: 'Running shell', toolKind: 'other' }),
+    undefined
+  );
+});
+
+test('native Antigravity subagent results become task events instead of tool rows', async () => {
+  let harness!: ReturnType<typeof fakeAcpClient>;
+  harness = fakeAcpClient({
+    promptGate: async () => {
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call',
+        toolCallId: 'trajectory:4',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'running'
+      });
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call_update',
+        toolCallId: 'trajectory:4',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'completed',
+        outputText: 'Finished review.'
+      });
+    }
+  });
+  const { adapter } = buildAdapter({ client: harness.client, agent: ANTIGRAVITY_AGENT });
+  const tasks: Array<{ taskId: string; status: string; title?: string; summary?: string }> = [];
+  const { request } = streamRequest();
+  await adapter.streamChat({
+    ...request,
+    onTask: (event) => tasks.push(event)
+  });
+  assert.deepEqual(tasks, [
+    { taskId: 'trajectory:4', status: 'running', title: 'Antigravity subagent' },
+    {
+      taskId: 'trajectory:4',
+      status: 'completed',
+      title: 'Antigravity subagent',
+      summary: 'Finished review.'
+    }
+  ]);
+});
+
+test('native Antigravity subagent results can complete in their first tool frame', async () => {
+  let harness!: ReturnType<typeof fakeAcpClient>;
+  harness = fakeAcpClient({
+    promptGate: async () => {
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call',
+        toolCallId: 'trajectory:5',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'completed',
+        outputText: '  Finished immediately.  '
+      });
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call',
+        toolCallId: 'trajectory:6',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'failed',
+        outputText: 'Subagent exceeded its limit.'
+      });
+    }
+  });
+  const { adapter } = buildAdapter({ client: harness.client, agent: ANTIGRAVITY_AGENT });
+  const tasks: Array<{ taskId: string; status: string; summary?: string }> = [];
+  const { request } = streamRequest();
+  await adapter.streamChat({
+    ...request,
+    onTask: (event) => tasks.push(event)
+  });
+  assert.deepEqual(tasks, [
+    {
+      taskId: 'trajectory:5',
+      status: 'completed',
+      title: 'Antigravity subagent',
+      summary: 'Finished immediately.'
+    },
+    {
+      taskId: 'trajectory:6',
+      status: 'failed',
+      title: 'Antigravity subagent',
+      summary: 'Subagent exceeded its limit.'
+    }
+  ]);
+});
+
+test('an interrupted native subagent frame is terminal and is not repeated on cleanup', async () => {
+  let harness!: ReturnType<typeof fakeAcpClient>;
+  harness = fakeAcpClient({
+    promptGate: async () => {
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call',
+        toolCallId: 'trajectory:8',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'running'
+      });
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call_update',
+        toolCallId: 'trajectory:8',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'interrupted'
+      });
+    }
+  });
+  const { adapter } = buildAdapter({ client: harness.client, agent: ANTIGRAVITY_AGENT });
+  const tasks: Array<{ taskId: string; status: string }> = [];
+  const { request } = streamRequest();
+  await adapter.streamChat({
+    ...request,
+    onTask: (event) => tasks.push(event)
+  });
+  assert.deepEqual(tasks, [
+    { taskId: 'trajectory:8', status: 'running', title: 'Antigravity subagent' },
+    { taskId: 'trajectory:8', status: 'interrupted', title: 'Antigravity subagent' }
+  ]);
+});
+
+test('non-Antigravity ACP tools with the same title stay ordinary tools', async () => {
+  let harness!: ReturnType<typeof fakeAcpClient>;
+  harness = fakeAcpClient({
+    promptGate: async () => {
+      harness.client.emitUpdate({
+        sessionId: 'ses_acp_1',
+        kind: 'tool_call',
+        toolCallId: 'trajectory:7',
+        title: 'Running start_subagent',
+        toolKind: 'other',
+        status: 'completed',
+        outputText: 'Ordinary ACP output.'
+      });
+    }
+  });
+  const { adapter } = buildAdapter({ client: harness.client });
+  const tasks: unknown[] = [];
+  const { request } = streamRequest();
+  await adapter.streamChat({
+    ...request,
+    onTask: (event) => tasks.push(event)
+  });
+  assert.deepEqual(tasks, []);
+});
 
 function memoryStore(seed?: { conversationId: string; sessionId: string; directory: string }) {
   const rows = new Map<string, { sessionId: string; directory: string; schemaVersion?: number; transport?: 'sdk' | 'acp' }>();
@@ -172,13 +343,14 @@ function buildAdapter(
     client?: AcpDriverClient;
     store?: OpenCodeSessionStore;
     clientDirs?: string[];
+    agent?: typeof AGENT | typeof ANTIGRAVITY_AGENT;
   } = {}
 ) {
   const store = overrides.store ?? memoryStore();
   const clientDirs = overrides.clientDirs ?? [];
   const client = overrides.client ?? fakeAcpClient().client;
   const adapter = new AcpAgentAdapter({
-    ...AGENT,
+    ...(overrides.agent ?? AGENT),
     readSettings: () => ({ customModels: [] }),
     getClient: (directory) => {
       clientDirs.push(directory);

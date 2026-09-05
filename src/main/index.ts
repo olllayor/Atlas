@@ -415,6 +415,10 @@ app.whenReady().then(async () => {
     onRegistryChanged: async () => {
       await modelRegistry.refresh().catch(reportBackgroundFailure('models.refresh_failed'));
       broadcastModelsChanged();
+    },
+    onCatalogUpdated: async (providerId, rows) => {
+      database.models.upsertModels(rows, { pruneProviderId: providerId });
+      broadcastModelsChanged();
     }
   });
 
@@ -651,7 +655,7 @@ app.whenReady().then(async () => {
     database.conversationSummaries,
   );
 
-  const chatEngine = new ChatEngine(
+  const chatEngine: ChatEngine = new ChatEngine(
     database.conversations,
     database.models,
     keychain,
@@ -771,7 +775,7 @@ app.whenReady().then(async () => {
       });
     }
   };
-  const goalRuntime = new GoalRuntime({
+  const goalRuntime: GoalRuntime = new GoalRuntime({
     goals: database.conversationGoals,
     randomId: () => randomUUID(),
     recordActivity: ({ eventId, conversationId, activityType, payload }) => {
@@ -779,7 +783,7 @@ app.whenReady().then(async () => {
       // in conversation_activities and replay like any other work log.
       void chatEngine.recordGoalActivity({ eventId, conversationId, activityType, payload });
     },
-    isBusy: (conversationId) => chatEngine.isBusyForGoal(conversationId),
+    isBusy: (conversationId): boolean => chatEngine.isBusyForGoal(conversationId),
     hasPendingApproval: (conversationId) => chatEngine.hasPendingGoalApproval(conversationId),
     enqueueContinuation: (conversationId) => chatEngine.startGoalContinuation(conversationId),
     pushEvent: pushGoalEvent,

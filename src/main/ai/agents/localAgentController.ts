@@ -11,7 +11,7 @@
  * - `'none'` — detected and configurable, but refuses `enabled: true`.
  */
 
-import type { ProviderId } from '../../../shared/contracts.js';
+import type { ModelSummary, ProviderId } from '../../../shared/contracts.js';
 import {
   findLocalAgent,
   LOCAL_AGENTS,
@@ -40,6 +40,8 @@ import {
 import { AntigravityInstallation } from '../providers/antigravity/AntigravityInstallation.js';
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
+  ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+  createAntigravityAuthorizationLineHandler,
   type AntigravityAuthConfig
 } from '../providers/antigravity/antigravityAuthSupport.js';
 import { planAntigravitySpawn } from '../providers/antigravity/antigravityRuntime.js';
@@ -74,6 +76,8 @@ export interface LocalAgentControllerDeps {
   readonly defaultDirectory?: () => string;
   /** Called after the registry changes so the catalog can be rebuilt. */
   readonly onRegistryChanged?: () => void | Promise<void>;
+  /** Called when an ACP session publishes a changed model/config catalog. */
+  readonly onCatalogUpdated?: (providerId: ProviderId, rows: ModelSummary[]) => void | Promise<void>;
   /** Antigravity managed runtime + profile roots. Absent in tests/headless. */
   readonly antigravity?: AntigravityControllerPaths;
   /** Read the Antigravity API key from the keychain (never stored in settings). */
@@ -413,7 +417,8 @@ export class LocalAgentController {
                 ...row,
                 label: antigravityModelLabel(row.id),
                 archived: !isAntigravityCurrentModel(row.id)
-              }))
+              })),
+            onCatalogUpdated: (rows) => this.deps.onCatalogUpdated?.(agent.id, rows)
           }
         : {}),
       sessions: {
@@ -588,6 +593,10 @@ export class LocalAgentController {
             ...(plan.env ? { env: plan.env } : {}),
             ...(isAntigravity
               ? {
+                  spawnTimeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+                  onStderr: createAntigravityAuthorizationLineHandler(),
+                  onConfigOptionsUpdated: (session) =>
+                    this.adapters.get(agent.id)?.publishCatalog(session),
                   clientFileSystem: true,
                   ...(attachmentsDir ? { additionalDirectories: [attachmentsDir] } : {}),
                   writeTextFile: async (path: string, content: string) => {
@@ -761,8 +770,8 @@ export class LocalAgentController {
     }
   }
 
-  /** Drop every child for one agent, e.g. after its spawn settings moved. */
-  private async shutdownAgent(agentId: LocalAgentId): Promise<void> {
+  /** Drop every child for one agent, e.g. after its spawn settings moved or sign-out. */
+  async shutdownAgent(agentId: LocalAgentId): Promise<void> {
     if (agentId === 'claude-code') {
       const claude = this.claudeAdapters.get(agentId);
       if (claude) {

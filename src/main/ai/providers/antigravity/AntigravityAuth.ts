@@ -42,6 +42,8 @@ export interface AntigravityAuthDeps {
   }) => Promise<{ stop: () => Promise<void> }>;
   /** Confirm the agent authenticated (e.g. ACP initialize/session/new). */
   readonly confirmAuthenticated: () => Promise<void>;
+  /** Clear the native provider credentials during explicit sign-out. */
+  readonly logoutAgent?: () => Promise<void>;
   readonly now?: () => number;
   readonly flowTtlMs?: number;
 }
@@ -96,20 +98,33 @@ export class AntigravityAuth {
     const ttlMs = this.deps.flowTtlMs ?? DEFAULT_FLOW_TTL_MS;
     const now = this.deps.now?.() ?? Date.now();
     let captured: AntigravityAuthorizationUrl | null = null;
+    let captureError: string | null = null;
     const handle = await this.deps.startAgent({
       onAuthorizationUrl: (url) => {
+        let parsed: AntigravityAuthorizationUrl;
         try {
-          captured = parseAntigravityAuthorizationUrl(url);
+          parsed = parseAntigravityAuthorizationUrl(url);
         } catch {
           // Ignore malformed URLs; the agent may print others first.
+          return;
         }
+        if (captured && captured.authorizationUrl !== parsed.authorizationUrl) {
+          captureError = 'Antigravity started more than one Google sign-in request.';
+          throw new Error(captureError);
+        }
+        captured = parsed;
       }
     });
 
     // The agent prints the URL shortly after start; poll briefly.
     const deadline = Date.now() + 30_000;
-    while (!captured && Date.now() < deadline) {
+    while (!captured && !captureError && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (captureError) {
+      await handle.stop().catch(() => undefined);
+      this.status = { state: 'error', message: captureError };
+      return this.status;
     }
     if (!captured) {
       await handle.stop().catch(() => undefined);
@@ -178,6 +193,15 @@ export class AntigravityAuth {
   async logout(): Promise<AntigravityAuthStatus> {
     await this.cleanupPending();
     this.authenticatedAt = null;
+    if (this.deps.logoutAgent) {
+      try {
+        await this.deps.logoutAgent();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error ?? '');
+        this.status = { state: 'error', message: message || 'Sign-out failed.' };
+        return this.status;
+      }
+    }
     this.status = { state: 'idle' };
     return this.status;
   }

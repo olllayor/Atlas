@@ -1858,6 +1858,16 @@ export type StreamNoticeEvent = {
   level: 'info' | 'warning';
 };
 
+export type StreamTaskEvent = {
+  type: 'task';
+  requestId: string;
+  taskId: string;
+  status: RuntimeTaskStatus;
+  title?: string;
+  summary?: string;
+  error?: string;
+};
+
 /**
  * Why a named plugin could or could not be used.
  *
@@ -1975,6 +1985,7 @@ export type StreamEvent =
   | StreamMetaEvent
   | StreamErrorEvent
   | StreamNoticeEvent
+  | StreamTaskEvent
   | StreamDoneEvent
   | RuntimeSyncEvent
   | StreamConversationTitleEvent;

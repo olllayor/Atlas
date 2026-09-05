@@ -15,6 +15,7 @@ import {
   antigravityProfileSettings,
   buildAntigravityAcpSpawnInput,
   buildAntigravityBrowserCommand,
+  createAntigravityAuthorizationLineHandler,
   isAntigravitySignInRequiredError,
   parseAntigravityAuthorizationUrl,
   resolveAntigravityProfileDirectory,
@@ -67,6 +68,25 @@ test('auth methods label and gate like T3', () => {
     antigravityAuthConfigIssue({ authMethod: 'oauth-business', apiKey: '', gcpProject: '', gcpLocation: '' }) ?? '',
     /GCP project/
   );
+});
+
+test('auth URL handler accepts fragmented browser-helper stderr and rejects malformed lines', () => {
+  const url =
+    'https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=atlas-state&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2F';
+  const received: string[] = [];
+  const handler = createAntigravityAuthorizationLineHandler({
+    onAuthorizationUrl: (value) => received.push(value)
+  });
+  handler('__ATLAS_ANTIGRAVITY_AUTH_URL__' + JSON.stringify(url).slice(0, 24));
+  handler(JSON.stringify(url).slice(24) + '\nnoise\n');
+  assert.deepEqual(received, [url]);
+
+  const failing = createAntigravityAuthorizationLineHandler();
+  assert.throws(
+    () => failing(`__ATLAS_ANTIGRAVITY_AUTH_URL__${JSON.stringify(url)}\n`),
+    new RegExp(ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE)
+  );
+  failing('__ATLAS_ANTIGRAVITY_AUTH_URL__"not a url"\n');
 });
 
 test('profile settings record auth type, never secrets', () => {

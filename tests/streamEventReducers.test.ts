@@ -45,9 +45,78 @@ function makeMessage(overrides: Partial<{ id: string; content: string; status: '
 test('isStreamingEvent recognizes the streaming event set', () => {
   assert.equal(isStreamingEvent({ type: 'chunk', requestId: 'r', id: 'i', delta: 'd' } as StreamEvent), true);
   assert.equal(isStreamingEvent({ type: 'reasoning', requestId: 'r', id: 'i', delta: 'd' } as StreamEvent), true);
+  assert.equal(isStreamingEvent({
+    type: 'task',
+    requestId: 'r',
+    taskId: 't',
+    status: 'running'
+  } as StreamEvent), true);
   assert.equal(isStreamingEvent({ type: 'tool-input-start', requestId: 'r', toolCallId: 't', toolName: 'read_file' } as StreamEvent), true);
   assert.equal(isStreamingEvent({ type: 'meta', requestId: 'r', inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0 } as StreamEvent), false);
   assert.equal(isStreamingEvent({ type: 'finish', requestId: 'r' } as StreamEvent), false);
+});
+
+test('applyStreamingEvent folds task updates onto one live activity row', () => {
+  const state = makeFanOut();
+  const progress: StreamEvent = {
+    type: 'task',
+    requestId: 'r1',
+    taskId: 'trajectory:4',
+    status: 'running',
+    title: 'Running start_subagent',
+    summary: 'Reviewing files'
+  };
+  const completed: StreamEvent = {
+    ...progress,
+    status: 'completed',
+    summary: 'Finished review.'
+  };
+
+  const firstPatch = applyStreamingEvent(state, 'c1', progress);
+  assert.ok(firstPatch);
+  const secondPatch = applyStreamingEvent(
+    { ...state, ...firstPatch } as RuntimeEventFanOut,
+    'c1',
+    completed
+  );
+  assert.ok(secondPatch);
+  const next = {
+    ...state,
+    ...firstPatch,
+    ...secondPatch
+  } as RuntimeEventFanOut;
+  assert.deepEqual(next.activitiesByConversation?.c1, [
+    {
+      id: 'task:trajectory:4',
+      conversationId: 'c1',
+      turnId: 'r1',
+      requestId: 'r1',
+      messageId: null,
+      activityType: 'task.completed',
+      tone: 'info',
+      toolType: null,
+      toolCallId: 'trajectory:4',
+      approvalId: null,
+      title: 'Running start_subagent',
+      summary: 'Finished review.',
+      status: 'completed',
+      sequence: 1,
+      isFinal: true,
+      payload: {
+        taskId: 'trajectory:4',
+        taskType: 'subagent',
+        agentKind: 'agent',
+        toolCallId: 'trajectory:4',
+        title: 'Running start_subagent',
+        status: 'completed',
+        summary: 'Finished review.'
+      },
+      agentId: null,
+      parentToolCallId: 'trajectory:4',
+      createdAt: next.activitiesByConversation?.c1?.[0]?.createdAt,
+      updatedAt: next.activitiesByConversation?.c1?.[0]?.updatedAt
+    }
+  ]);
 });
 
 test('applyStreamingEvent appends text deltas to a draft', () => {

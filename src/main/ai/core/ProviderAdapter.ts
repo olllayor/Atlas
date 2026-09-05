@@ -1,7 +1,12 @@
 import type { ModelMessage, ToolChoice, ToolSet } from 'ai';
 
 import type { ReasoningEffort, ToolPermissionMode } from '../../../shared/chatParameters';
-import type { ModelRuntimeHints, ModelSummary, ProviderId } from '../../../shared/contracts';
+import type {
+  ModelRuntimeHints,
+  ModelSummary,
+  ProviderId,
+  RuntimeTaskStatus
+} from '../../../shared/contracts';
 
 export type ProviderStreamRequest = {
   apiKey: string;
@@ -101,6 +106,14 @@ export type ProviderStreamRequest = {
    * runtime stamps.
    */
   onNotice?: (event: { code: string; level: 'info' | 'warning'; message: string }) => void;
+  /** Provider-native background work, such as Antigravity's subagent tool. */
+  onTask?: (event: {
+    taskId: string;
+    status: RuntimeTaskStatus;
+    title?: string;
+    summary?: string;
+    error?: string;
+  }) => void;
 };
 
 export type ProviderStreamResult = {

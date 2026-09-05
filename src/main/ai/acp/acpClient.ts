@@ -23,11 +23,16 @@
 import { spawn as defaultSpawn, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { normalize, resolve, sep } from 'node:path';
+import {
+  ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
+  parseAntigravityAuthorizationUrl
+} from '../providers/antigravity/antigravityAuthSupport.js';
 
 export const ACP_PROTOCOL_VERSION = 1;
 const CLIENT_NAME = 'atlas';
 const MAX_BUFFERED_UPDATES = 32;
 const DEFAULT_SPAWN_TIMEOUT_MS = 10_000;
+const MAX_STDERR_CHUNK_BYTES = 32_768;
 /** Mirror of the SDK driver's per-file ceiling: bigger files travel as paths. */
 const MAX_FILE_BYTES = 20_000_000;
 /**
@@ -127,6 +132,8 @@ export type AcpSessionUpdate =
       readonly input?: unknown;
       readonly outputText?: string;
       readonly errorText?: string;
+      readonly rawOutput?: unknown;
+      readonly meta?: Record<string, unknown>;
     }
   | { readonly sessionId: string; readonly kind: 'unknown'; readonly rawKind: string };
 
@@ -223,6 +230,11 @@ export interface AcpClientOptions {
    * reported here instead of failing JSON parsing.
    */
   readonly onAuthorizationUrl?: (url: string) => void;
+  /**
+   * Receives bounded stderr chunks. Antigravity uses this for the browser
+   * helper marker; a rejected handler is a transport failure, not a log line.
+   */
+  readonly onStderr?: (chunk: string) => void | Promise<void>;
   readonly logger?: (direction: 'in' | 'out', payload: unknown) => void;
   /**
    * Sink for tool permission asks. When set, asks wait for `resolvePermission`;
@@ -236,6 +248,8 @@ export interface AcpClientOptions {
   readonly onExit?: () => void;
   /** Extra sink for every session update, besides the prompt collector. */
   readonly onSessionUpdate?: (update: AcpSessionUpdate) => void;
+  /** Called when an agent publishes a fresh model config option list. */
+  readonly onConfigOptionsUpdated?: (info: AcpSessionInfo) => void | Promise<void>;
 }
 
 interface Pending {
@@ -284,6 +298,46 @@ function nonEmptyRecord(value: unknown): Record<string, unknown> | undefined {
   return Object.keys(record).length > 0 ? record : undefined;
 }
 
+function parseModelOptions(
+  configOptions: unknown
+): { models: AcpModelOption[]; currentModel: string | null; found: boolean } {
+  const models: AcpModelOption[] = [];
+  let currentModel: string | null = null;
+  let found = false;
+  for (const entry of Array.isArray(configOptions) ? configOptions : []) {
+    const option = asRecord(entry);
+    if (
+      option.id !== 'model' &&
+      option.configId !== 'model' &&
+      option.category !== 'model'
+    ) {
+      continue;
+    }
+    if (!Array.isArray(option.options)) {
+      continue;
+    }
+    found = true;
+    if (typeof option.currentValue === 'string') {
+      currentModel = option.currentValue;
+    }
+    for (const model of option.options) {
+      const record = asRecord(model);
+      if (typeof record.value === 'string') {
+        models.push({
+          value: record.value,
+          name:
+            typeof record.name === 'string'
+              ? record.name
+              : typeof record.label === 'string'
+                ? record.label
+                : record.value
+        });
+      }
+    }
+  }
+  return { models, currentModel, found };
+}
+
 function parseSessionUpdate(params: unknown): AcpSessionUpdate | null {
   const record = asRecord(params);
   const sessionId = asString(record.sessionId);
@@ -308,7 +362,9 @@ function parseSessionUpdate(params: unknown): AcpSessionUpdate | null {
     const input = nonEmptyRecord(update.rawInput);
     const output = asRecord(update.rawOutput);
     const text = contentText(update.content);
-    const outputText = boundToolOutput(text ?? asString(output.output));
+    const outputText = boundToolOutput(
+      text ?? asString(output.output) ?? asString(update.rawOutput)
+    );
     const rawError = asString(output.error);
     return {
       sessionId,
@@ -319,6 +375,12 @@ function parseSessionUpdate(params: unknown): AcpSessionUpdate | null {
       ...(status !== undefined ? { status } : {}),
       ...(input !== undefined ? { input } : {}),
       ...(outputText !== undefined ? { outputText } : {}),
+      ...(update.rawOutput !== undefined
+        ? { rawOutput: update.rawOutput === null ? null : outputText ?? true }
+        : {}),
+      ...(asRecord(update._meta) && Object.keys(asRecord(update._meta)).length > 0
+        ? { meta: asRecord(update._meta) }
+        : {}),
       ...(status === 'failed'
         ? { errorText: rawError ?? outputText ?? 'The tool failed without reporting a reason.' }
         : {})
@@ -409,6 +471,8 @@ export class AcpClient {
   private readonly clientFileSystem: boolean;
   private readonly additionalDirectories: readonly string[];
   private readonly onAuthorizationUrl?: (url: string) => void;
+  private readonly onStderr?: (chunk: string) => void | Promise<void>;
+  private readonly onConfigOptionsUpdated?: (info: AcpSessionInfo) => void | Promise<void>;
   private permissionHandler: ((ask: AcpPermissionAsk) => void) | null = null;
   private readonly permissionPending = new Map<
     string,
@@ -442,6 +506,8 @@ export class AcpClient {
     this.clientFileSystem = options.clientFileSystem ?? false;
     this.additionalDirectories = options.additionalDirectories ?? [];
     this.onAuthorizationUrl = options.onAuthorizationUrl;
+    this.onStderr = options.onStderr;
+    this.onConfigOptionsUpdated = options.onConfigOptionsUpdated;
     this.permissionHandler = options.onPermissionRequest ?? null;
     this.logger = options.logger;
     this.onExit = options.onExit;
@@ -512,7 +578,24 @@ export class AcpClient {
       void this.onStdout(chunk.toString());
     });
     child.stderr?.on('data', (chunk: Buffer | string) => {
-      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-4096);
+      const text = chunk.toString();
+      this.stderrTail = (this.stderrTail + text).slice(-4096);
+      if (this.onStderr) {
+        void Promise.resolve()
+          .then(() => this.onStderr?.(text.slice(-MAX_STDERR_CHUNK_BYTES)))
+          .catch((error) => {
+            this.failAll(
+              new AcpError(
+                'transport',
+                error instanceof Error ? error.message : String(error ?? 'Antigravity stderr handler failed.'),
+                undefined,
+                undefined,
+                error
+              )
+            );
+            void this.shutdown();
+          });
+      }
     });
     // A spawn that never happens (bad binary path, missing ACP bridge) emits
     // `error` and no `exit`. Unhandled, that is an uncaught exception in the
@@ -687,27 +770,18 @@ export class AcpClient {
     if (!sessionId) {
       throw new AcpError(operation, 'The ACP agent did not return a session id.');
     }
-    const models: AcpModelOption[] = [];
-    let currentModel: string | null = null;
-    for (const entry of Array.isArray(result.configOptions) ? result.configOptions : []) {
-      const option = asRecord(entry);
-      if (option.id !== 'model' || !Array.isArray(option.options)) {
-        continue;
-      }
-      if (typeof option.currentValue === 'string') {
-        currentModel = option.currentValue;
-      }
-      for (const model of option.options) {
-        const record = asRecord(model);
-        if (typeof record.value === 'string') {
-          models.push({
-            value: record.value,
-            name: typeof record.name === 'string' ? record.name : record.value
-          });
-        }
-      }
+    const parsed = parseModelOptions(result.configOptions);
+    const models = parsed.models;
+    const currentModel = parsed.currentModel;
+    const info = { sessionId, models, currentModel };
+    if (this.onConfigOptionsUpdated && parsed.found) {
+      void Promise.resolve()
+        .then(() => this.onConfigOptionsUpdated?.(info))
+        .catch(() => {
+          // Catalog refresh is observational and must never break a session.
+        });
     }
-    return { sessionId, models, currentModel };
+    return info;
   }
 
   /**
@@ -843,6 +917,40 @@ export class AcpClient {
    */
   async authenticate(methodId: string): Promise<unknown> {
     return this.request('authenticate', { methodId });
+  }
+
+  /**
+   * Ask an ACP server to clear its provider credentials. Antigravity advertises
+   * this capability during initialize; keep the request bounded so sign-out
+   * cannot leave Settings waiting on a stalled packaged runtime.
+   */
+  async logout(): Promise<void> {
+    const initialized = await this.start();
+    const auth = asRecord(asRecord(initialized.capabilities).auth);
+    if (!auth.logout) {
+      throw new AcpError('logout', 'This Antigravity runtime does not support sign-out.');
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new AcpError(
+              'logout',
+              `Timed out after ${this.spawnTimeoutMs}ms waiting for Antigravity sign-out.`
+            )
+          ),
+        this.spawnTimeoutMs
+      );
+    });
+    try {
+      await Promise.race([this.request('logout', {}), timeout]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   /** Real `session/cancel`: a notification, no id, never treated as a request. */
@@ -1095,14 +1203,32 @@ export class AcpClient {
       // exact prefix — not JSON-RPC. Catch only that prefix, like T3.
       if (line.startsWith(ACP_AUTH_STDOUT_PREFIX)) {
         const url = line.slice(ACP_AUTH_STDOUT_PREFIX.length).trim();
-        if (url && this.onAuthorizationUrl) {
-          try {
-            this.onAuthorizationUrl(url);
-          } catch {
-            // A bad sink must not break the transport.
-          }
+        try {
+          parseAntigravityAuthorizationUrl(url);
+        } catch {
+          // A line that merely resembles the prefix is diagnostic noise.
           continue;
         }
+        if (!this.onAuthorizationUrl) {
+          this.failAll(new AcpError('transport', ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE));
+          void this.shutdown();
+          continue;
+        }
+        try {
+          this.onAuthorizationUrl(url);
+        } catch (error) {
+          this.failAll(
+            new AcpError(
+              'transport',
+              error instanceof Error ? error.message : String(error ?? 'Authorization URL handler failed.'),
+              undefined,
+              undefined,
+              error
+            )
+          );
+          void this.shutdown();
+        }
+        continue;
       }
       let message: unknown;
       try {
@@ -1160,6 +1286,28 @@ export class AcpClient {
   }
 
   private onSessionUpdate(params: unknown): void {
+    const record = asRecord(params);
+    const sessionId = asString(record.sessionId);
+    const updateRecord = asRecord(record.update);
+    const updateKind = asString(updateRecord.sessionUpdate);
+    if (sessionId && updateKind === 'config_option_update') {
+      const configOptions =
+        updateRecord.configOptions ??
+        updateRecord.configOption ??
+        updateRecord.options;
+      const hasConfigOptionsPayload = Array.isArray(configOptions);
+      const parsed = parseModelOptions(
+        hasConfigOptionsPayload ? configOptions : configOptions ? [configOptions] : []
+      );
+      if (parsed.found || (hasConfigOptionsPayload && configOptions.length === 0)) {
+        const info = { sessionId, models: parsed.models, currentModel: parsed.currentModel };
+        void Promise.resolve()
+          .then(() => this.onConfigOptionsUpdated?.(info))
+          .catch(() => {
+            // A catalog refresh is observational.
+          });
+      }
+    }
     const update = parseSessionUpdate(params);
     if (!update) {
       return;

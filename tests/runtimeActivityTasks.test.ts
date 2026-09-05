@@ -128,6 +128,22 @@ test('task.completed with non-completed status uses mapTaskStatus rather than de
   assert.equal(entryCancelled?.isFinal, true);
 });
 
+test('task errors remain visible in the work-log summary', () => {
+  const event = makeTaskEvent({
+    activityType: 'task.updated',
+    payload: {
+      taskId: 'error-task',
+      status: 'failed',
+      error: 'Antigravity process stopped.'
+    }
+  });
+
+  const entry = deriveWorkLogEntry(null, event);
+
+  assert.ok(entry);
+  assert.equal(entry?.summary, 'Antigravity process stopped.');
+});
+
 test('a late task.started after task.completed fills metadata but never resets status or createdAt', () => {
   const completedEvent = makeTaskEvent({
     activityType: 'task.completed',

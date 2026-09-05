@@ -330,7 +330,12 @@ function deriveTaskWorkLogEntry(previous: WorkLogEntry | null, event: RuntimeEve
     previous?.title ??
     titleCase(pickString(event.payload.taskType) ?? 'task');
 
-  const summary = pickString(event.payload.summary) ?? pickString(event.payload.description) ?? previous?.summary ?? null;
+  const summary =
+    pickString(event.payload.summary) ??
+    pickString(event.payload.description) ??
+    pickString(event.payload.error) ??
+    previous?.summary ??
+    null;
 
   let status: WorkLogEntryStatus;
   let isFinal: boolean;

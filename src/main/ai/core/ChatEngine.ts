@@ -2356,6 +2356,32 @@ export class ChatEngine {
             reason: event.reason,
           },
         }];
+      case 'task': {
+        const terminal = event.status === 'completed' || event.status === 'failed';
+        const stopped = event.status === 'cancelled' || event.status === 'interrupted';
+        return [{
+          eventId: randomUUID(),
+          ...base,
+          activityType: terminal
+            ? 'task.completed'
+            : stopped
+              ? 'task.updated'
+              : 'task.progress',
+          tone: event.error || event.status === 'failed' ? 'error' : 'info',
+          toolCallId: event.taskId,
+          providerEventType: event.type,
+          payload: {
+            taskId: event.taskId,
+            taskType: 'subagent',
+            agentKind: 'agent',
+            toolCallId: event.taskId,
+            title: event.title ?? 'Antigravity subagent',
+            status: event.status,
+            summary: event.summary,
+            error: event.error,
+          },
+        }];
+      }
       case 'plugin-invocation':
         // Recorded as a runtime envelope, not only rendered. This is the first
         // line of the audit trail the plugin work is building toward: which
@@ -2477,7 +2503,9 @@ export class ChatEngine {
       input.activityType === 'turn.completed' ||
       input.activityType === 'runtime.error' ||
       input.activityType === 'approval.requested' ||
-      input.activityType === 'approval.resolved';
+      input.activityType === 'approval.resolved' ||
+      input.activityType === 'task.completed' ||
+      input.activityType === 'task.updated';
 
     this.persistActiveMessage(active, options?.forcePersist || isSettleEvent);
 

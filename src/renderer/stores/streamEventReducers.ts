@@ -296,6 +296,7 @@ export function applyRecoveredRuntimeEventsToStore(
 const STREAMING_EVENT_TYPES = new Set<StreamEvent['type']>([
   'chunk',
   'reasoning',
+  'task',
   'tool-input-start',
   'tool-input-delta',
   'tool-input-available',
@@ -319,6 +320,57 @@ export function applyStreamingEvent(
 ): RuntimeEventFanOutPatch | null {
   if (!isStreamingEvent(event)) {
     return null;
+  }
+
+  if (event.type === 'task') {
+    const draft = state.draftsByConversation[conversationId];
+    const terminal = event.status === 'completed' || event.status === 'failed';
+    const stopped = event.status === 'cancelled' || event.status === 'interrupted';
+    const runtimeEvent: RuntimeEventEnvelope = {
+      eventId: `stream-task:${event.requestId}:${event.taskId}:${event.status}`,
+      conversationId,
+      turnId: event.requestId,
+      requestId: event.requestId,
+      sequence: (state.runtimeSequenceByConversation[conversationId] ?? 0) + 1,
+      occurredAt: new Date().toISOString(),
+      activityType: terminal ? 'task.completed' : stopped ? 'task.updated' : 'task.progress',
+      tone: event.error || event.status === 'failed' ? 'error' : 'info',
+      toolCallId: event.taskId,
+      provider: draft?.providerId ?? 'system',
+      providerEventType: event.type,
+      payload: {
+        taskId: event.taskId,
+        taskType: 'subagent',
+        agentKind: 'agent',
+        toolCallId: event.taskId,
+        title: event.title ?? 'Antigravity subagent',
+        status: event.status,
+        ...(event.summary !== undefined ? { summary: event.summary } : {}),
+        ...(event.error !== undefined ? { error: event.error } : {}),
+      },
+    };
+    const currentActivities = state.activitiesByConversation?.[conversationId] ?? [];
+    const existingActivityId = getWorkLogEntryId(runtimeEvent);
+    const existingIndex = currentActivities.findIndex((activity) => activity.id === existingActivityId);
+    const nextActivity = deriveWorkLogEntry(
+      existingIndex === -1 ? null : currentActivities[existingIndex],
+      runtimeEvent,
+    );
+    if (!nextActivity) {
+      return { activitiesByConversation: state.activitiesByConversation ?? {} };
+    }
+    const nextActivities = [...currentActivities];
+    if (existingIndex === -1) {
+      nextActivities.push(nextActivity);
+    } else {
+      nextActivities[existingIndex] = nextActivity;
+    }
+    return {
+      activitiesByConversation: {
+        ...(state.activitiesByConversation ?? {}),
+        [conversationId]: nextActivities,
+      },
+    };
   }
 
   const draft = state.draftsByConversation[conversationId];

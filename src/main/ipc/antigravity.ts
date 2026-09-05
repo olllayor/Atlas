@@ -22,7 +22,9 @@ import { AntigravityAuth } from '../ai/providers/antigravity/AntigravityAuth';
 import { AntigravityInstallation } from '../ai/providers/antigravity/AntigravityInstallation';
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
+  ANTIGRAVITY_STARTUP_TIMEOUT_MS,
   antigravityAuthConfigIssue,
+  createAntigravityAuthorizationLineHandler,
   isAntigravityAuthMethod,
   type AntigravityAuthConfig
 } from '../ai/providers/antigravity/antigravityAuthSupport';
@@ -109,7 +111,9 @@ export function registerAntigravityIpc({ localAgents, keychain, paths }: Antigra
           cwd: paths.stateDir,
           binaryPath: runtime.executablePath,
           spawnArgs: [],
-          spawnCwd: false
+          spawnCwd: false,
+          spawnTimeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+          onStderr: createAntigravityAuthorizationLineHandler()
         });
         try {
           await probe.start();
@@ -178,7 +182,9 @@ export function registerAntigravityIpc({ localAgents, keychain, paths }: Antigra
             spawnArgs: [...plan.args],
             spawnCwd: false,
             env: plan.env,
-            onAuthorizationUrl
+            spawnTimeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+            onAuthorizationUrl,
+            onStderr: createAntigravityAuthorizationLineHandler({ onAuthorizationUrl })
           });
           await client.start();
           return {
@@ -194,12 +200,32 @@ export function registerAntigravityIpc({ localAgents, keychain, paths }: Antigra
             binaryPath: plan.command,
             spawnArgs: [...plan.args],
             spawnCwd: false,
-            env: plan.env
+            env: plan.env,
+            spawnTimeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+            onStderr: createAntigravityAuthorizationLineHandler()
           });
           try {
             await client.start();
             const session = await client.createSession();
             await client.closeSession(session.sessionId).catch(() => undefined);
+          } finally {
+            await client.shutdown().catch(() => undefined);
+          }
+        },
+        logoutAgent: async () => {
+          await localAgents?.shutdownAgent('antigravity');
+          const plan = await spawnPlanFor(paths.stateDir, auth);
+          const client = new AcpClient({
+            cwd: paths.stateDir,
+            binaryPath: plan.command,
+            spawnArgs: [...plan.args],
+            spawnCwd: false,
+            env: plan.env,
+            spawnTimeoutMs: ANTIGRAVITY_STARTUP_TIMEOUT_MS,
+            onStderr: createAntigravityAuthorizationLineHandler()
+          });
+          try {
+            await client.logout();
           } finally {
             await client.shutdown().catch(() => undefined);
           }

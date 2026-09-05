@@ -1681,6 +1681,10 @@ export class ChatSessionRuntime {
           onNotice: (event) => {
             emitEvent({ type: 'notice', requestId, ...event });
           },
+          onTask: (event) => {
+            streamedAnyResponse = true;
+            emitEvent({ type: 'task', requestId, ...event });
+          },
         });
 
         this.applyParsedChunks(turnState, turnState.visualParser.flush(requestId), requestId, emitEvent);

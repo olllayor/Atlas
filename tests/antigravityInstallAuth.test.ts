@@ -70,8 +70,8 @@ test('activation refuses while leases are held', async () => {
 
 test('auth flow completes a browser sign-in through the pasted redirect', async () => {
   const authorizationUrl =
-    'https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=st1&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2F&client_id=x';
-  // Port 9 is closed; forwarding fails — so complete via the non-browser
+    'https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=st1&redirect_uri=http%3A%2F%2F127.0.0.1%3A9876%2F&client_id=x';
+  // Port 9876 is closed; forwarding fails — so complete via the non-browser
   // path check instead: here we assert start captures the URL and cancel resets.
   let reported = '';
   const flow = new AntigravityAuth(ANTIGRAVITY_PERSONAL_AUTH, {
@@ -92,6 +92,31 @@ test('auth flow completes a browser sign-in through the pasted redirect', async 
   assert.equal(cancelled.state, 'idle');
 });
 
+test('auth flow accepts a duplicate URL but rejects a different sign-in request', async () => {
+  const authorizationUrl =
+    'https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=st1&redirect_uri=http%3A%2F%2F127.0.0.1%3A9876%2F&client_id=x';
+  let reportUrl: ((url: string) => void) | null = null;
+  const flow = new AntigravityAuth(ANTIGRAVITY_PERSONAL_AUTH, {
+    startAgent: async ({ onAuthorizationUrl }) => {
+      reportUrl = onAuthorizationUrl;
+      onAuthorizationUrl(authorizationUrl);
+      return { stop: async () => undefined };
+    },
+    confirmAuthenticated: async () => undefined
+  });
+
+  const started = await flow.start();
+  assert.equal(started.state, 'awaiting-callback');
+  reportUrl?.(authorizationUrl);
+  assert.throws(
+    () =>
+      reportUrl?.(
+        authorizationUrl.replace('state=st1', 'state=other')
+      ),
+    /more than one Google sign-in request/
+  );
+});
+
 test('non-browser methods verify credentials without spawning', async () => {
   let spawns = 0;
   const flow = new AntigravityAuth(
@@ -109,6 +134,26 @@ test('non-browser methods verify credentials without spawning', async () => {
   const status = await flow.start();
   assert.equal(status.state, 'error');
   assert.equal(spawns, 0);
+});
+
+test('sign-out clears native credentials before returning idle', async () => {
+  let logouts = 0;
+  const flow = new AntigravityAuth(
+    { authMethod: 'gemini-api-key', apiKey: 'key', gcpProject: '', gcpLocation: '' },
+    {
+      startAgent: async () => ({ stop: async () => undefined }),
+      confirmAuthenticated: async () => undefined,
+      logoutAgent: async () => {
+        logouts += 1;
+      }
+    }
+  );
+
+  const signedIn = await flow.start();
+  assert.equal(signedIn.state, 'authenticated');
+  const signedOut = await flow.logout();
+  assert.deepEqual(signedOut, { state: 'idle' });
+  assert.equal(logouts, 1);
 });
 
 test('profile settings file lands on disk with auth type', async () => {

@@ -6,8 +6,9 @@
  * - each instance gets its own `GEMINI_HOME` profile with file token storage;
  * - a controlled `BROWSER` helper stops the agent opening a browser on the
  *   host, so the OAuth URL is captured from a marker line instead;
- * - the agent prints its OAuth URL as one plain stdout line with an exact
- *   prefix, caught by a stdout filter (wired in `AntigravityAuth`);
+ * - the agent prints its OAuth URL either as one plain stdout line or through
+ *   the controlled browser helper on stderr; both exact markers are filtered
+ *   (wired in `AntigravityAuth`);
  * - 4 auth methods: Google account (default), Gemini Enterprise, Gemini API
  *   key, Agent Platform. No fallback from the picked method.
  * - ambient `GOOGLE_*` variables on the host are stripped; only the picked
@@ -22,6 +23,7 @@ export const ANTIGRAVITY_AUTH_STDOUT_PREFIX =
 export const ANTIGRAVITY_AUTH_BROWSER_MARKER = '__ATLAS_ANTIGRAVITY_AUTH_URL__';
 export const ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE =
   'Sign in to Antigravity in Settings before you continue.';
+export const ANTIGRAVITY_STARTUP_TIMEOUT_MS = 90_000;
 
 export type AntigravityAuthMethod =
   | 'oauth-personal'
@@ -305,6 +307,61 @@ export function parseAntigravityAuthorizationUrl(
   }
   if (Number(redirect!.port) < 1024) invalid();
   return { authorizationUrl, redirectUri: redirectUri!, state: state! };
+}
+
+/**
+ * ACP servers can report the same OAuth URL either through their native
+ * stdout line or through the browser helper on stderr. Keep this parser
+ * deliberately line-oriented: stderr is diagnostic output, so only the
+ * exact marker is actionable.
+ */
+export function createAntigravityAuthorizationLineHandler(options?: {
+  readonly onAuthorizationUrl?: (url: string) => void;
+}): (chunk: string) => void {
+  let buffer = '';
+  const prefixes = [
+    ANTIGRAVITY_AUTH_BROWSER_MARKER,
+    ANTIGRAVITY_AUTH_STDOUT_PREFIX
+  ] as const;
+  return (chunk: string) => {
+    buffer += chunk;
+    const maxLineLength =
+      MAX_AUTHORIZATION_URL_LENGTH + Math.max(...prefixes.map((prefix) => prefix.length)) + 2;
+    if (buffer.length > maxLineLength) {
+      buffer = buffer.slice(-maxLineLength);
+    }
+    let newline: number;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline).replace(/\r$/, '');
+      buffer = buffer.slice(newline + 1);
+      const prefix = prefixes.find((candidate) => line.startsWith(candidate));
+      if (!prefix) {
+        continue;
+      }
+      let url = line.slice(prefix.length).trim();
+      if (prefix === ANTIGRAVITY_AUTH_BROWSER_MARKER) {
+        try {
+          const parsed = JSON.parse(url);
+          if (typeof parsed !== 'string') {
+            continue;
+          }
+          url = parsed;
+        } catch {
+          continue;
+        }
+      }
+      try {
+        parseAntigravityAuthorizationUrl(url);
+      } catch {
+        continue;
+      }
+      if (options?.onAuthorizationUrl) {
+        options.onAuthorizationUrl(url);
+      } else {
+        throw new Error(ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE);
+      }
+    }
+  };
 }
 
 /** True for native auth failures and interactive login blocked by Atlas. */

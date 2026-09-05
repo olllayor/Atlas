@@ -84,6 +84,8 @@ export interface AcpAgentAdapterDeps {
   readonly mapPermissionMode?: (toolPermissionMode: string | null | undefined) => string | null;
   /** Re-label / fold catalog rows (Antigravity legacy models → archived). */
   readonly classifyCatalog?: (rows: ModelSummary[]) => ModelSummary[];
+  /** Persist live ACP config/model changes while a session is open. */
+  readonly onCatalogUpdated?: (rows: ModelSummary[]) => void | Promise<void>;
 }
 
 function abortError(label = 'OpenCode'): Error {
@@ -155,6 +157,55 @@ function toCatalogRows(
   return rows;
 }
 
+export type AntigravitySubagentToolKind = 'subagent' | 'mcp' | undefined;
+
+/** Antigravity exposes native delegation as an ordinary ACP tool call. */
+const ANTIGRAVITY_SUBAGENT_TITLE = 'Antigravity subagent';
+
+export function classifyAntigravitySubagentToolCall(
+  update: {
+    readonly title?: string;
+    readonly toolKind?: string;
+    readonly meta?: Record<string, unknown>;
+    readonly _meta?: Record<string, unknown>;
+  }
+): AntigravitySubagentToolKind {
+  if ((update.meta ?? update._meta)?.is_mcp_tool_call === true) {
+    return 'mcp';
+  }
+  if (
+    (update.toolKind === undefined || update.toolKind === 'other') &&
+    (update.title === 'Running start_subagent' || update.title === 'Run start_subagent?')
+  ) {
+    return 'subagent';
+  }
+  return undefined;
+}
+
+function nativeSubagentStatus(status: string | undefined): {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+} {
+  switch (status) {
+    case 'pending':
+      return { status: 'pending' };
+    case 'completed':
+      return { status: 'completed' };
+    case 'failed':
+    case 'error':
+      return { status: 'failed' };
+    case 'cancelled':
+    case 'canceled':
+      return { status: 'cancelled' };
+    case 'interrupted':
+      return { status: 'interrupted' };
+    default:
+      return { status: 'running' };
+  }
+}
+
+type NativeSubagentState = 'open' | 'finished' | 'mcp';
+const MAX_NATIVE_SUBAGENT_STATES = 1_024;
+
 export class AcpAgentAdapter implements ProviderAdapter {
   readonly providerId: ProviderId;
 
@@ -176,10 +227,38 @@ export class AcpAgentAdapter implements ProviderAdapter {
     string,
     { client: AcpDriverClient; settled: boolean; notifyResolved?: () => void }
   >();
+  /**
+   * ACP can replay late updates after a turn's handler is reattached. Keep
+   * settled ids long enough to preserve their identity, while bounding this
+   * cache so long-lived sessions cannot grow it without limit.
+   */
+  private readonly nativeSubagents = new Map<string, NativeSubagentState>();
 
   constructor(private readonly deps: AcpAgentAdapterDeps) {
     this.providerId = deps.providerId;
     this.label = deps.agentLabel;
+  }
+
+  private rememberNativeSubagent(key: string, state: NativeSubagentState): void {
+    this.nativeSubagents.delete(key);
+    this.nativeSubagents.set(key, state);
+    while (this.nativeSubagents.size > MAX_NATIVE_SUBAGENT_STATES) {
+      const oldest = this.nativeSubagents.keys().next().value;
+      if (oldest === undefined) {
+        return;
+      }
+      this.nativeSubagents.delete(oldest);
+    }
+  }
+
+  /** Called by the client when ACP publishes a fresh config option list. */
+  publishCatalog(session: AcpSessionInfo): void {
+    const settings = this.deps.readSettings();
+    const rows = toCatalogRows(session, settings.customModels, this.providerId);
+    const classified = this.deps.classifyCatalog ? this.deps.classifyCatalog(rows) : rows;
+    void Promise.resolve(this.deps.onCatalogUpdated?.(classified)).catch(() => {
+      // A catalog write is observational; never interrupt an active turn.
+    });
   }
 
   /**
@@ -226,7 +305,11 @@ export class AcpAgentAdapter implements ProviderAdapter {
 
     let onAbort: (() => void) | null = null;
     let disposableSessionId: string | null = null;
+    let activeSessionId: string | null = null;
     let unsubscribeTools: (() => void) | null = null;
+    let turnActive = false;
+    let turnCompleted = false;
+    let stopReason: string | undefined;
     const raisedApprovals = new Set<string>();
     try {
       const { sessionId, seeded, ephemeral } = await this.resolveSession({
@@ -234,6 +317,7 @@ export class AcpAgentAdapter implements ProviderAdapter {
         conversationId,
         directory
       });
+      activeSessionId = sessionId;
       if (ephemeral) {
         disposableSessionId = sessionId;
       }
@@ -258,10 +342,93 @@ export class AcpAgentAdapter implements ProviderAdapter {
           return;
         }
         if (update.kind === 'tool_call') {
+          const kind =
+            this.providerId === 'antigravity' ? classifyAntigravitySubagentToolCall(update) : undefined;
+          const nativeKey = `${sessionId}:${update.toolCallId}`;
+          if (kind === 'mcp') {
+            this.rememberNativeSubagent(nativeKey, 'mcp');
+          } else if (kind === 'subagent') {
+            const prior = this.nativeSubagents.get(nativeKey);
+            if (prior === 'finished' || prior === 'mcp') {
+              return;
+            }
+            if (
+              update.status === 'completed' &&
+              (update.rawOutput === undefined || update.rawOutput === null) &&
+              !turnActive
+            ) {
+              this.rememberNativeSubagent(nativeKey, 'open');
+              return;
+            }
+            this.rememberNativeSubagent(nativeKey, 'open');
+            const state = nativeSubagentStatus(update.status);
+            const summary = update.outputText?.trim();
+            request.onTask?.({
+              taskId: update.toolCallId,
+              status: state.status,
+              title: ANTIGRAVITY_SUBAGENT_TITLE,
+              ...(state.status === 'failed' && update.errorText ? { error: update.errorText } : {}),
+              ...(summary && (state.status === 'completed' || state.status === 'failed')
+                ? { summary }
+                : {})
+            });
+            if (
+              state.status === 'completed' ||
+              state.status === 'failed' ||
+              state.status === 'cancelled' ||
+              state.status === 'interrupted'
+            ) {
+              this.rememberNativeSubagent(nativeKey, 'finished');
+            }
+            return;
+          }
           toolTracker.start(update.toolCallId, update.title);
           return;
         }
         if (update.kind !== 'tool_call_update') {
+          return;
+        }
+        const nativeKey = `${sessionId}:${update.toolCallId}`;
+        const prior = this.nativeSubagents.get(nativeKey);
+        if (prior === 'finished') {
+          return;
+        }
+        const kind =
+          this.providerId === 'antigravity' ? classifyAntigravitySubagentToolCall(update) : undefined;
+        if (kind === 'mcp') {
+          this.rememberNativeSubagent(nativeKey, 'mcp');
+        } else if (kind === 'subagent' || this.nativeSubagents.get(nativeKey) === 'open') {
+          if (prior === 'mcp') {
+            return;
+          }
+          if (
+            update.status === 'completed' &&
+            (update.rawOutput === undefined || update.rawOutput === null) &&
+            !turnActive
+          ) {
+            this.rememberNativeSubagent(nativeKey, 'open');
+            return;
+          }
+          this.rememberNativeSubagent(nativeKey, 'open');
+          const state = nativeSubagentStatus(update.status);
+          const summary = update.outputText?.trim();
+          request.onTask?.({
+            taskId: update.toolCallId,
+            status: state.status,
+            title: ANTIGRAVITY_SUBAGENT_TITLE,
+            ...(state.status === 'failed' && update.errorText ? { error: update.errorText } : {}),
+            ...(summary && (state.status === 'completed' || state.status === 'failed')
+              ? { summary }
+              : {})
+          });
+          if (
+            state.status === 'completed' ||
+            state.status === 'failed' ||
+            state.status === 'cancelled' ||
+            state.status === 'interrupted'
+          ) {
+            this.rememberNativeSubagent(nativeKey, 'finished');
+          }
           return;
         }
         if (update.title) {
@@ -274,19 +441,19 @@ export class AcpAgentAdapter implements ProviderAdapter {
             toolTracker.inputAvailable(update.toolCallId, update.title, update.input);
           }
         }
-            if (update.status === 'completed' || update.status === 'failed') {
-              // Terminal frames repeat the last input; make sure the record
-              // carries it before settling, like the SDK snapshot path.
-              if (update.input !== undefined && lastToolInput.get(update.toolCallId) === undefined) {
-                lastToolInput.set(update.toolCallId, JSON.stringify(update.input));
-                toolTracker.inputAvailable(update.toolCallId, update.title, update.input);
-              }
-            }
-            if (update.status === 'completed') {
-              toolTracker.succeeded(update.toolCallId, update.outputText ?? '');
-            } else if (update.status === 'failed') {
-              toolTracker.failed(update.toolCallId, update.errorText ?? 'The tool failed.');
-            }
+        if (update.status === 'completed' || update.status === 'failed') {
+          // Terminal frames repeat the last input; make sure the record
+          // carries it before settling, like the SDK snapshot path.
+          if (update.input !== undefined && lastToolInput.get(update.toolCallId) === undefined) {
+            lastToolInput.set(update.toolCallId, JSON.stringify(update.input));
+            toolTracker.inputAvailable(update.toolCallId, update.title, update.input);
+          }
+        }
+        if (update.status === 'completed') {
+          toolTracker.succeeded(update.toolCallId, update.outputText ?? '');
+        } else if (update.status === 'failed') {
+          toolTracker.failed(update.toolCallId, update.errorText ?? 'The tool failed.');
+        }
       });
 
       // Route permission asks into the turn so the UI can answer them instead
@@ -339,6 +506,7 @@ export class AcpAgentAdapter implements ProviderAdapter {
         throw abortError(this.label);
       }
       request.signal.addEventListener('abort', onAbort, { once: true });
+      turnActive = true;
 
       request.onNotice?.({
         code: 'opencode.toolsDelegated',
@@ -387,6 +555,9 @@ export class AcpAgentAdapter implements ProviderAdapter {
           request.onReasoningChunk?.({ id: chunkId, delta: chunk.delta });
         }
       });
+      turnActive = false;
+      turnCompleted = true;
+      stopReason = result.stopReason;
 
       // Skipped files degrade to path lines inside the client, the SDK
       // driver's fallback: the agent still learns each file exists.
@@ -422,6 +593,24 @@ export class AcpAgentAdapter implements ProviderAdapter {
         latencyMs: Date.now() - startedAt
       };
     } finally {
+      turnActive = false;
+      for (const [nativeKey, state] of [...this.nativeSubagents]) {
+        if (!activeSessionId || !nativeKey.startsWith(`${activeSessionId}:`)) {
+          continue;
+        }
+        if (state !== 'open') {
+          continue;
+        }
+        const taskId = nativeKey.slice(nativeKey.indexOf(':') + 1);
+        const status = request.signal.aborted || stopReason === 'cancelled' ? 'cancelled' : turnCompleted ? 'interrupted' : 'failed';
+        request.onTask?.({
+          taskId,
+          status,
+          title: ANTIGRAVITY_SUBAGENT_TITLE,
+          ...(status === 'failed' ? { error: 'The Antigravity subagent ended without a result.' } : {})
+        });
+        this.rememberNativeSubagent(nativeKey, 'finished');
+      }
       if (onAbort) {
         request.signal.removeEventListener('abort', onAbort);
       }
@@ -432,6 +621,11 @@ export class AcpAgentAdapter implements ProviderAdapter {
       }
       if (disposableSessionId) {
         await client.closeSession(disposableSessionId).catch(() => undefined);
+        for (const nativeKey of this.nativeSubagents.keys()) {
+          if (nativeKey.startsWith(`${disposableSessionId}:`)) {
+            this.nativeSubagents.delete(nativeKey);
+          }
+        }
       }
     }
   }

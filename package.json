@@ -25,7 +25,7 @@
   "main": "out/main/index.cjs",
   "packageManager": "pnpm@10.11.1",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -98,6 +98,7 @@
     "zustand": "5.0.12"
   },
   "devDependencies": {
+    "@electron/osx-sign": "2.7.0",
     "@electron/rebuild": "4.0.3",
     "@tailwindcss/vite": "4.2.2",
     "@types/better-sqlite3": "7.6.13",
@@ -147,6 +148,13 @@
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
+      "files": [
+        "out/**/*",
+        "package.json",
+        "!**/node_modules/node-pty/prebuilds/win32-*/**/*",
+        "!**/node_modules/node-pty/third_party/conpty/**/*"
+      ],
+      "sign": "./scripts/sign-macos.mjs",
       "entitlements": "build/entitlements.mac.plist",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,

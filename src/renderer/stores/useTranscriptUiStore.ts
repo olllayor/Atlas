@@ -41,6 +41,17 @@ type TranscriptUiState = {
    * long something took while it was on screen.
    */
   timings: Record<string, CellTiming>;
+  /**
+   * Plans the tasks dock is currently drawing, by `PlanView.anchorId`.
+   *
+   * While a turn is live the dock and `PlanCell` hold the same checklist —
+   * once pinned above the composer, once in a cell that scrolls away from it.
+   * The transcript cannot work out on its own whether a dock exists to defer
+   * to (a subagent takeover replaces the composer, dock and all), so instead
+   * the dock declares the one plan it owns and the cell yields to the claim.
+   * A set rather than a single id: the side chat runs a second dock.
+   */
+  dockPlans: Record<string, true>;
   setExpanded: (id: string, open: boolean) => void;
   toggleExpanded: (id: string, currentlyOpen: boolean) => void;
   /**
@@ -55,6 +66,10 @@ type TranscriptUiState = {
   startTiming: (id: string, inheritFrom?: string) => void;
   /** Close out a cell's timing window (idempotent). */
   endTiming: (id: string) => void;
+  /** The dock took over this plan; the matching `PlanCell` stands down. */
+  claimDockPlan: (anchorId: string) => void;
+  /** The dock let it go — on unmount, or when its turn settled. */
+  releaseDockPlan: (anchorId: string) => void;
 };
 
 function trim<T>(map: Record<string, T>): Record<string, T> {
@@ -70,6 +85,7 @@ function trim<T>(map: Record<string, T>): Record<string, T> {
 export const useTranscriptUiStore = create<TranscriptUiState>((set) => ({
   expanded: {},
   timings: {},
+  dockPlans: {},
 
   setExpanded: (id, open) =>
     set((state) => ({ expanded: trim({ ...state.expanded, [id]: open }) })),
@@ -99,6 +115,20 @@ export const useTranscriptUiStore = create<TranscriptUiState>((set) => ({
           [id]: { ...existing, durationMs: Date.now() - existing.startedAt },
         }),
       };
+    }),
+
+  claimDockPlan: (anchorId) =>
+    set((state) =>
+      state.dockPlans[anchorId] ? state : { dockPlans: { ...state.dockPlans, [anchorId]: true } }
+    ),
+
+  // Deleted rather than set false, so the map only ever holds live claims and
+  // a long session cannot accumulate one entry per plan it has ever drawn.
+  releaseDockPlan: (anchorId) =>
+    set((state) => {
+      if (!state.dockPlans[anchorId]) return state;
+      const { [anchorId]: _released, ...rest } = state.dockPlans;
+      return { dockPlans: rest };
     }),
 }));
 

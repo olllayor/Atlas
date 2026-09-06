@@ -276,6 +276,22 @@
   --radius-composer: 1.75rem; /* 28px */
   --composer-max-height: calc(var(--ui-font-size) * 12); /* 180px at 15px */
 
+  /*
+   * Tasks dock geometry — the strip that tucks behind the composer slab.
+   *
+   * The inset is the slab's own corner radius, not a number of its own: that
+   * is exactly where the slab's rounded corner gives way to its straight top
+   * edge, so the dock's sides land on the one vertical the slab already draws.
+   * A theme that squares the composer off (`--radius-composer: 0`) gets a dock
+   * flush with it, which is the right answer there too.
+   *
+   * The overlap is how far the dock slides *under* the slab. Its background is
+   * masked away over that band, so the two surfaces meet with no seam and no
+   * doubled hairline, and the slab — painted later — covers what is left.
+   */
+  --tasks-dock-inset: var(--radius-composer);
+  --tasks-dock-overlap: 1.0625rem; /* 17px */
+
   /* Shared titlebar height used by both the sidebar header and the main panel. */
   --titlebar-height: 3.25rem; /* 52px at default font size */
   /*
@@ -601,6 +617,8 @@ html[data-border-radius='none'][data-design-theme] {
   --spacing-titlebar-height-fullscreen: var(--titlebar-height-fullscreen);
   /* `max-h-composer-max-height` for the composer textarea. */
   --spacing-composer-max-height: var(--composer-max-height);
+  /* `-mb-tasks-dock-overlap` — how far the tasks dock tucks under the slab. */
+  --spacing-tasks-dock-overlap: var(--tasks-dock-overlap);
 
   --radius-2xs: var(--radius-2xs);
   --radius-xs: var(--radius-xs);

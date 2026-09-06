@@ -24,6 +24,8 @@ type SidebarConversationRowProps = {
   isSelected?: boolean;
   isFailed?: boolean;
   attentionLevel?: AttentionLevel;
+  /** True when a tool approval card is actually waiting on the user. */
+  hasPendingApproval?: boolean;
   unreadCount?: number;
   primaryLabel: string;
   secondaryLabel?: string | null;
@@ -70,6 +72,7 @@ export function SidebarConversationRow({
   isSelected = false,
   isFailed = false,
   attentionLevel = 'idle',
+  hasPendingApproval = false,
   unreadCount = 0,
   primaryLabel,
   secondaryLabel = null,
@@ -96,6 +99,11 @@ export function SidebarConversationRow({
   timestampAccent = false,
 }: SidebarConversationRowProps) {
   const needsInput = attentionLevel === 'needsInput' && !isFailed;
+  // "Approval" only when an approval card is actually waiting. A needs-input
+  // without one (unreachable today: deriveAttentionState pairs it with failure,
+  // which sets isFailed) falls through to Working when running, else Needs Input.
+  const showsApproval = needsInput && hasPendingApproval;
+  const showsNeedsInput = needsInput && !hasPendingApproval && !isRunning;
   const isUnread = !needsInput && !isFailed && !isRunning && attentionLevel === 'unread' && unreadCount > 0;
 
   const settleButtonText = settleActionLabel ?? (isSettled ? 'Restore' : 'Settle');
@@ -116,7 +124,7 @@ export function SidebarConversationRow({
   const showHoverActions = Boolean(onSettle) || Boolean(showSnoozeMenu);
 
   const statusClass =
-    needsInput || isWoke
+    showsApproval || showsNeedsInput || isWoke
       ? 'text-warning-text'
       : isFailed
         ? 'text-error-text'
@@ -149,7 +157,7 @@ export function SidebarConversationRow({
               'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-has-[:focus-visible]/sidebar-status-slot:delay-0'
             )}
           >
-            {needsInput ? (
+            {showsApproval ? (
               <span className={cn('text-3xs font-medium', statusClass)} role="status">
                 Approval
               </span>
@@ -181,6 +189,10 @@ export function SidebarConversationRow({
             ) : isUnread ? (
               <span className={cn('text-3xs font-medium', statusClass)} role="status">
                 Done
+              </span>
+            ) : showsNeedsInput ? (
+              <span className={cn('text-3xs font-medium', statusClass)} role="status">
+                Needs Input
               </span>
             ) : timestampLabel && showTimestamp ? (
               <span
@@ -263,7 +275,7 @@ export function SidebarConversationRow({
               'group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0'
             )}
           >
-            {needsInput ? (
+            {showsApproval ? (
               <span className={cn('inline-flex items-center gap-1 text-xs font-medium', statusClass)}>
                 <span role="status">Approval</span>
               </span>
@@ -297,6 +309,10 @@ export function SidebarConversationRow({
             ) : isUnread ? (
               <span className={cn('inline-flex items-center gap-1 text-xs font-medium', statusClass)}>
                 <span role="status">Done</span>
+              </span>
+            ) : showsNeedsInput ? (
+              <span className={cn('inline-flex items-center gap-1 text-xs font-medium', statusClass)}>
+                <span role="status">Needs Input</span>
               </span>
             ) : timestampLabel && showTimestamp ? (
               <span className="text-xs tabular-nums text-text-tertiary">{timestampLabel}</span>

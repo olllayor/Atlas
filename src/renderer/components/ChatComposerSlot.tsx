@@ -6,6 +6,7 @@ import { Composer, type ComposerAttachment, type ComposerProps } from './Compose
 import type { CitedQuoteEntry } from '../../shared/citations';
 import { QueueDock } from './transcript/QueueDock';
 import { GoalDock } from './goal/GoalDock';
+import { TasksDock } from './composer/TasksDock';
 
 /**
  * Everything the composer needs that is *not* the half-typed message itself.
@@ -211,6 +212,12 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
       />
       <Composer
         {...composerProps}
+        /*
+          Passed as an element, not as data: `TasksDock` subscribes to the
+          live plan itself, so a stream flush re-renders that leaf alone
+          rather than travelling back up through this slot to the composer.
+        */
+        shoulder={<TasksDock conversationId={conversationId} />}
         conversationId={conversationId}
         draftRequestId={draftRequestId}
         draftStatus={draftStatus}

@@ -45,14 +45,16 @@ export const ATTENTION_LEVEL_ORDER: readonly AttentionLevel[] = [
 ];
 
 export function deriveAttentionState(input: AttentionInput): AttentionLevel {
-  // Pending approval or failure halts progress and requires human decision.
+  // Pending approval halts progress and requires human decision.
   // Needs-input strictly outranks running/liveness: a turn stalled on an approval
   // card must alert the user rather than masquerading as actively computing.
-  if (
-    input.hasPendingApproval ||
+  // A draft error halts the active turn and also requires human decision.
+  // A persisted failure requires attention only when no active draft has superseded it.
+  const hasFailed =
     input.draftStatus === 'error' ||
-    input.conversationStatus === 'failed'
-  ) {
+    (!input.draftStatus && input.conversationStatus === 'failed');
+
+  if (input.hasPendingApproval || hasFailed) {
     return 'needsInput';
   }
 

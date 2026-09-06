@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ClipboardEvent as ReactClipboardEvent, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { ClipboardEvent as ReactClipboardEvent, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import {
   DropdownMenu,
@@ -189,6 +189,13 @@ export type ComposerProps = {
    * queue rather than sit silent about where the next message will land.
    */
   queuedCount?: number;
+  /**
+   * Strips that attach to the composer's shoulder — currently the tasks dock.
+   * They render *inside* the centred column, above the slab, because they are
+   * inset from and overlap it: a sibling further up the tree would have to
+   * restate this component's geometry to line up, and would drift from it.
+   */
+  shoulder?: ReactNode;
 };
 
 // ---------------------------------------------------------------------------
@@ -798,6 +805,7 @@ export function Composer({
   onOpenGallery,
   selectedProviderId,
   queuedCount = 0,
+  shoulder,
 }: ComposerProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isComposing, setIsComposing] = useState(false);
@@ -1565,6 +1573,8 @@ export function Composer({
       */}
       <div className="px-4 pb-7 lg:px-5">
         <div className="mx-auto max-w-composer">
+          {shoulder}
+
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
             aria-label="Upload files"

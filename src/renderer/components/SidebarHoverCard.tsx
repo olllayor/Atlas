@@ -179,6 +179,8 @@ type ConversationHoverCardProps = {
   /** What the chat did to the working tree. Zeros mean the row stays silent. */
   changeStats?: ConversationChangeStats | null;
   attentionLevel?: AttentionLevel;
+  /** True when a tool approval card is actually waiting on the user. */
+  hasPendingApproval?: boolean;
   /** First line of unsent composer text, when the box holds unsent work. */
   draftPreview?: string | null;
 };
@@ -194,11 +196,12 @@ export function SidebarConversationHoverCard({
   modelId = null,
   changeStats = null,
   attentionLevel = 'idle',
+  hasPendingApproval = false,
   draftPreview = null,
 }: ConversationHoverCardProps) {
   const stats = formatConversationChangeStats(changeStats);
   const modeLabel = workspaceMode ? `${describeWorkspaceMode(workspaceMode).label} mode` : null;
-  const needsApproval = attentionLevel === 'needsInput' && !isFailed;
+  const needsApproval = attentionLevel === 'needsInput' && !isFailed && hasPendingApproval;
 
   return (
     <HoverCardContent

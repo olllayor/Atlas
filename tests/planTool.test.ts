@@ -3,9 +3,13 @@ import test from 'node:test';
 
 import type { ChatToolPart } from '../src/shared/contracts.js';
 import {
+  derivePlanStepDurations,
+  derivePlanTasksView,
   derivePlanView,
+  keyPlanSteps,
   normalizePlanSteps,
   parsePlanToolInput,
+  planPartsOf,
   type PlanStep,
 } from '../src/shared/planTool.js';
 
@@ -170,4 +174,144 @@ test('derivePlanView ignores a dynamic tool that happens to be named update_plan
   const view = derivePlanView([planPart('mcp-1', { plan: THREE_STEPS }, { dynamic: true })]);
 
   assert.equal(view, null);
+});
+
+// ---------------------------------------------------------------------------
+// The tasks dock's view: identities, timings, and the current step.
+// ---------------------------------------------------------------------------
+
+/** A plan call at a known moment, so durations are assertable rather than wall-clock. */
+function timedPlan(id: string, at: string, plan: PlanStep[]): ChatToolPart {
+  return planPart(id, { plan }, { startedAt: at });
+}
+
+test('keyPlanSteps keeps duplicate step text apart', () => {
+  const keys = keyPlanSteps([
+    { step: 'Run the tests', status: 'completed' },
+    { step: 'Fix the fix', status: 'completed' },
+    { step: 'Run the tests', status: 'in_progress' },
+  ]).map((entry) => entry.key);
+
+  assert.deepEqual(keys, ['Run the tests:0', 'Fix the fix:0', 'Run the tests:1']);
+});
+
+test('planPartsOf keeps only plan calls, in order', () => {
+  const ids = planPartsOf([
+    { id: 'text-1', type: 'text', text: 'hello', state: 'done' } as never,
+    planPart('plan-1', { plan: THREE_STEPS }),
+    toolPart({ toolName: 'read_file', id: 'read-1' }),
+    planPart('plan-2', { plan: THREE_STEPS }),
+  ]).map((part) => part.id);
+
+  assert.deepEqual(ids, ['plan-1', 'plan-2']);
+});
+
+test('derivePlanStepDurations times a step from in_progress to completed', () => {
+  const durations = derivePlanStepDurations([
+    timedPlan('plan-1', '2026-01-01T00:00:00.000Z', [
+      { step: 'Read the code', status: 'in_progress' },
+      { step: 'Write the fix', status: 'pending' },
+    ]),
+    timedPlan('plan-2', '2026-01-01T00:00:37.000Z', [
+      { step: 'Read the code', status: 'completed' },
+      { step: 'Write the fix', status: 'in_progress' },
+    ]),
+  ]);
+
+  assert.equal(durations.get('Read the code:0'), 37_000);
+  // Still running: nothing to measure yet.
+  assert.equal(durations.get('Write the fix:0'), undefined);
+});
+
+test('derivePlanStepDurations leaves a step that never ran untimed', () => {
+  const durations = derivePlanStepDurations([
+    timedPlan('plan-1', '2026-01-01T00:00:00.000Z', [{ step: 'Ship it', status: 'pending' }]),
+    timedPlan('plan-2', '2026-01-01T00:01:00.000Z', [{ step: 'Ship it', status: 'completed' }]),
+  ]);
+
+  assert.equal(durations.size, 0);
+});
+
+test('derivePlanStepDurations keeps the first start and the first finish', () => {
+  const durations = derivePlanStepDurations([
+    timedPlan('plan-1', '2026-01-01T00:00:00.000Z', [{ step: 'Ship it', status: 'in_progress' }]),
+    // A revision that repeats the same status must not restart the clock.
+    timedPlan('plan-2', '2026-01-01T00:00:10.000Z', [{ step: 'Ship it', status: 'in_progress' }]),
+    timedPlan('plan-3', '2026-01-01T00:00:20.000Z', [{ step: 'Ship it', status: 'completed' }]),
+    timedPlan('plan-4', '2026-01-01T00:05:00.000Z', [{ step: 'Ship it', status: 'completed' }]),
+  ]);
+
+  assert.equal(durations.get('Ship it:0'), 20_000);
+});
+
+test('derivePlanStepDurations ignores a plan call with no usable timestamp', () => {
+  const durations = derivePlanStepDurations([
+    planPart('plan-1', { plan: [{ step: 'Ship it', status: 'in_progress' }] }),
+    timedPlan('plan-2', '2026-01-01T00:00:20.000Z', [{ step: 'Ship it', status: 'completed' }]),
+  ]);
+
+  assert.equal(durations.size, 0);
+});
+
+test('derivePlanTasksView names the running step and carries its timings', () => {
+  const view = derivePlanTasksView([
+    timedPlan('plan-1', '2026-01-01T00:00:00.000Z', [
+      { step: 'Read the code', status: 'in_progress' },
+      { step: 'Write the fix', status: 'pending' },
+      { step: 'Run the tests', status: 'pending' },
+    ]),
+    timedPlan('plan-2', '2026-01-01T00:00:37.000Z', [
+      { step: 'Read the code', status: 'completed' },
+      { step: 'Write the fix', status: 'in_progress' },
+      { step: 'Run the tests', status: 'pending' },
+    ]),
+  ]);
+
+  assert.equal(view?.current?.step, 'Write the fix');
+  assert.equal(view?.completed, 1);
+  assert.equal(view?.total, 3);
+  assert.deepEqual(
+    view?.steps.map((step) => step.durationMs),
+    [37_000, null, null]
+  );
+});
+
+test('derivePlanTasksView falls back to the next pending step when none is running', () => {
+  const view = derivePlanTasksView([
+    planPart('plan-1', {
+      plan: [
+        { step: 'Read the code', status: 'completed' },
+        { step: 'Write the fix', status: 'pending' },
+      ],
+    }),
+  ]);
+
+  assert.equal(view?.current?.step, 'Write the fix');
+});
+
+test('derivePlanTasksView has no current step once every step is done', () => {
+  const view = derivePlanTasksView([
+    planPart('plan-1', { plan: [{ step: 'Ship it', status: 'completed' }] }),
+  ]);
+
+  assert.equal(view?.current, null);
+  assert.equal(view?.completed, 1);
+});
+
+test('derivePlanTasksView times a step whose text repeats earlier in the plan', () => {
+  const view = derivePlanTasksView([
+    timedPlan('plan-1', '2026-01-01T00:00:00.000Z', [
+      { step: 'Run the tests', status: 'completed' },
+      { step: 'Run the tests', status: 'in_progress' },
+    ]),
+    timedPlan('plan-2', '2026-01-01T00:00:05.000Z', [
+      { step: 'Run the tests', status: 'completed' },
+      { step: 'Run the tests', status: 'completed' },
+    ]),
+  ]);
+
+  assert.deepEqual(
+    view?.steps.map((step) => step.durationMs),
+    [null, 5_000]
+  );
 });

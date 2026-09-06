@@ -10,7 +10,7 @@
  * same reason `toolCellGrammar.ts` lives here.
  */
 
-import type { ChatToolPart, ChatToolState } from './contracts';
+import type { ChatMessagePart, ChatToolPart, ChatToolState } from './contracts';
 
 export const PLAN_TOOL_NAME = 'update_plan';
 export const PLAN_MAX_STEPS = 50;
@@ -207,4 +207,153 @@ export function planViewToPlainText(view: PlanView): string {
   if (view.explanation) lines.push(view.explanation);
   for (const item of view.steps) lines.push(`${marker[item.status]} ${item.step}`);
   return lines.join('\n');
+}
+
+/* ------------------------------------------------------------------------ *
+ * The tasks dock's render model.
+ *
+ * The transcript's `PlanView` answers "what is the plan"; the dock above the
+ * composer also has to answer "how long did each step take", which no single
+ * `update_plan` call carries. Nothing in the payload is a clock — the timing
+ * is in the *sequence* of calls, so it is reconstructed here by walking every
+ * plan the turn published and noticing when a step changed status.
+ * ------------------------------------------------------------------------ */
+
+/** One row of the tasks dock: a plan step plus what the call sequence timed. */
+export type PlanTaskStep = PlanStep & {
+  /**
+   * Stable identity across plan revisions. The model rewrites the whole plan
+   * each call and may legitimately repeat a step's text, so the occurrence
+   * index disambiguates duplicates — matching on text alone would fuse two
+   * identical steps into one timer.
+   */
+  key: string;
+  /**
+   * Wall-clock span between the call that marked this step `in_progress` and
+   * the one that marked it `completed`. Null while it is still running, and
+   * for a step that jumped straight to `completed` — there was no observed
+   * moment it started, and inventing one would be a guess presented as a
+   * measurement.
+   */
+  durationMs: number | null;
+};
+
+export type PlanTasksView = {
+  steps: PlanTaskStep[];
+  completed: number;
+  total: number;
+  /**
+   * What the collapsed header names: the running step, or — when the model
+   * has not claimed one — the next step it owes. Null once every step is
+   * completed, which is what tells the dock it has nothing left to say.
+   */
+  current: PlanTaskStep | null;
+  /** True while the newest update_plan call has not reached a terminal state. */
+  updating: boolean;
+  anchorId: string;
+};
+
+/** Plan calls only, in the order the turn made them. */
+export function planPartsOf(parts: readonly ChatMessagePart[]): ChatToolPart[] {
+  return parts.filter(
+    (part): part is ChatToolPart => part.type === 'tool' && isPlanToolPart(part)
+  );
+}
+
+/**
+ * Pair each step with an identity that survives the next revision.
+ *
+ * `${step}:${occurrence}` rather than the array index: a model that inserts a
+ * step at the top would shift every index by one and hand the second step the
+ * first step's elapsed time.
+ */
+export function keyPlanSteps(steps: readonly PlanStep[]): { key: string; step: PlanStep }[] {
+  const occurrences = new Map<string, number>();
+  return steps.map((step) => {
+    const occurrence = occurrences.get(step.step) ?? 0;
+    occurrences.set(step.step, occurrence + 1);
+    return { key: `${step.step}:${occurrence}`, step };
+  });
+}
+
+/** When a plan call happened. `startedAt` is the call itself; the rest is fallback. */
+function planPartTimestamp(part: ChatToolPart): number | null {
+  for (const iso of [part.startedAt, part.completedAt]) {
+    if (!iso) continue;
+    const parsed = Date.parse(iso);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Time each step from the run of plan calls.
+ *
+ * A step is started by the first call that shows it `in_progress` and stopped
+ * by the first call that shows it `completed`; a step never seen in progress
+ * is left untimed rather than credited with the gap since the previous call,
+ * which would be the time the *model* took, not the time the step took.
+ */
+export function derivePlanStepDurations(parts: readonly ChatToolPart[]): Map<string, number> {
+  const startedAt = new Map<string, number>();
+  const durations = new Map<string, number>();
+
+  for (const part of parts) {
+    const parsed = parsePlanToolInput(part.input) ?? parsePlanToolInput(part.rawInput);
+    if (!parsed) continue;
+
+    const at = planPartTimestamp(part);
+    if (at == null) continue;
+
+    for (const { key, step } of keyPlanSteps(normalizePlanSteps(parsed.plan).steps)) {
+      if (step.status === 'in_progress' && !startedAt.has(key)) {
+        startedAt.set(key, at);
+        continue;
+      }
+
+      if (step.status !== 'completed' || durations.has(key)) continue;
+
+      const start = startedAt.get(key);
+      // A clock that ran backwards (a reordered event, a machine that slept)
+      // is not a duration worth showing.
+      if (start != null && at >= start) durations.set(key, at - start);
+    }
+  }
+
+  return durations;
+}
+
+/**
+ * Reduce a turn's plan calls to what the tasks dock draws.
+ *
+ * Same winner rule as `derivePlanView` — the newest plan that parses — with
+ * the timings folded in and the current step resolved, so the dock's header
+ * and its rows can never disagree about which step is live.
+ */
+export function derivePlanTasksView(parts: readonly ChatToolPart[]): PlanTasksView | null {
+  const view = derivePlanView([...parts]);
+  if (!view) {
+    return null;
+  }
+
+  const durations = derivePlanStepDurations(parts.filter(isPlanToolPart));
+  const steps: PlanTaskStep[] = keyPlanSteps(view.steps).map(({ key, step }) => ({
+    ...step,
+    key,
+    durationMs: durations.get(key) ?? null,
+  }));
+
+  const current =
+    steps.find((step) => step.status === 'in_progress') ??
+    steps.find((step) => step.status === 'pending') ??
+    null;
+
+  return {
+    steps,
+    completed: view.completed,
+    total: view.total,
+    current,
+    updating: view.updating,
+    anchorId: view.anchorId,
+  };
 }

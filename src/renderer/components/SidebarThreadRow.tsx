@@ -297,6 +297,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
               isFailed={item.isFailed}
               isSelected={isSelected}
               attentionLevel={item.attention}
+              hasPendingApproval={item.pendingApproval != null}
               unreadCount={item.unreadCount}
               primaryLabel={item.primaryLabel}
               secondaryLabel={item.secondaryLabel}
@@ -335,6 +336,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
         modelId={item.modelId}
         changeStats={item.changeStats}
         attentionLevel={item.attention}
+        hasPendingApproval={item.pendingApproval != null}
         modelLabel={modelLabel}
         draftPreview={draftPreview}
       />

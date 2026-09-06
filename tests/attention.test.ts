@@ -44,6 +44,38 @@ test('a failed conversation is needsInput — persisted failure wants a decision
   assert.equal(deriveAttentionState({ conversationStatus: 'failed' }), 'needsInput');
 });
 
+test('active turn supersedes stale persisted conversation failure', () => {
+  assert.equal(
+    deriveAttentionState({
+      conversationStatus: 'failed',
+      draftStatus: 'streaming',
+    }),
+    'running'
+  );
+  assert.equal(
+    deriveAttentionState({
+      conversationStatus: 'failed',
+      draftStatus: 'queued',
+    }),
+    'queued'
+  );
+  assert.equal(
+    deriveAttentionState({
+      conversationStatus: 'failed',
+      draftStatus: 'streaming',
+      hasPendingApproval: true,
+    }),
+    'needsInput'
+  );
+  assert.equal(
+    deriveAttentionState({
+      conversationStatus: 'failed',
+      draftStatus: 'error',
+    }),
+    'needsInput'
+  );
+});
+
 test('running: draft streaming or background liveness or persisted running status', () => {
   assert.equal(deriveAttentionState({ draftStatus: 'streaming' }), 'running');
   assert.equal(deriveAttentionState({ backgroundLiveness: 'working' }), 'running');

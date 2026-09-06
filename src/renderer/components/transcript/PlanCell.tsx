@@ -11,11 +11,12 @@
  */
 
 import { Check, ChevronRight, Circle, CircleDot, type LucideIcon } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 
 import type { ChatToolPart } from '../../../shared/contracts';
 import { derivePlanView, planViewToPlainText, type PlanStepStatus } from '../../../shared/planTool';
-import { useDisclosure } from '../../stores/useTranscriptUiStore';
+import { useDisclosure, useTranscriptUiStore } from '../../stores/useTranscriptUiStore';
+import { usePlanProgressAnnouncement } from '../../hooks/usePlanProgressAnnouncement';
 import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import { cn } from '../../lib/utils';
 import { Disclosure } from './ToolCell';
@@ -52,11 +53,25 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
   // The disclosure store keys on the first call's id so the reader's choice
   // survives both the virtualizer unmounting the row and the next
   // `update_plan` call rewriting the plan underneath it.
-  const [isOpen, toggleOpen] = useDisclosure(`plan-${parts[0]?.id ?? 'none'}`, isStreaming);
+  //
+  // Closed by default, streaming or not: by the time this row is on screen the
+  // dock has handed the plan back, and a checklist that springs open on its own
+  // is not what a reader scrolling through finished turns asked for.
+  const [isOpen, toggleOpen] = useDisclosure(`plan-${parts[0]?.id ?? 'none'}`, false);
   const announcement = usePlanProgressAnnouncement(view?.completed ?? null, view?.total ?? null);
   const raw = useRawTranscript();
+  /*
+    While the tasks dock is showing this plan it *is* the plan, pinned where it
+    can be read; this row would be the same checklist a screen higher up. The
+    announcement above still runs, so progress is spoken once either way, and
+    the cell comes back the moment the dock releases its claim — which is what
+    keeps a settled turn's plan in the transcript where the record belongs.
+  */
+  const ownedByDock = useTranscriptUiStore((state) =>
+    view ? state.dockPlans[view.anchorId] === true : false
+  );
 
-  if (!view) {
+  if (!view || ownedByDock) {
     return null;
   }
 
@@ -142,32 +157,4 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
       </div>
     </div>
   );
-}
-
-/**
- * Announce progress only when it changes in front of the reader.
- *
- * Same reasoning as `useTerminalTransitions` in `ToolCell`: virtualization
- * remounts this row whenever it scrolls back into view, and announcing on
- * mount would replay every plan in the transcript.
- */
-function usePlanProgressAnnouncement(completed: number | null, total: number | null): string {
-  const [announcement, setAnnouncement] = useState('');
-  const previous = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (completed == null || total == null) {
-      return;
-    }
-
-    const current = `${completed}/${total}`;
-    const seen = previous.current;
-    previous.current = current;
-
-    if (seen !== null && seen !== current) {
-      setAnnouncement(`Plan: ${completed} of ${total} complete`);
-    }
-  }, [completed, total]);
-
-  return announcement;
 }

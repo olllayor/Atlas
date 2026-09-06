@@ -35,6 +35,18 @@ const STEP_TEXT: Record<PlanStepStatus, string> = {
   pending: 'text-text-tertiary',
 };
 
+/**
+ * Text status beside each expanded step, ported from t3code PR #10128.
+ *
+ * Steps relied on glyph + colour alone (check / dot / circle); the words make
+ * pending vs running vs completed readable without colour.
+ */
+const STEP_STATUS_LABEL: Record<PlanStepStatus, string> = {
+  pending: 'Pending',
+  in_progress: 'Running',
+  completed: 'Completed',
+};
+
 export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]; isStreaming?: boolean }) {
   const view = useMemo(() => derivePlanView(parts), [parts]);
   // The disclosure store keys on the first call's id so the reader's choice
@@ -48,7 +60,7 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
     return null;
   }
 
-  const label = view.updating ? 'Updating plan' : `Updated plan · ${view.completed}/${view.total} done`;
+  const label = view.updating ? 'Updating plan' : `Updated plan · ${view.completed}/${view.total} complete`;
 
   if (raw) {
     // Status lives in an icon and a strikethrough here; neither pastes. The
@@ -106,7 +118,7 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
                   <Glyph aria-hidden className="mt-[5px] h-3 w-3 shrink-0 text-text-faint" />
                   <span
                     className={cn(
-                      'min-w-0',
+                      'min-w-0 flex-1',
                       STEP_TEXT[step.status],
                       // The shimmer says "work is happening now", so it is only
                       // honest while this turn is actually running.
@@ -114,6 +126,9 @@ export function PlanCell({ parts, isStreaming = false }: { parts: ChatToolPart[]
                     )}
                   >
                     {step.step}
+                  </span>
+                  <span className="mt-[4px] shrink-0 pl-3 text-[10px] leading-relaxed text-text-faint tabular-nums">
+                    {STEP_STATUS_LABEL[step.status]}
                   </span>
                 </div>
               );
@@ -150,7 +165,7 @@ function usePlanProgressAnnouncement(completed: number | null, total: number | n
     previous.current = current;
 
     if (seen !== null && seen !== current) {
-      setAnnouncement(`Plan: ${completed} of ${total} done`);
+      setAnnouncement(`Plan: ${completed} of ${total} complete`);
     }
   }, [completed, total]);
 

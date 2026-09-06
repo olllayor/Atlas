@@ -59,6 +59,17 @@ the way t3code PR #9348 does:
    account can use; only the Gemini 3.8 Flash trio counts as current and the
    rest fold under Legacy. New threads start on 3.8 Flash (High).
 
+After an environment or application restarts, Google sign-in can show as not
+checked until an authenticated session succeeds. You can continue an existing
+thread. Antigravity checks saved Google sign-in when the session starts. An
+unchecked status (`unknown`) does not require signing in again.
+
+To check account access and reload models on desktop, open **Settings → Providers →
+Local agents** and select Test connection or trigger sign-in. Refresh uses saved
+Google sign-in and does not open a login page if valid credentials exist. If
+sign-in is required, use the provider's setup controls. Automatic status checks
+verify the installation only.
+
 The **sign-in method** selects `Google account` (default), `Gemini
 Enterprise`, `Gemini API key` or `Agent Platform`. API keys live in the OS
 keychain and the GCP project/location in settings; Atlas never falls back
@@ -72,6 +83,9 @@ and send audio attachments (wav, mp3, m4a, ogg, flac, webm) as native audio
 blocks. Agent file edits arrive as file-change approvals, so Supervised and
 Auto-accept behave like other providers. Sign out, cancel, retry and **Remove
 downloaded runtime** share the same card.
+
+The packaged runtime can be slow to start, especially on Windows. Health checks,
+model refresh, and sign-out each allow up to 90 seconds before reporting a timeout.
 
 ## Configuration
 

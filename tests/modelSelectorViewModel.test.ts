@@ -214,3 +214,21 @@ test('the send gate exempts a provider that signs itself in', () => {
   assert.equal(modelNeedsApiKey(model('opencode/mimo', { providerId: 'opencode' }), credentials), false);
   assert.equal(modelNeedsApiKey(model('m', { providerId: 'custom:two' }), credentials), true);
 });
+
+test('Antigravity models group under their own name, count as self-managed, and never ask for an API key', () => {
+  const viewModel = buildModelSelectorViewModel({
+    models: [
+      model('gemini-3.8-flash-high', { providerId: 'antigravity', label: 'Gemini 3.8 Flash (High)' }),
+      model('gpt-5', { providerId: 'custom:openai' })
+    ],
+    customProviders: [{ id: 'custom:openai', name: 'OpenAI' }],
+    credentials: [credential('custom:openai', true)],
+    showFreeOnly: false
+  });
+
+  const antigravity = viewModel.groups.find((group) => group.providerId === 'antigravity');
+  assert.ok(antigravity, 'Antigravity group is present');
+  assert.equal(antigravity.configured, true);
+  assert.equal(antigravity.selfManaged, true);
+  assert.equal(modelNeedsApiKey(antigravity.models[0]!, [credential('custom:openai', true)]), false);
+});

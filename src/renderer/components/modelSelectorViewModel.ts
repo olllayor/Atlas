@@ -1,14 +1,16 @@
-import type { CustomProvider, ModelSummary, ProviderCredentialSummary } from '../../shared/contracts';
-import { OPENCODE_PROVIDER_ID } from '../../shared/opencodeSettings';
-import { resolveProviderLabel } from '../../shared/providerMetadata';
+import type { CustomProvider, ModelSummary, ProviderCredentialSummary } from '../../shared/contracts.js';
+import { isLocalAgentId } from '../../shared/localAgents.js';
+import { OPENCODE_PROVIDER_ID } from '../../shared/opencodeSettings.js';
+import { resolveProviderLabel } from '../../shared/providerMetadata.js';
 
 /**
- * OpenCode signs in on its own (`opencode auth login`), so Atlas never holds a
- * key for it. Without this its models would sort below the configured ones and
- * offer an API-key prompt that fixes nothing.
+ * Local agents (OpenCode, Antigravity, Claude Code, Codex, Cursor, Grok) sign
+ * in on their own (or hold credentials in their own profiles / keychain), so Atlas
+ * never holds a standard BYOK key for them. Without this their models would sort
+ * below the configured ones and offer an API-key prompt that fixes nothing.
  */
 function providerAuthenticatesItself(providerId: string) {
-  return providerId === OPENCODE_PROVIDER_ID;
+  return providerId === OPENCODE_PROVIDER_ID || isLocalAgentId(providerId);
 }
 
 /**

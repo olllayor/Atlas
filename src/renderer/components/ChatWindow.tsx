@@ -363,6 +363,7 @@ function AssistantParts({
   durationMs,
   onRespondToolApproval,
   onOpenAgentsPanel,
+  onToolOutputCollapsedAtEnd,
 }: {
   content: string;
   isStreaming?: boolean;
@@ -374,6 +375,11 @@ function AssistantParts({
   durationMs?: number | null;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onOpenAgentsPanel?: () => void;
+  /**
+   * Re-pin hook for tool collapses that reveal the live edge. Ported from
+   * t3code PR #9782 (`onToolOutputCollapsedAtEnd`).
+   */
+  onToolOutputCollapsedAtEnd?: () => void;
 }) {
   // Memoised because it used to be recomputed for every visible row on
   // every streamed token.
@@ -413,6 +419,7 @@ function AssistantParts({
           key={`tools-${segment.parts[0].toolCallId}`}
           parts={segment.parts}
           onRespondToolApproval={onRespondToolApproval}
+          onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
         />
       );
     }
@@ -424,6 +431,7 @@ function AssistantParts({
           parts={segment.parts}
           onRespondToolApproval={onRespondToolApproval}
           onOpenAgentsPanel={onOpenAgentsPanel}
+          onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
         />
       );
     }
@@ -553,9 +561,11 @@ function AssistantParts({
 function ToolCellGroup({
   parts,
   onRespondToolApproval,
+  onToolOutputCollapsedAtEnd,
 }: {
   parts: ChatToolPart[];
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
+  onToolOutputCollapsedAtEnd?: () => void;
 }) {
   const [submittingApprovalId, setSubmittingApprovalId] = useState<string | null>(null);
 
@@ -588,7 +598,11 @@ function ToolCellGroup({
 
   return (
     <div className="my-1.5 space-y-2">
-      <ToolCellList parts={parts} approvals={approvals} />
+      <ToolCellList
+        parts={parts}
+        approvals={approvals}
+        onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+      />
     </div>
   );
 }
@@ -608,10 +622,12 @@ function SpawnBatchRow({
   parts,
   onRespondToolApproval,
   onOpenAgentsPanel,
+  onToolOutputCollapsedAtEnd,
 }: {
   parts: ChatToolPart[];
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
-  onOpenAgentsPanel?: () => void;
+  onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
+  onToolOutputCollapsedAtEnd?: () => void;
 }) {
   const activitiesByConversation = useAppStore((state) => state.activitiesByConversation);
   const selectedConversationId = useAppStore((state) => state.selectedConversationId);
@@ -635,7 +651,11 @@ function SpawnBatchRow({
   return (
     <>
       {pendingParts.length > 0 && (
-        <ToolCellGroup parts={pendingParts} onRespondToolApproval={onRespondToolApproval} />
+        <ToolCellGroup
+          parts={pendingParts}
+          onRespondToolApproval={onRespondToolApproval}
+          onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+        />
       )}
       {spawnedToolCallIds.length > 0 && (
         <SpawnAgentCta
@@ -836,6 +856,7 @@ const MessageRow = memo(function MessageRow({
   onUndoChanges,
   onOpenAgentsPanel,
   onNavigateCitation,
+  onToolOutputCollapsedAtEnd,
 }: {
   message: ChatMessage;
   deferRichContent?: boolean;
@@ -845,6 +866,7 @@ const MessageRow = memo(function MessageRow({
   onUndoChanges?: ChatWindowProps['onUndoChanges'];
   onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
   onNavigateCitation?: (citation: AssistantCitation) => void;
+  onToolOutputCollapsedAtEnd?: () => void;
 }) {
   const isAssistant = message.role === 'assistant';
   const fileParts = getMessageFileParts(message.parts);
@@ -909,6 +931,7 @@ const MessageRow = memo(function MessageRow({
           isStreaming={message.status === 'streaming'}
           onRespondToolApproval={onRespondToolApproval}
           onOpenAgentsPanel={onOpenAgentsPanel}
+          onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
         />
 
         {changedFiles ? (
@@ -972,6 +995,7 @@ function StreamingRow({
   onRespondToolApproval,
   onRetry,
   onOpenAgentsPanel,
+  onToolOutputCollapsedAtEnd,
 }: {
   parts: ChatMessagePart[];
   /** The draft's request id — keys the turn's `Worked for …` disclosure. */
@@ -984,6 +1008,7 @@ function StreamingRow({
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onRetry?: () => void;
   onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
+  onToolOutputCollapsedAtEnd?: () => void;
 }) {
   const isError = status === 'error';
   const isAborted = status === 'aborted';
@@ -1021,7 +1046,7 @@ function StreamingRow({
         ) : isAborted ? (
           <>
             {hasParts ? (
-              <AssistantParts content="" parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} />
+              <AssistantParts content="" parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd} />
             ) : null}
             <div
               className={cn(
@@ -1037,7 +1062,7 @@ function StreamingRow({
           </>
         ) : (
           <>
-            <AssistantParts content="" isStreaming parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} />
+            <AssistantParts content="" isStreaming parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd} />
             {/*
               A dim line under the shimmer, not a banner: the turn has not
               failed, and a warning-shaped box would say it had. Before this
@@ -1955,6 +1980,23 @@ export function ChatWindow({
   scrolledUpRef.current = isScrolledUp;
 
   /**
+   * Tool collapse at the live edge. Closing tool output shrinks the
+   * scrollable content without emitting a scroll event, so the transcript
+   * can sit visually at the bottom while the stick lock still believes the
+   * reader is away — and the saved per-conversation anchor can keep landing
+   * future visits mid-thread. Re-pin instantly and drop the anchor.
+   * Ported from t3code PR #9782 (`onToolOutputCollapsedAtEnd`); the
+   * composer half of that fix does not apply here because the Atlas slab
+   * has no blur-collapse state to restore and must not steal DOM focus.
+   */
+  const handleToolOutputCollapsedAtEnd = useCallback(() => {
+    if (conversationId) {
+      clearConversationScrollAnchor(conversationId);
+    }
+    void scrollToBottom({ animation: 'instant', wait: false });
+  }, [conversationId, scrollToBottom]);
+
+  /**
    * Selection guard. While the reader holds a live text selection inside the
    * transcript, auto-stick stands down: pinning to the bottom on every stream
    * flush would rip the selection (and the cite/quote menu behind it) away
@@ -2259,6 +2301,7 @@ export function ChatWindow({
                   onUndoChanges={onUndoChanges}
                   onOpenAgentsPanel={onOpenAgentsPanel}
                   onNavigateCitation={navigateToCitation}
+                  onToolOutputCollapsedAtEnd={handleToolOutputCollapsedAtEnd}
                 />
               </div>
             );
@@ -2277,6 +2320,7 @@ export function ChatWindow({
               onRespondToolApproval={onRespondToolApproval}
               onRetry={draft.error?.retryable !== false ? onRetryLastMessage : undefined}
               onOpenAgentsPanel={onOpenAgentsPanel}
+              onToolOutputCollapsedAtEnd={handleToolOutputCollapsedAtEnd}
             />
           </div>
         ) : null}

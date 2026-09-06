@@ -78,10 +78,22 @@ export function Disclosure({
   open,
   className,
   children,
+  onCollapsedAtEnd,
 }: {
   open: boolean;
   className?: string;
   children: ReactNode;
+  /**
+   * Fired when a collapse settles while the timeline is at its live edge.
+   *
+   * Closing tool output shrinks the scrollable content without emitting a
+   * scroll event, so the transcript can sit visually at the bottom while the
+   * stick-to-bottom lock still believes the reader is away reading history.
+   * The owner re-pins the live edge here. Ported from t3code PR #9782, which
+   * restores the composer under the same condition; Atlas has no
+   * blur-collapse composer state, so only the scroll pin needs restoring.
+   */
+  onCollapsedAtEnd?: () => void;
 }) {
   const [keepMounted, setKeepMounted] = useState(open);
 
@@ -153,6 +165,41 @@ export function Disclosure({
     return () => cancelAnimationFrame(raf);
   }, [open]);
 
+  /*
+   * Collapse-at-end notification. Kept separate from the anchor effect above
+   * on purpose: anchoring stands down at the live edge, while this only
+   * fires there. Two frames, mirroring t3code's
+   * `suspendEndScrollMaintenanceForDisclosure`, so row measurement and the
+   * disclosure click's own blur handling settle before the position is read.
+   */
+  const collapseNotifyRef = useRef(open);
+  useEffect(() => {
+    const wasOpen = collapseNotifyRef.current;
+    collapseNotifyRef.current = open;
+    if (!wasOpen || open) {
+      return;
+    }
+    if (!onCollapsedAtEnd) {
+      return;
+    }
+    let firstFrame = 0;
+    let secondFrame = 0;
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const scroller = rootRef.current?.closest?.(
+          '[data-transcript-scroller]'
+        ) as HTMLElement | null;
+        if (scroller && isPinnedToBottom(scroller)) {
+          onCollapsedAtEnd();
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [open, onCollapsedAtEnd]);
+
   return (
     <div
       ref={rootRef}
@@ -177,6 +224,11 @@ export type ToolCellApprovalHandlers = {
 type ToolCellListProps = {
   parts: ChatToolPart[];
   approvals?: ToolCellApprovalHandlers;
+  /**
+   * Re-pin hook for collapses that reveal the live edge. Threaded to every
+   * cell's `Disclosure`; see its `onCollapsedAtEnd`.
+   */
+  onToolOutputCollapsedAtEnd?: () => void;
 };
 
 /**
@@ -186,7 +238,7 @@ type ToolCellListProps = {
  * collapse into a single `Explored N files` row, so N file reads produce
  * one line rather than N.
  */
-export function ToolCellList({ parts, approvals }: ToolCellListProps) {
+export function ToolCellList({ parts, approvals, onToolOutputCollapsedAtEnd }: ToolCellListProps) {
   const cells = useMemo(() => buildToolCells(parts), [parts]);
   const announcement = useTerminalTransitions(cells);
   const raw = useRawTranscript();
@@ -199,7 +251,12 @@ export function ToolCellList({ parts, approvals }: ToolCellListProps) {
         raw ? (
           <RawToolCell key={cell.id} cell={cell} approvals={approvals} />
         ) : (
-          <ToolCell key={cell.id} cell={cell} approvals={approvals} />
+          <ToolCell
+            key={cell.id}
+            cell={cell}
+            approvals={approvals}
+            onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+          />
         )
       )}
 
@@ -313,7 +370,15 @@ function RawToolCell({
   );
 }
 
-function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCellApprovalHandlers }) {
+function ToolCell({
+  cell,
+  approvals,
+  onToolOutputCollapsedAtEnd,
+}: {
+  cell: ToolCellModel;
+  approvals?: ToolCellApprovalHandlers;
+  onToolOutputCollapsedAtEnd?: () => void;
+}) {
   const expandable = isExpandable(cell);
 
   // Errors, denials and approval prompts open themselves; everything else
@@ -388,7 +453,7 @@ function ToolCell({ cell, approvals }: { cell: ToolCellModel; approvals?: ToolCe
         </div>
       )}
 
-      <Disclosure open={isOpen}>
+      <Disclosure open={isOpen} onCollapsedAtEnd={onToolOutputCollapsedAtEnd}>
         <CellDetail cell={cell} approvals={approvals} />
       </Disclosure>
 

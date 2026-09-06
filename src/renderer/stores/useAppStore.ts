@@ -48,6 +48,7 @@ import {
   mergeConversationPage,
   reconcileConversationCache
 } from './conversationCache';
+import { antigravityModelLabel, isAntigravityCurrentModel } from '../../shared/antigravityModels';
 import { modelNeedsApiKey } from '../components/modelSelectorViewModel';
 import { notify, notifyError, repeatingToastId } from '../lib/notify';
 import { hasPendingApprovalInParts } from '../lib/attention';
@@ -423,12 +424,22 @@ export function resolveSelectedModelId(
   // every conversation that had chosen one still names it, and an id nothing can
   // serve is not a selection — it is a send that fails in the main process.
   const explicit = selectedModelIdByConversation[selectedConversationId];
-  if (explicit && models.some((model) => model.id === explicit)) {
+  if (explicit && (models.some((model) => model.id === explicit) || models.length === 0)) {
     return explicit;
   }
 
-  const persisted = conversationDetails[selectedConversationId]?.conversation.defaultModelId;
-  if (persisted && models.some((model) => model.id === persisted)) {
+  const detail = conversationDetails[selectedConversationId];
+  const persisted = detail?.conversation.defaultModelId;
+  const isAntigravityConversation =
+    detail?.conversation.defaultProviderId === 'antigravity' ||
+    (persisted !== undefined && persisted !== null && isAntigravityCurrentModel(persisted));
+
+  if (
+    persisted &&
+    (models.some((model) => model.id === persisted) ||
+      models.length === 0 ||
+      isAntigravityConversation)
+  ) {
     return persisted;
   }
 
@@ -2176,8 +2187,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const pinnedProviderId =
       state.selectedProviderIdByConversation[conversationId] ?? detail.conversation.defaultProviderId ?? state.settings?.defaultProviderId ?? null;
-    const selectedModel = getModelById(state.models, modelId, pinnedProviderId);
+    let selectedModel = getModelById(state.models, modelId, pinnedProviderId);
     const providerId = selectedModel?.providerId ?? pinnedProviderId;
+    if (!selectedModel && providerId === 'antigravity' && modelId) {
+      selectedModel = {
+        id: modelId,
+        providerId: 'antigravity',
+        label: antigravityModelLabel(modelId),
+        contextWindow: 1_000_000,
+        isFree: false,
+        supportsVision: true,
+        supportsDocumentInput: true,
+        supportsTools: true,
+        archived: false,
+        lastSyncedAt: new Date().toISOString(),
+        lastSeenFreeAt: null,
+        reasoningEfforts: null,
+        supportsTemperature: false
+      };
+    }
     if (!selectedModel || !providerId) {
       notify({ tone: 'error', title: 'Select a valid model before sending' });
       return;

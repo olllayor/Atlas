@@ -249,7 +249,9 @@ export function AntigravitySetupCard({ agent }: { agent: LocalAgentStatusView })
                   ? 'Verifying…'
                   : authState === 'error'
                     ? `Sign-in failed${authMessage ? ` · ${authMessage}` : ''}`
-                    : 'Not signed in'}
+                    : installed
+                      ? 'Google account access not checked yet'
+                      : 'Not signed in'}
           </span>
           <div className="ml-auto flex items-center gap-2">
             {authState === 'authenticated' ? (

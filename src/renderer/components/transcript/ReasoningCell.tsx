@@ -91,7 +91,7 @@ export function ReasoningCell({
   if (!trimmed) {
     return (
       <div className="my-1.5 flex min-h-[1.5rem] items-center text-sm font-normal text-text-tertiary">
-        <span className="motion-shimmer">{label}</span>
+        <span className="focus-sweep inline-flex items-center gap-1.5 py-0.5 text-text-secondary">{label}</span>
       </div>
     );
   }
@@ -117,7 +117,7 @@ export function ReasoningCell({
         aria-label={`${label}. ${isOpen ? 'Hide' : 'Show'} reasoning`}
         className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-left text-sm font-normal leading-relaxed text-text-tertiary transition-colors hover:text-text-secondary"
       >
-        <span title={label} className={cn('min-w-0 truncate', isStreaming && 'motion-shimmer')}>
+        <span title={label} className={cn('min-w-0 truncate', isStreaming && 'focus-sweep px-1 py-0.5 text-text-secondary')}>
           {label}
         </span>
         <ChevronRight

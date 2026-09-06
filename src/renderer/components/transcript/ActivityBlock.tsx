@@ -20,7 +20,7 @@
  */
 
 import { ChevronRight } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { formatElapsed } from '../../../shared/toolCellGrammar';
 import { useDisclosure, useTranscriptUiStore } from '../../stores/useTranscriptUiStore';
@@ -35,6 +35,14 @@ export function ActivityBlock({
    * stream (history loaded from the database).
    */
   fallbackDurationMs,
+  /**
+   * Epoch ms the live turn was dispatched, used while streaming when the
+   * window-local timing started late (or never ran) — e.g. the turn was
+   * acknowledged but its first token has not arrived, or this window
+   * mounted mid-stream. The draft's send time is the truthful start;
+   * mount time would undercount both cases.
+   */
+  fallbackStartMs,
   /** Keeps the block open regardless of the default — see rule 2 above. */
   forceOpen = false,
   /**
@@ -48,6 +56,7 @@ export function ActivityBlock({
   id: string;
   isStreaming?: boolean;
   fallbackDurationMs?: number | null;
+  fallbackStartMs?: number | null;
   forceOpen?: boolean;
   defaultOpen?: boolean;
   children: React.ReactNode;
@@ -64,14 +73,28 @@ export function ActivityBlock({
   const [isOpen, toggleOpen] = useDisclosure(id, defaultOpen);
   const open = forceOpen || isOpen;
 
+  // Live tick for the streaming label. Mounts only while the turn is in
+  // flight; once it settles the effect — and the ticking — goes away.
+  const [nowMs, setNowMs] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isStreaming) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isStreaming]);
+
   // The measured window is the truthful one — it covers tool time, which the
   // provider's own latency number does not always include.
   const durationMs = timing?.durationMs ?? fallbackDurationMs ?? null;
-  const label = isStreaming
-    ? 'Working'
-    : durationMs != null && durationMs >= 1000
-      ? `Worked for ${formatElapsed(durationMs)}`
-      : 'Worked';
+  const liveStartMs = fallbackStartMs ?? timing?.startedAt ?? null;
+  const label =
+    isStreaming && liveStartMs != null && nowMs != null
+      ? `Working ${formatElapsed(nowMs - liveStartMs)}`
+      : isStreaming
+        ? 'Working'
+        : durationMs != null && durationMs >= 1000
+          ? `Worked for ${formatElapsed(durationMs)}`
+          : 'Worked';
 
   return (
     <div className="group/activity my-1.5">
@@ -90,7 +113,7 @@ export function ActivityBlock({
           forceOpen ? 'cursor-default' : 'cursor-pointer'
         )}
       >
-        <span className={cn('shrink-0', isStreaming && 'motion-shimmer')}>{label}</span>
+        <span className={cn('shrink-0', isStreaming && 'focus-sweep py-0.5 text-text-secondary')}>{label}</span>
         <ChevronRight
           aria-hidden
           className={cn(

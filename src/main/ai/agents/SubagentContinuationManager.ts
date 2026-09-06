@@ -151,12 +151,11 @@ export class SubagentContinuationManager {
       ...(model ? { model } : {}),
       ...(tools ? { toolFilter: tools } : {}),
     });
-    const envelope: RuntimeEventEnvelope = {
+    const inputEnvelope = {
       eventId: randomUUID(),
       conversationId: activation.childId,
       turnId: randomUUID(),
       requestId: agentId,
-      sequence: this.sequenceCounter,
       occurredAt: new Date().toISOString(),
       activityType: 'subagent.descriptor' as const,
       tone: 'info',
@@ -174,9 +173,14 @@ export class SubagentContinuationManager {
         title: descriptor.label,
         agentKind: 'agent',
       } as unknown as Record<string, unknown>,
-    } as RuntimeEventEnvelope;
+    };
+    let envelope: RuntimeEventEnvelope;
     try {
-      this.deps.runtimeStateRepo.recordEvent(envelope as any);
+      // Use the repo's returned envelope for its authoritative per-conversation
+      // sequence. Pushing the local counter instead would emit a small shared
+      // integer against the conversation watermark and the renderer's
+      // runtime-sync stale check would silently drop it.
+      envelope = this.deps.runtimeStateRepo.recordEvent(inputEnvelope as any);
     } catch (e) {
       // Let caller rollback child row
       throw e;

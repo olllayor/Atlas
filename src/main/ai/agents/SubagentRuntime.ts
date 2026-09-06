@@ -360,12 +360,11 @@ export class SubagentRuntime {
   /** Emit a durable subagent descriptor (S1). Stored under the child conversation so listing can find it after restart. */
   private emitDescriptorEvent(state: SubagentTaskState, descriptor: ReturnType<typeof snapshotSubagentDescriptor>): void {
     this.sequenceCounter += 1;
-    const envelope: RuntimeEventEnvelope = {
+    const inputEnvelope: RecordRuntimeEventInput = {
       eventId: randomUUID(),
       conversationId: state.childConversationId ?? state.conversationId,
       turnId: state.turnId,
       requestId: state.parentToolCallId,
-      sequence: this.sequenceCounter,
       occurredAt: new Date().toISOString(),
       activityType: 'subagent.descriptor' as ActivityType,
       tone: 'info',
@@ -383,12 +382,22 @@ export class SubagentRuntime {
         title: descriptor.label,
         agentKind: state.agentKind,
       } as unknown as Record<string, unknown>,
-    } as RuntimeEventEnvelope;
+    };
 
+    let envelope: RuntimeEventEnvelope;
     if (this.runtimeStateRepo) {
       // S1: must throw on failure so the caller can rollback the child row.
       // Swallowing here would leave a child conversation with no descriptor — cold resume (S2) would see a diagnostic orphan.
-      this.runtimeStateRepo.recordEvent(envelope as unknown as RecordRuntimeEventInput);
+      // Use the repo's returned envelope: it carries the authoritative
+      // per-conversation sequence. Forwarding a locally-built sequence here
+      // would trip the renderer's stale-sequence drop (runtime-sync <= watermark).
+      envelope = this.runtimeStateRepo.recordEvent(inputEnvelope);
+    } else {
+      envelope = {
+        ...inputEnvelope,
+        sequence: this.sequenceCounter,
+        occurredAt: inputEnvelope.occurredAt ?? new Date().toISOString(),
+      } as RuntimeEventEnvelope;
     }
     if (this.onRuntimeEvent) {
       this.onRuntimeEvent(envelope);
@@ -401,13 +410,20 @@ export class SubagentRuntime {
     activityType: 'task.started' | 'task.progress' | 'task.updated' | 'task.completed'
   ) {
     this.sequenceCounter += 1;
-    const envelope = buildTaskEnvelope(state, activityType, {
+    const fallbackEnvelope = buildTaskEnvelope(state, activityType, {
       eventId: randomUUID(),
       sequence: this.sequenceCounter,
       occurredAt: new Date().toISOString(),
     });
+    let envelope: RuntimeEventEnvelope = fallbackEnvelope;
     if (this.runtimeStateRepo) {
-      this.runtimeStateRepo.recordEvent(envelope);
+      // Use the repo's returned envelope for its authoritative sequence.
+      // The local counter is fallback-only (no-repo mode); pushing it when a
+      // repo exists would emit a small shared integer against a large
+      // per-conversation watermark and the renderer would silently drop it.
+      const { sequence: _droppedSequence, ...inputWithoutSequence } = fallbackEnvelope as unknown as Record<string, unknown> as RecordRuntimeEventInput & { sequence: number };
+      void _droppedSequence;
+      envelope = this.runtimeStateRepo.recordEvent(inputWithoutSequence);
     }
     if (this.onRuntimeEvent) {
       this.onRuntimeEvent(envelope);

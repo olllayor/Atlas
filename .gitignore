@@ -35,3 +35,7 @@ skills/
 
 # Local perf dumps and test profiles
 .tmp/
+
+#Concatenated source dumps and editor backups: local scratch, never committed
+Atlas_codebase.txt
+*.bak

@@ -297,6 +297,8 @@ const api: RendererApi = {
     commands: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsCommands),
     commandBody: (qualifiedName: string, args: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsCommandBody, qualifiedName, args),
+    skills: (input: { projectRoot?: string | null; mode?: string; hasProject?: boolean }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.pluginsSkills, input),
     activation: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.pluginsActivation, conversationId),
     setActivated: (conversationId: string, plugin: string, active: boolean) =>

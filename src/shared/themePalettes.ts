@@ -166,7 +166,7 @@ export const T3_CHAT_THEME: ThemeDefinition = {
       secondaryForeground: 'oklch(0.848252 0.038248 307.961)',
       muted: 'oklch(0.360924 0.021469 316.83)',
       mutedForeground: 'oklch(0.880303 0.03077 342.696)',
-      placeholder: 'oklch(0.657087 0.028226 307.985)',
+      placeholder: 'oklch(0.705 0.028 308)',
       secondaryLabel: 'oklch(0.880303 0.03077 342.696)',
       iconMuted: 'oklch(0.848252 0.038248 307.961)',
       error: 'oklch(0.458704 0.169677 3.815)',

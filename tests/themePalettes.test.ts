@@ -9,6 +9,11 @@ import {
   getThemeDefinition,
 } from '../src/shared/themePalettes';
 import { getVariantShortLabel, resolveEffectiveTheme } from '../src/renderer/lib/themePalette';
+import {
+  createVividThemeColors,
+  parseThemeRgbColor,
+  themeContrastRatio,
+} from '../src/renderer/lib/themeVividEngine';
 
 test('Theme Color Roles defines all palette roles', () => {
   assert.equal(THEME_COLOR_ROLES.length, 57);
@@ -99,4 +104,83 @@ test("getVariantShortLabel derives clean short labels for theme family variants"
 
   // Single word collections fallback
   assert.equal(getVariantShortLabel("Nord", "Nord"), "Nord");
+});
+
+test('built-in theme palettes enforce WCAG contrast for core roles', () => {
+  for (const theme of BUILT_IN_THEMES) {
+    for (const mode of ['light', 'dark'] as const) {
+      const colors = getThemeColorsForAppearance(theme, mode);
+      assert.ok(colors, `${theme.id} (${mode}) must have colors`);
+
+      const mutedFg = parseThemeRgbColor(colors.mutedForeground, { r: 0, g: 0, b: 0 });
+      const mutedBg = parseThemeRgbColor(colors.muted, { r: 0, g: 0, b: 0 });
+      const placeholder = parseThemeRgbColor(colors.placeholder, { r: 0, g: 0, b: 0 });
+      const surfaceRaised = parseThemeRgbColor(colors.surfaceRaised, { r: 0, g: 0, b: 0 });
+      const accentFg = parseThemeRgbColor(colors.accentForeground, { r: 0, g: 0, b: 0 });
+      const accentBg = parseThemeRgbColor(colors.accent, { r: 0, g: 0, b: 0 });
+      const actionFg = parseThemeRgbColor(colors.messageActionForeground, { r: 0, g: 0, b: 0 });
+      const actionBg = parseThemeRgbColor(colors.messageAction, { r: 0, g: 0, b: 0 });
+      const actionHover = parseThemeRgbColor(colors.messageActionHover, { r: 0, g: 0, b: 0 });
+
+      const cMuted = themeContrastRatio(mutedFg, mutedBg);
+      const cPlaceholder = themeContrastRatio(placeholder, surfaceRaised);
+      const cAccent = themeContrastRatio(accentFg, accentBg);
+      const cAction = themeContrastRatio(actionFg, actionBg);
+      const cActionHover = themeContrastRatio(actionFg, actionHover);
+
+      assert.ok(
+        cMuted >= 4.5,
+        `${theme.id} (${mode}): mutedForeground on muted contrast must be >= 4.5, got ${cMuted.toFixed(2)}`,
+      );
+      assert.ok(
+        cPlaceholder >= 4.5,
+        `${theme.id} (${mode}): placeholder on surfaceRaised contrast must be >= 4.5, got ${cPlaceholder.toFixed(2)}`,
+      );
+      assert.ok(
+        cAccent >= 4.5,
+        `${theme.id} (${mode}): accentForeground on accent contrast must be >= 4.5, got ${cAccent.toFixed(2)}`,
+      );
+      assert.ok(
+        cAction >= 4.5,
+        `${theme.id} (${mode}): messageActionForeground on messageAction contrast must be >= 4.5, got ${cAction.toFixed(2)}`,
+      );
+      assert.ok(
+        cActionHover >= 4.5,
+        `${theme.id} (${mode}): messageActionForeground on messageActionHover contrast must be >= 4.5, got ${cActionHover.toFixed(2)}`,
+      );
+    }
+  }
+});
+
+test('createVividThemeColors enforces WCAG contrast for mutedForeground, placeholder, accent, and messageAction', () => {
+  for (const mode of ['light', 'dark'] as const) {
+    const bg = mode === 'dark' ? '#1a1b26' : '#fbfbfd';
+    const accent = '#db2777';
+    const colors = createVividThemeColors(mode, bg, accent);
+
+    const mutedFg = parseThemeRgbColor(colors.mutedForeground, { r: 0, g: 0, b: 0 });
+    const mutedBg = parseThemeRgbColor(colors.muted, { r: 0, g: 0, b: 0 });
+    const placeholder = parseThemeRgbColor(colors.placeholder, { r: 0, g: 0, b: 0 });
+    const surfaceRaised = parseThemeRgbColor(colors.surfaceRaised, { r: 0, g: 0, b: 0 });
+    const accentFg = parseThemeRgbColor(colors.accentForeground, { r: 0, g: 0, b: 0 });
+    const accentBg = parseThemeRgbColor(colors.accent, { r: 0, g: 0, b: 0 });
+    const actionFg = parseThemeRgbColor(colors.messageActionForeground, { r: 0, g: 0, b: 0 });
+    const actionHover = parseThemeRgbColor(colors.messageActionHover, { r: 0, g: 0, b: 0 });
+
+    const cMuted = themeContrastRatio(mutedFg, mutedBg);
+    const cPlaceholder = themeContrastRatio(placeholder, surfaceRaised);
+    const cAccent = themeContrastRatio(accentFg, accentBg);
+    const cActionHover = themeContrastRatio(actionFg, actionHover);
+
+    assert.ok(cMuted >= 4.5, `vivid (${mode}): muted contrast must be >= 4.5, got ${cMuted.toFixed(2)}`);
+    assert.ok(
+      cPlaceholder >= 4.5,
+      `vivid (${mode}): placeholder contrast must be >= 4.5, got ${cPlaceholder.toFixed(2)}`,
+    );
+    assert.ok(cAccent >= 4.5, `vivid (${mode}): accent contrast must be >= 4.5, got ${cAccent.toFixed(2)}`);
+    assert.ok(
+      cActionHover >= 4.5,
+      `vivid (${mode}): actionHover contrast must be >= 4.5, got ${cActionHover.toFixed(2)}`,
+    );
+  }
 });

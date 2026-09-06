@@ -48,6 +48,7 @@ import { GitPanel } from './GitPanel';
 import { ReviewPanel } from './ReviewPanel';
 import { JobsSection } from './JobsSection';
 import { TaskStatusGlyph } from './TaskStatusGlyph';
+import { ToolActivityIconView } from '../transcript/ToolActivityIconView';
 import { BrowserSurface } from './BrowserSurface';
 import { FilesPanel } from './FilesPanel';
 import { FileViewerPanel } from './FileViewerPanel';
@@ -404,7 +405,16 @@ function TaskRow({ cell }: { cell: ToolCell }) {
 
   return (
     <li className="flex min-h-10 items-center gap-2.5">
-      <TaskStatusGlyph status={cell.status} className="shrink-0" />
+      {cell.toolIcon || cell.toolSurface ? (
+        <ToolActivityIconView
+          icon={cell.toolIcon}
+          surface={cell.toolSurface}
+          className="size-4 shrink-0"
+          fallback={<TaskStatusGlyph status={cell.status} className="shrink-0" />}
+        />
+      ) : (
+        <TaskStatusGlyph status={cell.status} className="shrink-0" />
+      )}
       <span className="min-w-0 truncate text-base text-text-primary" title={name}>
         {name}
       </span>

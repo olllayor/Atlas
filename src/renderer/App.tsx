@@ -1997,6 +1997,10 @@ export default function App() {
           captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'visualMode', value });
           void updatePreferences({ chat: { visualMode: value } });
         }}
+        onToggleSkillsInSlashMenu={(value) => {
+          captureEvent(POSTHOG_EVENTS.PREFERENCES_UPDATED, { setting: 'showSkillsInSlashMenu', value });
+          void updatePreferences({ chat: { showSkillsInSlashMenu: value } });
+        }}
         onUpdateAction={() => {
           if (updateState.status === 'available' || updateState.status === 'downloaded') {
             void performUpdatePrimaryAction();
@@ -2454,6 +2458,8 @@ export default function App() {
                 toolPermissionMode={toolPermissionMode}
                 workspaceMode={workspaceMode}
                 workspaceReady={workspaceReady}
+                projectRoot={activeProject?.root ?? null}
+                showSkillsInSlashMenu={settings?.chat.showSkillsInSlashMenu ?? true}
                 onWorkspaceModeChange={handleWorkspaceModeChange}
                 onRequestProject={
                   selectedConversationId

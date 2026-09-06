@@ -104,6 +104,7 @@ export type SettingsWorkspaceProps = {
   onUpdateKeybindings: (rules: KeybindingRule[]) => void;
   onToggleFreeModels: (value: boolean) => void;
   onVisualModeChange: (mode: VisualMode) => void;
+  onToggleSkillsInSlashMenu: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
   telemetryEnabled: boolean;
@@ -159,6 +160,7 @@ export function SettingsWorkspace({
   onUpdateKeybindings,
   onToggleFreeModels,
   onVisualModeChange,
+  onToggleSkillsInSlashMenu,
   onUpdateAction,
   onRefreshModels,
   telemetryEnabled,
@@ -245,6 +247,7 @@ export function SettingsWorkspace({
                   onOpenProviders={() => onNavigate('providers')}
                   onToggleFreeModels={onToggleFreeModels}
                   onVisualModeChange={onVisualModeChange}
+                  onToggleSkillsInSlashMenu={onToggleSkillsInSlashMenu}
                   onUpdateAction={onUpdateAction}
                   onRefreshModels={onRefreshModels}
                 />
@@ -638,6 +641,7 @@ function GeneralPage({
   onOpenProviders,
   onToggleFreeModels,
   onVisualModeChange,
+  onToggleSkillsInSlashMenu,
   onUpdateAction,
   onRefreshModels,
 }: {
@@ -647,6 +651,7 @@ function GeneralPage({
   onOpenProviders: () => void;
   onToggleFreeModels: (value: boolean) => void;
   onVisualModeChange: (mode: VisualMode) => void;
+  onToggleSkillsInSlashMenu: (value: boolean) => void;
   onUpdateAction: () => void;
   onRefreshModels: () => void;
 }) {
@@ -687,6 +692,17 @@ function GeneralPage({
             onChange={onVisualModeChange}
           />
         </SettingsStackedRow>
+
+        <SettingsRow
+          title="Skills in slash menu"
+          description="Also list skills in the / command menu as /skill:Name rows. Off keeps the menu command-only; skills stay reachable through @ mentions."
+        >
+          <Switch
+            checked={settings?.chat.showSkillsInSlashMenu ?? true}
+            onCheckedChange={onToggleSkillsInSlashMenu}
+            ariaLabel="Toggle skills in slash menu"
+          />
+        </SettingsRow>
       </SettingsGroup>
 
       <SettingsGroup title="Catalog and updates">

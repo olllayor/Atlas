@@ -4,8 +4,21 @@ import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 
 import type { CommandDefinition } from '../../shared/commands';
 import { commandToken, filterCommands, matchCommandQuery } from '../../shared/commands';
+import type { SlashMenuSkill } from '../../shared/slashMenuSkills';
+import {
+  dedupeSlashMenuCommands,
+  filterSlashMenuSkills,
+  formatSkillDisplayName,
+  getSlashMenuSkills,
+  skillInsertText,
+} from '../../shared/slashMenuSkills';
+import type { WorkspaceMode } from '../../shared/workspaceModes';
 import { notifyError } from '../lib/notify';
 import { filterSlashCommands, BUILTIN_SLASH_COMMANDS } from '../lib/slashCommands';
+
+export type SlashMenuSuggestion =
+  | { kind: 'command'; definition: CommandDefinition }
+  | { kind: 'skill'; skill: SlashMenuSkill };
 
 type UseCommandAutocompleteOptions = {
   value: string;
@@ -14,6 +27,12 @@ type UseCommandAutocompleteOptions = {
   disabled?: boolean;
   /** Receives built-in command names (`compact`, `review`…) — consumed, never sent. */
   onBuiltinCommand?: (name: string) => void;
+  /** Project root for standalone skill discovery; null lists global + plugin skills. */
+  projectRoot?: string | null;
+  /** Filters mode-specific skills the same way the turn itself is filtered. */
+  workspaceMode?: WorkspaceMode;
+  /** Off keeps the `/` menu command-only. Defaults to on (opt-out). */
+  showSkillsInSlashMenu?: boolean;
 };
 
 /**
@@ -30,9 +49,13 @@ export function useCommandAutocomplete({
   onChange,
   textareaRef,
   disabled,
-  onBuiltinCommand
+  onBuiltinCommand,
+  projectRoot = null,
+  workspaceMode,
+  showSkillsInSlashMenu = true,
 }: UseCommandAutocompleteOptions) {
   const [pluginCommands, setPluginCommands] = useState<CommandDefinition[]>([]);
+  const [skills, setSkills] = useState<SlashMenuSkill[]>([]);
   const [caret, setCaret] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -60,6 +83,34 @@ export function useCommandAutocomplete({
     };
   }, []);
 
+  // Skills depend on the workspace (project skills need the project root, and
+  // mode-specific bundles are filtered), so they reload when it changes —
+  // unlike commands, which are workspace-independent.
+  useEffect(() => {
+    let cancelled = false;
+
+    if (typeof window.atlasChat.plugins.skills !== 'function') {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void window.atlasChat.plugins
+      .skills({ projectRoot, mode: workspaceMode, hasProject: projectRoot != null })
+      .then((next) => {
+        if (!cancelled) {
+          setSkills(next);
+        }
+      })
+      .catch(() => {
+        // Same rule as commands: no skill list, still a working composer.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot, workspaceMode]);
+
   // Built-ins ride the same popup as plugin templates: one grammar, one
   // gesture. They are marked by their `builtin:` qualified name and executed
   // rather than expanded (see `select`).
@@ -85,19 +136,31 @@ export function useCommandAutocomplete({
   }, [caret, commands.length, disabled, value]);
 
   const query = dismissed ? null : match;
-  const suggestions = useMemo(() => {
+  const suggestions = useMemo<SlashMenuSuggestion[]>(() => {
     if (!query) return [];
     const needle = query.query.toLowerCase();
     const builtinMatches = filterSlashCommands(needle);
-    const pluginMatches = filterCommands(pluginCommands, query.query);
-    // Built-ins first: they are the fixed vocabulary, plugin templates follow.
+    // The skill alias wins over a same-named template command — but only when
+    // the skill is actually visible. A hidden skill must not suppress the
+    // command it would otherwise shadow.
+    const visibleSkills = getSlashMenuSkills(skills, showSkillsInSlashMenu);
+    const pluginMatches = filterCommands(
+      dedupeSlashMenuCommands(pluginCommands, visibleSkills),
+      query.query
+    );
+    const skillMatches = filterSlashMenuSkills(visibleSkills, needle);
+    // Built-ins first: they are the fixed vocabulary, plugin templates follow,
+    // skills last under their distinct `/skill:` label.
     return [
-      ...builtinDefinitions.filter((definition) =>
-        builtinMatches.some((command) => commandToken(definition) === `/${command.name}`)
-      ),
-      ...pluginMatches,
+      ...builtinDefinitions
+        .filter((definition) =>
+          builtinMatches.some((command) => commandToken(definition) === `/${command.name}`)
+        )
+        .map((definition) => ({ kind: 'command' as const, definition })),
+      ...pluginMatches.map((definition) => ({ kind: 'command' as const, definition })),
+      ...skillMatches.map((skill) => ({ kind: 'skill' as const, skill })),
     ];
-  }, [builtinDefinitions, pluginCommands, query]);
+  }, [builtinDefinitions, pluginCommands, query, showSkillsInSlashMenu, skills]);
   const isOpen = Boolean(query) && suggestions.length > 0;
 
   useEffect(() => {
@@ -131,7 +194,7 @@ export function useCommandAutocomplete({
   }, [textareaRef]);
 
   const select = useCallback(
-    (definition: CommandDefinition) => {
+    (suggestion: SlashMenuSuggestion) => {
       const range = query;
       if (!range) return;
 
@@ -139,6 +202,18 @@ export function useCommandAutocomplete({
       // the body is read.
       setDismissed(true);
 
+      if (suggestion.kind === 'skill') {
+        // A skill pick leaves the invocation token the send path already
+        // understands (`@plugin skill` or `$name`), replacing the whole
+        // `/query` — the caret lands after the trailing space so typing
+        // continues the message, not the query.
+        const token = skillInsertText(suggestion.skill);
+        pendingCaretRef.current = token.length;
+        onChange(token);
+        return;
+      }
+
+      const definition = suggestion.definition;
       if (onBuiltinCommand && definition.qualifiedName.startsWith('builtin:')) {
         onBuiltinCommand(definition.name);
         return;
@@ -198,13 +273,19 @@ export function useCommandAutocomplete({
 }
 
 type CommandAutocompleteListProps = {
-  suggestions: CommandDefinition[];
+  suggestions: SlashMenuSuggestion[];
   activeIndex: number;
   listboxId: string;
   anchorRef: RefObject<HTMLElement | null>;
   onHover: (index: number) => void;
-  onSelect: (definition: CommandDefinition) => void;
+  onSelect: (suggestion: SlashMenuSuggestion) => void;
 };
+
+function skillSourceLabel(skill: SlashMenuSkill): string {
+  if (skill.source === 'project') return 'Project';
+  if (skill.source === 'global') return 'Global';
+  return skill.pluginName;
+}
 
 export function CommandAutocompleteList({
   suggestions,
@@ -251,37 +332,82 @@ export function CommandAutocompleteList({
         maxWidth: Math.max(anchorRect.width, 260)
       }}
     >
-      {suggestions.map((definition, index) => (
-        <button
-          key={definition.qualifiedName}
-          id={`${listboxId}-option-${index}`}
-          type="button"
-          role="option"
-          aria-selected={index === activeIndex}
-          tabIndex={-1}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onSelect(definition);
-          }}
-          onMouseEnter={() => onHover(index)}
-          className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition ${
-            index === activeIndex ? 'bg-bg-hover' : 'bg-transparent'
-          }`}
-        >
-          <span className="flex w-full items-baseline gap-2">
-            <span className="font-mono text-xs text-text-primary">{commandToken(definition)}</span>
-            {definition.argumentHint ? (
-              <span className="font-mono text-2xs text-text-faint">{definition.argumentHint}</span>
+      {suggestions.map((suggestion, index) => {
+        const key =
+          suggestion.kind === 'command'
+            ? suggestion.definition.qualifiedName
+            : `skill:${suggestion.skill.qualifiedName}`;
+        const optionId = `${listboxId}-option-${index}`;
+        const active = index === activeIndex;
+        if (suggestion.kind === 'skill') {
+          const skill = suggestion.skill;
+          return (
+            <button
+              key={key}
+              id={optionId}
+              type="button"
+              role="option"
+              aria-selected={active}
+              tabIndex={-1}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onSelect(suggestion);
+              }}
+              onMouseEnter={() => onHover(index)}
+              className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition ${
+                active ? 'bg-bg-hover' : 'bg-transparent'
+              }`}
+            >
+              <span className="flex w-full items-baseline gap-2">
+                <span className="font-mono text-xs text-text-primary">
+                  <span className="text-text-faint">/skill:</span>
+                  {formatSkillDisplayName(skill.name)}
+                </span>
+                {/* Source decides trust the same way the bundle name does for
+                    templates: a Project skill reads project files. */}
+                <span className="ml-auto shrink-0 text-2xs text-text-faint">
+                  {skillSourceLabel(skill)}
+                </span>
+              </span>
+              {skill.description ? (
+                <span className="text-2xs leading-4 text-text-tertiary">{skill.description}</span>
+              ) : null}
+            </button>
+          );
+        }
+        const definition = suggestion.definition;
+        return (
+          <button
+            key={key}
+            id={optionId}
+            type="button"
+            role="option"
+            aria-selected={active}
+            tabIndex={-1}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              onSelect(suggestion);
+            }}
+            onMouseEnter={() => onHover(index)}
+            className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition ${
+              active ? 'bg-bg-hover' : 'bg-transparent'
+            }`}
+          >
+            <span className="flex w-full items-baseline gap-2">
+              <span className="font-mono text-xs text-text-primary">{commandToken(definition)}</span>
+              {definition.argumentHint ? (
+                <span className="font-mono text-2xs text-text-faint">{definition.argumentHint}</span>
+              ) : null}
+              {/* Which bundle a template comes from is the part that decides
+                  whether to trust what it puts in the box. */}
+              <span className="ml-auto shrink-0 text-2xs text-text-faint">{definition.pluginName}</span>
+            </span>
+            {definition.description ? (
+              <span className="text-2xs leading-4 text-text-tertiary">{definition.description}</span>
             ) : null}
-            {/* Which bundle a template comes from is the part that decides
-                whether to trust what it puts in the box. */}
-            <span className="ml-auto shrink-0 text-2xs text-text-faint">{definition.pluginName}</span>
-          </span>
-          {definition.description ? (
-            <span className="text-2xs leading-4 text-text-tertiary">{definition.description}</span>
-          ) : null}
-        </button>
-      ))}
+          </button>
+        );
+      })}
     </div>,
     document.body
   );

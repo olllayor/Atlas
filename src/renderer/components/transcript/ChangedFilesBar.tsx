@@ -1,11 +1,13 @@
 /**
  * The end-of-turn changed-files card.
  *
- * A turn that edited files closes with a filled card: a collapse chevron,
- * `N changed files` over its `+A −D` totals, a `Hide/Show files` toggle, a
- * prev/next file pager, `Undo` and `Open diff` on the right. Files group
- * under collapsible top-directory rows (`src/renderer  +71 −22`), each
- * carrying its own totals; every file row expands to its unified diff.
+ * A turn that edited files closes with a compact card: a sticky collapse
+ * header with `N changed files` directly beside `+A −D` totals, prev/next file
+ * pager, `Undo` and responsive `Open diff` on the right. In the collapsed
+ * resting state, it renders inline representative file previews with per-file
+ * diff stats. When expanded, files group under collapsible top-directory rows
+ * (`src/renderer  +71 −22`), each carrying its own adjacent totals; every file
+ * row expands to its unified diff with stats close to filenames.
  *
  * Open state lives in the transcript UI store, keyed by stable ids — the
  * transcript is virtualized, so `useState` here would silently re-collapse
@@ -141,6 +143,17 @@ export function ChangedFilesBar({
     });
   };
 
+  const openAndFocusFile = (path: string) => {
+    if (!filesOpen) toggleFilesOpen();
+    const folder = topDirectoryOf(path);
+    if (folder) setExpanded(stableId('changed-folder', `${barSeed}|${folder}`), true);
+    setExpanded(fileRowId(path), true);
+    setFocusedPath(path);
+    requestAnimationFrame(() => {
+      rowRefs.current.get(path)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  };
+
   const runUndo = async () => {
     if (!onUndo || undoState !== 'idle') return;
     setUndoState('running');
@@ -193,41 +206,37 @@ export function ChangedFilesBar({
     // `overflow-hidden` so the last expanded diff cannot square off the
     // card's bottom corners.
     <div className="mt-4 overflow-hidden rounded-xl border border-border-subtle bg-bg-surface">
-      <div className="flex h-11 items-center gap-1.5 px-2.5">
+      {/* Sticky header stays pinned when reading through a long set of expanded diffs */}
+      <div
+        className={cn(
+          'flex h-10 items-center gap-1.5 px-2.5 transition-colors',
+          filesOpen && 'sticky top-0 z-10 border-b border-border-subtle bg-bg-surface backdrop-blur-xs'
+        )}
+      >
         <button
           type="button"
           onClick={toggleFilesOpen}
           aria-expanded={filesOpen}
           aria-label={filesOpen ? 'Hide changed files' : 'Show changed files'}
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          className="flex min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-md py-1 pr-1.5 text-left transition-colors hover:bg-bg-hover"
         >
           <ChevronDown
             aria-hidden
             className={cn(
-              'size-4 transition-transform duration-fast motion-reduce:transition-none',
+              'size-4 shrink-0 text-text-secondary transition-transform duration-fast motion-reduce:transition-none',
               !filesOpen && '-rotate-90'
             )}
           />
-        </button>
-
-        <span className="shrink-0 text-base font-semibold text-text-primary">
-          {count} {count === 1 ? 'file' : 'files'}
-        </span>
-        <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
-          +{summary.added}
-        </span>
-        <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
-          {MINUS}
-          {summary.removed}
-        </span>
-
-        <button
-          type="button"
-          onClick={toggleFilesOpen}
-          aria-expanded={filesOpen}
-          className="shrink-0 cursor-pointer rounded-md px-1.5 py-1 text-sm text-text-tertiary transition-colors hover:text-text-secondary"
-        >
-          {filesOpen ? 'Hide files' : 'Show files'}
+          <span className="shrink-0 text-sm font-semibold text-text-primary">
+            {count} {count === 1 ? 'changed file' : 'changed files'}
+          </span>
+          <span className="app-code-compact ml-1 shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
+            +{summary.added}
+          </span>
+          <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
+            {MINUS}
+            {summary.removed}
+          </span>
         </button>
 
         <span className="min-w-0 flex-1" />
@@ -270,16 +279,55 @@ export function ChangedFilesBar({
           <button
             type="button"
             onClick={onReview}
-            className="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border-subtle px-3 text-sm text-text-primary transition-colors hover:bg-bg-hover"
+            className="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 text-xs text-text-primary transition-colors hover:bg-bg-hover"
           >
             <FileDiff aria-hidden className="size-3.5" />
-            Open diff
+            <span className="hidden sm:inline">Open diff</span>
           </button>
         ) : null}
       </div>
 
+      {/* Inline representative file previews in collapsed resting state */}
+      {!filesOpen && summary.files.length > 0 ? (
+        <div className="flex min-w-0 items-center gap-2 overflow-x-auto px-2.5 pb-2 pt-0.5 scrollbar-none">
+          {summary.files.slice(0, 3).map((file) => (
+            <button
+              key={file.path}
+              type="button"
+              title={file.path}
+              onClick={() => openAndFocusFile(file.path)}
+              className="group flex min-h-6 min-w-0 max-w-64 shrink cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left text-xs transition-colors hover:bg-bg-hover"
+            >
+              <span className="min-w-0 truncate font-mono text-text-secondary group-hover:text-text-primary">
+                {basename(file.path)}
+              </span>
+              {(file.added > 0 || file.removed > 0) && (
+                <span className="shrink-0 font-mono text-[11px] tabular-nums">
+                  {file.added > 0 && <span style={ADD_COUNT_STYLE}>+{file.added}</span>}
+                  {file.removed > 0 && (
+                    <span className={cn(file.added > 0 && 'ml-1')} style={DEL_COUNT_STYLE}>
+                      {MINUS}
+                      {file.removed}
+                    </span>
+                  )}
+                </span>
+              )}
+            </button>
+          ))}
+          {summary.files.length > 3 && (
+            <button
+              type="button"
+              onClick={toggleFilesOpen}
+              className="shrink-0 cursor-pointer text-xs text-text-tertiary transition-colors hover:text-text-secondary"
+            >
+              +{summary.files.length - 3} more
+            </button>
+          )}
+        </div>
+      ) : null}
+
       {filesOpen ? (
-        <div className="border-t border-border-subtle px-1 pb-1">
+        <div className="px-1 pb-1">
           {groups.map((group) =>
             group.folder ? (
               <ChangedFolderGroup
@@ -346,7 +394,7 @@ function ChangedFolderGroup({
         onClick={toggleOpen}
         aria-expanded={isOpen}
         aria-label={`${group.folder}, ${group.files.length} ${group.files.length === 1 ? 'file' : 'files'}. ${isOpen ? 'Hide' : 'Show'} files`}
-        className="group/folder flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-bg-hover"
+        className="group/folder flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-bg-hover"
       >
         <ChevronRight
           aria-hidden
@@ -356,16 +404,17 @@ function ChangedFolderGroup({
           )}
         />
         <Folder aria-hidden className="size-3.5 shrink-0 text-text-tertiary" strokeWidth={1.75} />
-        <span className="min-w-0 flex-1 truncate text-sm text-text-secondary transition-colors group-hover/folder:text-text-primary">
+        <span className="min-w-0 truncate text-sm text-text-secondary transition-colors group-hover/folder:text-text-primary">
           {group.folder}
         </span>
-        <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
+        <span className="app-code-compact ml-1 shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
           +{group.added}
         </span>
         <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
           {MINUS}
           {group.removed}
         </span>
+        <span className="flex-1" />
       </button>
 
       {isOpen
@@ -378,6 +427,7 @@ function ChangedFolderGroup({
             // Backslash paths never start with `folder/`; fall back to the
             // full directory rather than a wrong relative one.
             const relative = remainder === file.path ? directoryOf(file.path) : directoryOf(remainder);
+
             return (
               <div key={file.path} ref={(element) => setRowRef(file.path, element)}>
                 <ChangedFileRow
@@ -420,22 +470,23 @@ function ChangedFileRow({
         aria-expanded={isOpen}
         aria-label={`${title}, ${file.added} additions, ${file.removed} deletions. ${isOpen ? 'Hide' : 'Show'} diff`}
         className={cn(
-          'group/file flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left transition-colors hover:bg-bg-hover',
+          'group/file flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-3 text-left transition-colors hover:bg-bg-hover',
           indented && 'pl-9',
           focused && 'bg-bg-hover'
         )}
       >
-        <span className="min-w-0 flex-1 truncate text-sm" title={title}>
+        <span className="min-w-0 truncate text-sm" title={title}>
           <span className="text-text-tertiary">{displayDir}</span>
-          <span className="text-text-primary">{displayName}</span>
+          <span className="font-mono text-[13px] text-text-primary">{displayName}</span>
         </span>
-        <span className="app-code-compact shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
+        <span className="app-code-compact ml-1 shrink-0 tabular-nums" style={ADD_COUNT_STYLE}>
           +{file.added}
         </span>
         <span className="app-code-compact shrink-0 tabular-nums" style={DEL_COUNT_STYLE}>
           {MINUS}
           {file.removed}
         </span>
+        <span className="flex-1" />
         <ChevronRight
           aria-hidden
           className={cn(

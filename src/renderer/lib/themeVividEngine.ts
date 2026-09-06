@@ -450,8 +450,8 @@ export function createVividThemeColors(
     themeOklchToThemeColor(
       solveOklchLightness(textBase, surfaceRgb, 4.6, dark ? 'lighter' : 'darker'),
     );
-  const mutedForeground = themeRgbToThemeColor(readableThemeText(mutedRgb, textRgb, 1, 4.6));
-  const placeholder = themeRgbToThemeColor(readableThemeText(surfaceRaisedRgb, textRgb, 1, 4.6));
+  const mutedForeground = foregroundOn(mutedRgb);
+  const placeholder = foregroundOn(surfaceRaisedRgb);
 
   const actionHover: ThemeOklch = { ...action, L: action.L + (dark ? 0.06 : -0.06) };
 

@@ -22,6 +22,11 @@ import {
   registerAttachmentProtocolHandler,
   registerAttachmentScheme,
 } from './attachments/attachmentProtocol';
+import { NativeAppIconResolver } from './assets/NativeAppIconResolver';
+import {
+  registerNativeAppIconProtocolHandler,
+  registerNativeAppIconScheme,
+} from './assets/nativeAppIconProtocol';
 import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
 import { getDockIcon } from './bootstrap/iconPath';
 import { perfMark, perfNow } from './bootstrap/perfTrace';
@@ -141,6 +146,7 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
 registerSitePreviewScheme();
 registerAttachmentScheme();
 registerPluginIconScheme();
+registerNativeAppIconScheme();
 /**
  * Reports a background failure instead of dropping it.
  *
@@ -262,6 +268,10 @@ app.whenReady().then(async () => {
   const attachmentsDir = await resolveAttachmentDirectory();
   const attachmentStore = new AttachmentStore(attachmentsDir);
   registerAttachmentProtocolHandler(attachmentStore);
+  const nativeAppIconResolver = new NativeAppIconResolver({
+    cacheDir: app.getPath('userData'),
+  });
+  registerNativeAppIconProtocolHandler(nativeAppIconResolver);
   // Staged composer files whose session never sent them. Drafts are
   // in-memory, so anything old here is orphaned by definition.
   const sweptStaged = sweepStaleStagedAttachments(attachmentsDir, Date.now());
@@ -876,6 +886,7 @@ app.whenReady().then(async () => {
     updates: pluginUpdates,
     origins: pluginOrigins,
     activations: pluginActivations,
+    skills: skillsService,
     secrets: mcpSecrets,
     mcpManager,
     setAlwaysOn: (name, alwaysOn) => database.settings.setPluginAlwaysOn(name, alwaysOn),

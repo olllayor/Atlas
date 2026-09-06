@@ -12,6 +12,7 @@ import type {
   WorkLogEntryStatus,
 } from './contracts';
 import { applyStreamEventToParts } from './messageParts';
+import { extractToolActivityPresentation } from './toolPresentation';
 
 function titleCase(value: string) {
   return value
@@ -527,6 +528,10 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
   }
 
   const linkage = resolveTaskLinkage(event);
+  const toolPresentation = extractToolActivityPresentation(event.payload);
+  const toolSurface = event.toolSurface ?? toolPresentation.toolSurface ?? previous?.toolSurface;
+  const toolIcon = event.toolIcon ?? toolPresentation.toolIcon ?? previous?.toolIcon;
+  const toolSource = event.toolSource ?? toolPresentation.toolSource ?? previous?.toolSource;
 
   return {
     id: previous?.id ?? getWorkLogEntryId(event),
@@ -549,6 +554,9 @@ export function deriveWorkLogEntry(previous: WorkLogEntry | null, event: Runtime
     parentToolCallId: linkage.parentToolCallId ?? previous?.parentToolCallId ?? null,
     createdAt: previous?.createdAt ?? event.occurredAt,
     updatedAt: event.occurredAt,
+    ...(toolSurface ? { toolSurface } : {}),
+    ...(toolIcon ? { toolIcon } : {}),
+    ...(toolSource ? { toolSource } : {}),
   };
 }
 
@@ -597,6 +605,9 @@ export function workLogEntryToChatToolPart(entry: WorkLogEntry): ChatToolPart {
           reason: typeof entry.payload?.reason === 'string' ? entry.payload.reason : undefined,
         }
       : undefined,
+    ...(entry.toolSurface ? { toolSurface: entry.toolSurface } : {}),
+    ...(entry.toolIcon ? { toolIcon: entry.toolIcon } : {}),
+    ...(entry.toolSource ? { toolSource: entry.toolSource } : {}),
   };
 }
 
@@ -610,12 +621,20 @@ export function applyRuntimeEventToMessageParts(parts: ChatMessagePart[], event:
    * an accent and a duration instead of re-deriving them from the tool
    * name string.
    */
+  const presentation = extractToolActivityPresentation(event.payload);
+  const toolSurface = event.toolSurface ?? presentation.toolSurface;
+  const toolIcon = event.toolIcon ?? presentation.toolIcon;
+  const toolSource = event.toolSource ?? presentation.toolSource;
+
   const toolMeta = {
     toolType: event.toolType ?? inferCanonicalToolType({
       toolName: typeof payload.toolName === 'string' ? payload.toolName : null,
       dynamic: Boolean(payload.dynamic),
     }),
     occurredAt: event.occurredAt,
+    ...(toolSurface ? { toolSurface } : {}),
+    ...(toolIcon ? { toolIcon } : {}),
+    ...(toolSource ? { toolSource } : {}),
   };
 
   switch (event.activityType) {

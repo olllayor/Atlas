@@ -880,6 +880,9 @@ export type ChatToolPart = {
   startedAt?: string;
   /** ISO timestamp of the terminal event, once the call is final. */
   completedAt?: string;
+  toolSurface?: ToolActivitySurface;
+  toolIcon?: ToolActivityIcon;
+  toolSource?: ToolActivitySource;
 };
 
 export type ChatVisualPart = {
@@ -1787,6 +1790,9 @@ export type StreamToolMetadata = {
   toolType?: CanonicalToolType | null;
   /** ISO timestamp of the originating runtime event. */
   occurredAt?: string;
+  toolSurface?: ToolActivitySurface;
+  toolIcon?: ToolActivityIcon;
+  toolSource?: ToolActivitySource;
 };
 
 export type StreamToolInputStartEvent = StreamToolMetadata & {
@@ -2108,6 +2114,24 @@ export type CanonicalToolType =
   | 'web_search'
   | 'image_view';
 
+export type ToolActivitySurface = 'browser' | 'computer';
+
+export type ToolActivityNativeAppReference =
+  | { _tag: 'app-id'; appId: string }
+  | { _tag: 'display-name'; displayName: string };
+
+export type ToolActivityIcon =
+  | { _tag: 'website'; pageUrl: string; faviconUrl?: string; faviconUrlDark?: string }
+  | { _tag: 'native-app'; app: ToolActivityNativeAppReference }
+  | { _tag: 'themed-logo'; logoUrl: string; logoUrlDark?: string };
+
+export type ToolActivitySource = {
+  key: string;
+  name: string;
+  kind: 'browser' | 'computer' | 'integration';
+  icon?: ToolActivityIcon;
+};
+
 export type ApprovalDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
 
 /**
@@ -2239,6 +2263,9 @@ export type RuntimeEventEnvelope = {
   agentId?: string | null;
   /** The tool call that spawned the agent/task this event belongs to. */
   parentToolCallId?: string | null;
+  toolSurface?: ToolActivitySurface;
+  toolIcon?: ToolActivityIcon;
+  toolSource?: ToolActivitySource;
 };
 
 export type WorkLogEntryStatus =
@@ -2272,6 +2299,9 @@ export type WorkLogEntry = {
   parentToolCallId?: string | null;
   createdAt: string;
   updatedAt: string;
+  toolSurface?: ToolActivitySurface;
+  toolIcon?: ToolActivityIcon;
+  toolSource?: ToolActivitySource;
 };
 
 export type ApprovalRequestStatus = 'pending' | 'resolved' | 'stale';

@@ -5,7 +5,7 @@ import {
   type Virtualizer,
   useVirtualizer,
 } from '@tanstack/react-virtual';
-import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
+import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, Sparkles, StopCircle } from 'lucide-react';
 import {
   Suspense,
   lazy,
@@ -50,12 +50,15 @@ import {
 import { ConversationEmptyState } from './ai-elements/conversation';
 import { ImageLightbox } from './ai-elements/image-lightbox';
 import { MessageResponse } from './ai-elements/message';
+import { MarkdownAnchor } from './ai-elements/chat-markdown-link';
+import { splitTextByUrls } from '../../shared/linkify';
 import { PluginInvocationRow } from './transcript/PluginInvocationRow';
 import { TimelineMinimap } from './transcript/TimelineMinimap';
 import { deriveMinimapItems } from '../lib/timelineMinimap';
 const VisualBlock = lazy(() => import('./ai-elements/visual').then((module) => ({ default: module.VisualBlock })));
 import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
+import { groupToolCells } from '../../shared/toolGroups';
 import { isPlanToolPart } from '../../shared/planTool';
 import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
 import type { AssistantSegment } from './transcript/assistantSegments';
@@ -222,8 +225,14 @@ const ACTION_ROW =
 const ACTION_BUTTON =
   'inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-text-faint transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:opacity-100';
 
-function formatBytes(value: number | null | undefined) {
-  if (!value || value <= 0) {
+/** ISO timestamp to epoch ms, or null when unparseable. Never NaN. */
+function parseDraftStartedAt(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatBytes(value: number | null | undefined) {  if (!value || value <= 0) {
     return null;
   }
 
@@ -365,6 +374,8 @@ function AssistantParts({
   deferRichContent = false,
   turnId,
   durationMs,
+  /** Epoch ms the live turn was dispatched — live `Working …` timer seed. */
+  workStartMs,
   onRespondToolApproval,
   onOpenAgentsPanel,
   onToolOutputCollapsedAtEnd,
@@ -377,6 +388,7 @@ function AssistantParts({
   turnId: string;
   /** The turn's persisted latency, for history that never streamed here. */
   durationMs?: number | null;
+  workStartMs?: number | null;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onOpenAgentsPanel?: () => void;
   /**
@@ -407,7 +419,10 @@ function AssistantParts({
     return isStreaming ? (
       // Reserve one line so the first token does not shove the transcript.
       <div className="flex min-h-[1.5rem] items-center text-sm font-normal text-text-tertiary">
-        <span className="motion-shimmer">Thinking</span>
+        <span className="focus-sweep inline-flex items-center gap-1.5 py-0.5 text-text-secondary">
+          <Sparkles aria-hidden className="size-3.5 shrink-0 text-text-secondary" />
+          <span>Thinking</span>
+        </span>
       </div>
     ) : (
       <AssistantTextFallback content={content} />
@@ -535,6 +550,7 @@ function AssistantParts({
             id={`activity:${turnId}`}
             isStreaming={isStreaming}
             fallbackDurationMs={durationMs}
+            fallbackStartMs={workStartMs}
             // Open while there is no reply under it — the live run of steps, or
             // a turn that ended without one. It folds as the answer arrives.
             defaultOpen={split.answer.length === 0}
@@ -684,8 +700,30 @@ function SpawnBatchRow({
 }
 
 /**
+ * A bare URL inside a user message, rendered with the same anchor as
+ * assistant links: brand mark or favicon plus breakable text, opening via
+ * the system browser. User bubbles never go through markdown, so without
+ * this a pasted link sat as dead text.
+ */
+function UserExternalLink({ url }: { url: string }) {
+  return (
+    <MarkdownAnchor
+      href={url}
+      // Link text wears the blue; the brand/favicon mark keeps the bubble's
+      // own text token so it follows every theme instead of going blue.
+      // The `:not([class*='text-'])` guard matches the ui-kit convention —
+      // only untinted svgs (the icon) are recolored, never link text.
+      className="text-[#4D9AF6] underline decoration-[#4D9AF6]/60 underline-offset-2 [&_svg:not([class*='text-'])]:text-text-message"
+    >
+      {url}
+    </MarkdownAnchor>
+  );
+}
+
+/**
  * User message text with citation links rendered as chips. Malformed links
- * stay verbatim inside text runs. Memoized per message by the caller.
+ * stay verbatim inside text runs. Bare URLs linkify with site icons.
+ * Memoized per message by the caller.
  */
 function CitedText({
   text,
@@ -695,25 +733,33 @@ function CitedText({
   onNavigate?: (citation: AssistantCitation) => void;
 }) {
   const segments = useMemo(() => splitByCitations(text), [text]);
-  if (segments.length === 1 && segments[0]!.kind === 'text') {
-    return <>{text}</>;
-  }
-  return (
-    <>
-      {segments.map((segment, index) =>
-        segment.kind === 'text' ? (
-          <span key={index}>{segment.text}</span>
-        ) : (
+  const children = useMemo(() => {
+    let hasLinks = false;
+    const nodes = segments.flatMap((segment, index) => {
+      if (segment.kind !== 'text') {
+        return [
           <CiteChip
-            key={index}
+            key={`cite-${index}`}
             citation={segment.citation}
             onNavigate={onNavigate}
             className="translate-y-[0.1em] align-baseline"
-          />
-        ),
-      )}
-    </>
-  );
+          />,
+        ];
+      }
+      return splitTextByUrls(segment.text).map((part, partIndex) => {
+        if (part.kind === 'url') {
+          hasLinks = true;
+          return <UserExternalLink key={`url-${index}-${partIndex}`} url={part.url} />;
+        }
+        return <span key={`text-${index}-${partIndex}`}>{part.text}</span>;
+      });
+    });
+    return { nodes, hasLinks };
+  }, [segments, onNavigate]);
+  if (!children.hasLinks && segments.length === 1 && segments[0]!.kind === 'text') {
+    return <>{text}</>;
+  }
+  return <>{children.nodes}</>;
 }
 
 function hasRenderableAssistantParts(parts: ChatMessagePart[]) {
@@ -1006,6 +1052,8 @@ function StreamingRow({
   errorCode,
   notice,
   status,
+  /** Epoch ms the live turn was dispatched — live `Working …` timer seed. */
+  startedAtMs,
   onRespondToolApproval,
   onRetry,
   onOpenAgentsPanel,
@@ -1019,6 +1067,7 @@ function StreamingRow({
   /** Why this turn is taking longer than it looks like it should. */
   notice?: DraftStateLike['notice'];
   status: 'queued' | 'streaming' | 'error' | 'aborted';
+  startedAtMs?: number | null;
   onRespondToolApproval: ChatWindowProps['onRespondToolApproval'];
   onRetry?: () => void;
   onOpenAgentsPanel?: ChatWindowProps['onOpenAgentsPanel'];
@@ -1076,7 +1125,7 @@ function StreamingRow({
           </>
         ) : (
           <>
-            <AssistantParts content="" isStreaming parts={parts} turnId={turnId} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd} />
+            <AssistantParts content="" isStreaming parts={parts} turnId={turnId} workStartMs={startedAtMs} onRespondToolApproval={onRespondToolApproval} onOpenAgentsPanel={onOpenAgentsPanel} onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd} />
             {/*
               A dim line under the shimmer, not a banner: the turn has not
               failed, and a warning-shaped box would say it had. Before this
@@ -1265,7 +1314,11 @@ function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
         // renders. Counting the lines is the only honest seed available.
         rawCellLines.reduce((sum, entry) => sum + entry.lines * ROW_HEIGHT.rawLine, 0) +
         reasoningCount * ROW_HEIGHT.reasoning
-      : cells.length * ROW_HEIGHT.toolCell + reasoningCount * ROW_HEIGHT.reasoning;
+      : // The transcript folds consecutive tool cells into one group row
+        // each (live shimmer line, settled summary toggle), so the open
+        // work phase counts groups, not cells.
+        groupToolCells(cells).length * ROW_HEIGHT.toolCell +
+        reasoningCount * ROW_HEIGHT.reasoning;
 
   // In raw mode the card is not a header and a few rows but the full patch
   // text again, so it costs roughly what the diff cells above it cost, plus a
@@ -2400,6 +2453,7 @@ export function ChatWindow({
               errorCode={draft.error?.code}
               notice={draft.notice}
               status={draft.status}
+              startedAtMs={parseDraftStartedAt(draft.startedAt)}
               onRespondToolApproval={onRespondToolApproval}
               onRetry={draft.error?.retryable !== false ? onRetryLastMessage : undefined}
               onOpenAgentsPanel={onOpenAgentsPanel}

@@ -248,9 +248,12 @@ test('descriptor persistence under child conversation cascades on delete', async
       recordEvent: (e: any) => {
         // insert into conversation_events via real repo for cascade test
         // Use direct DB insert through repo not available, so just use DB manually
+        // Contract matches RuntimeStateRepo.recordEvent: input carries no
+        // sequence (repo assigns it), so assign here like the real repo does.
+        const seq = 1;
         db.prepare(`INSERT INTO conversation_events (event_id, conversation_id, turn_id, request_id, sequence, occurred_at, activity_type, tone, provider_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(e.eventId, e.conversationId, e.turnId, e.requestId, e.sequence, e.occurredAt, e.activityType, e.tone, e.provider, JSON.stringify(e.payload));
-        return { ...e, sequence: 1, occurredAt: new Date().toISOString() };
+          .run(e.eventId, e.conversationId, e.turnId, e.requestId, seq, e.occurredAt, e.activityType, e.tone, e.provider, JSON.stringify(e.payload));
+        return { ...e, sequence: seq, occurredAt: new Date().toISOString() };
       },
     } as any,
     createChildConversation: (input: any) => convRepo.createSubagentConversation(input),
@@ -264,4 +267,36 @@ test('descriptor persistence under child conversation cascades on delete', async
   convRepo.delete(childId);
   const countAfter = db.prepare(`SELECT COUNT(*) as c FROM conversation_events WHERE conversation_id = ?`).get(childId) as any;
   assert.equal(countAfter.c, 0); // cascade deleted descriptor
+});
+
+test('seam: pushed envelopes carry the repo-assigned sequence, not the local counter', async () => {
+  const db = createAppliedSqliteTestDatabase().database;
+  applySchema(db);
+  const convRepo = new ConversationsRepo(db);
+  const parent = convRepo.create({});
+  // Repo assigns authoritative sequences out of band from the runtime's
+  // private counter (e.g. parent turn already advanced the watermark).
+  let nextSequence = 100;
+  const pushed: any[] = [];
+  const runtime = new SubagentRuntime({
+    runtimeStateRepo: {
+      recordEvent: (e: any) => {
+        assert.equal(e.sequence, undefined, 'repo input must not carry a local sequence');
+        nextSequence += 1;
+        return { ...e, sequence: nextSequence, occurredAt: new Date().toISOString() };
+      },
+    } as any,
+    createChildConversation: (input: any) => convRepo.createSubagentConversation(input),
+    deleteChildConversation: (id: string) => convRepo.delete(id),
+    onRuntimeEvent: (envelope: any) => pushed.push(envelope),
+    childExecutor: async () => ({ content: 'done' }),
+  });
+  await runtime.spawn({ conversationId: parent.id, parentTurnId: 't1', parentToolCallId: 'c1', title: 'c', prompt: 'hi', depth: 0 });
+  await new Promise((r) => setTimeout(r, 30));
+  const taskStarted = pushed.find((e) => e.activityType === 'task.started');
+  const descriptor = pushed.find((e) => e.activityType === 'subagent.descriptor');
+  assert.ok(taskStarted, 'expected a pushed task.started');
+  assert.ok(descriptor, 'expected a pushed subagent.descriptor');
+  assert.ok(taskStarted.sequence > 100, `task.started pushed stale sequence ${taskStarted.sequence}`);
+  assert.ok(descriptor.sequence > 100, `descriptor pushed stale sequence ${descriptor.sequence}`);
 });

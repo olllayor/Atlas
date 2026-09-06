@@ -13,7 +13,16 @@
  * Kept in `shared/` and free of React so it can be unit-tested directly.
  */
 
-import type { CanonicalToolType, ChatToolPart, ChatToolState } from './contracts';
+import type {
+  CanonicalToolType,
+  ChatToolPart,
+  ChatToolState,
+  ToolActivityIcon,
+  ToolActivityNativeAppReference,
+  ToolActivitySource,
+  ToolActivitySurface,
+} from './contracts';
+export { summarizeToolGroup } from './toolPresentation';
 import { describeMcpToolName } from './mcp';
 import { isPlanToolPart } from './planTool';
 
@@ -60,6 +69,9 @@ export type ToolCell = {
   durationMs: number | null;
   /** The parts this cell was built from — `Explored` merges several. */
   parts: ChatToolPart[];
+  toolSurface?: ToolActivitySurface;
+  toolIcon?: ToolActivityIcon;
+  toolSource?: ToolActivitySource;
 };
 
 export type ToolDetail =
@@ -689,6 +701,9 @@ function buildSingleCell(part: ChatToolPart): ToolCell {
     continuationAll: [] as string[],
     durationMs: durationOf([part]),
     parts: [part],
+    toolSurface: part.toolSurface,
+    toolIcon: part.toolIcon,
+    toolSource: part.toolSource,
   };
 
   if (status === 'awaiting-approval') {
@@ -897,6 +912,15 @@ function buildExploreCell(parts: ChatToolPart[]): ToolCell {
     detail: { type: 'explore', entries },
     durationMs: durationOf(parts),
     parts,
+    ...(parts.find((p) => p.toolSurface !== undefined)?.toolSurface
+      ? { toolSurface: parts.find((p) => p.toolSurface !== undefined)!.toolSurface }
+      : {}),
+    ...(parts.find((p) => p.toolIcon !== undefined)?.toolIcon
+      ? { toolIcon: parts.find((p) => p.toolIcon !== undefined)!.toolIcon }
+      : {}),
+    ...(parts.find((p) => p.toolSource !== undefined)?.toolSource
+      ? { toolSource: parts.find((p) => p.toolSource !== undefined)!.toolSource }
+      : {}),
   };
 }
 

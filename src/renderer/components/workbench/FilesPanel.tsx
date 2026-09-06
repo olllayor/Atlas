@@ -12,9 +12,14 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import { ChevronDown, ChevronRight, File, FolderClosed, FolderOpen, RefreshCw, Search, X } from 'lucide-react';
 
 import type { WorkspaceEntry } from '../../../shared/contracts';
+import {
+  FILE_ROW_PATH_ATTR,
+  createFileTreeDragController,
+} from '../../../shared/fileMentionDrag';
 import { cn } from '../../lib/utils';
 import { useExpandedFolders, useFileTreeStore } from '../../stores/useFileTreeStore';
 import { buildFileTree, filterFilePaths, flattenFileTree } from './fileTreeModel';
@@ -81,6 +86,20 @@ export function FilesPanel({ conversationId, onOpenFile }: FilesPanelProps) {
 
   const searching = query.trim().length > 0;
 
+  // Rows are draggable so entries can be dropped into the chat composer as
+  // file references. There is no in-tree reordering — the drag only carries
+  // the custom mention payload out of the panel.
+  const fileDrag = useMemo(() => createFileTreeDragController(), []);
+  const onRowDragStart = (event: ReactDragEvent<HTMLButtonElement>) => {
+    fileDrag.handleDragStart({
+      dataTransfer: event.dataTransfer,
+      composedPath: () => event.nativeEvent.composedPath(),
+    });
+  };
+  const onRowDragEnd = () => {
+    fileDrag.handleDragEnd();
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
@@ -146,6 +165,8 @@ export function FilesPanel({ conversationId, onOpenFile }: FilesPanelProps) {
             matches={search.matches}
             truncated={search.truncated}
             onOpenFile={onOpenFile}
+            onDragStart={onRowDragStart}
+            onDragEnd={onRowDragEnd}
           />
         ) : (
           <ul>
@@ -158,6 +179,8 @@ export function FilesPanel({ conversationId, onOpenFile }: FilesPanelProps) {
                     ? toggleFolder(conversationId, row.path)
                     : onOpenFile(row.path)
                 }
+                onDragStart={onRowDragStart}
+                onDragEnd={onRowDragEnd}
               />
             ))}
           </ul>
@@ -176,9 +199,13 @@ export function FilesPanel({ conversationId, onOpenFile }: FilesPanelProps) {
 function TreeRow({
   row,
   onSelect,
+  onDragStart,
+  onDragEnd,
 }: {
   row: ReturnType<typeof flattenFileTree>[number];
   onSelect: () => void;
+  onDragStart: (event: ReactDragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
 }) {
   const Icon =
     row.kind === 'file' ? File : row.expanded ? FolderOpen : FolderClosed;
@@ -189,6 +216,10 @@ function TreeRow({
         type="button"
         onClick={onSelect}
         title={row.path}
+        draggable
+        {...{ [FILE_ROW_PATH_ATTR]: row.path }}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
         // Depth is padding rather than nesting: a flat list of rows keeps the
         // scroller's height honest and the DOM shallow at any tree depth.
         style={{ paddingLeft: `${12 + row.depth * 14}px` }}
@@ -214,10 +245,14 @@ function SearchResults({
   matches,
   truncated,
   onOpenFile,
+  onDragStart,
+  onDragEnd,
 }: {
   matches: ReturnType<typeof filterFilePaths>['matches'];
   truncated: boolean;
   onOpenFile: (relativePath: string) => void;
+  onDragStart: (event: ReactDragEvent<HTMLButtonElement>) => void;
+  onDragEnd: () => void;
 }) {
   if (matches.length === 0) {
     return <Message title="No matching files" body="Every character of the query has to appear in the path, in order." />;
@@ -237,6 +272,10 @@ function SearchResults({
                 type="button"
                 onClick={() => onOpenFile(match.path)}
                 title={match.path}
+                draggable
+                {...{ [FILE_ROW_PATH_ATTR]: match.path }}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
                 className="flex w-full items-baseline gap-2 py-[3px] pr-3 pl-3 text-left transition-colors hover:bg-bg-hover"
               >
                 <span className="shrink-0 truncate text-sm text-text-primary">{name}</span>

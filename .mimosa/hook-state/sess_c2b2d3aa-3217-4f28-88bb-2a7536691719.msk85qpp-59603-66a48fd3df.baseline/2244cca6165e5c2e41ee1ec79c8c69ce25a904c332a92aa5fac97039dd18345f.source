@@ -1,3 +1,0 @@
-export function shouldPersistResponseMessages(responseMessages, enableTools) {
-    return Boolean(enableTools && responseMessages?.length);
-}

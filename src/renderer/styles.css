@@ -810,6 +810,59 @@ select {
 }
 
 /* ============================================
+   Focus sweep — stationary text-and-icon sweep
+
+   Replaces the uncoordinated text shimmer + bullet pulse treatment with a
+   stationary focus sweep that illuminates both the icon and the text together.
+
+   Performance & Visuals:
+   - Continuous transform-only animation (translateX) running on the compositor
+   - Zero text repaint invalidations or layout reflows
+   - Soft faded gradient edges
+   - Clean left-side restart after a natural dwell
+   - Themed icon and text highlighting
+   - Reduced-motion fallback disables the pseudo-element overlay
+   ============================================ */
+.focus-sweep {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.focus-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 60%;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--text-primary) 26%, transparent) 50%,
+    transparent 100%
+  );
+  transform: translateX(-160%);
+  animation: atlas-focus-sweep 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  mix-blend-mode: plus-lighter;
+}
+
+@keyframes atlas-focus-sweep {
+  0% {
+    transform: translateX(-160%);
+  }
+  60% {
+    transform: translateX(280%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+/* ============================================
    Shimmer — the running indicator
 
    Codex sweeps a light band left→right across in-flight text: one sweep
@@ -939,6 +992,11 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .focus-sweep::after {
+    display: none;
+    animation: none;
+  }
+
   .motion-logo-breathe {
     animation: none;
   }

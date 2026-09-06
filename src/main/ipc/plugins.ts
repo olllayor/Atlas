@@ -10,10 +10,12 @@ import type {
   PluginHealthView,
   PluginUpdateView,
   PluginUrlPreview,
-  PluginsView
+  PluginsView,
+  SlashMenuSkillSummary
 } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import { expandCommandBody } from '../../shared/plugins';
+import { isWorkspaceMode } from '../../shared/workspaceModes';
 import { readCommandBody } from '../plugins/PluginLoader';
 import type { PluginInstaller } from '../plugins/PluginInstaller';
 import type { PluginActivationStore } from '../plugins/PluginActivation';
@@ -21,6 +23,7 @@ import type { PluginMarketplaceService } from '../plugins/PluginMarketplaceServi
 import type { PluginOriginStore } from '../plugins/PluginOrigins';
 import type { PluginRegistry } from '../plugins/PluginRegistry';
 import type { PluginUpdateService } from '../plugins/PluginUpdateService';
+import type { SkillsService } from '../plugins/SkillsService';
 import { buildCommandList, buildPluginHealth, buildPluginsView } from '../plugins/pluginViews';
 import { withUserFacingErrors } from './errors';
 import { assertTrustedSender } from './security';
@@ -45,6 +48,8 @@ export function registerPluginsIpc(deps: {
   updates: PluginUpdateService;
   origins: PluginOriginStore;
   activations: PluginActivationStore;
+  /** Serves the slash menu's skill list; standalone-aware, unlike the registry. */
+  skills: Pick<SkillsService, 'applicableSkills'>;
   secrets?: McpSecretStore;
   /** Present in production; absent where no MCP manager exists. */
   mcpManager?: Pick<McpClientManager, 'health' | 'authorize'>;
@@ -78,6 +83,7 @@ export function registerPluginsIpc(deps: {
   const QUIET_EMPTY: Record<string, () => unknown> = {
     [IPC_CHANNELS.pluginsList]: () => ({ root: deps.registry.root, plugins: [], failures: [] }),
     [IPC_CHANNELS.pluginsCommands]: () => [],
+    [IPC_CHANNELS.pluginsSkills]: () => [],
     [IPC_CHANNELS.pluginsActivation]: () => [],
     [IPC_CHANNELS.pluginsMarketplaces]: () => ({ marketplaces: [] }),
   };
@@ -356,6 +362,44 @@ export function registerPluginsIpc(deps: {
         }
 
         return expandCommandBody(body, typeof args === 'string' ? args : '');
+      }
+    )
+  );
+
+  /**
+   * Every skill applicable to the caller's workspace, for the composer's `/`
+   * menu. Runs through `applicableSkills` rather than the registry so
+   * standalone Agent Skills (global + project) are included and mode/project
+   * mismatches are filtered — the same set the turn itself could reach.
+   */
+  handle(
+    IPC_CHANNELS.pluginsSkills,
+    withUserFacingErrors(
+      IPC_CHANNELS.pluginsSkills,
+      async (
+        event,
+        input?: { projectRoot?: string | null; mode?: unknown; hasProject?: boolean }
+      ): Promise<SlashMenuSkillSummary[]> => {
+        assertTrustedSender(event);
+        const projectRoot = typeof input?.projectRoot === 'string' ? input.projectRoot : null;
+        const mode = isWorkspaceMode(input?.mode) ? input.mode : undefined;
+        const hasProject =
+          typeof input?.hasProject === 'boolean' ? input.hasProject : projectRoot != null;
+        const skills = deps.skills.applicableSkills(
+          mode ? { mode, hasProject, projectRoot } : undefined
+        );
+        return skills
+          .map((skill) => ({
+            qualifiedName: skill.qualifiedName,
+            pluginName: skill.pluginName,
+            name: skill.name,
+            description: skill.description,
+            source:
+              skill.pluginName === 'global' || skill.pluginName === 'project'
+                ? (skill.pluginName as 'global' | 'project')
+                : ('plugin' as const),
+          }))
+          .sort((left, right) => left.name.localeCompare(right.name));
       }
     )
   );

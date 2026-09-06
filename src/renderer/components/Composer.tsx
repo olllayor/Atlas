@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { ClipboardEvent as ReactClipboardEvent, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import {
   DropdownMenu,
@@ -34,6 +34,11 @@ import {
 } from '../../shared/composerPromptHistory';
 import { planImageDownscale, MAX_COMPRESSIBLE_SOURCE_BYTES } from '../../shared/imageDownscale';
 import { isHeicImageFile } from '../../shared/heic';
+import {
+  dataTransferHasFileMention,
+  makeComposerFileMentionDragHandlers,
+} from '../../shared/fileMentionDrag';
+import { notify } from '../lib/notify';
 import { prepareImageForAttachment } from '../lib/imageCompression';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
@@ -170,6 +175,13 @@ export type ComposerProps = {
    * is exactly one of them is consumed as an action instead of sent.
    */
   onSlashAction?: (name: string, args?: string) => void;
+  /**
+   * Project root for standalone skill discovery in the `/` menu. Null lists
+   * global + plugin skills only. The side chat leaves this unset.
+   */
+  projectRoot?: string | null;
+  /** Off keeps the `/` menu command-only. Defaults to on (opt-out). */
+  showSkillsInSlashMenu?: boolean;
   onOpenGallery: () => void;
   /**
    * How many follow-ups are waiting to run in this conversation. Drives the
@@ -781,6 +793,8 @@ export function Composer({
   onReasoningEffortChange,
   onToolPermissionModeChange,
   onSlashAction,
+  projectRoot = null,
+  showSkillsInSlashMenu = true,
   onOpenGallery,
   selectedProviderId,
   queuedCount = 0,
@@ -789,6 +803,7 @@ export function Composer({
   const [isComposing, setIsComposing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
+  const [isFileMentionOver, setIsFileMentionOver] = useState(false);
   const [showStopHint, setShowStopHint] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [scrollEdges, setScrollEdges] = useState({ bottom: false, top: false });
@@ -900,6 +915,9 @@ export function Composer({
     textareaRef,
     disabled,
     onBuiltinCommand: onSlashAction,
+    projectRoot,
+    workspaceMode,
+    showSkillsInSlashMenu,
   });
 
   const syncPickerCarets = useCallback(() => {
@@ -1015,6 +1033,89 @@ export function Composer({
       document.removeEventListener('drop', onDrop);
     };
   }, []);
+
+  // -- file-reference drops from the Files panel (t3code PR #4140, adapted) --
+  // A Files-panel row drag lands as an inline-code path reference at the end
+  // of the draft. Handled in the capture phase so the textarea never sees the
+  // drop; the load-bearing rules (native stop, "move" effect, no eager focus)
+  // live in makeComposerFileMentionDragHandlers. OS file drags carry the
+  // "Files" type instead and keep flowing to the attachment path above.
+  const insertFileMentionAtEnd = useCallback(
+    (text: string): boolean => {
+      // No conversation, no draft: refuse rather than dropping the reference.
+      // Streaming stays allowed — the message queues like a typed one.
+      if (text.length === 0 || disabled) {
+        return false;
+      }
+      const needsLeadingSpace = value.length > 0 && !/\s$/.test(value);
+      onChange(`${value}${needsLeadingSpace ? ' ' : ''}${text}`);
+      // Focus on the next frame, after the controlled value has landed, so
+      // the caret can be placed at the end of the inserted reference.
+      requestAnimationFrame(() => {
+        const element = textareaRef.current;
+        if (!element) return;
+        element.focus();
+        const end = element.value.length;
+        element.setSelectionRange(end, end);
+      });
+      return true;
+    },
+    [disabled, onChange, value],
+  );
+
+  const toFileMentionEvent = (event: ReactDragEvent<HTMLDivElement>) => ({
+    dataTransfer: {
+      types: Array.from(event.dataTransfer?.types ?? []),
+      getData: (format: string) => event.dataTransfer?.getData(format) ?? '',
+      get dropEffect(): string {
+        return event.dataTransfer?.dropEffect ?? 'none';
+      },
+      set dropEffect(value: string) {
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = value as DataTransfer['dropEffect'];
+        }
+      },
+    },
+    nativeEvent: event.nativeEvent,
+    preventDefault: () => event.preventDefault(),
+    stopPropagation: () => event.stopPropagation(),
+  });
+
+  // File-tree drags land as mentions. Handled in the capture phase so the
+  // editor never sees the drop; the load-bearing rules (native stop, "move"
+  // effect, no eager focus) live in makeComposerFileMentionDragHandlers.
+  const fileMentionDragHandlers = makeComposerFileMentionDragHandlers({
+    insertMentionAtEnd: insertFileMentionAtEnd,
+    setDragActive: setIsFileMentionOver,
+    onInsertRejected: () => {
+      notify({
+        tone: 'error',
+        title: 'Unable to add to chat',
+        description: 'The composer is not ready; try again once it is ready.',
+      });
+    },
+  });
+
+  const onFileMentionDragLeaveCapture = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!dataTransferHasFileMention(Array.from(event.dataTransfer?.types ?? []))) return;
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setIsFileMentionOver(false);
+  };
+
+  // A cancelled drag (Escape) can end without a dragleave on the hovered
+  // target, which would leave the drop highlight stuck. dragend always fires
+  // on the in-page drag source and bubbles to window, so it is the reset of
+  // last resort while the highlight is up.
+  useEffect(() => {
+    if (!isFileMentionOver) return;
+    const onWindowDragEnd = () => {
+      setIsFileMentionOver(false);
+    };
+    window.addEventListener('dragend', onWindowDragEnd);
+    return () => window.removeEventListener('dragend', onWindowDragEnd);
+  }, [isFileMentionOver]);
 
   // -- send -----------------------------------------------------------------
   const unsupportedReason = getAttachmentCapabilityError(selectedModel, attachments.files);
@@ -1481,13 +1582,18 @@ export function Composer({
           />
 
           {/* The Codex slab: opaque, superellipse-rounded, borderless, shadowless. */}
-          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-3 pt-4">
-            {isDropTarget ? (
+          <div className="composer-slab @container relative rounded-composer bg-bg-composer px-3.5 pb-3 pt-4"
+            onDragEnterCapture={(event) => fileMentionDragHandlers.onDragEnter(toFileMentionEvent(event))}
+            onDragOverCapture={(event) => fileMentionDragHandlers.onDragOver(toFileMentionEvent(event))}
+            onDragLeaveCapture={onFileMentionDragLeaveCapture}
+            onDropCapture={(event) => fileMentionDragHandlers.onDrop(toFileMentionEvent(event))}
+          >
+            {isDropTarget || isFileMentionOver ? (
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-composer border border-dashed border-border-strong bg-bg-composer/95 text-sm text-text-secondary"
               >
-                Drop files to attach
+                {isFileMentionOver ? 'Drop to reference file in chat' : 'Drop files to attach'}
               </div>
             ) : null}
 

@@ -10,8 +10,8 @@
  * See `docs/codex-parity/reference-visual-spec.md` §5.
  */
 
-import { ChevronRight } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ChevronRight, X } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { ChatToolPart } from '../../../shared/contracts';
 import { isMcpToolName } from '../../../shared/mcp';
@@ -24,6 +24,12 @@ import {
   formatElapsed,
   toolCellToPlainText,
 } from '../../../shared/toolCellGrammar';
+import {
+  groupToolCells,
+  liveToolLabel,
+  summarizeToolGroup,
+  type ToolGroup,
+} from '../../../shared/toolGroups';
 import { useDisclosure } from '../../stores/useTranscriptUiStore';
 import { RAW_BLOCK, useRawTranscript } from '../../lib/rawTranscript';
 import {
@@ -35,6 +41,7 @@ import { cn } from '../../lib/utils';
 import { DiffBlock, MINUS } from './DiffBlock';
 import { McpUiFrame } from './McpUiFrame';
 import { TerminalBlock } from './TerminalBlock';
+import { ToolActivityIconView } from './ToolActivityIconView';
 
 /** Expanded details indent by ~16px under their summary row. */
 const DETAIL_INDENT = 'pl-4';
@@ -234,12 +241,16 @@ type ToolCellListProps = {
 /**
  * Render an ordered run of tool parts as activity rows.
  *
- * Grouping happens in `buildToolCells` — consecutive read-only calls
- * collapse into a single `Explored N files` row, so N file reads produce
- * one line rather than N.
+ * Grouping happens in two passes: `buildToolCells` coalesces consecutive
+ * read-only calls into a single `Explored` cell, then `groupToolCells`
+ * folds consecutive live cells into one shimmer line and consecutive
+ * settled cells into one summary toggle — so N tool calls produce one
+ * line rather than N. Single calls and approval prompts keep their own
+ * rows. Raw mode stays flat: one text node per cell is the copy contract.
  */
 export function ToolCellList({ parts, approvals, onToolOutputCollapsedAtEnd }: ToolCellListProps) {
   const cells = useMemo(() => buildToolCells(parts), [parts]);
+  const groups = useMemo(() => groupToolCells(cells), [cells]);
   const announcement = useTerminalTransitions(cells);
   const raw = useRawTranscript();
 
@@ -247,18 +258,44 @@ export function ToolCellList({ parts, approvals, onToolOutputCollapsedAtEnd }: T
 
   return (
     <div className="flex flex-col gap-1.5" role="list" aria-label="Agent actions">
-      {cells.map((cell) =>
-        raw ? (
-          <RawToolCell key={cell.id} cell={cell} approvals={approvals} />
-        ) : (
-          <ToolCell
-            key={cell.id}
-            cell={cell}
+      {groups.map((group) => {
+        if (group.kind === 'single') {
+          return raw ? (
+            <RawToolCell key={group.cell.id} cell={group.cell} approvals={approvals} />
+          ) : (
+            <ToolCell
+              key={group.cell.id}
+              cell={group.cell}
+              approvals={approvals}
+              onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+            />
+          );
+        }
+        if (raw) {
+          return (
+            <Fragment key={group.id}>
+              {group.cells.map((cell) =>
+                <RawToolCell key={cell.id} cell={cell} approvals={approvals} />
+              )}
+            </Fragment>
+          );
+        }
+        return group.kind === 'live' ? (
+          <LiveToolGroupRow
+            key={group.id}
+            group={group}
             approvals={approvals}
             onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
           />
-        )
-      )}
+        ) : (
+          <SettledToolGroupRow
+            key={group.id}
+            group={group}
+            approvals={approvals}
+            onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+          />
+        );
+      })}
 
       {/*
         One status region for the whole run. Wrapping the list itself in
@@ -270,6 +307,152 @@ export function ToolCellList({ parts, approvals, onToolOutputCollapsedAtEnd }: T
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One shimmer line for a run of in-flight tool calls (`Running pnpm`).
+ *
+ * A turn fanning out N parallel calls reads as one live line instead of N
+ * rows; expanding reveals the individual cells, which keep their own
+ * expand/collapse state. The shimmer is the transcript's existing
+ * `motion-shimmer` (duty-cycled, reduced-motion safe), matching the
+ * `Working`/`Thinking` rows rather than introducing a new animation.
+ *
+ * Group identity keys on the run's first cell, so the toggle survives
+ * streaming appends at the tail. When the live window slides (its head
+ * settles into the run below), the key — and the toggle — resets.
+ */
+function LiveToolGroupRow({
+  group,
+  approvals,
+  onToolOutputCollapsedAtEnd,
+}: {
+  group: Extract<ToolGroup, { kind: 'live' }>;
+  approvals?: ToolCellApprovalHandlers;
+  onToolOutputCollapsedAtEnd?: () => void;
+}) {
+  const label = useMemo(() => liveToolLabel(group.cells), [group.cells]);
+  const iconCell = group.cells.find((c) => c.toolIcon || c.toolSurface);
+  const [isOpen, toggleOpen] = useDisclosure(group.id, false);
+  const count = group.cells.length;
+
+  return (
+    <div role="listitem">
+      <button
+        type="button"
+        onClick={toggleOpen}
+        aria-expanded={isOpen}
+        aria-label={`${label}${count > 1 ? `, ${count} tools running` : ''}. ${isOpen ? 'Hide' : 'Show'} details`}
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-left text-sm font-normal leading-relaxed text-text-tertiary transition-colors hover:text-text-secondary"
+      >
+        <span className="focus-sweep inline-flex min-w-0 items-center gap-1.5 py-0.5">
+          {iconCell && (
+            <ToolActivityIconView
+              icon={iconCell.toolIcon}
+              surface={iconCell.toolSurface}
+              className="size-3.5 shrink-0 text-text-secondary"
+              muted
+            />
+          )}
+          <span title={label} className="min-w-0 truncate text-text-secondary">
+            {label}
+          </span>
+        </span>
+        {count > 1 && (
+          <span className="shrink-0 tabular-nums text-text-faint">· {count}</span>
+        )}
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 transition-transform duration-fast motion-reduce:transition-none',
+            isOpen && 'rotate-90'
+          )}
+        />
+      </button>
+      <Disclosure open={isOpen} onCollapsedAtEnd={onToolOutputCollapsedAtEnd}>
+        <div className={cn('flex flex-col gap-1.5 pt-1', DETAIL_INDENT)}>
+          {group.cells.map((cell) => (
+            <ToolCell
+              key={cell.id}
+              cell={cell}
+              approvals={approvals}
+              onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+            />
+          ))}
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
+
+/**
+ * One summary toggle for a run of settled calls (`Ran 2 commands and
+ * changed 3 files`). Failure is the only thing that changes the row's
+ * shape: a red `×` replaces the chevron and the label tints destructive,
+ * because a buried failure changes the next user action.
+ */
+function SettledToolGroupRow({
+  group,
+  approvals,
+  onToolOutputCollapsedAtEnd,
+}: {
+  group: Extract<ToolGroup, { kind: 'settled' }>;
+  approvals?: ToolCellApprovalHandlers;
+  onToolOutputCollapsedAtEnd?: () => void;
+}) {
+  const summary = useMemo(() => summarizeToolGroup(group.cells), [group.cells]);
+  const iconCell = group.cells.find((c) => c.toolIcon || c.toolSurface);
+  const [isOpen, toggleOpen] = useDisclosure(group.id, false);
+
+  return (
+    <div role="listitem">
+      <button
+        type="button"
+        onClick={toggleOpen}
+        aria-expanded={isOpen}
+        aria-label={`${summary.text}${summary.hasFailure ? ', tool call failed' : ''}. ${isOpen ? 'Hide' : 'Show'} details`}
+        className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-left text-sm font-normal leading-relaxed text-text-tertiary transition-colors hover:text-text-secondary"
+      >
+        {summary.hasFailure ? (
+          <X aria-hidden className="h-3.5 w-3.5 shrink-0 text-error" />
+        ) : (
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              'h-3.5 w-3.5 shrink-0 transition-transform duration-fast motion-reduce:transition-none',
+              isOpen && 'rotate-90'
+            )}
+          />
+        )}
+        {iconCell && (
+          <ToolActivityIconView
+            icon={iconCell.toolIcon}
+            surface={iconCell.toolSurface}
+            className="size-3.5 shrink-0"
+            muted
+          />
+        )}
+        <span
+          title={summary.text}
+          className={cn('min-w-0 truncate', summary.hasFailure && 'text-error')}
+        >
+          {summary.text}
+        </span>
+      </button>
+      <Disclosure open={isOpen} onCollapsedAtEnd={onToolOutputCollapsedAtEnd}>
+        <div className={cn('flex flex-col gap-1.5 pt-1', DETAIL_INDENT)}>
+          {group.cells.map((cell) => (
+            <ToolCell
+              key={cell.id}
+              cell={cell}
+              approvals={approvals}
+              onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+            />
+          ))}
+        </div>
+      </Disclosure>
     </div>
   );
 }
@@ -399,12 +582,22 @@ function ToolCell({
 
   const rowContent = (
     <>
-      <span
-        // Truncated labels are unreadable without the full text on hover.
-        title={cell.label}
-        className={cn('min-w-0 truncate', running && 'motion-shimmer', tint)}
-      >
-        {cell.label}
+      <span className={cn('inline-flex min-w-0 items-center gap-1.5', running && 'focus-sweep py-0.5')}>
+        {(cell.toolIcon || cell.toolSurface) && (
+          <ToolActivityIconView
+            icon={cell.toolIcon}
+            surface={cell.toolSurface}
+            className={cn('size-3.5 shrink-0', running && 'text-text-secondary')}
+            muted
+          />
+        )}
+        <span
+          // Truncated labels are unreadable without the full text on hover.
+          title={cell.label}
+          className={cn('min-w-0 truncate', running ? 'text-text-secondary' : tint)}
+        >
+          {cell.label}
+        </span>
       </span>
       {elapsed && <span className="shrink-0 tabular-nums text-text-faint">· {elapsed}</span>}
       {expandable && (

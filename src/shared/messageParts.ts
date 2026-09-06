@@ -185,7 +185,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: part?.approval,
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: part?.completedAt
+        completedAt: part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-input-delta':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -206,7 +209,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: part?.approval,
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: part?.completedAt
+        completedAt: part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-input-available':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -227,7 +233,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: part?.approval,
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: part?.completedAt
+        completedAt: part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-approval-requested':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -252,6 +261,9 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
         completedAt: part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-approval-responded':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -277,6 +289,9 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
         completedAt: part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-output-available':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -297,7 +312,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: part?.approval,
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: event.preliminary ? part?.completedAt : (event.occurredAt ?? part?.completedAt)
+        completedAt: event.preliminary ? part?.completedAt : (event.occurredAt ?? part?.completedAt),
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-output-error':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -318,7 +336,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         approval: part?.approval,
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: event.occurredAt ?? part?.completedAt
+        completedAt: event.occurredAt ?? part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'tool-output-denied':
       return upsertToolPart(parts, event.toolCallId, (part) => ({
@@ -342,7 +363,10 @@ export function applyStreamEventToParts(parts: ChatMessagePart[], event: StreamE
         },
         toolType: event.toolType ?? part?.toolType,
         startedAt: part?.startedAt ?? event.occurredAt,
-        completedAt: event.occurredAt ?? part?.completedAt
+        completedAt: event.occurredAt ?? part?.completedAt,
+        toolSurface: event.toolSurface ?? part?.toolSurface,
+        toolIcon: event.toolIcon ?? part?.toolIcon,
+        toolSource: event.toolSource ?? part?.toolSource,
       }));
     case 'plugin-invocation': {
       // Keyed by plugin and skill, which is what the resolver deduplicates on:

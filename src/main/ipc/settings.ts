@@ -305,6 +305,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
         settingsRepo.setCloudSandboxEnabled(patch.chat.cloudSandboxEnabled);
       }
 
+      if (typeof patch?.chat?.showSkillsInSlashMenu === 'boolean') {
+        settingsRepo.setShowSkillsInSlashMenu(patch.chat.showSkillsInSlashMenu);
+      }
+
       if (patch?.chat?.cloudSandboxWorkerUrl !== undefined) {
         settingsRepo.setCloudSandboxWorkerUrl(patch.chat.cloudSandboxWorkerUrl);
       }

@@ -19,6 +19,7 @@ import {
 type SidebarConversationRowProps = {
   variant?: SidebarRowVariant;
   isRunning: boolean;
+  isMonitoring?: boolean;
   isActive?: boolean;
   isSelected?: boolean;
   isFailed?: boolean;
@@ -64,6 +65,7 @@ type SidebarConversationRowProps = {
 export function SidebarConversationRow({
   variant = 'card',
   isRunning,
+  isMonitoring = false,
   isActive = false,
   isSelected = false,
   isFailed = false,
@@ -157,13 +159,18 @@ export function SidebarConversationRow({
               </span>
             ) : isRunning ? (
               <span className={cn('inline-flex items-center gap-1 text-3xs font-medium', statusClass)}>
-                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong motion-glyph-pulse" aria-hidden />
+                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong" aria-hidden />
                 <span role="status">Working</span>
                 {startedMs != null ? (
                   <span aria-hidden>
                     <WorkingTimer startedMs={startedMs} />
                   </span>
                 ) : null}
+              </span>
+            ) : isMonitoring ? (
+              <span className="inline-flex items-center gap-1 text-3xs font-medium text-text-tertiary">
+                <span className="size-1.5 shrink-0 rounded-full bg-text-tertiary" aria-hidden />
+                <span role="status">Monitoring</span>
               </span>
             ) : attentionLevel === 'queued' ? (
               <span className="text-3xs text-text-tertiary">Queued</span>
@@ -266,13 +273,18 @@ export function SidebarConversationRow({
               </span>
             ) : isRunning ? (
               <span className={cn('inline-flex items-center gap-1 text-xs font-medium', statusClass)}>
-                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong motion-glyph-pulse" aria-hidden />
+                <span className="size-1.5 shrink-0 rounded-full bg-brand-strong" aria-hidden />
                 <span role="status">Working</span>
                 {startedMs != null ? (
                   <span aria-hidden>
                     <WorkingTimer startedMs={startedMs} />
                   </span>
                 ) : null}
+              </span>
+            ) : isMonitoring ? (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-text-tertiary">
+                <span className="size-1.5 shrink-0 rounded-full bg-text-tertiary" aria-hidden />
+                <span role="status">Monitoring</span>
               </span>
             ) : attentionLevel === 'queued' ? (
               <span className="inline-flex items-center text-xs text-text-tertiary">

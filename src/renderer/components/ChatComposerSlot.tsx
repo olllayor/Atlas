@@ -1,6 +1,7 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { EMPTY_COMPOSER_ATTACHMENTS, EMPTY_COMPOSER_CITATIONS, selectQueuedFollowups, useAppStore } from '../stores/useAppStore';
+import { stagedBlobToDataUrl, stagingErrorMessage } from '../lib/attachmentStaging';
 import { Composer, type ComposerAttachment, type ComposerProps } from './Composer';
 import type { CitedQuoteEntry } from '../../shared/citations';
 import { QueueDock } from './transcript/QueueDock';
@@ -111,6 +112,96 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
     [conversationId, setComposerCitations]
   );
 
+  /*
+   * Upload-before-send (t3code PR #8048, adapted). Staged bytes are persisted
+   * to the main-process store in the background, right after they land, so
+   * the send carries a short storage key instead of inline base64 — retries
+   * and the durable follow-up queue stop hauling megabytes around. Staging
+   * never blocks anything: an entry that has not finished (or failed) sends
+   * the old way, and a failed stage just offers a retry on its chip.
+   */
+  const stagingInflight = useRef(new Set<string>());
+  const stageEntry = useCallback(
+    (entryId: string) => {
+      if (!conversationId || stagingInflight.current.has(entryId)) {
+        return;
+      }
+      const entry = useAppStore
+        .getState()
+        .composerAttachmentsByConversation[conversationId]?.find((file) => file.id === entryId);
+      if (!entry || entry.upload || !entry.url.startsWith('blob:')) {
+        return;
+      }
+      stagingInflight.current.add(entryId);
+      setComposerAttachments(conversationId, (previous) =>
+        previous.map((file) => (file.id === entryId ? { ...file, upload: { status: 'staging' as const } } : file))
+      );
+      void (async () => {
+        try {
+          const dataUrl = await stagedBlobToDataUrl(entry.url);
+          const staged = await window.atlasChat.attachments.stage({
+            conversationId,
+            ...(entry.filename ? { filename: entry.filename } : {}),
+            mediaType: entry.mediaType,
+            dataUrl,
+          });
+          const live = useAppStore.getState().composerAttachmentsByConversation[conversationId];
+          if (!live?.some((file) => file.id === entryId)) {
+            // Removed while staging: the bytes are orphaned, delete them.
+            // Best-effort — the startup sweep reclaims whatever this misses.
+            await window.atlasChat.attachments
+              .deleteStaged({ conversationId, storageKey: staged.storageKey })
+              .catch(() => undefined);
+            return;
+          }
+          setComposerAttachments(conversationId, (previous) =>
+            previous.map((file) =>
+              file.id === entryId
+                ? {
+                    ...file,
+                    upload: { status: 'ready' as const, storageKey: staged.storageKey },
+                  }
+                : file
+            )
+          );
+        } catch (error) {
+          setComposerAttachments(conversationId, (previous) =>
+            previous.map((file) =>
+              file.id === entryId
+                ? { ...file, upload: { status: 'failed' as const, error: stagingErrorMessage(error) } }
+                : file
+            )
+          );
+        } finally {
+          stagingInflight.current.delete(entryId);
+        }
+      })();
+    },
+    [conversationId, setComposerAttachments]
+  );
+
+  useEffect(() => {
+    for (const file of attachments) {
+      if (!file.upload) {
+        stageEntry(file.id);
+      }
+    }
+  }, [attachments, stageEntry]);
+
+  const handleRetryAttachmentUpload = useCallback(
+    (entryId: string) => {
+      if (!conversationId) {
+        return;
+      }
+      stagingInflight.current.delete(entryId);
+      setComposerAttachments(conversationId, (previous) =>
+        previous.map((file) => (file.id === entryId ? { ...file, upload: undefined } : file))
+      );
+      stageEntry(entryId);
+    },
+    [conversationId, setComposerAttachments, stageEntry]
+  );
+
   return (
     <>
       <GoalDock conversationId={conversationId} />
@@ -127,6 +218,7 @@ export function ChatComposerSlot({ conversationId, ...composerProps }: ChatCompo
         queuedCount={queuedFollowups.length}
         attachments={attachments}
         onAttachmentsChange={handleAttachmentsChange}
+        onRetryAttachmentUpload={handleRetryAttachmentUpload}
         citations={citations}
         onCitationsChange={handleCitationsChange}
         onChange={handleChange}

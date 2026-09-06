@@ -292,6 +292,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow({
             <SidebarConversationRow
               variant={variant}
               isRunning={item.isRunning}
+              isMonitoring={item.isMonitoring}
               isActive={isActive}
               isFailed={item.isFailed}
               isSelected={isSelected}

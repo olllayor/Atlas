@@ -17,7 +17,7 @@ import { BackgroundJobRegistry, type JobSnapshot } from './ai/jobs/BackgroundJob
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
-import { AttachmentStore } from './attachments/AttachmentStore';
+import { AttachmentStore, sweepStaleStagedAttachments } from './attachments/AttachmentStore';
 import {
   registerAttachmentProtocolHandler,
   registerAttachmentScheme,
@@ -97,6 +97,7 @@ import { registerVisualsIpc } from './ipc/visuals';
 import { registerContextMenuIpc } from './ipc/contextMenu';
 import { registerWindowIpc } from './ipc/window';
 import { registerImagesIpc } from './ipc/images';
+import { registerAttachmentsIpc } from './ipc/attachments';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
 import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
@@ -261,6 +262,12 @@ app.whenReady().then(async () => {
   const attachmentsDir = await resolveAttachmentDirectory();
   const attachmentStore = new AttachmentStore(attachmentsDir);
   registerAttachmentProtocolHandler(attachmentStore);
+  // Staged composer files whose session never sent them. Drafts are
+  // in-memory, so anything old here is orphaned by definition.
+  const sweptStaged = sweepStaleStagedAttachments(attachmentsDir, Date.now());
+  if (sweptStaged > 0) {
+    logger.info('attachments.staged_swept', { deleted: sweptStaged });
+  }
   // Every provider is user-configured; the registry starts empty and is filled
   // from the database by CustomProviderService below. Declared before the
   // database because the model cache asks it which providers are servable
@@ -894,6 +901,7 @@ app.whenReady().then(async () => {
   registerContextMenuIpc();
   registerWindowIpc();
   registerImagesIpc();
+  registerAttachmentsIpc(attachmentStore);
   registerSitesIpc({ service: siteService, previewHost: sitePreviewHost, exporter: siteExporter });
 
   // Wrapped like every other handler: these are registered here rather than in

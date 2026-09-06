@@ -32,13 +32,14 @@ import {
   stepComposerPromptHistory,
   type ComposerPromptHistoryPosition,
 } from '../../shared/composerPromptHistory';
-import { planImageDownscale } from '../../shared/imageDownscale';
+import { planImageDownscale, MAX_COMPRESSIBLE_SOURCE_BYTES } from '../../shared/imageDownscale';
+import { compressImageToByteLimit } from '../lib/imageCompression';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
 import { CitationTray } from './CitationTray';
 import type { CitedQuoteEntry } from '../../shared/citations';
 import { AtlasLoader } from './ui/atlas-loader';
-import { useAppStore } from '../stores/useAppStore';
+import { useAppStore, type StagedAttachmentUpload } from '../stores/useAppStore';
 import type {
   CustomProvider,
   ModelSummary,
@@ -90,6 +91,13 @@ export type ComposerAttachment = {
   url: string;
   filename?: string;
   sizeBytes?: number;
+  /**
+   * Background stage state, owned by the slot. A `ready` entry sends by
+   * storage-key reference; anything else sends the historical way.
+   */
+  upload?: StagedAttachmentUpload;
+  /** Storage key for a staged entry, filled in at submit time. */
+  storageKey?: string | null;
 };
 
 export type ComposerMessage = {
@@ -124,6 +132,8 @@ export type ComposerProps = {
   /** Staged files for the *current* conversation; owned by the store. */
   attachments: ComposerAttachment[];
   onAttachmentsChange: (updater: (previous: ComposerAttachment[]) => ComposerAttachment[]) => void;
+  /** Re-runs a failed background stage for one staged entry. */
+  onRetryAttachmentUpload?: (id: string) => void;
   /** Staged cited quotes for the *current* conversation; owned by the store. */
   citations: CitedQuoteEntry[];
   onCitationsChange: (updater: (previous: CitedQuoteEntry[]) => CitedQuoteEntry[]) => void;
@@ -386,6 +396,13 @@ function useComposerAttachments(
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const filesRef = useRef(files);
   const rejectionRef = useRef(getRejectionReason);
+  // In-flight compressions hold attachment slots so concurrent pastes cannot
+  // exceed the cap, and gate sending until every staged byte is final.
+  const inFlightRef = useRef(0);
+  // Bumped by clear(): completions from an older generation are dropped
+  // instead of re-adding files the send just retired.
+  const generationRef = useRef(0);
+  const [compressingCount, setCompressingCount] = useState(0);
 
   useEffect(() => {
     filesRef.current = files;
@@ -417,16 +434,33 @@ function useComposerAttachments(
       }
 
       const sized = accepted.filter((file) => file.size <= MAX_ATTACHMENT_SIZE_BYTES);
-      if (sized.length === 0) {
+      // Oversized images are squeezed under the cap instead of rejected
+      // (t3code PR #4967): a 12 MB retina screenshot compresses with no
+      // meaningful quality loss. Anything else over the cap — documents,
+      // video, or a source so large decoding it risks OOM — stays refused.
+      const compressible = accepted.filter(
+        (file) =>
+          file.size > MAX_ATTACHMENT_SIZE_BYTES &&
+          file.type.startsWith('image/') &&
+          file.size <= MAX_COMPRESSIBLE_SOURCE_BYTES,
+      );
+      if (sized.length === 0 && compressible.length === 0) {
         onError(`Files must be ${MAX_ATTACHMENT_SIZE_MB} MB or smaller.`);
         return;
       }
-      const capacity = Math.max(0, MAX_ATTACHMENT_COUNT - filesRef.current.length);
+      // Staged files plus reserved in-flight slots: concurrent pastes share
+      // one budget instead of each seeing the same headroom.
+      const capacity = Math.max(0, MAX_ATTACHMENT_COUNT - filesRef.current.length - inFlightRef.current);
       const capped = sized.slice(0, capacity);
       if (sized.length > capped.length) {
         onError(`Up to ${MAX_ATTACHMENT_COUNT} files. Some were not added.`);
       }
-      if (capped.length === 0) {
+      const compressibleCapacity = Math.max(0, capacity - capped.length);
+      const cappedCompressible = compressible.slice(0, compressibleCapacity);
+      if (compressible.length > cappedCompressible.length) {
+        onError(`Up to ${MAX_ATTACHMENT_COUNT} files. Some were not added.`);
+      }
+      if (capped.length === 0 && cappedCompressible.length === 0) {
         return;
       }
 
@@ -445,6 +479,50 @@ function useComposerAttachments(
           url: URL.createObjectURL(file),
         })),
       ]);
+
+      // Oversized images compress in the background; the chip appears when
+      // the bytes are final and sending stays gated until then. Slots are
+      // reserved up front so a second paste during the first encode sees the
+      // same budget the capacity check just computed.
+      const generation = generationRef.current;
+      const failures: string[] = [];
+      inFlightRef.current += cappedCompressible.length;
+      setCompressingCount((count) => count + cappedCompressible.length);
+      await Promise.all(
+        cappedCompressible.map(async (file) => {
+          try {
+            const compressed = await compressImageToByteLimit(file, MAX_ATTACHMENT_SIZE_BYTES);
+            if (generation !== generationRef.current) {
+              return;
+            }
+            if (compressed.size > MAX_ATTACHMENT_SIZE_BYTES) {
+              failures.push(compressed.name || 'an image');
+              return;
+            }
+            setFiles((previous) => [
+              ...previous,
+              {
+                filename: compressed.name,
+                id: nanoid(),
+                mediaType: normalizeAttachmentMediaType(compressed.type, compressed.name),
+                sizeBytes: compressed.size,
+                type: 'file' as const,
+                url: URL.createObjectURL(compressed),
+              },
+            ]);
+          } catch {
+            if (generation === generationRef.current) {
+              failures.push(file.name || 'an image');
+            }
+          } finally {
+            inFlightRef.current -= 1;
+            setCompressingCount((count) => Math.max(0, count - 1));
+          }
+        }),
+      );
+      if (failures.length > 0 && generation === generationRef.current) {
+        onError(`Could not shrink ${failures.join(', ')} under ${MAX_ATTACHMENT_SIZE_MB} MB.`);
+      }
     },
     [onError, setFiles],
   );
@@ -464,6 +542,9 @@ function useComposerAttachments(
   );
 
   const clear = useCallback(() => {
+    // Retire in-flight compressions with the staged files: their completions
+    // are dropped by the generation check instead of reappearing post-send.
+    generationRef.current += 1;
     setFiles((previous) => {
       if (previous.length === 0) {
         return previous;
@@ -479,7 +560,7 @@ function useComposerAttachments(
     fileInputRef.current?.click();
   }, []);
 
-  return { add, clear, fileInputRef, files, openFileDialog, remove };
+  return { add, clear, fileInputRef, files, isCompressing: compressingCount > 0, openFileDialog, remove };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,13 +572,19 @@ const ComposerAttachmentItem = memo(
     attachment,
     pendingDelete,
     onRemove,
+    onRetryUpload,
   }: {
     attachment: AttachmentData;
     /** Armed by the first Backspace on an empty composer. */
     pendingDelete: boolean;
     onRemove: (id: string) => void;
+    onRetryUpload?: (id: string) => void;
   }) => {
     const handleRemove = useCallback(() => onRemove(attachment.id), [attachment.id, onRemove]);
+    const upload = (attachment as { upload?: StagedAttachmentUpload }).upload;
+    const isStaging = upload?.status === 'staging';
+    const stagingError = upload?.status === 'failed' ? upload.error : null;
+    const handleRetry = useCallback(() => onRetryUpload?.(attachment.id), [attachment.id, onRetryUpload]);
     const mediaCategory = getMediaCategory(attachment);
     const label = getAttachmentLabel(attachment);
     const isImage = mediaCategory === 'image';
@@ -517,8 +604,8 @@ const ComposerAttachmentItem = memo(
       <Attachment
             aria-label={imageUrl ? `Attachment ${label} — open` : `Attachment ${label}`}
             className={`size-20 overflow-hidden rounded-lg border bg-bg-base text-text-secondary transition-colors ${
-              imageUrl ? 'cursor-zoom-in' : ''
-            } ${pendingDelete ? 'border-error ring-1 ring-error' : 'border-border-subtle'}`}
+              imageUrl && !isStaging ? 'cursor-zoom-in' : ''
+            } ${pendingDelete || stagingError ? 'border-error ring-1 ring-error' : 'border-border-subtle'} ${isStaging ? 'pointer-events-none opacity-60' : ''}`}
             data={attachment}
             onRemove={handleRemove}
             role={imageUrl ? 'button' : undefined}
@@ -567,9 +654,38 @@ const ComposerAttachmentItem = memo(
       second, worse answer to the same question. Everything else keeps the
       hover card, which is the only place its full filename fits.
     */
+    // Background stage state lives under the tile: a quiet caption while
+    // saving, an error with a retry once it has failed. Sending never waits
+    // for this — an unfinished entry goes the inline way instead.
+    const statusCaption =
+      isStaging || stagingError ? (
+        <div className="flex w-20 flex-col items-center gap-0.5 pt-1">
+          {isStaging ? (
+            <span className="text-3xs text-text-faint" role="status">
+              Saving…
+            </span>
+          ) : (
+            <>
+              <span className="line-clamp-2 w-full break-words text-center text-3xs leading-tight text-error" role="status">
+                {stagingError}
+              </span>
+              {onRetryUpload ? (
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="cursor-pointer text-2xs font-medium text-accent transition-colors hover:text-accent-hover hover:underline"
+                >
+                  Retry
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null;
+
     if (imageUrl) {
       return (
-        <>
+        <div className="flex flex-col items-center">
           {tile}
           <ImageLightbox
             open={lightboxOpen}
@@ -577,21 +693,25 @@ const ComposerAttachmentItem = memo(
             src={imageUrl}
             filename={label}
           />
-        </>
+          {statusCaption}
+        </div>
       );
     }
 
     return (
-      <AttachmentHoverCard openDelay={200}>
-        <AttachmentHoverCardTrigger asChild>{tile}</AttachmentHoverCardTrigger>
-        <AttachmentHoverCardContent
-          className="w-auto max-w-[264px] rounded-lg border border-border-default bg-bg-overlay p-2 text-xs font-normal text-text-primary"
-          side="top"
-          sideOffset={6}
-        >
-          <div className="max-w-[240px] break-all">{label}</div>
-        </AttachmentHoverCardContent>
-      </AttachmentHoverCard>
+      <div className="flex flex-col items-center">
+        <AttachmentHoverCard openDelay={200}>
+          <AttachmentHoverCardTrigger asChild>{tile}</AttachmentHoverCardTrigger>
+          <AttachmentHoverCardContent
+            className="w-auto max-w-[264px] rounded-lg border border-border-default bg-bg-overlay p-2 text-xs font-normal text-text-primary"
+            side="top"
+            sideOffset={6}
+          >
+            <div className="max-w-[240px] break-all">{label}</div>
+          </AttachmentHoverCardContent>
+        </AttachmentHoverCard>
+        {statusCaption}
+      </div>
     );
   },
 );
@@ -615,6 +735,7 @@ export function Composer({
   draftStatus,
   attachments: stagedAttachments,
   onAttachmentsChange,
+  onRetryAttachmentUpload,
   citations: stagedCitations,
   onCitationsChange,
   onChange,
@@ -691,6 +812,26 @@ export function Composer({
     onAttachmentsChange,
     setAttachmentError,
     getAttachmentRejectionReason,
+  );
+
+  /*
+   * Removing a chip also drops its staged bytes, when it has any. Awaiting
+   * the delete would put an IPC round trip in a click; the call is
+   * best-effort and the startup sweep reclaims whatever it misses.
+   */
+  const handleRemoveAttachment = useCallback(
+    (id: string) => {
+      const staged = stagedAttachments.find((file) => file.id === id);
+      const storageKey =
+        staged?.upload?.status === 'ready' ? staged.upload.storageKey : undefined;
+      if (conversationId && storageKey) {
+        void window.atlasChat.attachments
+          .deleteStaged({ conversationId, storageKey })
+          .catch(() => undefined);
+      }
+      attachments.remove(id);
+    },
+    [attachments, conversationId, stagedAttachments],
   );
   // The installed set, for the `@plugin` picker. Fetched once per mount: the
   // plugins page invalidates on its own, and re-reading on every keystroke
@@ -855,7 +996,11 @@ export function Composer({
 
   // -- send -----------------------------------------------------------------
   const unsupportedReason = getAttachmentCapabilityError(selectedModel, attachments.files);
-  const footerMessage = attachmentError ?? unsupportedReason;
+  // While a paste is still compressing the composer is not empty, but the
+  // staged bytes are not final either: sending now would snapshot the turn
+  // without them, so the send stays gated until the chip lands.
+  const footerMessage =
+    attachmentError ?? unsupportedReason ?? (attachments.isCompressing ? 'Compressing images…' : null);
 
   /**
    * A model that could take what is currently staged, or null.
@@ -879,7 +1024,7 @@ export function Composer({
   }, [attachments.files, models, selectedModelId, selectedProviderId, unsupportedReason]);
   const hasSubmittableContent =
     Boolean(value.trim()) || attachments.files.length > 0 || stagedCitations.length > 0;
-  const canSend = hasSubmittableContent && !disabled && !unsupportedReason && !isSubmitting;
+  const canSend = hasSubmittableContent && !disabled && !unsupportedReason && !isSubmitting && !attachments.isCompressing;
 
   const submit = useCallback(async () => {
     // `isSubmitting` closes the window between the first Enter and the awaited
@@ -915,9 +1060,15 @@ export function Composer({
     setAttachmentError(null);
 
     try {
-      // Blob URLs die with the renderer; persist attachments as data URLs.
+      // Staged entries go by storage-key reference; everything else keeps the
+      // historical path — blob URLs die with the renderer, so they are read
+      // into data URLs here. A stage that is still in flight (or failed) also
+      // takes the inline path, which is why staging never blocks sending.
       const files: ComposerAttachment[] = await Promise.all(
         attachments.files.map(async (file) => {
+          if (file.upload?.status === 'ready') {
+            return { ...file, storageKey: file.upload.storageKey };
+          }
           if (file.url.startsWith('blob:')) {
             const dataUrl = await convertBlobUrlToDataUrl(file.url);
             return { ...file, url: dataUrl ?? file.url };
@@ -930,8 +1081,10 @@ export function Composer({
       // anyway, which the main process rejected as "Attachments must be sent as
       // data URLs" — a sentence about our own wire format, thrown at the user,
       // naming neither the file nor anything they could do. Fail here instead,
-      // where the file still has a name and the message can say so.
-      const unreadable = files.filter((file) => !file.url.startsWith('data:'));
+      // where the file still has a name and the message can say so. Entries
+      // going by storage-key reference are exempt: the main process adopts
+      // their bytes and never looks at the blob URL.
+      const unreadable = files.filter((file) => !file.storageKey && !file.url.startsWith('data:'));
       if (unreadable.length > 0) {
         const names = unreadable.map((file) => file.filename ?? 'an attachment').join(', ');
         setAttachmentError(`Could not read ${names}. Remove ${unreadable.length === 1 ? 'it' : 'them'} and attach again.`);
@@ -1108,7 +1261,7 @@ export function Composer({
       if (!last) return;
       // Two-step: arm, then remove. A single Backspace used to delete silently.
       if (pendingDeleteId === last.id) {
-        attachments.remove(last.id);
+        handleRemoveAttachment(last.id);
         setPendingDeleteId(null);
       } else {
         setPendingDeleteId(last.id);
@@ -1251,9 +1404,11 @@ export function Composer({
       ? 'Sending…'
       : unsupportedReason
         ? unsupportedReason
-        : hasSubmittableContent
-          ? 'Send · Enter'
-          : 'Write a message first';
+        : attachments.isCompressing
+          ? 'Compressing images…'
+          : hasSubmittableContent
+            ? 'Send · Enter'
+            : 'Write a message first';
 
   const textareaMask =
     scrollEdges.top || scrollEdges.bottom
@@ -1326,7 +1481,8 @@ export function Composer({
                     <ComposerAttachmentItem
                       attachment={attachment}
                       key={attachment.id}
-                      onRemove={attachments.remove}
+                      onRemove={handleRemoveAttachment}
+                      onRetryUpload={onRetryAttachmentUpload}
                       pendingDelete={pendingDeleteId === attachment.id}
                     />
                   ))}
@@ -1480,7 +1636,7 @@ export function Composer({
                     </DropdownMenuTrigger>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Attach files or a visual — up to {MAX_ATTACHMENT_COUNT} files, {MAX_ATTACHMENT_SIZE_MB} MB each
+                    Attach files or a visual — up to {MAX_ATTACHMENT_COUNT} files, {MAX_ATTACHMENT_SIZE_MB} MB each; oversized images are compressed to fit
                   </TooltipContent>
                 </Tooltip>
                 <DropdownMenuContent

@@ -15,6 +15,8 @@ export type SidebarConversationItem = {
   /** Which project's section the row belongs under; null means Recents. */
   projectId: string | null;
   isRunning: boolean;
+  /** Watch-loop only (shell / dev server) with no agent work live. */
+  isMonitoring?: boolean;
   /** The turn ended in an error the user has not seen yet. */
   isFailed: boolean;
   status: DraftSummary['status'] | 'idle';
@@ -547,6 +549,11 @@ export function buildSidebarConversationItems({
         : draft
           ? draft.status === 'streaming'
           : conversation.status === 'running';
+    // Monitoring is the watch-loop-only signal: shells / dev servers with no
+    // agent work live. All in-flight agent states (pending/running/waiting)
+    // already present as Working via `working`; idle clears liveness entirely
+    // and presents as settled.
+    const isMonitoring = !isRunning && backgroundLiveness === 'monitoring';
     const isFailed = draft ? draft.status === 'error' : conversation.status === 'failed';
     const startedMs = isRunning
       ? parseTimestamp(draft?.startedAt ?? conversation.startedAt ?? null)
@@ -568,6 +575,7 @@ export function buildSidebarConversationItems({
       id: conversation.id,
       projectId: conversation.projectId,
       isRunning,
+      isMonitoring,
       isFailed,
       status: draft?.status ?? 'idle',
       attention,

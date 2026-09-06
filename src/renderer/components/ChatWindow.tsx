@@ -34,6 +34,10 @@ import {
   getConversationScrollAnchor,
   setConversationScrollAnchor,
 } from '../stores/conversationCache';
+import {
+  chatPartsToTimelineEntries,
+  shouldReleaseTimelineAnchorForToolActivity,
+} from './ChatView.logic';
 import type { DraftStateLike } from './types';
 import {
   Attachment,
@@ -70,7 +74,7 @@ import { AtlasLoader, AtlasLoaderRow } from './ui/atlas-loader';
 import { SpawnAgentCta } from './agents/SpawnAgentCta';
 import { SubagentBreadcrumbs } from './subagents/SubagentBreadcrumbs';
 import { useAppStore } from '../stores/useAppStore';
-import { foldAgents, selectBatchAgents } from '../lib/agentFold';
+import { foldAgents, selectBatchAgents, selectBatchWorkflows } from '../lib/agentFold';
 import type { AssistantCitation } from '../../shared/citations';
 import {
   assistantCitationsToPlainText,
@@ -648,6 +652,13 @@ function SpawnBatchRow({
     [activities, spawnedToolCallIds]
   );
 
+  // Workflow runs in this batch: membership pinned at the first row's tool
+  // calls (parallel-batch fix) and coordinator status authoritative downstream.
+  const workflows = useMemo(
+    () => selectBatchWorkflows(foldAgents(activities).workflows, spawnedToolCallIds),
+    [activities, spawnedToolCallIds]
+  );
+
   return (
     <>
       {pendingParts.length > 0 && (
@@ -660,6 +671,7 @@ function SpawnBatchRow({
       {spawnedToolCallIds.length > 0 && (
         <SpawnAgentCta
           agents={agents}
+          workflows={workflows}
           spawnCallCount={spawnedToolCallIds.length}
           parts={parts}
           onOpenAgentsPanel={onOpenAgentsPanel ?? (() => {})}
@@ -1861,6 +1873,27 @@ export function ChatWindow({
       return;
     }
 
+    const runningTurnId = draft?.status === 'streaming' ? draft.requestId : null;
+    const timelineEntries = runningTurnId && draft?.parts
+      ? chatPartsToTimelineEntries(runningTurnId, draft.parts)
+      : [];
+
+    if (
+      shouldReleaseTimelineAnchorForToolActivity({
+        anchorMessageId: anchor.messageId,
+        liveFollowEnabled: true,
+        runningTurnId,
+        timelineEntries,
+      })
+    ) {
+      clearConversationScrollAnchor(conversationId);
+      userHasScrolledRef.current = false;
+      stickState.escapedFromLock = false;
+      element.scrollTop = element.scrollHeight;
+      void scrollToBottom({ animation: 'instant', wait: false });
+      return;
+    }
+
     userHasScrolledRef.current = true;
     stickState.escapedFromLock = true;
 
@@ -1980,23 +2013,6 @@ export function ChatWindow({
   scrolledUpRef.current = isScrolledUp;
 
   /**
-   * Tool collapse at the live edge. Closing tool output shrinks the
-   * scrollable content without emitting a scroll event, so the transcript
-   * can sit visually at the bottom while the stick lock still believes the
-   * reader is away — and the saved per-conversation anchor can keep landing
-   * future visits mid-thread. Re-pin instantly and drop the anchor.
-   * Ported from t3code PR #9782 (`onToolOutputCollapsedAtEnd`); the
-   * composer half of that fix does not apply here because the Atlas slab
-   * has no blur-collapse state to restore and must not steal DOM focus.
-   */
-  const handleToolOutputCollapsedAtEnd = useCallback(() => {
-    if (conversationId) {
-      clearConversationScrollAnchor(conversationId);
-    }
-    void scrollToBottom({ animation: 'instant', wait: false });
-  }, [conversationId, scrollToBottom]);
-
-  /**
    * Selection guard. While the reader holds a live text selection inside the
    * transcript, auto-stick stands down: pinning to the bottom on every stream
    * flush would rip the selection (and the cite/quote menu behind it) away
@@ -2018,6 +2034,71 @@ export function ChatWindow({
       (anchor && node.contains(anchor)) || (focus && node.contains(focus))
     );
   }, [scrollNode]);
+
+  /**
+   * Tool collapse at the live edge. Closing tool output shrinks the
+   * scrollable content without emitting a scroll event, so the transcript
+   * can sit visually at the bottom while the stick lock still believes the
+   * reader is away — and the saved per-conversation anchor can keep landing
+   * future visits mid-thread. Re-pin instantly and drop the anchor.
+   * Ported from t3code PR #9782 (`onToolOutputCollapsedAtEnd`); the
+   * composer half of that fix does not apply here because the Atlas slab
+   * has no blur-collapse state to restore and must not steal DOM focus.
+   */
+  const handleToolOutputCollapsedAtEnd = useCallback(() => {
+    if (conversationId) {
+      clearConversationScrollAnchor(conversationId);
+    }
+    void scrollToBottom({ animation: 'instant', wait: false });
+  }, [conversationId, scrollToBottom]);
+
+  /**
+   * Tool activity in the active turn.
+   * Threads with an active tool call could leave a blank page because the
+   * first-message / previous scroll anchor stayed active after work started.
+   * Release that temporary anchor when tool activity begins and follow live.
+   * Ported from t3code PR #7971 (`shouldReleaseTimelineAnchorForToolActivity`).
+   */
+  useLayoutEffect(() => {
+    if (!conversationId || !draft || draft.status !== 'streaming' || !draft.requestId) {
+      return;
+    }
+
+    const anchor = getConversationScrollAnchor(conversationId);
+    if (!anchor) {
+      return;
+    }
+
+    const timelineEntries = draft.parts
+      ? chatPartsToTimelineEntries(draft.requestId, draft.parts)
+      : [];
+
+    const liveFollowEnabled = !scrolledUpRef.current && !hasBlockingSelection();
+
+    if (
+      shouldReleaseTimelineAnchorForToolActivity({
+        anchorMessageId: anchor.messageId,
+        liveFollowEnabled,
+        runningTurnId: draft.requestId,
+        timelineEntries,
+      })
+    ) {
+      clearConversationScrollAnchor(conversationId);
+      userHasScrolledRef.current = false;
+      stickState.escapedFromLock = false;
+      void scrollToBottom({ animation: 'instant', wait: false });
+    }
+  }, [
+    conversationId,
+    draft?.status,
+    draft?.requestId,
+    draft?.parts,
+    scrollToBottom,
+    hasBlockingSelection,
+    stickState,
+  ]);
+
+
 
   useEffect(() => {
     const onSelectionChange = () => {

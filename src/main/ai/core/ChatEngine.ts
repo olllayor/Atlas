@@ -8,6 +8,7 @@ import type { BrowserWindow } from 'electron';
 
 import type {
   ApprovalDecision,
+  ChatFilePart,
   ChatMessagePart,
   ChatStartRequest,
   ChatStartResponse,
@@ -23,6 +24,7 @@ import type {
   StreamEvent,
   ToolApprovalResponseRequest,
 } from '../../../shared/contracts';
+import { buildAttachmentUrl } from '../../attachments/AttachmentStore';
 import {
   finalizeMessageParts,
   finalizeInterruptedParts,
@@ -1329,7 +1331,10 @@ export class ChatEngine {
         continue;
       }
 
-      const storedAttachment = this.attachmentStore.persistAttachment(conversationId, part);
+      const stagedKey = part.storageKey;
+      const storedAttachment = stagedKey
+        ? this.adoptStagedInputPart(conversationId, part, stagedKey)
+        : this.attachmentStore.persistAttachment(conversationId, part);
       persistedParts.push({
         ...storedAttachment,
         id: `${requestId}-file-${fileIndex}`,
@@ -1338,6 +1343,31 @@ export class ChatEngine {
     }
 
     return persistedParts;
+  }
+
+  /**
+   * Adopts a pre-staged composer file by reference instead of decoding base64
+   * again. Staged bytes were validated at stage time and re-checked here; a
+   * missing or foreign key throws user copy asking for a re-attach.
+   */
+  private adoptStagedInputPart(
+    conversationId: string,
+    part: Extract<ChatInputPart, { type: 'file' }>,
+    storageKey: string,
+  ): ChatFilePart {
+    const adopted = this.attachmentStore.adoptStagedAttachment(conversationId, storageKey, {
+      ...(part.filename ? { filename: part.filename } : {}),
+      mediaType: part.mediaType,
+    });
+    return {
+      id: '',
+      type: 'file',
+      filename: adopted.filename,
+      mediaType: adopted.mediaType,
+      sizeBytes: part.sizeBytes ?? adopted.sizeBytes,
+      storageKey: adopted.storageKey,
+      url: buildAttachmentUrl(adopted.storageKey),
+    };
   }
 
   async abort(requestId: string) {

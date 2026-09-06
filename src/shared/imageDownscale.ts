@@ -15,6 +15,13 @@ export const MAX_IMAGE_EDGE_PX = 1568;
 /** Below this an image is left exactly as the user attached it. */
 export const IMAGE_REENCODE_BYTES = 1_000_000;
 
+/**
+ * Sources above this are refused without decoding, ported from t3code PR
+ * #4967: file size is a proxy for pixel count, and decoding something that
+ * large into an ImageBitmap risks OOMing the renderer.
+ */
+export const MAX_COMPRESSIBLE_SOURCE_BYTES = 50 * 1024 * 1024;
+
 export type ImageDownscalePlan = {
   width: number;
   height: number;
@@ -59,4 +66,57 @@ export function planImageDownscale({
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
   };
+}
+
+export type CompressionCandidate = {
+  width: number;
+  height: number;
+  mime: 'image/webp' | 'image/jpeg';
+  quality: number;
+};
+
+/**
+ * Encode attempts for squeezing an over-cap image under a byte limit,
+ * ported from t3code PR #4967. WebP first at each size (smaller for the same
+ * quality), JPEG as the fallback, then halve the dimensions and repeat.
+ * The caller takes the first result within budget; bounded so the worst case
+ * is a handful of encodes.
+ */
+export function buildCompressionCandidates(
+  naturalWidth: number,
+  naturalHeight: number,
+): CompressionCandidate[] {
+  if (
+    !Number.isFinite(naturalWidth) ||
+    !Number.isFinite(naturalHeight) ||
+    naturalWidth <= 0 ||
+    naturalHeight <= 0
+  ) {
+    return [];
+  }
+
+  const longEdge = Math.max(naturalWidth, naturalHeight);
+  const baseScale = longEdge > MAX_IMAGE_EDGE_PX ? MAX_IMAGE_EDGE_PX / longEdge : 1;
+  const baseWidth = Math.max(1, Math.round(naturalWidth * baseScale));
+  const baseHeight = Math.max(1, Math.round(naturalHeight * baseScale));
+
+  const ladder: CompressionCandidate[] = [];
+  for (const scale of [1, 0.5]) {
+    const width = Math.max(1, Math.round(baseWidth * scale));
+    const height = Math.max(1, Math.round(baseHeight * scale));
+    for (const [mime, quality] of [
+      ['image/webp', 0.8],
+      ['image/webp', 0.6],
+      ['image/webp', 0.45],
+      ['image/jpeg', 0.8],
+      ['image/jpeg', 0.6],
+    ] as const) {
+      const last = ladder[ladder.length - 1];
+      if (last && last.width === width && last.height === height && last.mime === mime && last.quality === quality) {
+        continue;
+      }
+      ladder.push({ width, height, mime, quality });
+    }
+  }
+  return ladder;
 }

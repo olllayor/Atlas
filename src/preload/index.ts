@@ -443,6 +443,10 @@ const api: RendererApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.imagesSaveRequest, handler);
       };
     }
+  },
+  attachments: {
+    stage: (request) => ipcRenderer.invoke(IPC_CHANNELS.attachmentsStage, request),
+    deleteStaged: (request) => ipcRenderer.invoke(IPC_CHANNELS.attachmentsDeleteStaged, request)
   }
 };
 

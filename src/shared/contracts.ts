@@ -1634,9 +1634,39 @@ export type ChatInputFilePart = {
   url: string;
   filename?: string;
   sizeBytes?: number | null;
+  /**
+   * Reference to a file the renderer staged via `attachments.stage` before
+   * sending. The main process adopts the stored bytes instead of decoding
+   * another base64 `url`, so retries and the durable follow-up queue carry a
+   * short key rather than megabytes of inline data (t3code PR #8048's
+   * upload-before-send, minus the signed URLs — this IPC is already trusted
+   * and local). Absent, the data-URL path is used as before.
+   */
+  storageKey?: string | null;
 };
 
 export type ChatInputPart = ChatInputTextPart | ChatInputFilePart;
+
+/** Persists one staged composer file before its turn is sent. */
+export type StageAttachmentRequest = {
+  conversationId: string;
+  filename?: string;
+  mediaType: string;
+  /** The staged bytes. Any supported attachment type, not just images. */
+  dataUrl: string;
+};
+
+/** Reference to staged bytes. The send carries this, not base64. */
+export type StagedAttachment = {
+  storageKey: string;
+  mediaType: string;
+  sizeBytes: number;
+};
+
+export type DeleteStagedAttachmentRequest = {
+  conversationId: string;
+  storageKey: string;
+};
 
 export type ChatInputMessage = {
   role: MessageRole;
@@ -2113,6 +2143,26 @@ export type TaskAgentLinkage = {
   outputFile?: string;
   /** Provider-synthesized rows that belong only in the Agents surface. */
   timelineBypass?: boolean;
+  // ── Workflow / coordinator linkage (additive, optional; old rows decode unchanged) ──
+  /** Stable workflow run id (coordinator taskId). Members repeat it on every row. */
+  workflowId?: string;
+  /** Human workflow name (coordinator title fallback). */
+  workflowName?: string;
+  /** Member's phase position; null/undefined when unphased. */
+  phaseIndex?: number | null;
+  /** Member's phase title at emit time. */
+  phaseTitle?: string;
+  /** Ordered phase list from the coordinator (index + title). */
+  phases?: ReadonlyArray<{ index: number; title: string }>;
+  /** Run handles for inspect (script / transcript / external session). */
+  runHandles?: {
+    runId?: string;
+    scriptPath?: string;
+    transcriptDir?: string;
+    sessionUrl?: string;
+  };
+  /** Codex hierarchy path (e.g. /root/marlow). */
+  agentPath?: string;
 };
 
 export const SUBAGENT_DESCRIPTOR_VERSION = 1;
@@ -2891,6 +2941,17 @@ export type RendererApi = {
      * the bytes (it alone can read `blob:` URLs) and answers via `save`.
      */
     onSaveRequest: (listener: (src: string) => void) => () => void;
+  };
+  attachments: {
+    /**
+     * Persists staged composer bytes before sending, so the turn carries a
+     * storage key instead of inline base64. The renderer reads the `blob:`
+     * URL (only it can) and hands over a `data:` URL, exactly like the
+     * images bridge above; validation errors are user copy.
+     */
+    stage: (request: StageAttachmentRequest) => Promise<StagedAttachment>;
+    /** Deletes a staged file that was removed before sending. Best-effort. */
+    deleteStaged: (request: DeleteStagedAttachmentRequest) => Promise<void>;
   };
 };
 

@@ -83,7 +83,25 @@ export type ComposerAttachmentDraft = {
   url: string;
   filename?: string;
   sizeBytes?: number;
+  /**
+   * Upload-before-send state (t3code PR #8048, adapted). The slot persists
+   * staged bytes to the main-process store in the background; the send then
+   * carries the storage key instead of inline base64. Absent while a stage
+   * has not started yet — the send falls back to the data-URL path.
+   */
+  upload?: StagedAttachmentUpload;
 };
+
+/**
+ * Background persist state for one staged attachment. Local staging is fast,
+ * so there is no progress reporting — only the three terminal-relevant
+ * states. A failed stage never blocks sending: the submit falls back to the
+ * inline data-URL path and the chip offers a retry for next time.
+ */
+export type StagedAttachmentUpload =
+  | { status: 'staging' }
+  | { status: 'ready'; storageKey: string }
+  | { status: 'failed'; error: string };
 
 /** Stable identity so consumers do not re-render on every empty read. */
 export const EMPTY_COMPOSER_ATTACHMENTS: ComposerAttachmentDraft[] = [];
@@ -2094,8 +2112,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasSent = (file: ComposerAttachmentDraft) => (sent ? sent.has(file.id) : true);
       const remaining = (staged ?? []).filter((file) => !wasSent(file));
 
-      // Sent files were copied to data URLs for the send; the object URLs
-      // they were staged with are now garbage.
+      // Sent files went out as data URLs or by staged storage-key reference;
+      // either way the blob object URLs they were staged with are now garbage.
       for (const file of staged ?? []) {
         if (wasSent(file) && file.url.startsWith('blob:')) {
           URL.revokeObjectURL(file.url);
@@ -2252,6 +2270,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         mediaType: file.mediaType,
         sizeBytes: file.sizeBytes ?? null,
         url: file.url,
+        // Staged entries travel by reference; the main process adopts the
+        // stored bytes. Absent, the data-URL path applies as before.
+        ...(file.storageKey ? { storageKey: file.storageKey } : {}),
       })),
     ];
     const previewContent = getContentPreviewText(trimmed, inputParts);

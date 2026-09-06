@@ -135,6 +135,8 @@ export const IPC_CHANNELS = {
   imagesCopyRequest: 'images:copy-request',
   imagesSave: 'images:save',
   imagesSaveRequest: 'images:save-request',
+  attachmentsStage: 'attachments:stage',
+  attachmentsDeleteStaged: 'attachments:delete-staged',
   appDeepLink: 'app:deepLink',
   deepLinkConsume: 'deepLink:consume',
   gitSwitchBranch: 'git:switchBranch',

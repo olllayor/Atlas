@@ -89,7 +89,7 @@ const USER_FACING_MESSAGES = new Set([
 ]);
 
 /** The attachment errors that name the offending file are user copy already. */
-const USER_FACING_PATTERNS = [/ is not a supported attachment type\.$/, / exceeds the attachment size limit\.$/];
+const USER_FACING_PATTERNS = [/ is not a supported attachment type\.$/, / exceeds the attachment size limit\.$/, / is no longer available\. Remove it and attach it again\.$/];
 
 function getErrorName(error: unknown) {
   if (error == null || typeof error !== 'object') {

@@ -1,12 +1,10 @@
 /**
- * The spawn batch row in the transcript matching T3 Code subagent UI/UX.
+ * The spawn batch row in the transcript.
  *
- * Top card:
- * `[• Ran 4 subagents       4 failed  Σ 636k  View ▸]`
- *
- * Below:
- * `4 subagents running in background:`
- * Table with `agent` | `scope`
+ * One anchored row per workflow run / direct-spawn batch, exempt from turn
+ * folds and overflow. Membership is pinned at the batch's first row via
+ * `selectBatchAgents` / `selectBatchWorkflows` so a parallel fan-out doesn't
+ * spawn N CTAs. Coordinator status is authoritative for workflows.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Bot } from 'lucide-react';
@@ -17,12 +15,14 @@ import {
   isActiveAgentStatus,
   summarizeBatch,
   type RuntimeAgent,
+  type RuntimeWorkflow,
 } from '../../lib/agentFold';
-import { cn } from '../../lib/utils';
 
 export type SpawnAgentCtaProps = {
   /** The agents this batch owns, already selected by `selectBatchAgents`. */
   agents: RuntimeAgent[];
+  /** Workflows this batch owns, already selected by `selectBatchWorkflows`. */
+  workflows?: RuntimeWorkflow[];
   /**
    * How many `spawn_agent` calls the batch made. Covers the window between the
    * tool call and the first `task.started` row reaching the renderer, when the
@@ -128,12 +128,17 @@ function extractTaskRows(
 
 export function SpawnAgentCta({
   agents,
+  workflows = [],
   spawnCallCount = 1,
   parts,
   onOpenAgentsPanel,
 }: SpawnAgentCtaProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const isLive = agents.some((agent) => isActiveAgentStatus(agent.status));
+  // Coordinator status is authoritative for workflows: a run is live when its
+  // coordinator says so, even while member ticks lag.
+  const isLive =
+    workflows.some((workflow) => isActiveAgentStatus(workflow.status)) ||
+    agents.some((agent) => isActiveAgentStatus(agent.status));
 
   useEffect(() => {
     if (!isLive) return;
@@ -153,36 +158,55 @@ export function SpawnAgentCta({
   // tasks. Prefer the declared task count and the live roster over it so the
   // pill doesn't flash "Ran 1 subagent" for a 4-task fan-out while the first
   // `task.started` rows are still in flight.
-  const count = Math.max(batch.total, taskRows.length, spawnCallCount);
-  // Rows not yet in the roster haven't started reporting — treat them as
-  // pending rather than dropping them from the running count.
-  const active = batch.active + Math.max(0, count - batch.total);
+  const directCount = Math.max(batch.total, taskRows.length, spawnCallCount - workflows.length, 0);
+  const workflowTokens = workflows.reduce((acc, workflow) => acc + workflow.totalTokens, 0);
+  const totalTokens = batch.totalTokens + workflowTokens;
 
-  const failedCount = agents.filter(
+  // Workflow liveness comes from coordinators (authoritative), direct liveness
+  // from members. Idle presents as settled everywhere.
+  const workflowActive = workflows.filter((workflow) => isActiveAgentStatus(workflow.status)).length;
+  const directActive = batch.active + Math.max(0, directCount - batch.total);
+  const active = workflowActive + directActive;
+
+  const workflowFailed = workflows.filter((workflow) => workflow.status === 'failed').length;
+  const directFailed = agents.filter(
     (a) => a.status === 'failed' || a.status === 'cancelled' || a.status === 'interrupted'
   ).length;
-  // Idle batches are parked, not done: a green dot plus "settled" would claim
-  // completion the roster never reported (t3code #9616).
-  const idleCount = batch.idle;
+  const failedCount = workflowFailed + directFailed;
+
+  const totalRuns = workflows.length + (directCount > 0 || agents.length > 0 ? 1 : 0);
+  const headline = useMemo(() => {
+    if (workflows.length === 1 && directCount === 0) {
+      const workflow = workflows[0]!;
+      return `Ran ${workflow.name}`;
+    }
+    if (workflows.length > 0 && directCount > 0) {
+      return `Ran ${workflows.length} workflow${workflows.length === 1 ? '' : 's'} · ${directCount} subagent${directCount === 1 ? '' : 's'}`;
+    }
+    if (workflows.length > 0) {
+      const count = workflows.reduce((acc, workflow) => acc + Math.max(1, workflow.members.length), 0);
+      return `Ran ${count} subagent${count === 1 ? '' : 's'} in ${workflows.length} workflow${workflows.length === 1 ? '' : 's'}`;
+    }
+    const count = Math.max(batch.total, taskRows.length, spawnCallCount);
+    return `Ran ${count} subagent${count === 1 ? '' : 's'}`;
+  }, [workflows, directCount, batch.total, taskRows.length, spawnCallCount]);
+
+  const count = workflows.length > 0 ? workflows.reduce((acc, w) => acc + Math.max(1, w.members.length), directCount) : Math.max(batch.total, taskRows.length, spawnCallCount);
 
   return (
-    <div className="my-3 w-full max-w-2xl font-sans">
-      {/* Top Header Pill Banner */}
+    <div className="my-3 w-full max-w-2xl font-sans" data-spawn-cta="true">
+      {/* Top Header Pill Banner: one anchored row per batch, exempt from folds */}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border-default bg-bg-surface/80 px-3.5 py-2 text-xs transition-colors hover:border-border-hover">
         <div className="flex min-w-0 items-center gap-2">
           {failedCount > 0 ? (
             <span className="h-2 w-2 shrink-0 rounded-full bg-destructive" />
           ) : active > 0 ? (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-accent motion-glyph-pulse" />
-          ) : idleCount > 0 ? (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
+            <span className="h-2 w-2 shrink-0 rounded-full bg-accent" />
           ) : (
             <span className="h-2 w-2 shrink-0 rounded-full bg-success" />
           )}
           <Bot className="h-4 w-4 shrink-0 text-text-primary" strokeWidth={1.75} />
-          <span className="truncate font-medium text-text-primary">
-            {`Ran ${count} subagent${count === 1 ? '' : 's'}`}
-          </span>
+          <span className="truncate font-medium text-text-primary">{headline}</span>
         </div>
 
         <div className="flex shrink-0 items-center gap-3 text-xs">
@@ -190,15 +214,13 @@ export function SpawnAgentCta({
             <span className="font-mono text-destructive font-medium">{failedCount} failed</span>
           ) : active > 0 ? (
             <span className="font-mono text-accent">{active} running</span>
-          ) : idleCount > 0 ? (
-            <span className="font-mono text-text-muted">{idleCount} idle</span>
           ) : (
             <span className="font-mono text-text-muted">{count} settled</span>
           )}
 
-          {batch.totalTokens > 0 && (
+          {totalTokens > 0 && (
             <span className="font-mono tabular-nums text-text-muted">
-              Σ {formatTokens(batch.totalTokens)}
+              Σ {formatTokens(totalTokens)}
             </span>
           )}
 
@@ -214,15 +236,43 @@ export function SpawnAgentCta({
         </div>
       </div>
 
-      {/* Task Scope Table */}
-      {taskRows.length > 0 && (
+      {/* Workflow runs: one line per run, coordinator status authoritative */}
+      {workflows.length > 0 && (
+        <div className="mt-2.5 space-y-1 pl-1">
+          {workflows.map((workflow) => {
+            const live = isActiveAgentStatus(workflow.status);
+            const failed = workflow.status === 'failed';
+            return (
+              <div key={workflow.id} className="flex min-w-0 items-center gap-2 text-xs">
+                <span
+                  className={
+                    failed
+                      ? 'h-1.5 w-1.5 shrink-0 rounded-full bg-destructive'
+                      : live
+                        ? 'h-1.5 w-1.5 shrink-0 rounded-full bg-accent'
+                        : 'h-1.5 w-1.5 shrink-0 rounded-full bg-success'
+                  }
+                />
+                <span className="truncate text-text-secondary">
+                  <span className="font-medium text-text-primary">{workflow.name}</span>
+                  <span className="ml-1.5 font-mono text-[11px] text-text-faint">
+                    {workflow.members.length} agents
+                    {live ? ' · running' : failed ? ' · failed' : ' · settled'}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Task Scope Table (direct spawns only; workflows render above) */}
+      {taskRows.length > 0 && directCount > 0 && (
         <div className="mt-3.5 pl-1">
           <div className="mb-2 text-xs text-text-muted font-normal">
             {active > 0
               ? `${count} subagent${count === 1 ? '' : 's'} running in background:`
-              : idleCount > 0
-                ? `${count} subagent${count === 1 ? '' : 's'} idle:`
-                : `${count} subagent${count === 1 ? '' : 's'} settled:`}
+              : `${count} subagent${count === 1 ? '' : 's'} settled:`}
           </div>
 
           <div className="overflow-x-auto">
@@ -249,6 +299,7 @@ export function SpawnAgentCta({
           </div>
         </div>
       )}
+      {totalRuns === 0 && null}
     </div>
   );
 }

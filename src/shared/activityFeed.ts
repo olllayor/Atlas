@@ -103,6 +103,30 @@ function mergeStatus(
   return { status: incoming.status, isFinal: false };
 }
 
+/**
+ * Quiet-timeline exclusion for the main work log.
+ *
+ * - `timelineBypass` rows never render in the timeline; they still update the
+ *   fold/panel and fold into the CTA.
+ * - Agent-attributed `tool.*` rows re-home to the owning agent's progress /
+ *   recent-activity; the parent chat keeps only the batch CTA.
+ * - Background rows (unstamped, shells, monitors) stay ordinary rows.
+ * - `task.*` rows stay: recurring ticks already collapse onto one lifecycle
+ *   row per task via stable ids, which is the direct-agent row / run card.
+ */
+function isQuietExcluded(entry: WorkLogEntry): boolean {
+  const payload = (entry.payload ?? {}) as Record<string, unknown>;
+  if (payload.timelineBypass === true) return true;
+  if (!entry.activityType.startsWith('tool.')) return false;
+  if (payload.agentKind !== 'agent') return false;
+  const agentId =
+    entry.agentId ??
+    (payload.agentId as string | undefined) ??
+    (payload.taskId as string | undefined) ??
+    null;
+  return agentId != null && agentId !== '';
+}
+
 export function buildActivityFeed(entries: WorkLogEntry[]): ActivityFeed {
   const turns: ActivityFeedTurn[] = [];
   const turnIndex = new Map<string, ActivityFeedTurn>();
@@ -110,6 +134,13 @@ export function buildActivityFeed(entries: WorkLogEntry[]): ActivityFeed {
   const rowIndex = new Map<string, ActivityFeedRow>();
 
   for (const entry of entries) {
+    // Quiet timeline: agent-attributed tool rows re-home to the panel and
+    // timelineBypass rows fold into the CTA. Background shells stay ordinary
+    // work-log rows.
+    if (isQuietExcluded(entry)) {
+      continue;
+    }
+
     const kind = kindOf(entry.activityType);
     if (!kind) {
       continue;

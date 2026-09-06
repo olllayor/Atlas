@@ -1,4 +1,4 @@
-import { Plus, Sparkles, Undo2 } from 'lucide-react';
+import { Paintbrush, Plus, Undo2 } from 'lucide-react';
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CONTRAST_DEFAULT,
@@ -429,7 +429,7 @@ export function ThemeAppearanceSection({
               onClick={handleCreateTheme}
               className="inline-flex h-6 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-xs font-medium text-[var(--text-secondary)] shadow-2xs transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] hover:border-[var(--border-medium)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
             >
-              <Sparkles className="size-3 text-[var(--text-muted)]" />
+              <Paintbrush className="size-3 text-[var(--text-muted)]" />
               <span>Create theme</span>
             </button>
             <button

@@ -282,6 +282,22 @@ export type PluginCommandSummary = {
 };
 
 /**
+ * One skill offered in the composer's `/` menu. Plugin skills resolve through
+ * the `@plugin skill` mention on send; standalone skills (`global` /
+ * `project` scope) resolve through `$name` dispatch. The menu inserts the
+ * right token per source, so the row never needs the distinction.
+ */
+export type SlashMenuSkillSummary = {
+  /** `<plugin>:<skill>` for bundles, bare name for standalone skills. */
+  qualifiedName: string;
+  /** Bundle name, or the `global` / `project` scope. */
+  pluginName: string;
+  name: string;
+  description: string;
+  source: 'plugin' | 'project' | 'global';
+};
+
+/**
  * What one of a plugin's MCP servers reported when actually asked.
  *
  * `ready` means a real connection succeeded and `tools/list` answered —
@@ -1309,6 +1325,12 @@ export type SettingsChatSummary = {
   compactionThresholdPercent: number;
   /** Whether the experimental Cloud Sandbox execution target is enabled. */
   cloudSandboxEnabled: boolean;
+  /**
+   * Whether the `/` command menu also lists skills. On by default; off keeps
+   * the menu command-only. Skills stay reachable through `@` mentions either
+   * way.
+   */
+  showSkillsInSlashMenu: boolean;
   /** HTTPS endpoint URL for the user's deployed Cloudflare Worker. */
   cloudSandboxWorkerUrl: string | null;
   /**
@@ -2445,6 +2467,7 @@ export type SettingsUpdateRequest = {
     cloudSandboxEnabled?: boolean;
     cloudSandboxWorkerUrl?: string | null;
     cloudSandboxWorkerSecret?: string | null;
+    showSkillsInSlashMenu?: boolean;
   };
 };
 
@@ -2812,6 +2835,16 @@ export type RendererApi = {
     update: (plugin: string) => Promise<PluginsView>;
     /** Every command installed plugins offer, for the composer's picker. */
     commands: () => Promise<PluginCommandSummary[]>;
+    /**
+     * Every skill applicable to the given workspace, for the composer's `/`
+     * menu. Standalone project skills need the project root to be discovered;
+     * without one only global and plugin skills are returned.
+     */
+    skills: (input: {
+      projectRoot?: string | null;
+      mode?: WorkspaceMode;
+      hasProject?: boolean;
+    }) => Promise<SlashMenuSkillSummary[]>;
     /** One command's expanded template, fetched when the user picks it. */
     commandBody: (qualifiedName: string, args: string) => Promise<string>;
     activation: (conversationId: string) => Promise<PluginActivationEntry[]>;

@@ -313,6 +313,19 @@ export class SettingsRepo {
     return isVisualMode(value) ? value : DEFAULT_VISUAL_MODE;
   }
 
+  /**
+   * Whether the `/` menu lists skills alongside commands. On by default
+   * (opt-out, matching the menu's shipped behavior); off keeps it
+   * command-only.
+   */
+  getShowSkillsInSlashMenu(): boolean {
+    return this.getJsonSetting<unknown>('chat.showSkillsInSlashMenu', true) !== false;
+  }
+
+  setShowSkillsInSlashMenu(value: boolean) {
+    this.setJsonSetting('chat.showSkillsInSlashMenu', Boolean(value));
+  }
+
   setVisualMode(value: VisualMode) {
     this.setJsonSetting('chat.visualMode', value);
   }

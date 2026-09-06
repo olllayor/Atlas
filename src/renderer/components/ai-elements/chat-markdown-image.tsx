@@ -110,16 +110,49 @@ export function decodedSrcFromImage(
   return image?.complete === true && image.naturalWidth > 0 ? requested : null;
 }
 
+/**
+ * Honor an authored width/height while keeping the image proportional and
+ * bounded, ported from t3code PR #8501.
+ *
+ * A bare `<img width height>` used to pin both axes, so a high-density asset
+ * painted at source pixels and could cover the transcript. Now both axes
+ * become width + auto height + aspect ratio inside the chat bounds, and a
+ * lone axis becomes a cap rather than a fixed size. Non-numeric sizes
+ * (`50%`, `auto`) pass through exactly as authored.
+ */
+function numericPixels(value: string | number | undefined): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim())) {
+    return Number.parseFloat(value);
+  }
+  return Number.NaN;
+}
+
 export function authoredImageSizeStyle(
   width: string | number | undefined,
   height: string | number | undefined
 ): CSSProperties | undefined {
-  const parsedWidth = typeof width === 'number' ? `${width}px` : width;
-  const parsedHeight = typeof height === 'number' ? `${height}px` : height;
-  if (!parsedWidth && !parsedHeight) return undefined;
+  const parsedWidth = numericPixels(width);
+  const parsedHeight = numericPixels(height);
+  const hasWidth = Number.isFinite(parsedWidth) && parsedWidth > 0;
+  const hasHeight = Number.isFinite(parsedHeight) && parsedHeight > 0;
+  if (hasWidth && hasHeight) {
+    return {
+      width: parsedWidth,
+      height: 'auto',
+      aspectRatio: `${parsedWidth} / ${parsedHeight}`,
+      maxWidth: `min(100%, 30rem, ${(30 * parsedWidth) / parsedHeight}rem)`
+    };
+  }
+  if (hasWidth) return { maxWidth: `min(100%, 30rem, ${parsedWidth}px)` };
+  if (hasHeight) return { maxHeight: `min(30rem, ${parsedHeight}px)` };
+
+  const fallbackWidth = typeof width === 'number' ? `${width}px` : width;
+  const fallbackHeight = typeof height === 'number' ? `${height}px` : height;
+  if (!fallbackWidth && !fallbackHeight) return undefined;
   return {
-    ...(parsedWidth ? { width: parsedWidth } : {}),
-    ...(parsedHeight ? { height: parsedHeight } : {})
+    ...(fallbackWidth ? { width: fallbackWidth } : {}),
+    ...(fallbackHeight ? { height: fallbackHeight } : {})
   };
 }
 

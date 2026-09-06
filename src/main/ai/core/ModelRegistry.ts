@@ -236,6 +236,7 @@ export class ModelRegistry {
         visualMode: this.settingsRepo.getVisualMode(),
         compactionThresholdPercent: this.settingsRepo.getCompactionThresholdPercent(),
         cloudSandboxEnabled: this.settingsRepo.getCloudSandboxEnabled(),
+        showSkillsInSlashMenu: this.settingsRepo.getShowSkillsInSlashMenu(),
         cloudSandboxWorkerUrl: this.settingsRepo.getCloudSandboxWorkerUrl(),
         // Raw token never crosses IPC — keychain holds it, the renderer only
         // needs to know whether one is configured so the UI can afford the

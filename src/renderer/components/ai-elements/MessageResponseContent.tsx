@@ -7,14 +7,10 @@ import { mermaid } from '@streamdown/mermaid';
 import type { ComponentProps } from 'react';
 import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins, type Components, type CustomRenderer } from 'streamdown';
 
-import { parseFileRef } from '../../../shared/fileRef';
-import { parseAssistantCitationHref } from '../../../shared/citations';
 import { streamdownCodeLanguages } from './codeLanguages';
-import { FileRefChip } from './file-ref';
-import { CiteChip } from '../CiteChip';
-import { useCiteNavigation } from '../citeNavigation';
 import { markdownTableComponents } from './markdown-table';
 import { ChatMarkdownImage, rehypeMarkStandaloneImages } from './chat-markdown-image';
+import { MarkdownAnchor } from './chat-markdown-link';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
 
@@ -62,55 +58,6 @@ const streamdownRehypePlugins = [
   ...Object.values(defaultRehypePlugins),
   rehypeMarkStandaloneImages,
 ];
-
-/**
- * Links, split by what they point at.
- *
- * A link to `src/main/index.ts` is the model naming a place in the project,
- * not a destination — the app has no browser to send it to, and rendering it
- * as an underlined URL both promises navigation that will not happen and
- * hides the filename in a run of blue text. Those become file chips; anything
- * that is actually a URL keeps the link styling the wrapper below defines.
- */
-function MarkdownAnchor({
-  href,
-  children,
-  // The mdast node rides along with every element Streamdown renders and is
-  // not an attribute; forwarding it puts `node="[object Object]"` in the DOM.
-  node: _node,
-  ...props
-}: ComponentProps<'a'> & { node?: unknown }) {
-  if (href && parseFileRef(href)) {
-    return <FileRefChip href={href}>{children}</FileRefChip>;
-  }
-
-  const citation = href ? parseAssistantCitationHref(href) : null;
-  if (citation) {
-    return <TranscriptCitationLink citation={citation} />;
-  }
-
-  return (
-    <a href={href} {...props}>
-      {children}
-    </a>
-  );
-}
-
-/** Hook boundary: the anchor itself stays a pure function of its props. */
-function TranscriptCitationLink({
-  citation,
-}: {
-  citation: NonNullable<ReturnType<typeof parseAssistantCitationHref>>;
-}) {
-  const navigate = useCiteNavigation();
-  return (
-    <CiteChip
-      citation={citation}
-      onNavigate={navigate ?? undefined}
-      className="translate-y-[0.1em] align-baseline"
-    />
-  );
-}
 
 const streamdownPlugins = { cjk, code, math, mermaid, renderers: streamdownRenderers };
 // `table: false` is belt-and-braces — `markdownTableComponents` replaces the

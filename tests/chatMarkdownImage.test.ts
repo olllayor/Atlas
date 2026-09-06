@@ -95,11 +95,41 @@ test('soleImageDescendant detects sole images and looks through inline wrappers'
   assert.equal(soleImageDescendant(badges), undefined);
 });
 
-test('authoredImageSizeStyle formats dimensions correctly', () => {
-  assert.deepEqual(authoredImageSizeStyle(400, 300), { width: '400px', height: '300px' });
-  assert.deepEqual(authoredImageSizeStyle('50%', 'auto'), { width: '50%', height: 'auto' });
-  assert.deepEqual(authoredImageSizeStyle(undefined, 250), { height: '250px' });
+test('authoredImageSizeStyle keeps numeric sizes proportional and bounded (PR #8501)', () => {
+  assert.deepEqual(authoredImageSizeStyle(96, 128), {
+    width: 96,
+    height: 'auto',
+    aspectRatio: '96 / 128',
+    maxWidth: 'min(100%, 30rem, 22.5rem)'
+  });
+  assert.deepEqual(authoredImageSizeStyle('400', '300'), {
+    width: 400,
+    height: 'auto',
+    aspectRatio: '400 / 300',
+    maxWidth: 'min(100%, 30rem, 40rem)'
+  });
+});
+
+test('authoredImageSizeStyle treats a lone numeric axis as a cap (PR #8501)', () => {
+  assert.deepEqual(authoredImageSizeStyle(300, undefined), {
+    maxWidth: 'min(100%, 30rem, 300px)'
+  });
+  assert.deepEqual(authoredImageSizeStyle(undefined, 300), {
+    maxHeight: 'min(30rem, 300px)'
+  });
   assert.deepEqual(authoredImageSizeStyle(undefined, undefined), undefined);
+});
+
+test('authoredImageSizeStyle passes non-numeric sizes through as authored', () => {
+  assert.deepEqual(authoredImageSizeStyle('50%', 'auto'), { width: '50%', height: 'auto' });
+  assert.deepEqual(authoredImageSizeStyle('50%', undefined), { width: '50%' });
+});
+
+test('a sized standalone image holds a proportional slot while loading (PR #8501)', () => {
+  const loading = renderImage({ src: 'https://example.com/sized.svg', alt: 'sized', width: 96, height: 128, ...STANDALONE });
+
+  assert.ok(loading.includes('aspect-ratio:96 / 128') || loading.includes('aspect-ratio: 96 / 128'), loading);
+  assert.ok(loading.includes('width:96px'), loading);
 });
 
 test('rehypeMarkStandaloneImages identifies standalone images vs inline badges (PR #9938)', () => {

@@ -105,6 +105,7 @@ export const IPC_CHANNELS = {
   pluginsUpdate: 'plugins:update',
   pluginsCommands: 'plugins:commands',
   pluginsCommandBody: 'plugins:commandBody',
+  pluginsSkills: 'plugins:skills',
   pluginsActivation: 'plugins:activation',
   pluginsSetActivated: 'plugins:setActivated',
   pluginsSetAlwaysOn: 'plugins:setAlwaysOn',

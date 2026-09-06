@@ -254,7 +254,7 @@ function ThemeJsonEditor({
         autoCapitalize="off"
         autoComplete="off"
         autoCorrect="off"
-        className="relative z-10 block h-64 w-full resize-y bg-transparent p-3 font-mono leading-relaxed text-foreground caret-accent outline-none placeholder:text-muted-foreground/40"
+        className="relative z-10 block h-64 w-full resize-y bg-transparent p-3 font-mono leading-relaxed text-foreground caret-accent outline-none placeholder:text-muted-foreground/40 selection:bg-accent selection:text-accent-foreground"
         disabled={disabled}
         onChange={(e) => onChange(e.currentTarget.value)}
         onScroll={handleScroll}

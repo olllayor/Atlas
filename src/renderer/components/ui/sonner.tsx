@@ -67,8 +67,12 @@ export function AtlasToaster() {
           // `items-start`, not `items-center`: a two-line body would push the
           // icon and the close button to the vertical middle of the block,
           // away from the title they belong to.
+          // Glass surface, not a flat fill (t3code PR #4681's method): the
+          // shared overlay triple owns blur/saturation/opacity, so toasts
+          // follow the appearance settings and the contrast ladder with
+          // every other overlay. The theme toast tint goes with it.
           toast:
-            'group/toast flex w-fit max-w-[340px] min-w-0 items-start rounded-xl border border-toast-border bg-toast-bg px-3.5 py-2.5 text-toast-text shadow-elevated backdrop-blur-sm',
+            'group/toast flex w-fit max-w-[340px] min-w-0 items-start rounded-xl border border-toast-border dropdown-glass px-3.5 py-2.5 text-toast-text shadow-elevated',
           content: 'flex min-w-0 flex-1 flex-col justify-center',
           // Two lines, not one. `truncate` here was silently eating the back
           // half of every error message the app raised.

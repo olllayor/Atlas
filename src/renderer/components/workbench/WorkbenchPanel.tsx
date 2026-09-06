@@ -117,7 +117,9 @@ export function WorkbenchPanel({
   const toolParts = useMemo(() => collectToolParts(messages), [messages]);
   // The roster is folded once per activity change, not once per render: it
   // walks every persisted row in the conversation.
-  const agentCount = useMemo(() => foldAgents(activities).agents.length, [activities]);
+  const agentModel = useMemo(() => foldAgents(activities), [activities]);
+  const agentCount = agentModel.agents.length;
+  const liveAgentCount = agentModel.activeAgents.length;
 
   const panel = useConversationPanel(conversationId);
   // Selected one at a time: zustand builds these once, so each is a stable
@@ -137,7 +139,7 @@ export function WorkbenchPanel({
   const paneGroups = useTerminalSplitStore((state) => state.byGroupKey);
   const forgetPaneGroup = useTerminalSplitStore((state) => state.forget);
 
-  const context: SurfaceContext = { conversationId, mode, hasProject, agentCount };
+  const context: SurfaceContext = { conversationId, mode, hasProject, agentCount, liveAgentCount };
 
   // Background jobs power the Tasks tab's pulse: live work should read as
   // alive from the tab strip, not only after opening the tab.

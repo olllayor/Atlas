@@ -134,11 +134,26 @@ export function SpawnAgentCta({
   onOpenAgentsPanel,
 }: SpawnAgentCtaProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const workflowMemberIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const w of workflows) {
+      if (w.coordinator) ids.add(w.coordinator.id);
+      for (const m of w.members) ids.add(m.id);
+    }
+    return ids;
+  }, [workflows]);
+
+  const directAgents = useMemo(
+    () => (workflowMemberIds.size > 0 ? agents.filter((a) => !workflowMemberIds.has(a.id)) : agents),
+    [agents, workflowMemberIds]
+  );
+
   // Coordinator status is authoritative for workflows: a run is live when its
   // coordinator says so, even while member ticks lag.
   const isLive =
     workflows.some((workflow) => isActiveAgentStatus(workflow.status)) ||
-    agents.some((agent) => isActiveAgentStatus(agent.status));
+    directAgents.some((agent) => isActiveAgentStatus(agent.status));
 
   useEffect(() => {
     if (!isLive) return;
@@ -146,12 +161,12 @@ export function SpawnAgentCta({
     return () => clearInterval(id);
   }, [isLive]);
 
-  const batch = summarizeBatch(agents, nowMs);
+  const batch = summarizeBatch(directAgents, nowMs);
   const declaredTasks = useMemo(() => countDeclaredTasks(parts), [parts]);
 
   const taskRows = useMemo(
-    () => extractTaskRows(parts, agents, Math.max(declaredTasks, spawnCallCount)),
-    [parts, agents, declaredTasks, spawnCallCount]
+    () => extractTaskRows(parts, directAgents, Math.max(declaredTasks, spawnCallCount)),
+    [parts, directAgents, declaredTasks, spawnCallCount]
   );
 
   // `spawnCallCount` counts spawn_agent *calls*; one call can fan out to many
@@ -169,12 +184,12 @@ export function SpawnAgentCta({
   const active = workflowActive + directActive;
 
   const workflowFailed = workflows.filter((workflow) => workflow.status === 'failed').length;
-  const directFailed = agents.filter(
+  const directFailed = directAgents.filter(
     (a) => a.status === 'failed' || a.status === 'cancelled' || a.status === 'interrupted'
   ).length;
   const failedCount = workflowFailed + directFailed;
 
-  const totalRuns = workflows.length + (directCount > 0 || agents.length > 0 ? 1 : 0);
+  const totalRuns = workflows.length + (directCount > 0 || directAgents.length > 0 ? 1 : 0);
   const headline = useMemo(() => {
     if (workflows.length === 1 && directCount === 0) {
       const workflow = workflows[0]!;
@@ -270,9 +285,9 @@ export function SpawnAgentCta({
       {taskRows.length > 0 && directCount > 0 && (
         <div className="mt-3.5 pl-1">
           <div className="mb-2 text-xs text-text-muted font-normal">
-            {active > 0
-              ? `${count} subagent${count === 1 ? '' : 's'} running in background:`
-              : `${count} subagent${count === 1 ? '' : 's'} settled:`}
+            {directActive > 0
+              ? `${directCount} subagent${directCount === 1 ? '' : 's'} running in background:`
+              : `${directCount} subagent${directCount === 1 ? '' : 's'} settled:`}
           </div>
 
           <div className="overflow-x-auto">

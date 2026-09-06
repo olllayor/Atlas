@@ -647,16 +647,18 @@ function SpawnBatchRow({
     [parts]
   );
 
+  const foldModel = useMemo(() => foldAgents(activities), [activities]);
+
   const agents = useMemo(
-    () => selectBatchAgents(foldAgents(activities).agents, spawnedToolCallIds),
-    [activities, spawnedToolCallIds]
+    () => selectBatchAgents(foldModel.directAgents, spawnedToolCallIds),
+    [foldModel.directAgents, spawnedToolCallIds]
   );
 
   // Workflow runs in this batch: membership pinned at the first row's tool
   // calls (parallel-batch fix) and coordinator status authoritative downstream.
   const workflows = useMemo(
-    () => selectBatchWorkflows(foldAgents(activities).workflows, spawnedToolCallIds),
-    [activities, spawnedToolCallIds]
+    () => selectBatchWorkflows(foldModel.workflows, spawnedToolCallIds),
+    [foldModel.workflows, spawnedToolCallIds]
   );
 
   return (

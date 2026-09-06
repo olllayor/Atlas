@@ -235,3 +235,50 @@ test('idle presents as settled visual (not live)', () => {
   assert.equal(model.workflows.length, 0);
   assert.equal(model.directAgents.length, 1);
 });
+test('isAgentAttributedToolEntry requires payload.agentKind to be agent', () => {
+  const agentTool = makeEntry({
+    activityType: 'tool.completed',
+    agentId: 'agent-1',
+    payload: { agentKind: 'agent', agentId: 'agent-1', toolName: 'read' },
+  });
+  const legacyTool = makeEntry({
+    activityType: 'tool.completed',
+    agentId: 'legacy-1',
+    payload: { toolName: 'read' }, // agentKind absent -> background default
+  });
+  const bgTool = makeEntry({
+    activityType: 'tool.completed',
+    agentId: 'bg-1',
+    payload: { agentKind: 'background', agentId: 'bg-1', toolName: 'bash' },
+  });
+  assert.equal(isAgentAttributedToolEntry(agentTool), true);
+  assert.equal(isAgentAttributedToolEntry(legacyTool), false);
+  assert.equal(isAgentAttributedToolEntry(bgTool), false);
+});
+
+test('foldModel partitions direct agents away from workflow members', () => {
+  const rows: WorkLogEntry[] = [
+    makeEntry({
+      id: 'task:flow-10',
+      activityType: 'task.started',
+      parentToolCallId: 'call-w',
+      payload: { agentKind: 'agent', agentId: 'flow-10', taskType: 'workflow', workflowName: 'flow-10', workflowId: 'flow-10', status: 'running', title: 'w' },
+    }),
+    makeEntry({
+      id: 'task:flow-10:0',
+      activityType: 'task.started',
+      parentToolCallId: 'call-w',
+      payload: { agentKind: 'agent', agentId: 'flow-10:0', workflowId: 'flow-10', agentIndex: 0, status: 'running', title: 'member' },
+    }),
+    makeEntry({
+      id: 'task:call-direct:0',
+      activityType: 'task.started',
+      parentToolCallId: 'call-direct',
+      payload: { agentKind: 'agent', agentId: 'call-direct:0', status: 'running', title: 'direct' },
+    }),
+  ];
+  const model = foldAgents(rows);
+  assert.equal(model.workflows.length, 1);
+  assert.equal(model.directAgents.length, 1);
+  assert.equal(model.directAgents[0]!.title, 'direct');
+});

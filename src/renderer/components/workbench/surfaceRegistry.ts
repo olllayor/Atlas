@@ -40,6 +40,8 @@ export type SurfaceContext = {
   hasProject: boolean;
   /** Subagents this conversation has spawned, live or settled. */
   agentCount: number;
+  /** Live subagents (pending/running/waiting). Idle presents as settled. */
+  liveAgentCount: number;
 };
 
 export type SurfaceDefinition = {

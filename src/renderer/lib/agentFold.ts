@@ -146,6 +146,7 @@ export function isAgentAttributedToolEntry(
 ): boolean {
   if (!entry.activityType.startsWith('tool.')) return false;
   const payload = (entry.payload ?? {}) as Record<string, unknown>;
+  if (payload.agentKind !== 'agent') return false;
   const agentId =
     (entry as { agentId?: string | null }).agentId ??
     (payload.agentId as string | undefined) ??

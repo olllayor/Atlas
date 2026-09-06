@@ -85,9 +85,12 @@ export function AgentsPanel({
     );
   }
 
-  const togglePhase = (workflowId: string, phaseIndex: number) => {
+  const togglePhase = (workflowId: string, phaseIndex: number, live: boolean) => {
     const key = `${workflowId}:${phaseIndex}`;
-    setCollapsedPhases((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
+    setCollapsedPhases((prev) => {
+      const current = key in prev ? prev[key]! : !live;
+      return { ...prev, [key]: !current };
+    });
   };
 
   const isPhaseCollapsed = (workflowId: string, phaseIndex: number, live: boolean) => {
@@ -130,7 +133,7 @@ export function AgentsPanel({
             workflow={workflow}
             nowMs={nowMs}
             isPhaseCollapsed={(phaseIndex, live) => isPhaseCollapsed(workflow.id, phaseIndex, live)}
-            onTogglePhase={(phaseIndex) => togglePhase(workflow.id, phaseIndex)}
+            onTogglePhase={(phaseIndex, live) => togglePhase(workflow.id, phaseIndex, live)}
             onOpenOutputFile={onOpenOutputFile}
           />
         ))}
@@ -192,7 +195,7 @@ function WorkflowSection({
   workflow: RuntimeWorkflow;
   nowMs: number;
   isPhaseCollapsed: (phaseIndex: number, live: boolean) => boolean;
-  onTogglePhase: (phaseIndex: number) => void;
+  onTogglePhase: (phaseIndex: number, live: boolean) => void;
   onOpenOutputFile?: (path: string) => void;
 }) {
   const scriptPath = workflow.runHandles?.scriptPath ?? null;
@@ -292,7 +295,7 @@ function WorkflowSection({
             <div key={phaseIndex} className="rounded border border-border-subtle/60">
               <button
                 type="button"
-                onClick={() => onTogglePhase(group.phase!.index)}
+                onClick={() => onTogglePhase(group.phase!.index, info.live)}
                 aria-expanded={!collapsed}
                 className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left cursor-pointer"
               >

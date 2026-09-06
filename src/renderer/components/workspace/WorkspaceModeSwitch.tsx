@@ -380,28 +380,46 @@ export function WorkspaceAccessChip({
 export function WorkbenchToggle({
   open,
   onToggle,
+  /** Live subagents (running/waiting). Forced to 0 while Agents surface visible. */
+  liveAgentCount = 0,
 }: {
   open: boolean;
   onToggle: (open: boolean) => void;
+  liveAgentCount?: number;
 }) {
+  const showBadge = liveAgentCount > 0;
+  const label = showBadge
+    ? `${liveAgentCount} agent${liveAgentCount === 1 ? '' : 's'} working`
+    : 'Toggle workbench panel';
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label="Toggle workbench panel"
+          aria-label={label}
           aria-pressed={open}
+          title={showBadge ? label : undefined}
           onClick={() => onToggle(!open)}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           className={cn(
-            'flex size-7 items-center justify-center rounded-md transition-colors',
+            'relative flex size-7 items-center justify-center rounded-md transition-colors',
             open ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'
           )}
         >
           <PanelRight className="size-4" strokeWidth={1.75} aria-hidden="true" />
+          {showBadge ? (
+            <span
+              aria-hidden
+              className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-bg-elevated px-1 text-[10px] tabular-nums text-text-primary"
+            >
+              {liveAgentCount}
+            </span>
+          ) : null}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{open ? 'Hide workbench' : 'Show workbench'}</TooltipContent>
+      <TooltipContent side="bottom">
+        {showBadge ? label : open ? 'Hide workbench' : 'Show workbench'}
+      </TooltipContent>
     </Tooltip>
   );
 }

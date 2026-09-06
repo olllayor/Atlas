@@ -2261,6 +2261,13 @@ export default function App() {
               />
               <WorkbenchToggle
                 open={workbenchOpen}
+                liveAgentCount={
+                  workbenchOpen &&
+                  rightPanel.surfaces.find((surface) => surface.id === rightPanel.activeSurfaceId)
+                    ?.kind === 'agents'
+                    ? 0
+                    : runningAgentsCount
+                }
                 onToggle={() => {
                   if (!panelConversationId) return;
                   useRightPanelStore.getState().togglePanel(panelConversationId);

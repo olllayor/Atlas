@@ -33,7 +33,8 @@ import {
   type ComposerPromptHistoryPosition,
 } from '../../shared/composerPromptHistory';
 import { planImageDownscale, MAX_COMPRESSIBLE_SOURCE_BYTES } from '../../shared/imageDownscale';
-import { compressImageToByteLimit } from '../lib/imageCompression';
+import { isHeicImageFile } from '../../shared/heic';
+import { prepareImageForAttachment } from '../lib/imageCompression';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
 import { CitationTray } from './CitationTray';
@@ -421,7 +422,10 @@ function useComposerAttachments(
       // A fresh attempt invalidates whatever the last one complained about.
       onError(null);
 
-      const accepted = list.filter(matchesAccept);
+      // Finder drops HEIC photos with an empty or generic MIME type, which
+      // the accept list alone would refuse. Concrete image MIME types keep
+      // their normal path: a PNG misnamed `.heic` is a PNG, not a convert.
+      const accepted = list.filter((file) => matchesAccept(file) || isHeicImageFile(file));
       if (accepted.length === 0) {
         onError('No files match the accepted types.');
         return;
@@ -436,12 +440,14 @@ function useComposerAttachments(
       const sized = accepted.filter((file) => file.size <= MAX_ATTACHMENT_SIZE_BYTES);
       // Oversized images are squeezed under the cap instead of rejected
       // (t3code PR #4967): a 12 MB retina screenshot compresses with no
-      // meaningful quality loss. Anything else over the cap — documents,
-      // video, or a source so large decoding it risks OOM — stays refused.
+      // meaningful quality loss. HEIC counts as an image here whatever its
+      // MIME says — the converter runs before the size check downstream.
+      // Anything else over the cap — documents, video, or a source so large
+      // decoding it risks OOM — stays refused.
       const compressible = accepted.filter(
         (file) =>
           file.size > MAX_ATTACHMENT_SIZE_BYTES &&
-          file.type.startsWith('image/') &&
+          (file.type.startsWith('image/') || isHeicImageFile(file)) &&
           file.size <= MAX_COMPRESSIBLE_SOURCE_BYTES,
       );
       if (sized.length === 0 && compressible.length === 0) {
@@ -465,8 +471,25 @@ function useComposerAttachments(
       }
 
       // Re-encode before the blob URL is minted, so the staged chip, the
-      // thumbnail and the bytes that get sent are all the same image.
-      const prepared = await Promise.all(capped.map((file) => downscaleImageFile(file)));
+      // thumbnail and the bytes that get sent are all the same image. HEIC
+      // photos convert to JPEG even within the cap: providers cannot consume
+      // the source format and the thumbnail cannot decode it.
+      const failures: string[] = [];
+      const prepared = (
+        await Promise.all(
+          capped.map(async (file) => {
+            if (!isHeicImageFile(file)) {
+              return downscaleImageFile(file);
+            }
+            try {
+              return await prepareImageForAttachment(file, MAX_ATTACHMENT_SIZE_BYTES);
+            } catch (error) {
+              failures.push(error instanceof Error ? error.message : `Could not read ${file.name || 'the image'}.`);
+              return null;
+            }
+          }),
+        )
+      ).filter((file): file is File => file !== null);
 
       setFiles((previous) => [
         ...previous,
@@ -485,18 +508,17 @@ function useComposerAttachments(
       // reserved up front so a second paste during the first encode sees the
       // same budget the capacity check just computed.
       const generation = generationRef.current;
-      const failures: string[] = [];
       inFlightRef.current += cappedCompressible.length;
       setCompressingCount((count) => count + cappedCompressible.length);
       await Promise.all(
         cappedCompressible.map(async (file) => {
           try {
-            const compressed = await compressImageToByteLimit(file, MAX_ATTACHMENT_SIZE_BYTES);
+            const compressed = await prepareImageForAttachment(file, MAX_ATTACHMENT_SIZE_BYTES);
             if (generation !== generationRef.current) {
               return;
             }
             if (compressed.size > MAX_ATTACHMENT_SIZE_BYTES) {
-              failures.push(compressed.name || 'an image');
+              failures.push(`Could not shrink ${compressed.name || 'an image'} under ${MAX_ATTACHMENT_SIZE_MB} MB.`);
               return;
             }
             setFiles((previous) => [
@@ -510,9 +532,9 @@ function useComposerAttachments(
                 url: URL.createObjectURL(compressed),
               },
             ]);
-          } catch {
+          } catch (error) {
             if (generation === generationRef.current) {
-              failures.push(file.name || 'an image');
+              failures.push(error instanceof Error ? error.message : `Could not read ${file.name || 'the image'}.`);
             }
           } finally {
             inFlightRef.current -= 1;
@@ -521,7 +543,7 @@ function useComposerAttachments(
         }),
       );
       if (failures.length > 0 && generation === generationRef.current) {
-        onError(`Could not shrink ${failures.join(', ')} under ${MAX_ATTACHMENT_SIZE_MB} MB.`);
+        onError(failures.join(' '));
       }
     },
     [onError, setFiles],

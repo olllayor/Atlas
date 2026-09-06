@@ -39,7 +39,8 @@ export function SurfacePicker({ context, onOpen }: SurfacePickerProps) {
       shortcut: definition.shortcut,
       available: availability.available,
       body: availability.available ? definition.description : availability.hint,
-      badge: definition.kind === 'agents' ? context.agentCount : 0,
+      // Live running/waiting count only; idle presents as settled (no badge).
+      badge: definition.kind === 'agents' ? context.liveAgentCount : 0,
     };
   });
 

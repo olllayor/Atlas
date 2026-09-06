@@ -46,3 +46,12 @@ test('the agent count only moves when an agent starts or settles', () => {
     0
   );
 });
+
+test('idle agents never pin the live badge', () => {
+  const row = (payloadStatus: string): WorkLogEntry =>
+    ({ status: 'running', payload: { agentKind: 'agent', status: payloadStatus } }) as unknown as WorkLogEntry;
+
+  assert.equal(countRunningAgents([row('idle')]), 0);
+  assert.equal(countRunningAgents([row('running'), row('idle')]), 1);
+  assert.equal(countRunningAgents([row('waiting'), row('pending')]), 2);
+});

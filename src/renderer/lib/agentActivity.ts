@@ -15,6 +15,8 @@ export function countRunningAgents(activities: readonly WorkLogEntry[] | undefin
   let count = 0;
   for (const activity of activities) {
     if (activity.payload?.agentKind !== 'agent') continue;
+    // Idle is settled visual: resumable but never pins a live badge.
+    if ((activity.payload as { status?: unknown }).status === 'idle') continue;
     if (activity.status === 'running' || activity.status === 'pending_approval') count += 1;
   }
   return count;

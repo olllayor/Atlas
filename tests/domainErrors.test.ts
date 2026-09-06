@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Effect, Schedule } from 'effect';
+import { Effect } from 'effect';
 
 import {
   AuthError,
   RateLimitError,
   TimeoutError,
   fromAiDomainError,
-  makeAiRetrySchedule,
 } from '../src/main/ai/core/domainErrors.js';
-import { asAiEffect, toAiDomainError } from '../src/main/ai/core/ErrorNormalizer.js';
+import { toAiDomainError } from '../src/main/ai/core/ErrorNormalizer.js';
 
 test('AiDomainError tagged classes have correct tags and serialization', () => {
   const rateLimit = new RateLimitError({
@@ -29,11 +28,9 @@ test('AiDomainError tagged classes have correct tags and serialization', () => {
 });
 
 test('Effect.catchTags allows exhaustive typed branching over domain errors', async () => {
-  const failingEffect = asAiEffect(async () => {
-    const error = new Error('invalid api key');
-    (error as { status?: number }).status = 401;
-    throw error;
-  });
+  const raw = new Error('invalid api key');
+  (raw as { status?: number }).status = 401;
+  const failingEffect = Effect.fail(toAiDomainError(raw));
 
   const handled = failingEffect.pipe(
     Effect.catchTags({
@@ -54,28 +51,4 @@ test('Effect.catchTags allows exhaustive typed branching over domain errors', as
 
   const message = await Effect.runPromise(handled);
   assert.match(message, /Handled auth/);
-});
-
-test('makeAiRetrySchedule retries on retryable errors and succeeds when recovering', async () => {
-  let attempts = 0;
-  const flakeyService = Effect.gen(function* () {
-    attempts++;
-    if (attempts < 3) {
-      return yield* Effect.fail(
-        new RateLimitError({ message: '429', retryAfterMs: null, retryable: true })
-      );
-    }
-    return 'recovered';
-  });
-
-  const scheduled = flakeyService.pipe(
-    Effect.retry({
-      schedule: makeAiRetrySchedule({ maxRetries: 4, initialDelayMs: 5, maxDelayMs: 20 }),
-      while: (err) => err._tag === 'RateLimitError',
-    })
-  );
-
-  const result = await Effect.runPromise(scheduled);
-  assert.equal(result, 'recovered');
-  assert.equal(attempts, 3);
 });

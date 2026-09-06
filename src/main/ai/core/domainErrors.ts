@@ -1,4 +1,4 @@
-import { Data, Duration, Effect, Schedule } from 'effect';
+import { Data } from 'effect';
 import type { NormalizedError } from './ErrorNormalizer';
 
 /**
@@ -166,23 +166,4 @@ export function fromAiDomainError(error: AiDomainError): NormalizedError {
         retryable: false,
       };
   }
-}
-
-/**
- * Creates a reusable Effect-TS retry Schedule tailored for AI API requests.
- */
-export function makeAiRetrySchedule(options?: {
-  maxRetries?: number;
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-}) {
-  const maxRetries = options?.maxRetries ?? 3;
-  const initialDelayMs = options?.initialDelayMs ?? 500;
-  const maxDelayMs = options?.maxDelayMs ?? 8000;
-
-  return Schedule.exponential(Duration.millis(initialDelayMs)).pipe(
-    Schedule.jittered,
-    Schedule.either(Schedule.spaced(Duration.millis(maxDelayMs))),
-    Schedule.compose(Schedule.recurs(maxRetries))
-  );
 }

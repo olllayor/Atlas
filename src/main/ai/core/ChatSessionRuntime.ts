@@ -1793,7 +1793,11 @@ export class ChatSessionRuntime {
           message: buildRetryNotice(normalized.code, attempt, retryBudget),
         });
 
-        await sleep(delayMs);
+        // The sleep itself honours the abort signal, so a provider
+        // Retry-After can no longer hold a stopped turn for up to 60s; the
+        // check below preserves the previous contract of rethrowing the raw
+        // error when the stop lands during backoff.
+        await sleep(delayMs, signal);
 
         if (signal.aborted) {
           throw error;

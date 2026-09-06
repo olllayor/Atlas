@@ -1,4 +1,3 @@
-import { Effect } from 'effect';
 import {
   type AiDomainError,
   AbortedError,
@@ -513,16 +512,6 @@ export function normalizeError(error: unknown): NormalizedError {
 }
 
 /**
- * Executes a Promise-based function and returns an Effect that fails with a typed AiDomainError.
- */
-export function asAiEffect<A>(thunk: () => Promise<A>): Effect.Effect<A, AiDomainError> {
-  return Effect.tryPromise({
-    try: thunk,
-    catch: (raw) => toAiDomainError(raw),
-  });
-}
-
-/**
  * Exponential backoff with full jitter, deferring to a provider-supplied Retry-After.
  */
 export function computeRetryDelayMs(attempt: number, retryAfterMs?: number | null) {
@@ -534,8 +523,27 @@ export function computeRetryDelayMs(attempt: number, retryAfterMs?: number | nul
   return base / 2 + Math.floor(Math.random() * (base / 2));
 }
 
-export function sleep(ms: number) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+/**
+ * Resolves after `ms`, or as soon as `signal` aborts. The signal-aware form
+ * exists because a bare `setTimeout` is uninterruptible: a provider
+ * `Retry-After` up to MAX_RETRY_AFTER_MS (60s) would otherwise park an
+ * aborted turn with no way to observe the stop request until the timer
+ * expired. Resolving (rather than rejecting) on abort keeps callers in
+ * control of how to observe the stop.
+ */
+export function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
   });
 }

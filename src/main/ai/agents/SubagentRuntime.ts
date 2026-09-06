@@ -24,12 +24,22 @@ import {
   SubagentTaskState,
   TaskSlotQueue,
 } from './subagentTasks';
+import { logger } from '../../observability/logger';
+import { sleep } from '../core/ErrorNormalizer';
 import { snapshotSubagentDescriptor } from './subagentDescriptor';
 
 export type { SubagentCapabilities };
 
 /** How long a cascade stop waits on a child before moving on. */
 export const CHILD_INTERRUPT_TIMEOUT_MS = 800;
+
+/**
+ * How long clearing a conversation's background tasks waits for aborted
+ * one-shot agents to settle before giving up on the join. Their records are
+ * dropped either way; the bound only stops one wedged turn from hanging
+ * conversation deletion forever.
+ */
+export const BACKGROUND_CLEAR_JOIN_TIMEOUT_MS = 2_000;
 
 function withTimeout(promise: Promise<unknown>, ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -1054,12 +1064,14 @@ export class SubagentRuntime {
   /**
    * Wait for a background agent to settle, up to `timeoutMs`. Resolves with
    * the snapshot at settlement or timeout — a timed-out agent keeps running.
-   * A settled wait marks the agent reported.
+   * An aborted `signal` resolves early with the live snapshot instead of
+   * idling out the remaining timeout. A settled wait marks the agent reported.
    */
   async waitBackgroundAgent(
     agentId: string,
     timeoutMs: number,
-    conversationId: string
+    conversationId: string,
+    options?: { signal?: AbortSignal }
   ): Promise<BackgroundAgentSnapshot | undefined> {
     const record = this.backgroundRecord(agentId, conversationId);
     if (!record) {
@@ -1069,7 +1081,7 @@ export class SubagentRuntime {
     if (!record.state.isFinal) {
       await Promise.race([
         record.donePromise,
-        new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, timeoutMs))),
+        sleep(Math.max(0, timeoutMs), options?.signal),
       ]);
     }
 
@@ -1120,7 +1132,17 @@ export class SubagentRuntime {
         if (childId) {
           try {
             await this.continuationManager?.interruptForParent?.(conversationId, childId);
-          } catch {}
+          } catch (err) {
+            // A failed interrupt must not block the delete path, but it must
+            // also not vanish: the child may keep running against a
+            // conversation that no longer exists.
+            logger.warn('subagent.background_clear_interrupt_failed', {
+              conversationId,
+              childId,
+              reason,
+              error: err,
+            });
+          }
         }
       } else {
         liveOneShot.push(record);
@@ -1131,7 +1153,13 @@ export class SubagentRuntime {
       record.controller.abort();
       record.reported = true;
     }
-    await Promise.allSettled(liveOneShot.map((record) => record.donePromise));
+    // Bounded join: the records are dropped right after this either way, so a
+    // wedged aborted turn must not hang conversation deletion. Abandoning the
+    // loser is the intended semantics here — same trade as cascade stop.
+    await withTimeout(
+      Promise.allSettled(liveOneShot.map((record) => record.donePromise)),
+      BACKGROUND_CLEAR_JOIN_TIMEOUT_MS
+    );
     for (const agentId of ids) {
       this.backgroundTasks.delete(agentId);
     }

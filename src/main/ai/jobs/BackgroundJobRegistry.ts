@@ -322,13 +322,20 @@ export class BackgroundJobRegistry {
   /**
    * Wait for settlement, up to `timeoutMs`. Resolves with the terminal
    * snapshot, or the live snapshot at timeout — a timed-out job keeps
-   * running. A settled wait marks the job reported.
+   * running. An aborted `signal` resolves early with the live snapshot
+   * instead of idling out the remaining timeout. A settled wait marks the
+   * job reported.
    */
-  async wait(id: string, timeoutMs: number, conversationId: string): Promise<JobSnapshot> {
+  async wait(
+    id: string,
+    timeoutMs: number,
+    conversationId: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<JobSnapshot> {
     const job = this.expectFenced(id, conversationId);
 
     if (!isTerminal(job.status)) {
-      await Promise.race([job.settled, sleep(Math.max(0, timeoutMs))]);
+      await Promise.race([job.settled, sleep(Math.max(0, timeoutMs), options?.signal)]);
     }
 
     if (isTerminal(job.status)) {
@@ -487,8 +494,27 @@ const JOB_TAIL_LINES = 3;
 /** Per-line cap so one runaway line cannot bloat every broadcast. */
 const JOB_TAIL_LINE_MAX_CHARS = 160;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Resolves after `ms`, or as soon as `signal` aborts. This registry is
+ * deliberately import-free, so it carries its own copy of the signal-aware
+ * sleep rather than pulling in `ErrorNormalizer`. Resolves (rather than
+ * rejects) on abort; the caller decides how to observe the stop.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 }
 
 /**

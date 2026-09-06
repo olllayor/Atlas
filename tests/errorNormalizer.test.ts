@@ -4,14 +4,12 @@ import test from 'node:test';
 import {
   HttpStatusError,
   ProviderStalledError,
-  asAiEffect,
   computeRetryDelayMs,
   isTransientNetworkError,
   normalizeError,
   parseRetryAfterMs,
   toAiDomainError
 } from '../src/main/ai/core/ErrorNormalizer.js';
-import { Effect } from 'effect';
 
 test('normalizeError treats dropped connections as retryable', () => {
   for (const message of ['fetch failed', 'socket hang up', 'terminated', 'ECONNRESET']) {
@@ -111,21 +109,4 @@ test('normalizeError classifies wrapped AI SDK rate limit errors as rate_limited
   const domainErr = toAiDomainError(rawAiSdkError);
   assert.equal(domainErr._tag, 'RateLimitError');
   assert.equal(domainErr.retryable, true);
-});
-
-test('asAiEffect turns a rejecting promise into a typed Effect error channel', async () => {
-  const effect = asAiEffect(async () => {
-    throw new Error('Failed after 3 attempts. Last error: Too Many Requests');
-  });
-
-  const result = await Effect.runPromise(
-    effect.pipe(
-      Effect.match({
-        onFailure: (error) => ({ failed: true, tag: error._tag }),
-        onSuccess: () => ({ failed: false, tag: '' }),
-      })
-    )
-  );
-
-  assert.deepEqual(result, { failed: true, tag: 'RateLimitError' });
 });

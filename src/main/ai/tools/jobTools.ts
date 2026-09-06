@@ -89,12 +89,13 @@ export function createJobTools(
           .optional()
           .describe('How long to wait when wait is true; defaults to 30000')
       }),
-      execute: async (input) => {
+      execute: async (input, execOptions) => {
         if (input.wait) {
           const snapshot = await registry.wait(
             input.job_id,
             input.timeout_ms ?? JOB_WAIT_DEFAULT_MS,
-            conversationId
+            conversationId,
+            { signal: execOptions?.abortSignal }
           );
           // After a wait the job may have produced output nobody read yet.
           const { text } = registry.read(input.job_id, conversationId);

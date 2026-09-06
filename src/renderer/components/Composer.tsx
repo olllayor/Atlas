@@ -27,6 +27,11 @@ import {
   normalizeAttachmentMediaType,
 } from '../../shared/attachments';
 import type { ReasoningEffort, ToolPermissionMode } from '../../shared/chatParameters';
+import {
+  buildComposerPromptHistoryEntries,
+  stepComposerPromptHistory,
+  type ComposerPromptHistoryPosition,
+} from '../../shared/composerPromptHistory';
 import { planImageDownscale } from '../../shared/imageDownscale';
 import { cn } from '../lib/utils';
 import { parseStandaloneSlashCommand, parseStandaloneCommandWithArgs } from '../lib/slashCommands';
@@ -266,6 +271,95 @@ const convertBlobUrlToDataUrl = async (url: string): Promise<string | null> => {
     return null;
   }
 };
+
+/**
+ * True when the textarea's collapsed caret sits on the first ("start") or
+ * last ("end") visual line, counting soft wraps. Ported from t3code PR #9173
+ * (there against a Lexical editor, here against the plain textarea): prompt
+ * history only claims ArrowUp/ArrowDown at these edges so arrows still move
+ * the caret inside multiline text.
+ *
+ * Hard newlines short-circuit before any layout read. Soft wraps are measured
+ * with a hidden mirror holding the text before the caret plus a marker: the
+ * marker's offset gives the caret's visual line.
+ */
+function isTextareaCaretOnVisualEdge(
+  textarea: HTMLTextAreaElement,
+  edge: 'start' | 'end',
+): boolean {
+  const caret = textarea.selectionStart ?? 0;
+  if (textarea.selectionEnd !== caret) return false;
+  const value = textarea.value;
+  if (value.length === 0) return true;
+  const beforeCaret = value.slice(0, caret);
+  const afterCaret = value.slice(caret);
+  if (edge === 'start' ? beforeCaret.includes('\n') : afterCaret.includes('\n')) {
+    return false;
+  }
+
+  const style = globalThis.getComputedStyle(textarea);
+  const mirror = document.createElement('div');
+  const mirrored = [
+    'fontFamily',
+    'fontSize',
+    'fontWeight',
+    'fontStyle',
+    'letterSpacing',
+    'textTransform',
+    'textIndent',
+    'paddingTop',
+    'paddingRight',
+    'paddingBottom',
+    'paddingLeft',
+    'borderTopWidth',
+    'borderRightWidth',
+    'borderBottomWidth',
+    'borderLeftWidth',
+    'boxSizing',
+    'lineHeight',
+    'tabSize',
+  ] as const;
+  for (const prop of mirrored) {
+    mirror.style[prop] = style[prop];
+  }
+  mirror.style.position = 'absolute';
+  mirror.style.visibility = 'hidden';
+  mirror.style.top = '-9999px';
+  mirror.style.left = '-9999px';
+  mirror.style.width = `${textarea.clientWidth}px`;
+  mirror.style.whiteSpace = 'pre-wrap';
+  mirror.style.overflowWrap = 'break-word';
+  mirror.append(
+    document.createTextNode(beforeCaret),
+    (() => {
+      const marker = document.createElement('span');
+      marker.textContent = '\u200b';
+      return marker;
+    })(),
+    document.createTextNode(afterCaret),
+  );
+  document.body.append(mirror);
+  try {
+    const parsedLineHeight = Number.parseFloat(style.lineHeight);
+    const lineHeight =
+      Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+        ? parsedLineHeight
+        : Number.parseFloat(style.fontSize) * 1.2;
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) return false;
+    const marker = mirror.querySelector('span');
+    if (!marker) return false;
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+    const caretLine = Math.round((marker.offsetTop - paddingTop) / lineHeight);
+    const totalLines = Math.max(
+      1,
+      Math.round((mirror.scrollHeight - paddingTop - paddingBottom) / lineHeight),
+    );
+    return edge === 'start' ? caretLine <= 0 : caretLine >= totalLines - 1;
+  } finally {
+    mirror.remove();
+  }
+}
 
 /**
  * Validation (accept list, per-file size, count cap) and blob-URL lifecycle for
@@ -557,6 +651,8 @@ export function Composer({
   const [scrollEdges, setScrollEdges] = useState({ bottom: false, top: false });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fieldRef = useRef<HTMLDivElement>(null);
+  // Active ArrowUp recall. Cleared on edit and on conversation switch.
+  const promptHistoryPositionRef = useRef<ComposerPromptHistoryPosition | null>(null);
   const selectedModel = useMemo(() => {
     if (!selectedModelId) return null;
     if (selectedProviderId) {
@@ -875,6 +971,99 @@ export function Composer({
     }
   }, [isStreaming]);
 
+  // The composer persists across conversations. A recall from conversation A
+  // must not be treated as active in B, where the text-match fallback could
+  // otherwise turn B's own draft into a browsing position.
+  useEffect(() => {
+    promptHistoryPositionRef.current = null;
+  }, [conversationId]);
+
+  // Any edit ends browsing, even one later undone by hand: typing a
+  // character and deleting it leaves the text equal to the recall, and
+  // ArrowDown must move the caret then, not clear the composer.
+  useEffect(() => {
+    if (promptHistoryPositionRef.current && promptHistoryPositionRef.current.recalled !== value) {
+      promptHistoryPositionRef.current = null;
+    }
+  }, [value]);
+
+  // ------------------------------------------------------------------
+  // Prompt history (ArrowUp / ArrowDown), ported from t3code PR #9173.
+  //
+  // Entries are built on the keypress, not per render, and read straight
+  // from the store so the composer stays off the token path.
+  // ------------------------------------------------------------------
+  const replacePromptFromHistory = useCallback(
+    (position: ComposerPromptHistoryPosition | null, nextPrompt: string) => {
+      promptHistoryPositionRef.current = position;
+      onChange(nextPrompt);
+      // The draft store re-renders with the new value; put the caret at the
+      // end once it lands.
+      requestAnimationFrame(() => {
+        const element = textareaRef.current;
+        if (!element) return;
+        element.selectionStart = element.selectionEnd = nextPrompt.length;
+        syncTextareaHeight();
+      });
+    },
+    [onChange, syncTextareaHeight],
+  );
+
+  const navigatePromptHistory = useCallback(
+    (direction: 'backward' | 'forward', event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+      if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey || isComposing || event.nativeEvent.isComposing) {
+        return false;
+      }
+      if (disabled) return false;
+      // Autocomplete menus own the arrows while open.
+      if (plugins.isOpen || mentions.isOpen || commands.isOpen) return false;
+      // A composer holding files or staged quotes is not empty: recalling
+      // text into it would send the old prompt with the new context, which
+      // is never what ArrowUp meant.
+      if (attachments.files.length > 0 || stagedCitations.length > 0) return false;
+      // A typed draft with no active recall can never step, so skip the
+      // layout read and the entry build for that common case.
+      if (promptHistoryPositionRef.current === null && value.length > 0) return false;
+      const element = textareaRef.current;
+      if (!element || !isTextareaCaretOnVisualEdge(element, direction === 'backward' ? 'start' : 'end')) {
+        return false;
+      }
+      const messages = conversationId
+        ? (useAppStore.getState().conversationDetails[conversationId]?.messages ?? [])
+        : [];
+      const step = stepComposerPromptHistory({
+        direction,
+        entries: buildComposerPromptHistoryEntries(
+          messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            text: message.parts
+              .filter((part): part is Extract<typeof message.parts[number], { type: 'text' }> => part.type === 'text')
+              .map((part) => part.text)
+              .join('\n\n'),
+          })),
+        ),
+        position: promptHistoryPositionRef.current,
+        currentPrompt: value,
+      });
+      if (!step) return false;
+      replacePromptFromHistory(step.position, step.prompt);
+      return true;
+    },
+    [
+      attachments.files.length,
+      commands.isOpen,
+      conversationId,
+      disabled,
+      isComposing,
+      mentions.isOpen,
+      plugins.isOpen,
+      replacePromptFromHistory,
+      stagedCitations.length,
+      value,
+    ],
+  );
+
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Consumed keys must stop here so they neither submit nor move the caret,
     // and must not reach the app's global Escape handling.
@@ -882,6 +1071,14 @@ export function Composer({
       event.preventDefault();
       event.stopPropagation();
       return;
+    }
+
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      if (navigatePromptHistory(event.key === 'ArrowUp' ? 'backward' : 'forward', event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
     }
 
     if (event.key === 'Escape' && isStreaming) {

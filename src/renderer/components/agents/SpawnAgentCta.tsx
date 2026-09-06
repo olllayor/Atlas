@@ -209,7 +209,7 @@ export function SpawnAgentCta({
             className="inline-flex items-center gap-1 font-medium text-accent transition-colors hover:underline hover:text-accent-hover focus:outline-none cursor-pointer"
           >
             <span>View</span>
-            <span className="text-[10px] leading-none select-none">▸</span>
+            <span className="text-2xs leading-none select-none">▸</span>
           </button>
         </div>
       </div>

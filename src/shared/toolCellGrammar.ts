@@ -648,6 +648,12 @@ function exploreEntryFor(part: ChatToolPart): ExploreEntry {
   const path = pathOf(part);
   const query = queryOf(part);
 
+  // Image views read a file like any other read (t3code PR #9597): as a
+  // `Read` entry they join the surrounding explore run instead of splitting
+  // it with one `Viewed X` row per image.
+  if (toolCellKind(part) === 'image') {
+    return { label: 'Read', values: [path ? basename(path) : part.toolName] };
+  }
   if (name.includes('glob') || name.includes('list')) {
     return { label: 'List', values: [path ?? query ?? part.toolName] };
   }
@@ -927,9 +933,11 @@ function buildExploreCell(parts: ChatToolPart[]): ToolCell {
 /**
  * Reduce an ordered list of tool parts into transcript cells.
  *
- * Consecutive explore-kind calls collapse into one `Explored` cell; every
- * other call gets its own. A call awaiting approval never coalesces —
- * it needs its own decision surface.
+ * Consecutive explore-kind calls collapse into one `Explored` cell, and image
+ * views join that run as reads (t3code PR #9597) — a bare image path no
+ * longer splits an otherwise ordinary read group. Every other call gets its
+ * own. A call awaiting approval never coalesces — it needs its own decision
+ * surface.
  */
 export function buildToolCells(parts: ChatToolPart[]): ToolCell[] {
   const cells: ToolCell[] = [];
@@ -950,8 +958,10 @@ export function buildToolCells(parts: ChatToolPart[]): ToolCell[] {
       continue;
     }
 
+    const kind = toolCellKind(part);
     const coalescable =
-      toolCellKind(part) === 'explore' && toolCellStatus(part.state) !== 'awaiting-approval';
+      (kind === 'explore' || kind === 'image') &&
+      toolCellStatus(part.state) !== 'awaiting-approval';
 
     if (coalescable) {
       pendingExplore.push(part);

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 
+import { toolGroupConsumesUpwardNavigation } from '../components/chat/ChatView.logic';
+
 /**
  * The transcript's own read of the scroll container.
  *
@@ -17,6 +19,13 @@ import { useEffect, useRef, useState, type MutableRefObject } from 'react';
  * gesture, wherever the pointer is, escapes the lock immediately. Double
  * handling with the library is harmless — both paths converge on the same
  * `stopScroll()`, which is idempotent.
+ *
+ * The one exception is a scroller that legitimately owns the gesture: the
+ * bounded live activity log has its own scrollback, and reading back through
+ * a running turn's steps is not a request to leave the live edge. It says so
+ * with `data-tool-group-scroll`, and only while it actually has somewhere to
+ * go — at its own top the gesture is the transcript's again. Ported from
+ * t3code PR #9106.
  *
  * The same listener set answers two other questions the library answers
  * badly: whether the user has ever scrolled at all (so auto-load-older does
@@ -88,7 +97,11 @@ export function useTranscriptScroll({
         return;
       }
       if (event.deltaY < -1) {
-        escapeUp();
+        if (!toolGroupConsumesUpwardNavigation(event.target)) {
+          escapeUp();
+        } else {
+          userHasScrolledRef.current = true;
+        }
       } else if (event.deltaY > 1) {
         userHasScrolledRef.current = true;
       }
@@ -114,6 +127,10 @@ export function useTranscriptScroll({
         return;
       }
       if (UPWARD_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) {
+        if (toolGroupConsumesUpwardNavigation(event.target)) {
+          userHasScrolledRef.current = true;
+          return;
+        }
         escapeUp();
         return;
       }

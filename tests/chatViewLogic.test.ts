@@ -6,6 +6,8 @@ import {
   chatPartsToTimelineEntries,
   getAntigravitySendBlockReason,
   shouldReleaseTimelineAnchorForToolActivity,
+  shouldShowComposerContextStrip,
+  toolGroupConsumesUpwardNavigation,
   type ServerProvider,
   type TimelineEntry
 } from '../src/renderer/components/chat/ChatView.logic.js';
@@ -365,4 +367,150 @@ test('handles whitespace-only commands without releasing anchor', () => {
     }),
     false
   );
+});
+
+test('shouldShowComposerContextStrip keeps strip expanded during draft state', () => {
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: false,
+      hasProject: true,
+      persistComposerContextStrip: false
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: false,
+      hasProject: false,
+      persistComposerContextStrip: false
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: false,
+      hasProject: true,
+      persistComposerContextStrip: true
+    }),
+    true
+  );
+});
+
+test('shouldShowComposerContextStrip collapses in active conversation when preference is false', () => {
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: true,
+      hasProject: true,
+      persistComposerContextStrip: false
+    }),
+    false
+  );
+});
+
+test('shouldShowComposerContextStrip stays expanded in active conversation when preference is true', () => {
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: true,
+      hasProject: true,
+      persistComposerContextStrip: true
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: true,
+      persistComposerContextStrip: true
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowComposerContextStrip({
+      conversationStarted: true,
+      hasProject: false,
+      persistComposerContextStrip: true
+    }),
+    false
+  );
+});
+
+
+// ---------------------------------------------------------------------------
+// toolGroupConsumesUpwardNavigation
+// ---------------------------------------------------------------------------
+
+/**
+ * A DOM stand-in: this suite is bare `node --test` with no jsdom, which is why
+ * the helper reads overflow through an injected function rather than
+ * `getComputedStyle`.
+ */
+type FakeNode = {
+  scrollTop: number;
+  overflowY: string;
+  isToolGroup: boolean;
+  parentElement: FakeNode | null;
+  closest(selector: string): FakeNode | null;
+};
+
+const readOverflowY = (target: unknown) => (target as FakeNode).overflowY;
+
+function fakeNode(
+  options: { scrollTop?: number; overflowY?: string; isToolGroup?: boolean },
+  parent: FakeNode | null = null
+): FakeNode {
+  const self: FakeNode = {
+    scrollTop: options.scrollTop ?? 0,
+    overflowY: options.overflowY ?? 'visible',
+    isToolGroup: options.isToolGroup ?? false,
+    parentElement: parent,
+    closest(selector: string) {
+      if (selector !== '[data-tool-group-scroll]') return null;
+      for (let node: FakeNode | null = self; node; node = node.parentElement) {
+        if (node.isToolGroup) return node;
+      }
+      return null;
+    }
+  };
+  return self;
+}
+
+test('toolGroupConsumesUpwardNavigation leaves the transcript lock alone outside a tool log', () => {
+  const transcript = fakeNode({ scrollTop: 400, overflowY: 'auto' });
+  const row = fakeNode({}, transcript);
+  assert.equal(toolGroupConsumesUpwardNavigation(row, readOverflowY), false);
+});
+
+test('toolGroupConsumesUpwardNavigation claims the gesture while the log has scrollback', () => {
+  const transcript = fakeNode({ scrollTop: 400, overflowY: 'auto' });
+  const log = fakeNode({ scrollTop: 120, overflowY: 'auto', isToolGroup: true }, transcript);
+  const step = fakeNode({}, log);
+  assert.equal(toolGroupConsumesUpwardNavigation(step, readOverflowY), true);
+});
+
+test('toolGroupConsumesUpwardNavigation releases the gesture at the log top', () => {
+  // Nothing left above inside the log, so the wheel is the transcript's again
+  // and the reader is deliberately leaving the live edge.
+  const transcript = fakeNode({ scrollTop: 400, overflowY: 'auto' });
+  const log = fakeNode({ scrollTop: 0, overflowY: 'auto', isToolGroup: true }, transcript);
+  const step = fakeNode({}, log);
+  assert.equal(toolGroupConsumesUpwardNavigation(step, readOverflowY), false);
+});
+
+test('toolGroupConsumesUpwardNavigation counts a scrolled result inside the log', () => {
+  const log = fakeNode({ scrollTop: 0, overflowY: 'auto', isToolGroup: true });
+  const output = fakeNode({ scrollTop: 60, overflowY: 'scroll' }, log);
+  const line = fakeNode({}, output);
+  assert.equal(toolGroupConsumesUpwardNavigation(line, readOverflowY), true);
+});
+
+test('toolGroupConsumesUpwardNavigation ignores scroll state above the log', () => {
+  // The transcript being scrolled is the whole reason the gesture matters; it
+  // must never be the reason the log claims it.
+  const transcript = fakeNode({ scrollTop: 400, overflowY: 'auto' });
+  const log = fakeNode({ scrollTop: 0, overflowY: 'auto', isToolGroup: true }, transcript);
+  assert.equal(toolGroupConsumesUpwardNavigation(log, readOverflowY), false);
+});
+
+test('toolGroupConsumesUpwardNavigation ignores a non-event target', () => {
+  assert.equal(toolGroupConsumesUpwardNavigation(null, readOverflowY), false);
+  assert.equal(toolGroupConsumesUpwardNavigation({}, readOverflowY), false);
 });

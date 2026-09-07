@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef } from 'react';
 
 import { formatElapsed } from '../../../shared/toolCellGrammar';
 import {
+  reasoningTimingId,
   stableId,
   useDisclosure,
   useTranscriptUiStore,
@@ -36,6 +37,16 @@ export function ReasoningCell({
   text,
   isStreaming = false,
   partId,
+  /**
+   * Namespaces the timing entry by turn (the message id or draft request
+   * id). Provider reasoning part ids restart every turn (`reasoning-delta`
+   * carries the content-block index, e.g. `"0"`), so an unscoped key is
+   * shared by every turn's first reasoning run: a later turn would inherit
+   * an earlier turn's start time — or an entry left open when a turn was
+   * replaced mid-stream — and render `Thought for 2h 46m` on a 3-minute
+   * turn. The disclosure key stays unscoped so expand state is preserved.
+   */
+  timingScope,
 }: {
   text?: string | null;
   isStreaming?: boolean;
@@ -46,6 +57,7 @@ export function ReasoningCell({
    * ever appends.
    */
   partId?: string;
+  timingScope?: string;
 }) {
   const trimmed = text?.trim();
 
@@ -53,10 +65,11 @@ export function ReasoningCell({
     () => partId ?? stableId('reasoning', (trimmed ?? '').slice(0, 96)),
     [partId, trimmed]
   );
+  const timingId = reasoningTimingId(cellId, timingScope);
 
   const startTiming = useTranscriptUiStore((state) => state.startTiming);
   const endTiming = useTranscriptUiStore((state) => state.endTiming);
-  const timing = useTranscriptUiStore((state) => state.timings[cellId]);
+  const timing = useTranscriptUiStore((state) => state.timings[timingId]);
 
   // The hashed fallback id only settles once ~96 characters have streamed
   // in, so the first delta or two can produce a throwaway id. Handing the
@@ -64,10 +77,13 @@ export function ReasoningCell({
   const previousCellId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isStreaming) startTiming(cellId, previousCellId.current ?? undefined);
-    else endTiming(cellId);
+    const previousTimingId = previousCellId.current
+      ? reasoningTimingId(previousCellId.current, timingScope)
+      : undefined;
+    if (isStreaming) startTiming(timingId, previousTimingId);
+    else endTiming(timingId);
     previousCellId.current = cellId;
-  }, [cellId, isStreaming, startTiming, endTiming]);
+  }, [cellId, timingId, timingScope, isStreaming, startTiming, endTiming]);
 
   // Collapsed by default, streaming or not — the reference app shows only
   // the shimmering `Thinking` label while the model works. `useDisclosure`

@@ -350,6 +350,47 @@ describe('buildToolCells', () => {
     assert.equal(cells[1].detail.type, 'approval');
   });
 
+  it('folds image views into the surrounding explore run as reads (t3code PR #9597)', () => {
+    const cells = buildToolCells([
+      toolPart({ id: 'r1', toolName: 'read_file', input: { path: 'src/a.ts' }, output: '' }),
+      toolPart({
+        id: 'v1',
+        toolName: 'view_image',
+        toolType: 'image_view',
+        input: { path: 'assets/shot.png' },
+        output: '',
+      }),
+      toolPart({ id: 'r2', toolName: 'read_file', input: { path: 'src/b.ts' }, output: '' }),
+    ]);
+
+    assert.equal(cells.length, 1, 'a bare image path must not split the read group');
+    assert.equal(cells[0].kind, 'explore');
+    assert.equal(cells[0].label, 'Explored 3 files');
+    const detail = cells[0].detail;
+    if (detail.type !== 'explore') throw new Error('expected explore detail');
+    assert.deepEqual(
+      detail.entries.flatMap((entry) => entry.values),
+      ['a.ts', 'shot.png', 'b.ts']
+    );
+  });
+
+  it('keeps an image view awaiting approval on its own row', () => {
+    const cells = buildToolCells([
+      toolPart({ id: 'r1', toolName: 'read_file', input: { path: 'a.ts' }, output: '' }),
+      toolPart({
+        id: 'v1',
+        toolName: 'view_image',
+        toolType: 'image_view',
+        state: 'approval-requested',
+        input: { path: 'assets/shot.png' },
+        approval: { id: 'a1', reason: 'outside the workspace' },
+      }),
+    ]);
+
+    assert.equal(cells.length, 2);
+    assert.equal(cells[1].status, 'awaiting-approval');
+  });
+
   it('renders empty command output as an explicit empty marker', () => {
     const cells = buildToolCells([
       toolPart({

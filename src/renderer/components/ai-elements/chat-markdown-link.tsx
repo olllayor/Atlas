@@ -12,7 +12,7 @@ import React, {
 
 import { cn } from '../../lib/utils';
 import { parseAssistantCitationHref } from '../../../shared/citations';
-import { parseFileRef } from '../../../shared/fileRef';
+import { decodeFileRefHash, parseFileRef } from '../../../shared/fileRef';
 import {
   faviconUrlForOrigin,
   leadingExternalLinkTextLength,
@@ -182,6 +182,21 @@ export function MarkdownAnchor({
   onClick,
   ...props
 }: ComponentProps<'a'> & { node?: unknown }) {
+  // File refs arrive hash-encoded (`remarkRewriteFileRefLinks`): bare-relative
+  // hrefs never survive the sanitizer, so the remark phase carries them past
+  // it as `#atlas-file:…` fragments. Decode back to a path for the chip —
+  // the title shows the full path, the link text keeps its words.
+  if (href) {
+    const hashed = decodeFileRefHash(href);
+    if (hashed) {
+      return (
+        <FileRefChip href={hashed.line ? `${hashed.path}:${hashed.line}` : hashed.path}>
+          {children}
+        </FileRefChip>
+      );
+    }
+  }
+
   if (href && parseFileRef(href)) {
     return <FileRefChip href={href}>{children}</FileRefChip>;
   }

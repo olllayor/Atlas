@@ -1218,6 +1218,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.settings
     }));
     await get().loadConversation(created.id);
+    // A new thread is for typing in: land the caret in the composer for
+    // every creation path (sidebar button, `chat.new` shortcut, deep links).
+    get().requestComposerFocus();
     return created;
   },
 
@@ -1236,6 +1239,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.settings
     }));
     await get().loadConversation(created.id);
+    get().requestComposerFocus();
   },
 
   forkConversation: async (conversationId) => {
@@ -2318,13 +2322,33 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const now = new Date().toISOString();
     const optimisticId = `optimistic-${request.requestId}`;
+    // The persisted message carries the files, so the optimistic row must too:
+    // it stays on screen for the whole turn (the page only refetches at a
+    // terminal event), and without file parts the sent image is missing until
+    // the turn completes. URLs here are display-only — data URLs after the
+    // composer's blob→dataURL pass, so the blob revoke in `clearComposerDraft`
+    // cannot break the thumbnail.
+    const optimisticParts = [
+      ...(trimmed
+        ? [{ type: 'text' as const, text: trimmed, state: 'done' as const, id: `${optimisticId}-text-0` }]
+        : []),
+      ...normalizedFiles.map((file, index) => ({
+        type: 'file' as const,
+        id: `${optimisticId}-file-${index}`,
+        mediaType: file.mediaType,
+        url: file.url,
+        ...(file.filename ? { filename: file.filename } : {}),
+        ...(file.sizeBytes !== undefined ? { sizeBytes: file.sizeBytes } : {}),
+        ...(file.storageKey ? { storageKey: file.storageKey } : {}),
+      })),
+    ];
     const optimisticMessage = {
       id: optimisticId,
       conversationId,
       role: 'user' as const,
       content: previewContent,
       reasoning: null,
-      parts: [{ type: 'text' as const, text: trimmed, state: 'done' as const, id: `${optimisticId}-text-0` }],
+      parts: optimisticParts,
       status: 'complete' as const,
       providerId,
       modelId,

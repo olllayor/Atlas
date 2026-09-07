@@ -1243,6 +1243,33 @@ select {
   );
 }
 
+/*
+ * Live activity log — the bounded scroll box inside a streaming turn's
+ * `Working …` fold (`transcript/ActivityBlock`). The mask, not an overlay:
+ * the box sits in the flow of a message row over whatever surface that row
+ * has, so a painted gradient would need a colour it cannot know. Both stops
+ * are 0px until the box actually has something behind that edge, which makes
+ * the mask a no-op rather than a permanent soft frame.
+ */
+.activity-log-scroll {
+  --activity-fade-top: 0px;
+  --activity-fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--activity-fade-top),
+    black calc(100% - var(--activity-fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--activity-fade-top),
+    black calc(100% - var(--activity-fade-bottom)),
+    transparent 100%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .scroll-edge-fade-bottom::after {
     /* Static dimming is still motion-adjacent for some readers; the fade is

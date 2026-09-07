@@ -117,3 +117,67 @@ export function fileRefBadge(extension: string): string {
 
   return (collapsed[extension] ?? (extension.slice(0, 2) || '··')).toUpperCase();
 }
+
+/**
+ * Fragment prefix that carries a file reference through the markdown
+ * sanitizer.
+ *
+ * Streamdown's bundled `rehype-harden` (default config, no `defaultOrigin`)
+ * cannot parse bare project-relative hrefs — exactly the `[Name](src/…)`
+ * shape the model is asked to write — and replaces those links with a
+ * `<span>text [blocked]</span>` before the transcript's anchor component ever
+ * runs, so file chips never render (t3code never hits this: react-markdown +
+ * rehype-sanitize keeps relative links and resolves them at render time).
+ * Hash-only URLs pass hardening untouched, so the remark phase rewrites
+ * file-ref hrefs into this fragment and the anchor decodes it back into a
+ * chip. The encoded path never holds a literal colon (`encodeURIComponent`
+ * escapes it), so the trailing `:line` split below is unambiguous.
+ */
+export const FILE_REF_HASH_PREFIX = '#atlas-file:';
+
+/** `file://` URLs the model sometimes emits instead of a bare path. */
+export function fileUrlToPath(href: string): string | null {
+  const match = /^file:\/\/(?:localhost)?(\/[^?#]*)(?:[?#].*)?$/i.exec(href.trim());
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return match[1]!;
+  }
+}
+
+export function encodeFileRefHref(ref: Pick<FileRef, 'path' | 'line'>): string {
+  return `${FILE_REF_HASH_PREFIX}${encodeURIComponent(ref.path)}${ref.line ? `:${ref.line}` : ''}`;
+}
+
+/** Inverse of `encodeFileRefHref`, re-validated through `parseFileRef`. */
+export function decodeFileRefHash(href: string): FileRef | null {
+  if (!href.startsWith(FILE_REF_HASH_PREFIX)) return null;
+  const rest = href.slice(FILE_REF_HASH_PREFIX.length);
+  const located = /^(.+?)(?::(\d+))?$/.exec(rest);
+  if (!located) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(located[1]!);
+  } catch {
+    return null;
+  }
+  const line = located[2] !== undefined ? Number(located[2]) : null;
+  return parseFileRef(line !== null ? `${path}:${line}` : path);
+}
+
+/**
+ * Rewrite one markdown link destination into a sanitizer-safe fragment when
+ * it names a project file — directly (`src/…`, `/abs/…`, `name.ext`) or
+ * wrapped in `file://`. Anything else returns null (leave the href alone).
+ */
+export function rewriteFileRefHref(href: string): string | null {
+  const direct = parseFileRef(href);
+  if (direct) return encodeFileRefHref(direct);
+  const unwrapped = fileUrlToPath(href);
+  if (unwrapped) {
+    const ref = parseFileRef(unwrapped);
+    if (ref) return encodeFileRefHref(ref);
+  }
+  return null;
+}

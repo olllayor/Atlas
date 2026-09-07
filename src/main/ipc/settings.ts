@@ -281,6 +281,10 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
         settingsRepo.setRawTranscript(appearancePatch.rawTranscript);
       }
 
+      if (typeof appearancePatch?.persistComposerContextStrip === 'boolean') {
+        settingsRepo.setPersistComposerContextStrip(appearancePatch.persistComposerContextStrip);
+      }
+
       if (patch?.keyboard?.keybindings) {
         settingsRepo.setKeybindings(patch.keyboard.keybindings);
       }

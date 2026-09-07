@@ -1273,6 +1273,8 @@ export type SettingsAppearanceSummary = {
    * hatch: same content, rendered as the characters it actually is.
    */
   rawTranscript: boolean;
+  /** Keep project, branch, and worktree controls visible below the composer after a conversation starts. */
+  persistComposerContextStrip: boolean;
 };
 
 export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
@@ -1304,6 +1306,7 @@ export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   reduceMotion: 'system',
   pointerCursors: false,
   rawTranscript: false,
+  persistComposerContextStrip: false,
 };
 
 export type SettingsKeyboardSummary = {
@@ -2479,6 +2482,7 @@ export type SettingsUpdateRequest = {
     reduceMotion?: ReduceMotionMode;
     pointerCursors?: boolean;
     rawTranscript?: boolean;
+    persistComposerContextStrip?: boolean;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];

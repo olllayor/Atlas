@@ -55,13 +55,19 @@ type TranscriptUiState = {
   setExpanded: (id: string, open: boolean) => void;
   toggleExpanded: (id: string, currentlyOpen: boolean) => void;
   /**
-   * Record the moment a reasoning cell started streaming (idempotent).
+   * Record the moment a reasoning cell started streaming (idempotent while
+   * open).
    *
    * `inheritFrom` exists for the content-hashed fallback id: the id is
    * derived from the text's leading chunk, which is only final once enough
    * text has streamed in, so the first delta or two can produce a
    * short-lived id. Carrying its start time forward keeps the measured
    * duration honest instead of restarting the clock.
+   *
+   * A *closed* entry is restarted, not kept: reasoning part ids restart
+   * every turn, so a `startTiming` on a finished key means a new run began
+   * under a reused id. Keeping the old window would pin the new run's
+   * duration to a previous turn's clock.
    */
   startTiming: (id: string, inheritFrom?: string) => void;
   /** Close out a cell's timing window (idempotent). */
@@ -95,7 +101,10 @@ export const useTranscriptUiStore = create<TranscriptUiState>((set) => ({
 
   startTiming: (id, inheritFrom) =>
     set((state) => {
-      if (state.timings[id]) return state;
+      const existing = state.timings[id];
+      // Open entries stay put: remounts and repeat deltas must not restart
+      // the clock mid-run.
+      if (existing && existing.durationMs == null) return state;
       const inherited = inheritFrom ? state.timings[inheritFrom]?.startedAt : undefined;
       return {
         timings: trim({
@@ -142,6 +151,15 @@ export function useDisclosure(id: string, defaultOpen: boolean): [boolean, () =>
   const toggle = useTranscriptUiStore((state) => state.toggleExpanded);
   const isOpen = stored ?? defaultOpen;
   return [isOpen, () => toggle(id, isOpen)];
+}
+
+/**
+ * Timing-store key for a reasoning cell. Scoped by turn: provider reasoning
+ * part ids restart every turn, so the bare cell id is shared by every turn's
+ * same-index reasoning run. Pure so the scoping rule is unit-testable.
+ */
+export function reasoningTimingId(cellId: string, timingScope?: string): string {
+  return timingScope ? `${timingScope}:${cellId}` : cellId;
 }
 
 /** FNV-1a — a stable id for cells the transcript gives us no id for. */

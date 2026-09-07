@@ -157,6 +157,20 @@ describe('summarizeToolGroup', () => {
     const mcp = cell({ id: 'm', kind: 'mcp', status: 'success' });
     assert.equal(summarizeToolGroup([mcp]).text, 'Used 1 tool');
   });
+
+  it('counts image views as explored files (t3code PR #9597)', () => {
+    const cells = buildToolCells([
+      toolPart({ toolName: 'read_file', id: 'r1', toolCallId: 'r1', input: { path: 'a.ts' } }),
+      toolPart({
+        toolName: 'view_image',
+        id: 'v1',
+        toolCallId: 'v1',
+        toolType: 'image_view',
+        input: { path: 'shot.png' },
+      }),
+    ]);
+    assert.equal(summarizeToolGroup(cells).text, 'Explored 2 files');
+  });
 });
 
 describe('commandProgram', () => {
@@ -181,6 +195,19 @@ describe('commandProgram', () => {
     assert.equal(commandProgram(''), null);
     assert.equal(commandProgram('   '), null);
     assert.equal(commandProgram('FOO=1'), null);
+  });
+
+  it('unwraps shell wrappers to the script program (t3code PR #9106)', () => {
+    assert.equal(commandProgram(`/bin/zsh -lc 'vp test run'`), 'vp');
+    assert.equal(commandProgram(`bash -c 'pnpm test'`), 'pnpm');
+    assert.equal(commandProgram(`sh -c "git status"`), 'git');
+    assert.equal(commandProgram('sudo bash -c \'npm run build\''), 'npm');
+    assert.equal(commandProgram('FOO=1 zsh -lc \'pnpm test\''), 'pnpm');
+  });
+
+  it('keeps the shell name when no command flag is present', () => {
+    assert.equal(commandProgram('bash script.sh'), 'bash');
+    assert.equal(commandProgram('/bin/bash'), 'bash');
   });
 });
 

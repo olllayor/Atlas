@@ -177,6 +177,27 @@ export function summarizeToolGroup(cells: readonly ToolCell[]): ToolGroupSummary
 // ---------------------------------------------------------------------------
 
 const WRAPPER_COMMANDS = new Set(['env', 'sudo']);
+
+/**
+ * Shells that wrap the real program (`bash -lc 'pnpm test'`). The summary
+ * names the program inside the wrapper; expanded rows keep the full command.
+ * Ported from t3code PR #9106 (`commandLabel.ts`, adapted to Atlas' tokenizer).
+ */
+const SHELL_PROGRAMS = new Set(['sh', 'bash', 'zsh', 'dash', 'ash', 'ksh', 'fish']);
+const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '-O', '--rcfile', '--init-file']);
+
+function shellCommandArgumentIndex(tokens: ReadonlyArray<string>, start: number): number | null {
+  for (let index = start; index < tokens.length; index += 1) {
+    const option = tokens[index]!;
+    if (option === '--' || !option.startsWith('-')) return null;
+    if (SHELL_OPTIONS_WITH_VALUE.has(option)) {
+      index += 1;
+      continue;
+    }
+    if (option === '--command' || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(option)) return index + 1;
+  }
+  return null;
+}
 const VALUE_FLAGS = new Set([
   '-u',
   '--user',
@@ -248,7 +269,8 @@ function basenameOf(program: string): string {
 
 /**
  * The program a live command line runs: first token, assignments skipped,
- * `env`/`sudo` wrappers unwrapped. Null when there is nothing to name.
+ * `env`/`sudo` wrappers unwrapped, shell wrappers (`sh -c`, `bash -lc`)
+ * resolved to the script's own program. Null when there is nothing to name.
  */
 export function commandProgram(commandLine: string, depth = 0): string | null {
   const tokens = splitCommandTokens(commandLine.trim());
@@ -280,6 +302,14 @@ export function commandProgram(commandLine: string, depth = 0): string | null {
     }
     if (index >= tokens.length) return null;
     program = basenameOf(tokens[index]!);
+  }
+  const shellName = program.replace(/\.exe$/i, '').toLowerCase();
+  if (SHELL_PROGRAMS.has(shellName)) {
+    const scriptIndex = shellCommandArgumentIndex(tokens, index + 1);
+    if (scriptIndex !== null) {
+      const script = tokens[scriptIndex];
+      return script ? commandProgram(script, depth + 1) : null;
+    }
   }
   return program || null;
 }

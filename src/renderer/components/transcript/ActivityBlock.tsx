@@ -17,15 +17,94 @@
  * 2. **It cannot hide a question.** A tool waiting on approval forces the
  *    block open: an approval prompt inside a collapsed row is a turn that
  *    never finishes.
+ * 3. **A live run is bounded.** An open fold on a forty-call turn used to
+ *    stretch to the height of the whole log, so the transcript grew by
+ *    hundreds of pixels a second under a stick-to-bottom lock that had to
+ *    re-pin on every frame — the app "froze" while doing nothing but
+ *    layout. The live log gets its own scroll box (a screenful at most),
+ *    follows its own bottom, and hands the reader the scrollback if they
+ *    want it. Ported from t3code PR #9106, which bounds and virtualizes the
+ *    same list. A pending approval switches the bound off: consent is not
+ *    something to scroll for.
  */
 
 import { ChevronRight } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { formatElapsed } from '../../../shared/toolCellGrammar';
 import { useDisclosure, useTranscriptUiStore } from '../../stores/useTranscriptUiStore';
 import { cn } from '../../lib/utils';
 import { Disclosure } from './ToolCell';
+
+/**
+ * How close to its own bottom the log has to be for a new step to keep
+ * scrolling it. Wide enough that one row landing mid-frame does not count as
+ * the reader walking away, narrow enough that a deliberate scroll back does.
+ */
+const LIVE_LOG_FOLLOW_SLACK_PX = 24;
+
+/** The soft edge on a scrollable log, in px, matching the transcript's ramp. */
+const LIVE_LOG_FADE_PX = 20;
+
+/**
+ * Pins a bounded log to its newest row and reports which edges have more
+ * behind them. Inert unless `active` — a settled turn's fold is plain flow.
+ */
+function useLiveLogViewport(active: boolean) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  // Starts following: a log that has just opened is showing its live end.
+  const followRef = useRef(true);
+  const [fade, setFade] = useState({ top: false, bottom: false });
+
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!active || !box) {
+      followRef.current = true;
+      setFade((previous) => (previous.top || previous.bottom ? { top: false, bottom: false } : previous));
+      return;
+    }
+
+    const distanceFromEnd = () => box.scrollHeight - box.clientHeight - box.scrollTop;
+
+    const updateFades = () => {
+      const top = box.scrollTop > 1;
+      const bottom = distanceFromEnd() > 1;
+      setFade((previous) =>
+        previous.top === top && previous.bottom === bottom ? previous : { top, bottom }
+      );
+    };
+
+    const handleScroll = () => {
+      // Every scroll re-reads intent, including the ones this hook causes:
+      // a programmatic pin lands at the end and re-arms following anyway.
+      followRef.current = distanceFromEnd() <= LIVE_LOG_FOLLOW_SLACK_PX;
+      updateFades();
+    };
+
+    const handleResize = () => {
+      if (followRef.current) {
+        box.scrollTop = box.scrollHeight;
+      }
+      updateFades();
+    };
+
+    box.addEventListener('scroll', handleScroll, { passive: true });
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(box);
+    // The content wrapper, not the children: a step appended inside it grows
+    // the wrapper, and the box's own size never changes once it is capped.
+    const content = box.firstElementChild;
+    if (content) observer.observe(content);
+    handleResize();
+
+    return () => {
+      box.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
+    };
+  }, [active]);
+
+  return { boxRef, fade };
+}
 
 export function ActivityBlock({
   id,
@@ -72,6 +151,11 @@ export function ActivityBlock({
 
   const [isOpen, toggleOpen] = useDisclosure(id, defaultOpen);
   const open = forceOpen || isOpen;
+  // Rule 3: the bound is for the live log only. A settled fold the reader
+  // opened is theirs to read at full height, and an approval must not be
+  // below a scroll line.
+  const bounded = open && isStreaming === true && !forceOpen;
+  const { boxRef, fade } = useLiveLogViewport(bounded);
 
   // Live tick for the streaming label. Mounts only while the turn is in
   // flight; once it settles the effect — and the ticking — goes away.
@@ -89,7 +173,7 @@ export function ActivityBlock({
   const liveStartMs = fallbackStartMs ?? timing?.startedAt ?? null;
   const label =
     isStreaming && liveStartMs != null && nowMs != null
-      ? `Working ${formatElapsed(nowMs - liveStartMs)}`
+      ? `Working for ${formatElapsed(nowMs - liveStartMs)}`
       : isStreaming
         ? 'Working'
         : durationMs != null && durationMs >= 1000
@@ -129,7 +213,40 @@ export function ActivityBlock({
       <Disclosure open={open}>
         {/* No rail, no indent: the reference keeps the expanded steps on the
             same measure as the reply, separated by the header rule alone. */}
-        <div className="mt-0.5">{children}</div>
+        <div
+          ref={boxRef}
+          /*
+            The transcript reads every upward gesture as "the reader left the
+            live edge" (`useTranscriptScroll`). This box owns its own
+            scrollback, so the flag tells that listener to leave the lock
+            alone while the gesture lands in here — see
+            `toolGroupConsumesUpwardNavigation`.
+          */
+          {...(bounded ? { 'data-tool-group-scroll': '' } : {})}
+          className={cn(
+            bounded &&
+              // A screenful at most, and never more than half the window on a
+              // short one. `scrollbar-auto-hide` keeps the rail out of the
+              // reading measure until it is wanted.
+              'scrollbar-auto-hide activity-log-scroll max-h-[min(18rem,50dvh)] overflow-y-auto overflow-x-clip'
+          )}
+          style={
+            bounded
+              ? {
+                  // Chains to the transcript at the ends: leaving this box
+                  // upward is a deliberate move into history, and the lock
+                  // should release with it.
+                  overscrollBehaviorY: 'auto',
+                  ['--activity-fade-top' as string]: fade.top ? `${LIVE_LOG_FADE_PX}px` : '0px',
+                  ['--activity-fade-bottom' as string]: fade.bottom
+                    ? `${LIVE_LOG_FADE_PX}px`
+                    : '0px',
+                }
+              : undefined
+          }
+        >
+          <div className="mt-0.5">{children}</div>
+        </div>
       </Disclosure>
     </div>
   );

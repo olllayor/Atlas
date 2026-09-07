@@ -838,6 +838,19 @@ export class SettingsRepo {
     this.setJsonSetting('appearance.rawTranscript', value);
   }
 
+  getPersistComposerContextStrip() {
+    return Boolean(
+      this.getJsonSetting(
+        'appearance.persistComposerContextStrip',
+        DEFAULT_SETTINGS_APPEARANCE.persistComposerContextStrip
+      )
+    );
+  }
+
+  setPersistComposerContextStrip(value: boolean) {
+    this.setJsonSetting('appearance.persistComposerContextStrip', value);
+  }
+
   getKeybindings(): KeybindingRule[] {
     return decodeKeybindingRules(this.getJsonSetting<unknown>('keybindings', null));
   }

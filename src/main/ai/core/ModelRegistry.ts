@@ -220,6 +220,7 @@ export class ModelRegistry {
         reduceMotion: this.settingsRepo.getReduceMotion(),
         pointerCursors: this.settingsRepo.getPointerCursors(),
         rawTranscript: this.settingsRepo.getRawTranscript(),
+        persistComposerContextStrip: this.settingsRepo.getPersistComposerContextStrip(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()

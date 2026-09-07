@@ -5,7 +5,7 @@ import {
   type Virtualizer,
   useVirtualizer,
 } from '@tanstack/react-virtual';
-import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, Sparkles, StopCircle } from 'lucide-react';
+import { AlertCircle, ArrowDown, Check, ChevronRight, Copy, Info, RefreshCw, StopCircle } from 'lucide-react';
 import {
   Suspense,
   lazy,
@@ -60,7 +60,14 @@ import { ReasoningCell } from './transcript/ReasoningCell';
 import { buildToolCells, collectChangedFiles, toolCellToPlainText } from '../../shared/toolCellGrammar';
 import { groupToolCells } from '../../shared/toolGroups';
 import { isPlanToolPart } from '../../shared/planTool';
-import { groupAssistantParts, hasPendingApproval, splitAssistantTurn } from './transcript/assistantSegments';
+import {
+  groupAssistantParts,
+  hasPendingApproval,
+  mergeActivitySegments,
+  shouldOpenActivityFold,
+  shouldShowFailedToolThinkingFallback,
+  splitAssistantTurn,
+} from './transcript/assistantSegments';
 import type { AssistantSegment } from './transcript/assistantSegments';
 import { ActivityBlock } from './transcript/ActivityBlock';
 import { ChangedFilesBar, topDirectoryOf } from './transcript/ChangedFilesBar';
@@ -403,6 +410,16 @@ function AssistantParts({
   // The work/answer cut, so the reply is not buried under the tool calls that
   // produced it. See `splitAssistantTurn`.
   const split = useMemo(() => splitAssistantTurn(segments), [segments]);
+  /*
+    Above the early returns, not beside its use below: a hook after a
+    conditional return changes the hook count when the condition flips, and
+    both conditions here flip on a mounted row — `deferRichContent` every
+    time the virtualizer scrolls a row in or out of the rich window, and
+    `parts.length` on the first token of every streaming turn. React throws
+    on that ("Rendered more hooks than during the previous render"), and
+    there is no lint in this repo to catch it.
+  */
+  const mergedActivity = useMemo(() => mergeActivitySegments(split.activity), [split.activity]);
   const rawMode = useRawTranscript();
 
   // The two drivers of the plain-text path. `deferRichContent` is the
@@ -420,7 +437,6 @@ function AssistantParts({
       // Reserve one line so the first token does not shove the transcript.
       <div className="flex min-h-[1.5rem] items-center text-sm font-normal text-text-tertiary">
         <span className="focus-sweep inline-flex items-center gap-1.5 py-0.5 text-text-secondary">
-          <Sparkles aria-hidden className="size-3.5 shrink-0 text-text-secondary" />
           <span>Thinking</span>
         </span>
       </div>
@@ -471,7 +487,9 @@ function AssistantParts({
       // `partId` keys the reasoning cell's timing and expand state in
       // the transcript UI store; without it the store falls back to
       // hashing the text, which only settles after ~96 characters.
-      return <ReasoningCell key={part.id} partId={part.id} text={part.text} isStreaming={isStreaming} />;
+      // `timingScope` keeps the duration per-turn: provider reasoning ids
+      // restart every turn, so without it every turn would share one clock.
+      return <ReasoningCell key={part.id} partId={part.id} timingScope={turnId} text={part.text} isStreaming={isStreaming} />;
     }
 
     if (part.type === 'file') {
@@ -526,12 +544,66 @@ function AssistantParts({
     );
   };
 
-  const activityChildren = split.activity.map((segment, index) =>
-    renderSegment(segment, {
-      isLast: isStreaming && split.answer.length === 0 && index === split.activity.length - 1,
+  const activityChildren = mergedActivity.map((segment, index, merged) => {
+    const options = {
+      isLast: isStreaming && split.answer.length === 0 && index === merged.length - 1,
       dim: true,
-    })
-  );
+    };
+    if (segment.kind === 'reasoning') {
+      // One row per turn, not per step: the step-scoped part ids
+      // (`ChatSessionRuntime`) would otherwise render N `Thinking` rows.
+      // The key is the first part's id, stable while the run grows at its
+      // tail. Shimmer follows actual reasoning activity, not the turn —
+      // once tools take over, this settles to `Thought` (t3code PR #9106's
+      // shimmer discipline).
+      if (!segment.text.trim() && !segment.isStreaming) return null;
+      return (
+        <ReasoningCell
+          key={segment.key}
+          partId={segment.key}
+          timingScope={turnId}
+          text={segment.text}
+          isStreaming={segment.isStreaming}
+        />
+      );
+    }
+    if (segment.kind === 'tools') {
+      // The merged run lets the tool grammar summarize the whole turn
+      // (`Ran 5 commands`) instead of one line per step.
+      return (
+        <ToolCellGroup
+          key={segment.key}
+          parts={segment.parts}
+          onRespondToolApproval={onRespondToolApproval}
+          onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+        />
+      );
+    }
+    if (segment.kind === 'plan' || segment.kind === 'spawn') {
+      return renderSegment(segment, options);
+    }
+    return renderSegment({ kind: 'part', part: segment.part }, options);
+  });
+
+  // t3code PR #9165, adapted: while the turn keeps streaming after its latest
+  // tool failed, the bottom row should say the model is still working. Atlas
+  // keeps the failed cells visible (the open log is history, not a single
+  // live slot), so this is one appended shimmer row beneath them — not a
+  // replacement. Suppressed while anything is still running, thinking, or
+  // awaiting approval; see `shouldShowFailedToolThinkingFallback`.
+  const showFailedToolThinking = shouldShowFailedToolThinkingFallback({
+    activity: mergedActivity,
+    isStreaming,
+  });
+  const failedToolThinkingFallback = showFailedToolThinking ? (
+    <ReasoningCell
+      key={`live-thinking-fallback:${turnId}`}
+      partId={`live-thinking-fallback:${turnId}`}
+      timingScope={turnId}
+      text=""
+      isStreaming
+    />
+  ) : null;
 
   return (
     <>
@@ -544,19 +616,26 @@ function AssistantParts({
             more to the point the collapsed default would hide the tool output
             that raw mode exists to make selectable.
           */
-          <div className="flex flex-col gap-1.5">{activityChildren}</div>
+          <div className="flex flex-col gap-1.5">{activityChildren}{failedToolThinkingFallback}</div>
         ) : (
           <ActivityBlock
             id={`activity:${turnId}`}
             isStreaming={isStreaming}
             fallbackDurationMs={durationMs}
             fallbackStartMs={workStartMs}
-            // Open while there is no reply under it — the live run of steps, or
-            // a turn that ended without one. It folds as the answer arrives.
-            defaultOpen={split.answer.length === 0}
+            // Open for the whole live run, and afterwards while there is no
+            // reply under it. It folds as the *finished* answer arrives —
+            // mid-turn commentary is `split.answer` too, and folding on that
+            // hid every later step behind a static header. See
+            // `shouldOpenActivityFold`.
+            defaultOpen={shouldOpenActivityFold({
+              isStreaming,
+              hasAnswer: split.answer.length > 0,
+            })}
             forceOpen={hasPendingApproval(split.activity)}
           >
             {activityChildren}
+            {failedToolThinkingFallback}
           </ActivityBlock>
         )
       ) : null}
@@ -1260,7 +1339,22 @@ function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
   }
 
   const toolParts = message.parts.filter((part): part is ChatToolPart => part.type === 'tool');
-  const reasoningCount = message.parts.filter((part) => part.type === 'reasoning').length;
+  // The activity fold renders merged runs (one `Thought` row per turn, not
+  // one per reasoning step), so the estimate counts merged rows, not parts.
+  const turnSplit = splitAssistantTurn(groupAssistantParts(message.parts));
+  const mergedActivity = mergeActivitySegments(turnSplit.activity);
+  const hasActivityReasoning = mergedActivity.some(
+    (segment) =>
+      segment.kind === 'reasoning' &&
+      (segment.text.trim().length > 0 || message.status === 'streaming')
+  );
+  const answerReasoningRows = turnSplit.answer.filter(
+    (segment) =>
+      segment.kind === 'part' &&
+      segment.part.type === 'reasoning' &&
+      ((segment.part.text?.trim().length ?? 0) > 0 || message.status === 'streaming')
+  ).length;
+  const reasoningRows = (hasActivityReasoning ? 1 : 0) + answerReasoningRows;
   const visualCount = message.parts.filter((part) => part.type === 'visual').length;
 
   // Ask the grammar how many cells these parts actually produce rather
@@ -1313,12 +1407,12 @@ function computeHistoryRowHeight(message: ChatMessage, raw: boolean) {
       ? // Every cell is fully expanded, so the row is as tall as the text it
         // renders. Counting the lines is the only honest seed available.
         rawCellLines.reduce((sum, entry) => sum + entry.lines * ROW_HEIGHT.rawLine, 0) +
-        reasoningCount * ROW_HEIGHT.reasoning
+        reasoningRows * ROW_HEIGHT.reasoning
       : // The transcript folds consecutive tool cells into one group row
         // each (live shimmer line, settled summary toggle), so the open
         // work phase counts groups, not cells.
         groupToolCells(cells).length * ROW_HEIGHT.toolCell +
-        reasoningCount * ROW_HEIGHT.reasoning;
+        reasoningRows * ROW_HEIGHT.reasoning;
 
   // In raw mode the card is not a header and a few rows but the full patch
   // text again, so it costs roughly what the diff cells above it cost, plus a

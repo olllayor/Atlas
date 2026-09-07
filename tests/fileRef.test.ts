@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
 
-import { fileRefBadge, parseFileRef } from '../src/shared/fileRef';
+import { decodeFileRefHash, encodeFileRefHref, fileRefBadge, fileUrlToPath, parseFileRef, rewriteFileRefHref } from '../src/shared/fileRef';
 
 describe('parseFileRef', () => {
   test('splits a project-relative path into directory and name', () => {
@@ -62,5 +62,59 @@ describe('fileRefBadge', () => {
     assert.equal(fileRefBadge('json'), '{}');
     assert.equal(fileRefBadge('md'), 'MD');
     assert.equal(fileRefBadge('python'), 'PY');
+  });
+});
+
+describe('file-ref hash round-trip (sanitizer bypass)', () => {
+  test('encodes a path and line into a hash-only href', () => {
+    assert.equal(
+      encodeFileRefHref({ path: 'src/renderer/components/ChatWindow.tsx', line: 42 }),
+      '#atlas-file:src%2Frenderer%2Fcomponents%2FChatWindow.tsx:42'
+    );
+    assert.equal(
+      encodeFileRefHref({ path: 'package.json', line: null }),
+      '#atlas-file:package.json'
+    );
+  });
+
+  test('decodes back to the same ref', () => {
+    const ref = decodeFileRefHash('#atlas-file:src%2Frenderer%2Fcomponents%2FChatWindow.tsx:42');
+    assert.ok(ref);
+    assert.equal(ref.path, 'src/renderer/components/ChatWindow.tsx');
+    assert.equal(ref.line, 42);
+    assert.equal(ref.name, 'ChatWindow.tsx');
+  });
+
+  test('rejects non-hash hrefs and garbage', () => {
+    assert.equal(decodeFileRefHash('src/main/index.ts'), null);
+    assert.equal(decodeFileRefHash('#section'), null);
+    assert.equal(decodeFileRefHash('#atlas-file:'), null);
+    assert.equal(decodeFileRefHash('#atlas-file:%zz'), null);
+    // Decodes, then re-validates: not a project file, no chip.
+    assert.equal(decodeFileRefHash('#atlas-file:notes.com'), null);
+  });
+
+  test('unwraps file:// URLs the model sometimes emits', () => {
+    assert.equal(fileUrlToPath('file:///Users/me/app/src/main/index.ts'), '/Users/me/app/src/main/index.ts');
+    assert.equal(fileUrlToPath('file://localhost/Users/me/app/src/main.ts'), '/Users/me/app/src/main.ts');
+    assert.equal(fileUrlToPath('https://example.com/a.ts'), null);
+    assert.equal(fileUrlToPath('src/main/index.ts'), null);
+  });
+
+  test('rewriteFileRefHref keeps chips for file shapes, leaves the rest', () => {
+    // Bare-relative and line-suffixed: the shapes rehype-harden blocks.
+    assert.ok(rewriteFileRefHref('src/components/ClipboardCard.tsx')?.startsWith('#atlas-file:'));
+    assert.ok(rewriteFileRefHref('src/main/index.ts:42')?.endsWith(':42'));
+    assert.ok(rewriteFileRefHref('file:///Users/me/app/src/main/index.ts')?.startsWith('#atlas-file:'));
+    // Citations, external links, anchors, queries: not files, untouched.
+    for (const href of [
+      'atlas://cite/abc',
+      'https://github.com/x/y',
+      '#section',
+      'src/main/index.ts?raw',
+      'example.com',
+    ]) {
+      assert.equal(rewriteFileRefHref(href), null, href);
+    }
   });
 });

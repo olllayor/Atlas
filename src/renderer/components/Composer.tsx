@@ -1198,7 +1198,15 @@ export function Composer({
       const files: ComposerAttachment[] = await Promise.all(
         attachments.files.map(async (file) => {
           if (file.upload?.status === 'ready') {
-            return { ...file, storageKey: file.upload.storageKey };
+            // The wire carries the storage key, but the optimistic transcript
+            // row renders `url` — and `clearComposerDraft` revokes the blob
+            // URL right after send. Resolve a data-URL copy for display so
+            // the thumbnail survives the revoke; the main process never reads
+            // this field for staged entries.
+            const displayUrl = file.url.startsWith('blob:')
+              ? ((await convertBlobUrlToDataUrl(file.url)) ?? file.url)
+              : file.url;
+            return { ...file, storageKey: file.upload.storageKey, url: displayUrl };
           }
           if (file.url.startsWith('blob:')) {
             const dataUrl = await convertBlobUrlToDataUrl(file.url);

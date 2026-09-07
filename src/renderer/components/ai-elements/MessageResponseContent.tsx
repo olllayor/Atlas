@@ -11,6 +11,7 @@ import { streamdownCodeLanguages } from './codeLanguages';
 import { markdownTableComponents } from './markdown-table';
 import { ChatMarkdownImage, rehypeMarkStandaloneImages } from './chat-markdown-image';
 import { MarkdownAnchor } from './chat-markdown-link';
+import { remarkRewriteFileRefLinks } from '../../../shared/fileRefLinks';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
 
@@ -52,6 +53,10 @@ function remarkTagUntaggedCode() {
 const streamdownRemarkPlugins = [
   ...Object.values(defaultRemarkPlugins),
   remarkTagUntaggedCode,
+  // File-ref hrefs (`[Name](src/…)`) must be rewritten before rehype-harden:
+  // the sanitizer blocks bare-relative links with a `[blocked]` suffix before
+  // the anchor component can turn them into chips.
+  remarkRewriteFileRefLinks,
 ];
 
 const streamdownRehypePlugins = [

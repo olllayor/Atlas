@@ -1411,6 +1411,8 @@ export class ChatEngine {
 
     // A turn still waiting for a slot has no stream to abort, so the signal
     // would go nowhere: drop it from the queue and close it out here.
+    // Finalized like any other interrupted turn — leaving `streaming` part
+    // states behind renders as forever-spinning rows in the transcript.
     const queuedIndex = this.queuedRequestIds.indexOf(requestId);
     if (queuedIndex >= 0) {
       this.queuedRequestIds.splice(queuedIndex, 1);
@@ -1418,9 +1420,13 @@ export class ChatEngine {
         this.markConversationStatus(active.request.conversationId, 'idle', {
           completedAt: new Date().toISOString(),
         });
+        const abortedParts = finalizeInterruptedParts(active.parts);
         this.conversationsRepo.updateMessage({
           messageId: active.assistantMessageId,
           status: 'aborted',
+          content: getTextContentFromParts(abortedParts),
+          reasoning: getReasoningContentFromParts(abortedParts),
+          parts: abortedParts,
         });
         this.cleanupRequest(requestId, active);
       }

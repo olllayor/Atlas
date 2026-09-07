@@ -1,3 +1,4 @@
+import type { CustomScheme } from 'electron';
 import { protocol } from 'electron/main';
 import { readFileSync, realpathSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
@@ -24,14 +25,11 @@ export { PLUGIN_ICON_SCHEME } from './pluginIconUrl';
 /** Icons are small. A bundle offering something enormous is not sending an icon. */
 const MAX_ICON_BYTES = 2 * 1024 * 1024;
 
-export function registerPluginIconScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: PLUGIN_ICON_SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
-    }
-  ]);
-}
+/** Registered by `bootstrap/privilegedSchemes.ts`, in one call with the rest. */
+export const PLUGIN_ICON_CUSTOM_SCHEME: CustomScheme = {
+  scheme: PLUGIN_ICON_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+};
 
 /**
  * @param roots Directories icons may be served from — the plugins directory and

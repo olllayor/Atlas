@@ -7,7 +7,7 @@ import type {
   StreamEvent,
   WorkLogEntry,
 } from '../../shared/contracts';
-import { applyStreamEventToParts } from '../../shared/messageParts';
+import { applyStreamEventToParts, finalizeInterruptedParts, finalizeMessageParts } from '../../shared/messageParts';
 import { applyRuntimeEventToMessageParts, deriveWorkLogEntry, getWorkLogEntryId } from '../../shared/runtimeActivity';
 import type { QueuedFollowupEntry } from './useAppStore';
 
@@ -297,6 +297,7 @@ const STREAMING_EVENT_TYPES = new Set<StreamEvent['type']>([
   'chunk',
   'reasoning',
   'task',
+  'plugin-invocation',
   'tool-input-start',
   'tool-input-delta',
   'tool-input-available',
@@ -525,4 +526,160 @@ function findStreamingAssistantIndex(detail: ConversationPage): number | null {
     }
   }
   return null;
+}
+
+// =============================================================================
+// Terminal-event fallback reducers: local reconcile when the post-turn refetch
+// is unavailable. The `done`/`error` branches in useAppStore refresh from the
+// main process so the persisted message is the source of truth; if that fetch
+// throws, the draft would sit at `streaming` forever (stuck Thinking shimmer,
+// stuck stop button, stuck queue placeholder) and the cached message would
+// keep `streaming` part states. These apply the same end state locally.
+// =============================================================================
+
+function needsPartFinalize(parts: ChatMessagePart[]): boolean {
+  return parts.some(
+    (part) =>
+      (part.type === 'text' || part.type === 'reasoning' || part.type === 'visual') &&
+      part.state === 'streaming'
+  );
+}
+
+/**
+ * Local stand-in for the `done` branch's refetch-and-merge. Drops only the
+ * draft that owns this request (a queued follow-up's placeholder must
+ * survive), closes the finished message by exact id, and releases the
+ * request mapping. No-ops when everything already settled.
+ */
+export function applyDoneEventToStore(
+  state: RuntimeEventFanOut,
+  conversationId: string,
+  event: Extract<StreamEvent, { type: 'done' }>
+): RuntimeEventFanOutPatch {
+  let nextDrafts = state.draftsByConversation;
+  const draft = nextDrafts[conversationId];
+  if (draft && draft.requestId === event.requestId) {
+    nextDrafts = { ...nextDrafts };
+    delete nextDrafts[conversationId];
+  }
+
+  let nextRequestToConversation = state.requestToConversation;
+  if (event.requestId in nextRequestToConversation) {
+    nextRequestToConversation = { ...nextRequestToConversation };
+    delete nextRequestToConversation[event.requestId];
+  }
+
+  let nextDetails = state.conversationDetails;
+  const detail = nextDetails[conversationId];
+  if (detail) {
+    const index = detail.messages.findIndex((message) => message.id === event.messageId);
+    if (index !== -1) {
+      const message = detail.messages[index];
+      if (message.role === 'assistant' && (message.status === 'streaming' || needsPartFinalize(message.parts))) {
+        const parts = needsPartFinalize(message.parts) ? finalizeMessageParts(message.parts) : message.parts;
+        const nextMessages = [...detail.messages];
+        nextMessages[index] = {
+          ...message,
+          status: 'complete',
+          parts,
+          content: getTextContentFromParts(parts),
+          reasoning: getReasoningContentFromParts(parts)
+        };
+        nextDetails = {
+          ...nextDetails,
+          [conversationId]: { ...detail, messages: nextMessages }
+        };
+      }
+    }
+  }
+
+  if (
+    nextDrafts === state.draftsByConversation &&
+    nextDetails === state.conversationDetails &&
+    nextRequestToConversation === state.requestToConversation
+  ) {
+    return {};
+  }
+
+  return {
+    draftsByConversation: nextDrafts,
+    conversationDetails: nextDetails,
+    requestToConversation: nextRequestToConversation
+  };
+}
+
+/**
+ * Local stand-in for the `error` branch's refetch-and-merge. Marks only the
+ * matching draft failed and closes the newest streaming assistant row — but
+ * solely when no newer turn owns the live edge (the draft is absent or names
+ * this request). Error events carry no message id, so without that guard a
+ * newer turn's placeholder would be finalized mid-stream.
+ */
+export function applyTerminalErrorFallbackToStore(
+  state: RuntimeEventFanOut,
+  conversationId: string,
+  event: Extract<StreamEvent, { type: 'error' }>
+): RuntimeEventFanOutPatch {
+  const draft = state.draftsByConversation[conversationId];
+  const ownsLiveEdge = !draft || draft.requestId === event.requestId;
+
+  let nextDrafts = state.draftsByConversation;
+  if (draft && draft.requestId === event.requestId) {
+    nextDrafts = {
+      ...nextDrafts,
+      [conversationId]: {
+        ...draft,
+        status: event.code === 'aborted' ? 'aborted' : 'error',
+        errorMessage: event.message,
+        error: {
+          code: event.code,
+          message: event.message,
+          retryable: event.retryable
+        }
+      }
+    };
+  }
+
+  let nextRequestToConversation = state.requestToConversation;
+  if (event.requestId in nextRequestToConversation) {
+    nextRequestToConversation = { ...nextRequestToConversation };
+    delete nextRequestToConversation[event.requestId];
+  }
+
+  let nextDetails = state.conversationDetails;
+  const detail = nextDetails[conversationId];
+  if (ownsLiveEdge && detail) {
+    const streamingAssistantIndex = findStreamingAssistantIndex(detail);
+    if (streamingAssistantIndex != null) {
+      const message = detail.messages[streamingAssistantIndex];
+      const parts = finalizeInterruptedParts(message.parts);
+      const nextMessages = [...detail.messages];
+      nextMessages[streamingAssistantIndex] = {
+        ...message,
+        status: 'error',
+        errorCode: event.code,
+        parts,
+        content: getTextContentFromParts(parts),
+        reasoning: getReasoningContentFromParts(parts)
+      };
+      nextDetails = {
+        ...nextDetails,
+        [conversationId]: { ...detail, messages: nextMessages }
+      };
+    }
+  }
+
+  if (
+    nextDrafts === state.draftsByConversation &&
+    nextDetails === state.conversationDetails &&
+    nextRequestToConversation === state.requestToConversation
+  ) {
+    return {};
+  }
+
+  return {
+    draftsByConversation: nextDrafts,
+    conversationDetails: nextDetails,
+    requestToConversation: nextRequestToConversation
+  };
 }

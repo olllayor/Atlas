@@ -9,10 +9,15 @@
       'self', so without it every send carrying a file failed in the main
       process with "Attachments must be sent as data URLs" — the conversion had
       been silently blocked one layer up.
+
+      The app's own schemes belong in connect-src as well as img-src, spelled
+      exactly as they are registered: an image the renderer shows is also an
+      image the user can right-click and copy or save, and that path reads the
+      bytes back with fetch().
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://*.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: atlas-attachment: atlas-native-app-icon: plugin-icon: https://models.dev https://*.posthog.com https://open-vsx.org https://*.open-vsx.org https://openvsx.eclipsecontent.org https://*.eclipsecontent.org https://github.com https://*.githubusercontent.com https://www.google.com; connect-src 'self' blob: data: atlas-attachment: atlas-native-app-icon: http://localhost:* ws://localhost:* https://*.posthog.com https://us-assets.i.posthog.com https://us.i.posthog.com https://open-vsx.org https://*.open-vsx.org https://openvsx.eclipsecontent.org https://*.eclipsecontent.org; font-src 'self'; frame-src 'self' atlas-site: atlas-widget:;"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' https://*.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: atlas-attachment: atlas-native-app-icon: atlas-plugin-icon: https://models.dev https://*.posthog.com https://open-vsx.org https://*.open-vsx.org https://openvsx.eclipsecontent.org https://*.eclipsecontent.org https://github.com https://*.githubusercontent.com https://www.google.com; connect-src 'self' blob: data: atlas-attachment: atlas-native-app-icon: atlas-plugin-icon: http://localhost:* ws://localhost:* https://*.posthog.com https://us-assets.i.posthog.com https://us.i.posthog.com https://open-vsx.org https://*.open-vsx.org https://openvsx.eclipsecontent.org https://*.eclipsecontent.org; font-src 'self'; frame-src 'self' atlas-site: atlas-widget:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Atlas</title>

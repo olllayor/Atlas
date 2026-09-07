@@ -1,17 +1,15 @@
+import type { CustomScheme } from 'electron';
 import { protocol } from 'electron/main';
 import * as fs from 'node:fs';
 
 import { NATIVE_APP_ICON_SCHEME, parseNativeAppIconUrl } from '../../shared/nativeAppIconUrl';
 import type { NativeAppIconResolver } from './NativeAppIconResolver';
 
-export function registerNativeAppIconScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: NATIVE_APP_ICON_SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
-    },
-  ]);
-}
+/** Registered by `bootstrap/privilegedSchemes.ts`, in one call with the rest. */
+export const NATIVE_APP_ICON_CUSTOM_SCHEME: CustomScheme = {
+  scheme: NATIVE_APP_ICON_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+};
 
 export function registerNativeAppIconProtocolHandler(resolver: NativeAppIconResolver): void {
   protocol.handle(NATIVE_APP_ICON_SCHEME, async (request) => {

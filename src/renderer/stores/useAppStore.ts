@@ -54,11 +54,13 @@ import { notify, notifyError, repeatingToastId } from '../lib/notify';
 import { hasPendingApprovalInParts } from '../lib/attention';
 import { formatSnoozeClockLabel } from '../lib/snooze';
 import {
+  applyDoneEventToStore,
   applyMetaEvent,
   applyNoticeEvent,
   applyRecoveredRuntimeEventsToStore,
   applyRuntimeSnapshotToStore,
   applyStreamingEvent,
+  applyTerminalErrorFallbackToStore,
   type DraftState,
   type RuntimeEventFanOut,
 } from './streamEventReducers';
@@ -2820,12 +2822,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      const [page, conversations, conversationStats, diagnostics] = await Promise.all([
-        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
-        window.atlasChat.conversations.list(),
-        window.atlasChat.conversations.getStats(),
-        window.atlasChat.diagnostics.getSnapshot()
-      ]);
+      // The post-turn refresh is load-bearing for clearing the draft: if it
+      // throws, fall back to local reconcile so the turn cannot stick at
+      // `streaming` (stuck Thinking shimmer, stop button, queue placeholder).
+      let page;
+      let conversations;
+      let conversationStats;
+      let diagnostics;
+      try {
+        [page, conversations, conversationStats, diagnostics] = await Promise.all([
+          window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
+          window.atlasChat.conversations.list(),
+          window.atlasChat.conversations.getStats(),
+          window.atlasChat.diagnostics.getSnapshot()
+        ]);
+      } catch {
+        set((s) => ({ ...applyTerminalErrorFallbackToStore(s, conversationId, event) }));
+        return;
+      }
       const shouldShowNotice = event.code === 'auth_error' || event.code === 'missing_credential';
 
       set((s) => {
@@ -2873,13 +2887,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     // Terminal event (finish / completion): drop the draft and refresh from
-    // the main process so the persisted message is the source of truth.
-    const [page, conversations, conversationStats, diagnostics] = await Promise.all([
-      window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
-      window.atlasChat.conversations.list(),
-      window.atlasChat.conversations.getStats(),
-      window.atlasChat.diagnostics.getSnapshot()
-    ]);
+    // the main process so the persisted message is the source of truth. Same
+    // fallback contract as the error branch: a failed refresh reconciles
+    // locally instead of leaving the draft streaming forever. Anything that
+    // is not `done` stops here — streaming events apply above, and an
+    // unmatched delta must never run the completion flow (it would drop a
+    // live draft and invent a background-finish notification).
+    if (event.type !== 'done') {
+      return;
+    }
+    let page;
+    let conversations;
+    let conversationStats;
+    let diagnostics;
+    try {
+      [page, conversations, conversationStats, diagnostics] = await Promise.all([
+        window.atlasChat.conversations.getPage(conversationId, { limit: DEFAULT_CONVERSATION_PAGE_SIZE }),
+        window.atlasChat.conversations.list(),
+        window.atlasChat.conversations.getStats(),
+        window.atlasChat.diagnostics.getSnapshot()
+      ]);
+    } catch {
+      set((s) => ({ ...applyDoneEventToStore(s, conversationId, event) }));
+      return;
+    }
 
     set((s) => {
       const draft = s.draftsByConversation[conversationId];
@@ -3000,4 +3031,4 @@ export function selectQueuedFollowups(state: AppState, conversationId: string | 
 }
 
 // Re-export helper for tests that need to drive the pure reducers directly.
-export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent, applyNoticeEvent };
+export const _internal = { applyRuntimeSnapshotToStore, applyRecoveredRuntimeEventsToStore, applyStreamingEvent, applyMetaEvent, applyNoticeEvent, applyDoneEventToStore, applyTerminalErrorFallbackToStore };

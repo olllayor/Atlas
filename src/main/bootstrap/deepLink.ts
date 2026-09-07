@@ -1,3 +1,4 @@
+import type { CustomScheme } from 'electron';
 import { protocol, app, ipcMain, BrowserWindow } from 'electron/main';
 
 import { IPC_CHANNELS } from '../../shared/ipc';
@@ -12,15 +13,11 @@ import { logger } from '../observability/logger';
  * `shared/atlasDeepLink.ts`; this module is the Electron plumbing around it.
  */
 
-/** Must run before `app.ready` — privileged schemes cannot be added later. */
-export function registerAtlasScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: ATLAS_SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: false },
-    },
-  ]);
-}
+/** Registered by `privilegedSchemes.ts`, in one call with the rest. */
+export const ATLAS_CUSTOM_SCHEME: CustomScheme = {
+  scheme: ATLAS_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: false },
+};
 
 /**
  * Serves the scheme and forwards every parsed link to all windows. The

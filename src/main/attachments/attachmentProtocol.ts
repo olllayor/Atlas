@@ -1,3 +1,4 @@
+import type { CustomScheme } from 'electron';
 import { protocol } from 'electron/main';
 import { extname } from 'node:path';
 
@@ -25,21 +26,22 @@ const EXTENSION_TO_MEDIA_TYPE: Record<string, string> = {
 };
 
 /**
- * Must run before `app.whenReady()`, like the site preview scheme.
+ * Declared in `bootstrap/privilegedSchemes.ts`, which registers every scheme in
+ * one call — see the note there for why they cannot register themselves.
  *
  * Attachments used to reach the renderer as `file://` URLs, which the app's
  * CSP does not allow — so every stored image rendered as its filename and no
  * picture. Serving them over their own scheme fixes that without opening the
  * renderer up to the whole filesystem the way `img-src file:` would.
+ *
+ * `supportFetchAPI` is what lets the renderer read the bytes back: copying or
+ * saving a stored image fetches its URL before handing the data to the main
+ * process.
  */
-export function registerAttachmentScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: ATTACHMENT_SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
-    },
-  ]);
-}
+export const ATTACHMENT_CUSTOM_SCHEME: CustomScheme = {
+  scheme: ATTACHMENT_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+};
 
 /** Call once, after `app.whenReady()`. */
 export function registerAttachmentProtocolHandler(

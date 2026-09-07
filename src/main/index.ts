@@ -18,16 +18,11 @@ import type { ProviderAdapter } from './ai/core/ProviderAdapter';
 import type { ProviderRegistry } from './ai/core/providerRegistry';
 import { ToolStateStore } from './ai/tools/ToolStateStore';
 import { AttachmentStore, sweepStaleStagedAttachments } from './attachments/AttachmentStore';
-import {
-  registerAttachmentProtocolHandler,
-  registerAttachmentScheme,
-} from './attachments/attachmentProtocol';
+import { registerAttachmentProtocolHandler } from './attachments/attachmentProtocol';
 import { NativeAppIconResolver } from './assets/NativeAppIconResolver';
-import {
-  registerNativeAppIconProtocolHandler,
-  registerNativeAppIconScheme,
-} from './assets/nativeAppIconProtocol';
+import { registerNativeAppIconProtocolHandler } from './assets/nativeAppIconProtocol';
 import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
+import { registerPrivilegedSchemes } from './bootstrap/privilegedSchemes';
 import { getDockIcon } from './bootstrap/iconPath';
 import { perfMark, perfNow } from './bootstrap/perfTrace';
 import { createAppDatabase } from './db/client';
@@ -68,10 +63,7 @@ import { CheckpointCoordinator } from './workspace/CheckpointCoordinator';
 import { McpClientManager } from './ai/mcp/McpClientManager';
 import type { ActivationRecord } from './plugins/PluginActivation';
 import { PluginActivationStore } from './plugins/PluginActivation';
-import {
-  registerPluginIconProtocolHandler,
-  registerPluginIconScheme,
-} from './plugins/pluginIconProtocol';
+import { registerPluginIconProtocolHandler } from './plugins/pluginIconProtocol';
 import { MarketplaceRegistry } from './plugins/MarketplaceRegistry';
 import { marketplaceCheckoutRoot, withBundledMarketplace } from './plugins/bundledMarketplace';
 import type { MarketplaceRecord } from './plugins/MarketplaceRegistry';
@@ -87,7 +79,7 @@ import { registerMcpUiIpc } from './ipc/mcpUi';
 import { McpAuditLog } from './ai/mcp/McpAuditLog';
 import { resolveMcpToolProvenance } from './ai/mcp/mcpToolProvenance';
 import { McpUiStore } from './ai/mcp/McpUiStore';
-import { registerMcpUiProtocolHandler, registerMcpUiScheme } from './ai/mcp/mcpUiProtocol';
+import { registerMcpUiProtocolHandler } from './ai/mcp/mcpUiProtocol';
 import { createPluginMcpSource } from './plugins/PluginMcpSource';
 import { SkillsService } from './plugins/SkillsService';
 import { createKeychainOAuthStore, McpSecretStore } from './secrets/mcpSecrets';
@@ -105,11 +97,10 @@ import { registerImagesIpc } from './ipc/images';
 import { registerAttachmentsIpc } from './ipc/attachments';
 import { SiteExporter } from './sites/SiteExporter';
 import { SiteFileStore } from './sites/SiteFileStore';
-import { SitePreviewHost, registerSitePreviewScheme } from './sites/SitePreviewHost';
+import { SitePreviewHost } from './sites/SitePreviewHost';
 import {
   parkColdStartLink,
   registerAtlasProtocolHandler,
-  registerAtlasScheme,
   registerDeepLinkIpc,
   wireOsLaunchLinks,
 } from './bootstrap/deepLink';
@@ -139,14 +130,12 @@ if (!app.isPackaged && process.env.ATLAS_REMOTE_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.ATLAS_REMOTE_DEBUG_PORT);
 }
 
-// Custom schemes must be declared before the app is ready. `atlas-site` gives
-// previewed sites their own secure origin instead of loading them over file://;
-// `atlas-attachment` does the same for stored files, which the CSP will not
-// load over file:// either.
-registerSitePreviewScheme();
-registerAttachmentScheme();
-registerPluginIconScheme();
-registerNativeAppIconScheme();
+// Custom schemes must be declared before the app is ready, and all of them in
+// one call — `privilegedSchemes.ts` says what a second call costs. `atlas-site`
+// gives previewed sites their own secure origin instead of loading them over
+// file://; `atlas-attachment` does the same for stored files, which the CSP
+// will not load over file:// either.
+registerPrivilegedSchemes();
 /**
  * Reports a background failure instead of dropping it.
  *
@@ -163,9 +152,8 @@ const reportBackgroundFailure =
     return undefined;
   };
 
-// `atlas://` deep links — same privileged-registration constraint, and the
-// OS launch hooks must attach before `whenReady` resolves to catch cold starts.
-registerAtlasScheme();
+// `atlas://` deep links — the OS launch hooks must attach before `whenReady`
+// resolves to catch cold starts.
 wireOsLaunchLinks();
 // Windows and Linux hand an `atlas://` link to a freshly spawned second
 // process's argv; Electron only delivers `second-instance` to a primary that
@@ -178,11 +166,6 @@ if (!hasSingleInstanceLock) {
   // park it until the renderer's subscription can pull it.
   parkColdStartLink(process.argv);
 }
-// Plugin UI components. Must be registered before the app is ready, like the
-// three above, and gets its own scheme for the same reason: the widget's CSP is
-// a response header this process writes, which is a guarantee no `srcdoc`
-// document can offer — one of those inherits the renderer's policy instead.
-registerMcpUiScheme();
 
 async function pathExists(path: string) {
   try {

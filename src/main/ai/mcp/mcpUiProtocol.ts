@@ -1,3 +1,4 @@
+import type { CustomScheme } from 'electron';
 import { protocol } from 'electron/main';
 
 import { MCP_UI_SCHEME, buildWidgetCsp, buildWidgetDocument } from '../../../shared/mcpUi';
@@ -21,25 +22,22 @@ import type { McpUiStore } from './McpUiStore';
  * `event.source` check mean something.
  */
 
-export function registerMcpUiScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: MCP_UI_SCHEME,
-      privileges: {
-        standard: true,
-        // "Secure" in the sense that powerful-feature gating treats it as a
-        // trustworthy origin. It grants nothing on its own: the CSP below still
-        // denies every network destination, and the frame is sandboxed.
-        secure: true,
-        supportFetchAPI: false,
-        // No CORS allowance and no stream support. A widget has nothing to
-        // fetch — `default-src 'none'` sees to that — so neither is needed, and
-        // both would be surface.
-        corsEnabled: false
-      }
-    }
-  ]);
-}
+/** Registered by `bootstrap/privilegedSchemes.ts`, in one call with the rest. */
+export const MCP_UI_CUSTOM_SCHEME: CustomScheme = {
+  scheme: MCP_UI_SCHEME,
+  privileges: {
+    standard: true,
+    // "Secure" in the sense that powerful-feature gating treats it as a
+    // trustworthy origin. It grants nothing on its own: the CSP below still
+    // denies every network destination, and the frame is sandboxed.
+    secure: true,
+    supportFetchAPI: false,
+    // No CORS allowance and no stream support. A widget has nothing to
+    // fetch — `default-src 'none'` sees to that — so neither is needed, and
+    // both would be surface.
+    corsEnabled: false
+  }
+};
 
 export function registerMcpUiProtocolHandler(store: McpUiStore): void {
   protocol.handle(MCP_UI_SCHEME, (request) => {

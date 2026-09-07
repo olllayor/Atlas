@@ -1,3 +1,4 @@
+import type { CustomScheme } from 'electron';
 import { BrowserWindow, protocol } from 'electron/main';
 import { shell } from 'electron/common';
 
@@ -15,24 +16,21 @@ import type { SiteService } from './SiteService';
 export const SITE_PREVIEW_SCHEME = 'atlas-site';
 
 /**
- * Must run before `app.whenReady()`. Marking the scheme `standard` is what
- * gives previewed sites a real origin, so relative and root-relative URLs
- * resolve inside the version directory instead of leaking to the filesystem.
+ * Registered by `bootstrap/privilegedSchemes.ts`, in one call with the rest.
+ * Marking the scheme `standard` is what gives previewed sites a real origin,
+ * so relative and root-relative URLs resolve inside the version directory
+ * instead of leaking to the filesystem.
  */
-export function registerSitePreviewScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: SITE_PREVIEW_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-        stream: true,
-      },
-    },
-  ]);
-}
+export const SITE_PREVIEW_CUSTOM_SCHEME: CustomScheme = {
+  scheme: SITE_PREVIEW_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+};
 
 /**
  * Serves site artifacts to preview surfaces over `atlas-site://<siteId>/<path>`.

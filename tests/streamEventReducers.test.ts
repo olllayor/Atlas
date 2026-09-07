@@ -3,10 +3,12 @@ import test from 'node:test';
 
 import type { ConversationPage, RuntimeStateSnapshot, StreamEvent } from '../src/shared/contracts.js';
 import {
+  applyDoneEventToStore,
   applyMetaEvent,
   applyRecoveredRuntimeEventsToStore,
   applyRuntimeSnapshotToStore,
   applyStreamingEvent,
+  applyTerminalErrorFallbackToStore,
   isStreamingEvent,
   type RuntimeEventFanOut
 } from '../src/renderer/stores/streamEventReducers.js';
@@ -52,6 +54,17 @@ test('isStreamingEvent recognizes the streaming event set', () => {
     status: 'running'
   } as StreamEvent), true);
   assert.equal(isStreamingEvent({ type: 'tool-input-start', requestId: 'r', toolCallId: 't', toolName: 'read_file' } as StreamEvent), true);
+  assert.equal(isStreamingEvent({
+    type: 'plugin-invocation',
+    requestId: 'r',
+    messageId: null,
+    plugin: 'github',
+    skill: null,
+    mention: '@github',
+    outcome: 'invoked',
+    version: null,
+    detail: null,
+  } as StreamEvent), true);
   assert.equal(isStreamingEvent({ type: 'meta', requestId: 'r', inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0 } as StreamEvent), false);
   assert.equal(isStreamingEvent({ type: 'finish', requestId: 'r' } as StreamEvent), false);
 });
@@ -427,4 +440,130 @@ test('applyStreamingEvent still feeds its own request draft', () => {
   const next = { ...state, ...patch } as RuntimeEventFanOut;
   const draft = next.draftsByConversation.c1!;
   assert.equal((draft.parts[0] as { text: string }).text, 'hi');
+});
+
+function makeStreamingDraft(requestId: string) {
+  return {
+    requestId,
+    providerId: 'openrouter' as const,
+    modelId: 'm1',
+    parts: [],
+    status: 'streaming' as const,
+    startedAt: new Date(0).toISOString(),
+  };
+}
+
+function makeDetailWithStreamingMessage(messageId: string, parts: never[] | object[] = []) {
+  return {
+    conversation: { id: 'c1', title: 't', createdAt: '', updatedAt: '', status: 'running' },
+    messages: [
+      {
+        ...makeMessage({ id: messageId, status: 'streaming' }),
+        parts: parts as never[],
+      },
+    ],
+    hasOlder: false,
+    nextCursor: null,
+    limit: DEFAULT_CONVERSATION_PAGE_SIZE,
+  };
+}
+
+test('applyDoneEventToStore drops the matching draft and finalizes the finished message', () => {
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r1') },
+    conversationDetails: {
+      c1: makeDetailWithStreamingMessage('assistant-1', [
+        { id: 'reasoning-1', type: 'reasoning', text: 'thinking…', state: 'streaming' },
+      ]),
+    },
+    requestToConversation: { r1: 'c1' },
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyDoneEventToStore(state, 'c1', { type: 'done', requestId: 'r1', messageId: 'assistant-1' });
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+
+  assert.equal(next.draftsByConversation.c1, undefined);
+  assert.equal(next.requestToConversation['r1'], undefined);
+  const message = next.conversationDetails.c1.messages[0];
+  assert.equal(message.status, 'complete');
+  assert.equal((message.parts[0] as { state: string }).state, 'done');
+});
+
+test('applyDoneEventToStore keeps a queued follow-up draft for another request', () => {
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r2') },
+    requestToConversation: { r1: 'c1', r2: 'c1' },
+  });
+
+  const patch = applyDoneEventToStore(state, 'c1', { type: 'done', requestId: 'r1', messageId: 'missing' });
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+
+  assert.equal(next.draftsByConversation.c1?.requestId, 'r2');
+  assert.equal(next.requestToConversation['r2'], 'c1');
+  assert.equal(next.requestToConversation['r1'], undefined);
+});
+
+test('applyDoneEventToStore no-ops once everything settled', () => {
+  const state = makeFanOut({ requestToConversation: {} });
+  assert.deepEqual(applyDoneEventToStore(state, 'c1', { type: 'done', requestId: 'r1', messageId: 'm1' }), {});
+});
+
+test('applyTerminalErrorFallbackToStore fails the matching draft and closes the streaming row', () => {
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r1') },
+    conversationDetails: {
+      c1: makeDetailWithStreamingMessage('assistant-1', [
+        { id: 'reasoning-1', type: 'reasoning', text: 'half a thought', state: 'streaming' },
+        {
+          id: 'tool-1',
+          type: 'tool',
+          toolCallId: 'tool-1',
+          toolName: 'read_file',
+          state: 'input-streaming',
+          rawInput: '',
+        },
+      ]),
+    },
+    requestToConversation: { r1: 'c1' },
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyTerminalErrorFallbackToStore(state, 'c1', {
+    type: 'error',
+    requestId: 'r1',
+    code: 'timeout',
+    message: 'Model stopped responding',
+    retryable: true,
+  });
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+
+  assert.equal(next.draftsByConversation.c1?.status, 'error');
+  assert.equal(next.draftsByConversation.c1?.errorMessage, 'Model stopped responding');
+  const message = next.conversationDetails.c1.messages[0];
+  assert.equal(message.status, 'error');
+  assert.equal(message.errorCode, 'timeout');
+  assert.equal((message.parts[0] as { state: string }).state, 'done');
+  assert.equal((message.parts[1] as { state: string }).state, 'output-error');
+});
+
+test('applyTerminalErrorFallbackToStore leaves a newer turn alone', () => {
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r2') },
+    conversationDetails: {
+      c1: makeDetailWithStreamingMessage('assistant-2'),
+    },
+    requestToConversation: { r1: 'c1', r2: 'c1' },
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyTerminalErrorFallbackToStore(state, 'c1', {
+    type: 'error',
+    requestId: 'r1',
+    code: 'aborted',
+    message: 'stopped',
+    retryable: false,
+  });
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+
+  assert.equal(next.draftsByConversation.c1?.requestId, 'r2');
+  assert.equal(next.draftsByConversation.c1?.status, 'streaming');
+  assert.equal(next.conversationDetails.c1.messages[0].status, 'streaming');
 });

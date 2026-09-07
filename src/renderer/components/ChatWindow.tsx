@@ -553,17 +553,19 @@ function AssistantParts({
       // One row per turn, not per step: the step-scoped part ids
       // (`ChatSessionRuntime`) would otherwise render N `Thinking` rows.
       // The key is the first part's id, stable while the run grows at its
-      // tail. Shimmer follows actual reasoning activity, not the turn —
-      // once tools take over, this settles to `Thought` (t3code PR #9106's
-      // shimmer discipline).
-      if (!segment.text.trim() && !segment.isStreaming) return null;
+      // tail. Shimmer needs a live turn on top of a streaming part — a
+      // part can outlive its turn (aborted queue slot, missed terminal
+      // event, rows written before finalization), and a settled fold must
+      // never shimmer (t3code PR #9106's shimmer discipline).
+      const live = isStreaming && segment.isStreaming;
+      if (!segment.text.trim() && !live) return null;
       return (
         <ReasoningCell
           key={segment.key}
           partId={segment.key}
           timingScope={turnId}
           text={segment.text}
-          isStreaming={segment.isStreaming}
+          isStreaming={live}
         />
       );
     }

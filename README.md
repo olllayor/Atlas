@@ -14,7 +14,7 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
 
 ### Core Principles
 
-- 🔑 **True BYOK Freedom** — Bring your own API keys directly to OpenRouter, Anthropic, OpenAI, Google Gemini/GLM, or local models (Ollama, LM Studio, vLLM). Pay only for what you consume at provider rates, with zero middleman markups.
+- 🔑 **True BYOK Freedom** — Bring your own API keys directly to OpenRouter, Anthropic, OpenAI, Google Gemini/GLM, Google Antigravity, or local models (Ollama, LM Studio, vLLM). Pay only for what you consume at provider rates, with zero middleman markups.
 - 🔒 **Privacy & Local-First Architecture** — Your conversations, prompts, workspace state, and model catalogs remain on your local disk in SQLite. All API keys are encrypted in your operating system's native keychain (`keytar`).
 - 🤖 **Agentic Workflow & Extensibility** — Move seamlessly between standard chat, planning, and autonomous execution modes with built-in Model Context Protocol (MCP) support, custom plugins, and safety-gated tool execution.
 - 🎨 **Rich Visual Artifacts** — Beyond plain text: stream and interact with live sandboxed HTML/UI documents, Mermaid diagrams, React Flow node graphs, LaTeX math formulas, and code diffs.
@@ -27,8 +27,9 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
 ### 🌐 Universal Provider Ecosystem
 - **OpenRouter Integration** — Real-time model catalog synchronization with free-tier model discovery and parameter controls.
 - **Major Model Providers** — Anthropic Claude, OpenAI, and Google Gemini / GLM.
+- **Google Antigravity** — Managed OAuth, API-key, or agent-platform auth with automatic CLI installation and recovery.
 - **Custom & Local Endpoints** — Connect any OpenAI-compatible provider, including Ollama, vLLM, LM Studio, or self-hosted inference servers.
-- **OpenCode (Beta)** — Hand a turn to the [OpenCode](https://opencode.ai) agent: it runs its own tools and holds its own credentials, Atlas streams the result into the same transcript. See [docs/opencode.md](docs/opencode.md).
+- **OpenCode (Beta)** — Hand a turn to the [OpenCode](https://opencode.ai) agent: it runs its own tools and holds its own credentials, Atlas streams the result into the same transcript. Pick the SDK server default or the ACP beta per integration mode. See [docs/opencode.md](docs/opencode.md).
 - **Reasoning & Thinking Tokens** — Real-time streaming and inspectable thought traces for reasoning models (DeepSeek-R1, Claude 3.7 Sonnet, OpenAI o1/o3-mini, Gemini Thinking).
 
 ### 🛠️ Agent Studio & Execution Modes
@@ -37,13 +38,16 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
   - **Plan Mode** — Structured step-by-step reasoning and architectural planning before code execution.
   - **Agent / Act Mode** — Autonomous agent execution with tool calling, self-correction, and progress reporting.
   - **Review Mode** — Review diffs, verify tool actions, and inspect command execution safely.
-- **Safety-First Tool Execution** — Local tools for file reading, grep search, glob matching, web search/fetch, and bash execution with user approval checkpoints.
+- **Safety-First Tool Execution** — Local tools for file reading, grep search, glob matching, web search/fetch, and bash execution with user approval checkpoints. Permission presets offer one-click postures, and every conversation keeps its own model pick and tool permission mode.
+- **Subagent Fleets** — Fan a turn out to autonomous subagents with a live roster in the Agents panel, continuable runs, FIFO follow-ups, and cold resume across restarts.
+- **Durable Follow-up Queue** — Send your next message while a turn is still running; it queues and dispatches automatically, surviving restarts.
 - **Context Injection & `@mentions`** — Reference files, workspace directories, plugins, and MCP resources directly inside your prompt.
 
 ### 🔌 Model Context Protocol (MCP) & Plugin Engine
 - **First-Class MCP Client** — Connect to any MCP server via Stdio or SSE to equip models with custom tools, resources, and prompt templates.
-- **Extensible Plugin System** — Load and manage plugins with automated security audits, connector verification, and marketplace discovery.
-- **Integrated Terminal** — Embedded terminal sessions powered by `@xterm/xterm` and `node-pty` for local debugging.
+- **Extensible Plugin System** — Install bundles from folders and marketplaces, serve their MCP servers on demand, and gate which plugin tools each chat can reach, with automated security audits and connector verification.
+- **Integrated Terminal** — Tabbed terminal sessions with split panes powered by `@xterm/xterm` and `node-pty` for local debugging.
+- **Right Panel Surfaces** — Open workbench views, sites, and agents beside the chat instead of losing your place in the thread.
 
 ### 📊 Interactive Visual Artifacts & Rendering
 - **Sandboxed Visual Documents** — Inline live rendering for HTML, web applications, and UI components with full-screen expansion.
@@ -52,12 +56,19 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
 - **LaTeX Math Equations** — Formatted mathematical notation via KaTeX.
 - **Token & Cost Intelligence** — Built-in token lens for real-time prompt token estimation and per-session cost tracking.
 
+### 💬 Transcript & Long-Running Work
+- **Conversation Forking & Side Chats** — Branch any thread to explore an idea, or spin a side conversation that keeps its parent's context.
+- **Raw Transcript Mode** — Copy-friendly plain text rendering that skips markdown chrome for exact selections.
+- **Checkpoints & Compaction** — Turn-end snapshots with rolling summaries keep long threads inside the context window.
+- **Past-Conversation Recall** — The model can search your earlier chats for decisions and context.
+- **Composer Conveniences** — Prompt history on ArrowUp/ArrowDown, staged attachments with background compression, HEIC photo support, and a context meter framed as remaining budget.
+
 ---
 
 ## 🏗️ Technical Stack
 
 - **Framework**: Electron + React 19 + TypeScript + Vite (`electron-vite`)
-- **AI Core**: Vercel AI SDK (`ai`), OpenRouter Provider, Anthropic, Google, and OpenAI adapters
+- **AI Core**: Vercel AI SDK (`ai`), OpenRouter Provider, Anthropic, Google, and OpenAI adapters, OpenCode SDK with ACP transport, Antigravity agent-platform transport
 - **State Management**: Zustand
 - **Styling & UI**: Tailwind CSS v4, Motion (Framer Motion), Radix UI primitives, Lucide icons, `cmdk`
 - **Database & Storage**: `better-sqlite3` (with WAL mode), OS Keychain via `keytar`
@@ -145,6 +156,7 @@ Atlas is engineered with security and privacy as core design tenets:
 2. **Key Security**: API keys are never stored in plain text or SQLite files. They are saved directly into the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 3. **Local Privacy**: Conversations, system prompts, attachments, and settings never leave your computer, except for direct HTTPS requests made to your chosen AI providers.
 4. **Execution Safeguards**: Terminal commands, file mutations, and tool invocations feature explicit user approval gates before running.
+5. **Honest Telemetry**: Anonymous product analytics (PostHog) ship enabled so usage patterns can guide development. No prompt content or conversation text is included, and one toggle in Settings turns it off entirely.
 
 ---
 
@@ -159,8 +171,12 @@ Atlas is engineered with security and privacy as core design tenets:
 - [x] **Workspace & Directory Binding** with `@mention` context injection
 - [x] **Integrated Terminal** (`node-pty` + `xterm.js`)
 - [x] **Custom Plugin System & Auditing**
+- [x] **Subagent Fleets** (Agents panel, spawn row, continuable runs, permission presets)
+- [x] **Tabbed Terminal** with split panes & right panel surfaces
+- [x] **Conversation Branching & Forking** (forks, side conversations, checkpoints)
+- [x] **Google Antigravity Provider** (managed OAuth / API key / agent platform)
+- [x] **OpenCode Agent Handoff** (SDK server default, ACP beta)
 - [ ] **Full-Text Conversation Search** across message history
-- [ ] **Conversation Branching & Forking**
 - [ ] **Local Vector Embeddings & Long-Term Memory**
 - [ ] **Automated Multi-Provider Fallbacks & Health Routing**
 - [ ] **Conversation Export & Import** (Markdown, JSON, PDF)

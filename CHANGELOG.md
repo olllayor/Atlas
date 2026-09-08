@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-08
+
+### Fixed
+- Fresh installs no longer crash on launch when the OpenCode CLI is absent.
+  The missing binary surfaced as an uncaught `spawn opencode ENOENT` in the
+  main process; the serve spawn now fails its own call instead, and the
+  integration reports itself as not installed.
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

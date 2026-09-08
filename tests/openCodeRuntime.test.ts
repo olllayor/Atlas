@@ -564,3 +564,16 @@ test('spawn env strips a host-inherited password when the keychain is empty', ()
   )!;
   assert.equal(env.OPENCODE_SERVER_PASSWORD, undefined);
 });
+
+test('missing binary rejects the connect instead of an uncaught exception', async () => {
+  const harness = makeHarness();
+  const connecting = harness.runtime.connect({ settings: defaultOpenCodeSettings() });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  const child = harness.children.at(-1)!;
+  // A spawn that never happens emits `error` and no `exit` — without a
+  // listener that is an uncaught exception in the main process.
+  child.emit('error', Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }));
+  await assert.rejects(connecting, /spawn opencode ENOENT/);
+  await harness.runtime.shutdown().catch(() => undefined);
+});

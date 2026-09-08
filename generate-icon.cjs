@@ -93,6 +93,12 @@ function createIcns(sourcePath) {
 
 function main() {
   if (!fs.existsSync(SOURCE_ICON)) {
+    // CI checks out the tag without the designer's root source: reuse the
+    // committed outputs instead of failing the package step.
+    if (fs.existsSync(RUNTIME_ICON) && fs.existsSync(ICNS_ICON)) {
+      console.log('Source icon.png not found; reusing committed build/icon.png and build/icon.icns.');
+      return;
+    }
     throw new Error(`Source icon not found: ${SOURCE_ICON}`);
   }
 

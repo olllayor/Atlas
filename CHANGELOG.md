@@ -11,16 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+### Added
+- OpenCode integration with SDK server default and ACP beta behind
+  integration modes, including model inventory, streaming session adapter,
+  approvals bridge, Settings card, and keychain account support.
+- Antigravity provider over ACP transport with auth recovery and
+  provider banners, plus local agent detection and Claude adapter.
+- Plugin system: install from folders and marketplaces, settings page,
+  MCP servers served from bundles, per-chat tool gating.
+- Subagents: catalog, continuable runtime with FIFO follow-ups, durable
+  conversations, permission presets, composer takeover, and a live
+  agent count badge.
+- Terminal tab with panes, right panel surfaces, conversation fork and
+  side conversations, raw transcript mode.
+- Per-conversation model persistence and tool permission mode, context
+  window framed as remaining, composer prompt history recall.
+- Attachment staging with background compression, HEIC photo conversion,
+  inline sandboxed visuals, markdown favicons and brand marks,
+  session search, checkpoints with compaction prompts.
+- Durable follow-up queue with restart resume, sticky compaction boundary.
+
+### Changed
+- New interface pass across the app shell, slim sidebar rows, compact
+  composer, centered empty state.
+
 ### Fixed
-- Light mode is no longer offered for design themes that have no light palette.
-  Picking it under `default` or `xai` set `color-scheme: light` — whitening
-  native inputs, scrollbars and autofill — while every app surface stayed dark.
-  The mode is now disabled for those themes and clamped to dark if already
-  stored.
-- The onboarding "You're all set" screen is reachable again. Opening Settings
-  from "Add a provider" unmounted the flow and nothing restored it, so a user
-  who configured a provider was dropped into an empty chat with no confirmation
-  and the `onboarding completed` event never fired.
+- Settled turns no longer shimmer: reasoning rows require a live turn,
+  and missed terminal events reconcile locally instead of sticking the
+  draft at streaming.
+- Custom Electron schemes register in one call so privileges no longer
+  overwrite each other.
+- Light mode clamped to themes that have a light palette; onboarding
+  completion screen reachable again.
+- Sidebar hover card flow debounced, model labels resolved from catalog,
+  tool output streaming optimized, orphaned serve processes reaped.
 
 ## [0.1.18] - 2026-04-06
 

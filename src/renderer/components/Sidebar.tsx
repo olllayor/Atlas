@@ -1335,12 +1335,6 @@ export function Sidebar({
                 onClick={onOpenPlugins}
               />
             ) : null}
-
-            <SidebarNavRow
-              icon={<GitPullRequest className="size-4" strokeWidth={1.75} aria-hidden />}
-              label="Pull requests"
-              onClick={onOpenPullRequests}
-            />
           </div>
 
           {/* Bulk bar: appears while a multi-select is held. */}

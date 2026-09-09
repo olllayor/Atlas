@@ -308,3 +308,71 @@ export function pullRequestLabelColor(color: string | null): string | null {
   const hex = color?.trim().replace(/^#/, '') ?? '';
   return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex}` : null;
 }
+
+export type PullRequestListSort =
+  | 'ready'
+  | 'updated'
+  | 'newest'
+  | 'oldest'
+  | 'largest'
+  | 'smallest';
+
+/**
+ * Merge readiness first: checks green and approved, then green alone, then
+ * everything else still open. Drafts stay in that third tier because their
+ * author has not made them mergeable yet. Finished work follows open work.
+ * A known conflict is never ready, whatever its checks say, so it stays at
+ * the bottom. Within each tier, smaller diffs come first, then recency.
+ *
+ * Ported from t3code's `rankPullRequestsByMergeReadiness`.
+ */
+export function rankPullRequestsByMergeReadiness(
+  entries: readonly PullRequestListEntry[]
+): PullRequestListEntry[] {
+  const tier = (entry: PullRequestListEntry) => {
+    if (entry.mergeability === 'conflicting') return 4;
+    if (entry.state !== 'open') return 3;
+    if (entry.isDraft) return 2;
+    if (entry.checksState === 'passing' && entry.reviewDecision === 'approved') return 0;
+    if (entry.checksState === 'passing') return 1;
+    return 2;
+  };
+
+  return [...entries].sort((left, right) => {
+    const byTier = tier(left) - tier(right);
+    if (byTier !== 0) return byTier;
+    const sized = left.additions + left.deletions - (right.additions + right.deletions);
+    if (sized !== 0) return sized;
+    return sortPullRequestsByUpdated([left, right])[0] === left ? -1 : 1;
+  });
+}
+
+function timestampOf(entry: PullRequestListEntry): number {
+  const updated = Date.parse(entry.updatedAt);
+  if (!Number.isNaN(updated)) return updated;
+  const created = Date.parse(entry.createdAt);
+  return Number.isNaN(created) ? 0 : created;
+}
+
+export function sortPullRequests(
+  entries: readonly PullRequestListEntry[],
+  sort: PullRequestListSort
+): PullRequestListEntry[] {
+  if (sort === 'ready') return rankPullRequestsByMergeReadiness(entries);
+  if (sort === 'updated') return sortPullRequestsByUpdated(entries);
+
+  return [...entries].sort((left, right) => {
+    if (sort === 'newest' || sort === 'oldest') {
+      const leftCreated = Date.parse(left.createdAt);
+      const rightCreated = Date.parse(right.createdAt);
+      const delta =
+        (Number.isNaN(leftCreated) ? 0 : leftCreated) -
+        (Number.isNaN(rightCreated) ? 0 : rightCreated);
+      return sort === 'newest' ? -delta : delta;
+    }
+
+    const sized = left.additions + left.deletions - (right.additions + right.deletions);
+    if (sized !== 0) return sort === 'largest' ? -sized : sized;
+    return timestampOf(right) - timestampOf(left);
+  });
+}

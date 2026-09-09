@@ -717,6 +717,18 @@ export type PullRequestWorkspaceListResult = {
   /** At least one project had more rows than the page asked for. */
   truncated: boolean;
   viewer: string | null;
+  /**
+   * What the scan actually looked at, so an empty list can say "no open pull
+   * requests on 3 GitHub projects" rather than a bare emptiness that reads
+   * like a bug.
+   */
+  scanned: {
+    projects: number;
+    git: number;
+    github: number;
+    /** `owner/repo` for every project the scan reached. */
+    repositories: string[];
+  };
 };
 
 /** The list row plus everything only a single-pull-request read carries. */

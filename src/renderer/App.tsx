@@ -59,6 +59,11 @@ const SettingsWorkspaceRoute = lazy(() =>
 const SitesWorkspace = lazy(() =>
   import('./components/sites/SitesWorkspace').then((module) => ({ default: module.SitesWorkspace }))
 );
+const PullRequestsWorkspace = lazy(() =>
+  import('./components/pullRequests/PullRequestsWorkspace').then((module) => ({
+    default: module.PullRequestsWorkspace
+  }))
+);
 const PluginsWorkspace = lazy(() =>
   import('./components/plugins/PluginsWorkspace').then((module) => ({
     default: module.PluginsWorkspace,
@@ -411,6 +416,8 @@ export default function App() {
     openSites,
     openPlugins,
     closeSites,
+    openPullRequests,
+    closePullRequests,
     projects,
     refreshProjects,
     attachProject,
@@ -512,6 +519,8 @@ export default function App() {
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
       openSites: state.openSites,
+      openPullRequests: state.openPullRequests,
+      closePullRequests: state.closePullRequests,
       openPlugins: state.openPlugins,
       closeSites: state.closeSites,
       projects: state.projects,
@@ -2089,6 +2098,7 @@ export default function App() {
             if (!(settings?.sitesBetaEnabled ?? false)) return;
             runViewTransition(() => openSites());
           }}
+          onOpenPullRequests={() => runViewTransition(() => openPullRequests())}
           onOpenPlugins={() => runViewTransition(() => openPlugins())}
           showSites={settings?.sitesBetaEnabled ?? false}
           showPlugins={settings?.pluginsBetaEnabled ?? false}
@@ -2146,6 +2156,10 @@ export default function App() {
             to what you were doing — and the sidebar is how you get back, so
             covering it would strand the user with no way out but a button.
 
+            Pull requests is the same shape: a destination beside the chats,
+            not a full-window takeover. t3code keeps the sidebar on
+            `/pull-requests` for that reason.
+
             The chat is swapped out rather than covered. An overlay left the
             composer mounted underneath at the same z-index, so it painted over
             the catalogue and stayed focusable behind it; stacking order is the
@@ -2154,7 +2168,9 @@ export default function App() {
           {/* The beta switch is checked here as well as in the sidebar: a
               window sitting on the plugins view while the flag turns off falls
               back to the chat rather than squatting on a hidden feature. */}
-          {activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
+          {activeView === 'pullRequests' ? (
+            <PullRequestsWorkspace onBack={() => runViewTransition(() => closePullRequests())} />
+          ) : activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
             <PluginsWorkspace />
           ) : (
             <>

@@ -311,21 +311,27 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
             },
             entries: [],
             truncated: false,
-            viewer: null
+            viewer: null,
+            scanned: { projects: 0, git: 0, github: 0, repositories: [] }
           };
         }
 
-        const projects = db.projects.list().filter((project) => project.exists && project.isGitRepository);
+        const allProjects = db.projects.list();
+        // Only folders still on disk. A project row can outlive its checkout,
+        // and listing pull requests for a path that is gone would look like a
+        // silent failure rather than a moved folder.
+        const existing = allProjects.filter((project) => project.exists);
+        const gitProjects = existing.filter((project) => project.isGitRepository);
         const limit = request.limitPerProject ?? DEFAULT_PR_LIST_LIMIT;
         const entries: PullRequestWorkspaceEntry[] = [];
+        const repositories: string[] = [];
         let truncated = false;
         let viewer: string | null = null;
-        let sawGitHub = false;
 
-        for (const project of projects) {
+        for (const project of gitProjects) {
           const slug = await githubService.getOriginSlug(project.root).catch(() => null);
           if (!slug) continue;
-          sawGitHub = true;
+          repositories.push(`${slug.owner}/${slug.repo}`);
 
           if (viewer === null) {
             viewer = await githubService.getViewerLogin(project.root).catch(() => null);
@@ -356,22 +362,49 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
           }
         }
 
-        if (!sawGitHub) {
+        const scanned = {
+          projects: allProjects.length,
+          git: gitProjects.length,
+          github: repositories.length,
+          repositories
+        };
+
+        if (allProjects.length === 0) {
           return {
             unavailable: {
-              reason: 'not-github',
-              hint: 'No attached project has a GitHub remote on `origin`.',
+              reason: 'no-project',
+              hint: 'Attach a project folder to Atlas to see its pull requests.',
               action: null
             },
             entries: [],
             truncated: false,
-            viewer
+            viewer,
+            scanned
+          };
+        }
+
+        if (repositories.length === 0) {
+          return {
+            unavailable: {
+              reason: 'not-github',
+              hint:
+                existing.length === 0
+                  ? 'None of your project folders are still on disk.'
+                  : gitProjects.length === 0
+                    ? 'None of your attached projects is a git repository.'
+                    : 'No attached project has a GitHub remote on `origin`.',
+              action: null
+            },
+            entries: [],
+            truncated: false,
+            viewer,
+            scanned
           };
         }
 
         entries.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
 
-        return { unavailable: null, entries, truncated, viewer };
+        return { unavailable: null, entries, truncated, viewer, scanned };
       }
     )
   );

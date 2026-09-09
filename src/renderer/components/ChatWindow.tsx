@@ -77,7 +77,7 @@ import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { decideAutoLoad } from '../lib/chatAutoLoad';
-import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
+import { deriveJumpState } from './jumpToLatest';
 import { filterHistoryMessages } from './chatHistoryFilter';
 import { AtlasMark } from './ui/atlas-mark';
 import { AtlasLoader, AtlasLoaderRow } from './ui/atlas-loader';
@@ -2340,45 +2340,23 @@ export function ChatWindow({
   }, [draft?.requestId, scrollToBottom, hasBlockingSelection]);
 
   // ---------------------------------------------------------------------
-  // Jump-to-latest / unread
+  // Jump-to-latest
   // ---------------------------------------------------------------------
 
-  const completedAssistantCount = useMemo(() => countCompletedAssistantTurns(historyMessages), [historyMessages]);
-
-  /**
-   * What counts as seen. Tracks the arrival count while the view is following
-   * the live edge, then freezes the moment the user reads away from it, so
-   * "unread" is growth since that point.
-   */
-  const seenAssistantCountRef = useRef(0);
-  const [seenAssistantCount, setSeenAssistantCount] = useState(0);
-
-  const { isDetached, unreadCount } = deriveJumpState({
+  /*
+    The pill counts rows the jump would skip: everything after the last
+    visible virtualizer row, plus the live streaming row (which lives outside
+    the list). `visibleRange.endIndex` is the viewport range, not the
+    overscanned render set, so a partially visible last row already counts as
+    seen.
+  */
+  const { isDetached, messagesBelow } = deriveJumpState({
     isScrolledUp,
     isAtBottom,
-    completedAssistantCount,
-    seenAssistantCount,
+    messageCount: visibleMessages.length,
+    lastVisibleIndex: visibleRange?.endIndex ?? -1,
+    hasStreamingRow: isStreaming,
   });
-
-  useEffect(() => {
-    // A conversation switch starts from what is on screen; the previous
-    // thread's backlog is not unread in this one.
-    seenAssistantCountRef.current = completedAssistantCount;
-    setSeenAssistantCount(completedAssistantCount);
-    // Deliberately keyed on the conversation alone: this is the reset, and must
-    // not re-run as the count changes within a conversation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
-
-  useEffect(() => {
-    if (isDetached || seenAssistantCountRef.current === completedAssistantCount) {
-      return;
-    }
-
-    // Attached, so everything that has landed has been seen.
-    seenAssistantCountRef.current = completedAssistantCount;
-    setSeenAssistantCount(completedAssistantCount);
-  }, [completedAssistantCount, isDetached]);
 
   // ---------------------------------------------------------------------
   // Turn-completion announcement
@@ -2834,7 +2812,11 @@ export function ChatWindow({
         )}
       >
         <ArrowDown className="h-3.5 w-3.5" />
-        <span>{unreadCount > 0 ? `${unreadCount} new` : 'Latest'}</span>
+        <span>
+          {messagesBelow > 0
+            ? `${messagesBelow} message${messagesBelow === 1 ? '' : 's'}`
+            : 'Latest'}
+        </span>
       </button>
 
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">

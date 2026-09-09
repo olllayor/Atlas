@@ -62,6 +62,9 @@ const ACTION_LABELS: Record<PullRequestAction, { verb: string; done: string }> =
   ready: { verb: 'Ready for review', done: 'Pull request marked ready for review.' },
   draft: { verb: 'Convert to draft', done: 'Pull request converted to draft.' },
   merge: { verb: 'Merge', done: 'Pull request merged.' },
+  'enable-auto-merge': { verb: 'Enable auto-merge', done: 'Auto-merge enabled.' },
+  'disable-auto-merge': { verb: 'Disable auto-merge', done: 'Auto-merge disabled.' },
+  'update-branch': { verb: 'Update branch', done: 'Branch updated from the base.' },
 };
 
 const MERGE_METHODS: { value: PullRequestMergeMethod; label: string; title: string }[] = [
@@ -72,13 +75,26 @@ const MERGE_METHODS: { value: PullRequestMergeMethod; label: string; title: stri
 
 export function PullRequestDetailPanel({
   conversationId,
+  projectRoot,
   number,
   onBack,
 }: {
-  conversationId: string;
+  /**
+   * Either a conversation (workbench) or a project root (app-wide page).
+   * Exactly one must be set; the ref sent to the main process is built from
+   * whichever is present.
+   */
+  conversationId?: string;
+  projectRoot?: string;
   number: number;
   onBack: () => void;
 }) {
+  const scope = conversationId
+    ? ({ conversationId } as const)
+    : projectRoot
+      ? ({ projectRoot } as const)
+      : null;
+
   const [detail, setDetail] = useState<PullRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -89,13 +105,13 @@ export function PullRequestDetailPanel({
   const requestRef = useRef(0);
 
   const loadDetail = useCallback(async () => {
-    if (!window.atlasChat?.github?.getPr) return;
+    if (!window.atlasChat?.github?.getPr || !scope) return;
 
     const token = ++requestRef.current;
     setLoading(true);
 
     try {
-      const next = await window.atlasChat.github.getPr({ conversationId, number });
+      const next = await window.atlasChat.github.getPr({ ...scope, number });
       if (requestRef.current !== token) return;
       setDetail(next);
       setFailed(next === null);
@@ -106,7 +122,7 @@ export function PullRequestDetailPanel({
     } finally {
       if (requestRef.current === token) setLoading(false);
     }
-  }, [conversationId, number]);
+  }, [number, scope]);
 
   useEffect(() => {
     void loadDetail();
@@ -114,20 +130,17 @@ export function PullRequestDetailPanel({
 
   const runAction = useCallback(
     async (action: PullRequestAction, method?: PullRequestMergeMethod) => {
-      if (!window.atlasChat?.github?.runPrAction) return;
+      if (!window.atlasChat?.github?.runPrAction || !scope) return;
       setBusy(true);
 
       try {
         await window.atlasChat.github.runPrAction({
-          conversationId,
+          ...scope,
           number,
           action,
           ...(method ? { mergeMethod: method } : {}),
         });
         notify({ tone: 'success', title: ACTION_LABELS[action].done });
-        // The host's answer, not a guess at it: a merge that queued behind a
-        // required check leaves the pull request open, and re-reading is the
-        // only way the panel finds that out.
         await loadDetail();
       } catch (err) {
         notifyError(`Could not ${ACTION_LABELS[action].verb.toLowerCase()} #${number}`, err);
@@ -135,8 +148,12 @@ export function PullRequestDetailPanel({
         setBusy(false);
       }
     },
-    [conversationId, loadDetail, number]
+    [loadDetail, number, scope]
   );
+
+  if (!scope) {
+    return <PullRequestEmptyState title={`#${number}`} body="No project or conversation to read from." />;
+  }
 
   if (loading && !detail) {
     return <PullRequestEmptyState title={`#${number}`} body="Loading…" />;
@@ -237,6 +254,22 @@ export function PullRequestDetailPanel({
               >
                 Merge
               </button>
+              <button
+                type="button"
+                disabled={busy}
+                className={ACTION_CLASS}
+                onClick={() => void runAction('enable-auto-merge', mergeMethod)}
+              >
+                Auto-merge
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                className={ACTION_CLASS}
+                onClick={() => void runAction('update-branch')}
+              >
+                Update branch
+              </button>
               <button type="button" disabled={busy} className={ACTION_CLASS} onClick={() => void runAction('draft')}>
                 Convert to draft
               </button>
@@ -276,18 +309,10 @@ export function PullRequestDetailPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
         {tab === 'summary' ? (
-          <SummaryTab
-            conversationId={conversationId}
-            detail={detail}
-            onChanged={() => void loadDetail()}
-          />
+          <SummaryTab scope={scope} detail={detail} onChanged={() => void loadDetail()} />
         ) : null}
-        {tab === 'activity' ? (
-          <ActivityTab conversationId={conversationId} number={number} />
-        ) : null}
-        {tab === 'diff' ? (
-          <DiffTab conversationId={conversationId} number={number} state={detail.state} />
-        ) : null}
+        {tab === 'activity' ? <ActivityTab scope={scope} number={number} /> : null}
+        {tab === 'diff' ? <DiffTab scope={scope} number={number} state={detail.state} /> : null}
       </div>
     </div>
   );
@@ -343,18 +368,20 @@ function DetailHeaderBar({
   );
 }
 
+type PrScope = { conversationId: string } | { projectRoot: string };
+
 function SummaryTab({
-  conversationId,
+  scope,
   detail,
   onChanged,
 }: {
-  conversationId: string;
+  scope: PrScope;
   detail: PullRequestDetail;
   onChanged: () => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <LabelsEditor conversationId={conversationId} detail={detail} onChanged={onChanged} />
+      <LabelsEditor scope={scope} detail={detail} onChanged={onChanged} />
 
       {detail.body.trim() ? (
         <MessageResponseContent>{detail.body}</MessageResponseContent>
@@ -362,7 +389,7 @@ function SummaryTab({
         <p className="text-sm text-text-faint">No description.</p>
       )}
 
-      <ReviewersEditor conversationId={conversationId} detail={detail} onChanged={onChanged} />
+      <ReviewersEditor scope={scope} detail={detail} onChanged={onChanged} />
 
       {detail.checks.length > 0 ? (
         <section>
@@ -407,7 +434,7 @@ function SummaryTab({
  * the reader already wrote. Request-changes needs a body because GitHub does;
  * the button stays disabled until one is there.
  */
-function ActivityTab({ conversationId, number }: { conversationId: string; number: number }) {
+function ActivityTab({ scope, number }: { scope: PrScope; number: number }) {
   const [activity, setActivity] = useState<PullRequestActivity | null>(null);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
@@ -417,13 +444,13 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
     if (!window.atlasChat?.github?.getPrActivity) return;
     setLoading(true);
     try {
-      setActivity(await window.atlasChat.github.getPrActivity({ conversationId, number }));
+      setActivity(await window.atlasChat.github.getPrActivity({ ...scope, number }));
     } catch (err) {
       notifyError('Could not load the pull request activity', err);
     } finally {
       setLoading(false);
     }
-  }, [conversationId, number]);
+  }, [number, scope]);
 
   useEffect(() => {
     void load();
@@ -440,13 +467,11 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
       try {
         if (verdict === 'comment') {
           if (!window.atlasChat?.github?.commentOnPr) return;
-          await window.atlasChat.github.commentOnPr({ conversationId, number, body });
+          await window.atlasChat.github.commentOnPr({ ...scope, number, body });
         } else {
           if (!window.atlasChat?.github?.submitReviewOnPr) return;
-          await window.atlasChat.github.submitReviewOnPr({ conversationId, number, verdict, body });
+          await window.atlasChat.github.submitReviewOnPr({ ...scope, number, verdict, body });
         }
-        // Cleared only once the host has it. A failed post that emptied the box
-        // would lose what the reader wrote.
         setDraft('');
         notify({
           tone: 'success',
@@ -467,7 +492,7 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
         setPosting(false);
       }
     },
-    [conversationId, draft, load, number, posting]
+    [draft, load, number, posting, scope]
   );
 
   return (
@@ -590,11 +615,11 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
  * it is posted, so a half-written one must stay invisible here too.
  */
 function DiffTab({
-  conversationId,
+  scope,
   number,
   state,
 }: {
-  conversationId: string;
+  scope: PrScope;
   number: number;
   state: PullRequestDetail['state'];
 }) {
@@ -612,8 +637,8 @@ function DiffTab({
     setLoading(true);
     try {
       const [next, nextThreads] = await Promise.all([
-        window.atlasChat.github.getPrDiff({ conversationId, number }),
-        window.atlasChat.github.getPrThreads({ conversationId, number }).catch(() => []),
+        window.atlasChat.github.getPrDiff({ ...scope, number }),
+        window.atlasChat.github.getPrThreads({ ...scope, number }).catch(() => []),
       ]);
       setResult(next);
       setThreads(nextThreads);
@@ -622,7 +647,7 @@ function DiffTab({
     } finally {
       setLoading(false);
     }
-  }, [conversationId, number]);
+  }, [number, scope]);
 
   useEffect(() => {
     void load();
@@ -682,7 +707,7 @@ function DiffTab({
       setSubmitting(true);
       try {
         await window.atlasChat.github.submitReviewOnPr({
-          conversationId,
+          ...scope,
           number,
           verdict,
           body: summary.trim(),
@@ -706,7 +731,7 @@ function DiffTab({
         setSubmitting(false);
       }
     },
-    [conversationId, drafts, load, number, submitting, summary]
+    [drafts, load, number, scope, submitting, summary]
   );
 
   if (loading && !result) {
@@ -784,7 +809,7 @@ function DiffTab({
             {openThreads.map((thread) => (
               <ThreadCard
                 key={thread.id}
-                conversationId={conversationId}
+                scope={scope}
                 number={number}
                 thread={thread}
                 onChanged={load}
@@ -803,7 +828,7 @@ function DiffTab({
             {resolvedThreads.map((thread) => (
               <ThreadCard
                 key={thread.id}
-                conversationId={conversationId}
+                scope={scope}
                 number={number}
                 thread={thread}
                 onChanged={load}
@@ -923,12 +948,12 @@ function ReviewBar({
 }
 
 function ThreadCard({
-  conversationId,
+  scope,
   number,
   thread,
   onChanged,
 }: {
-  conversationId: string;
+  scope: PrScope;
   number: number;
   thread: PullRequestReviewThread;
   onChanged: () => void | Promise<void>;
@@ -995,7 +1020,7 @@ function ThreadCard({
               void act(
                 () =>
                   window.atlasChat!.github!.setPrThreadResolution({
-                    conversationId,
+                    ...scope,
                     number,
                     threadId: thread.id,
                     resolved: !thread.isResolved,
@@ -1014,7 +1039,7 @@ function ThreadCard({
               void act(
                 () =>
                   window.atlasChat!.github!.replyToPrThread({
-                    conversationId,
+                    ...scope,
                     number,
                     threadId: thread.id,
                     body: reply.trim(),
@@ -1032,11 +1057,11 @@ function ThreadCard({
 }
 
 function LabelsEditor({
-  conversationId,
+  scope,
   detail,
   onChanged,
 }: {
-  conversationId: string;
+  scope: PrScope;
   detail: PullRequestDetail;
   onChanged: () => void;
 }) {
@@ -1049,7 +1074,7 @@ function LabelsEditor({
     let cancelled = false;
 
     void window.atlasChat?.github
-      ?.listPrLabels?.({ conversationId, number: detail.number })
+      ?.listPrLabels?.({ ...scope, number: detail.number })
       .then((next) => {
         if (!cancelled) setCandidates(next);
       })
@@ -1058,7 +1083,7 @@ function LabelsEditor({
     return () => {
       cancelled = true;
     };
-  }, [candidates, conversationId, detail.number, open]);
+  }, [candidates, detail.number, open, scope]);
 
   const toggle = useCallback(
     async (label: PullRequestLabelCandidate) => {
@@ -1066,7 +1091,7 @@ function LabelsEditor({
       setBusy(true);
       try {
         await window.atlasChat.github.setPrLabels({
-          conversationId,
+          ...scope,
           number: detail.number,
           ...(label.isApplied ? { remove: [label.name] } : { add: [label.name] }),
         });
@@ -1078,7 +1103,7 @@ function LabelsEditor({
         setBusy(false);
       }
     },
-    [busy, conversationId, detail.number, onChanged]
+    [busy, detail.number, onChanged, scope]
   );
 
   return (
@@ -1129,11 +1154,11 @@ function LabelsEditor({
 }
 
 function ReviewersEditor({
-  conversationId,
+  scope,
   detail,
   onChanged,
 }: {
-  conversationId: string;
+  scope: PrScope;
   detail: PullRequestDetail;
   onChanged: () => void;
 }) {
@@ -1146,7 +1171,7 @@ function ReviewersEditor({
     let cancelled = false;
 
     void window.atlasChat?.github
-      ?.listPrReviewers?.({ conversationId, number: detail.number })
+      ?.listPrReviewers?.({ ...scope, number: detail.number })
       .then((next) => {
         if (!cancelled) setCandidates(next);
       })
@@ -1155,7 +1180,7 @@ function ReviewersEditor({
     return () => {
       cancelled = true;
     };
-  }, [candidates, conversationId, detail.number, open]);
+  }, [candidates, detail.number, open, scope]);
 
   const toggle = useCallback(
     async (login: string, isRequested: boolean) => {
@@ -1163,7 +1188,7 @@ function ReviewersEditor({
       setBusy(true);
       try {
         await window.atlasChat.github.requestPrReviewers({
-          conversationId,
+          ...scope,
           number: detail.number,
           ...(isRequested ? { remove: [login] } : { add: [login] }),
         });
@@ -1175,7 +1200,7 @@ function ReviewersEditor({
         setBusy(false);
       }
     },
-    [busy, conversationId, detail.number, onChanged]
+    [busy, detail.number, onChanged, scope]
   );
 
   return (

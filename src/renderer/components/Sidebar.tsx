@@ -4,6 +4,7 @@ import {
   Clock,
   Folder,
   FolderPlus,
+  GitPullRequest,
   LayoutGrid,
   Plug,
   Plus,
@@ -193,6 +194,8 @@ type SidebarProps = {
   onOpenSites: () => void;
   /** Sites is a beta feature and ships off; off means invisible. */
   showSites: boolean;
+  /** App-wide Pull requests page, the t3code `/pull-requests` shape. */
+  onOpenPullRequests: () => void;
   onOpenPlugins: () => void;
   /** The plugin system is a beta feature and ships off; off means invisible. */
   showPlugins: boolean;
@@ -342,6 +345,7 @@ export function Sidebar({
   onOpenLanding,
   onOpenSites,
   showSites,
+  onOpenPullRequests,
   onOpenPlugins,
   showPlugins,
   onOpenSearch,
@@ -1192,6 +1196,12 @@ export function Sidebar({
             />
           ) : null}
 
+          <RailButton
+            icon={<GitPullRequest className="size-4" strokeWidth={1.75} aria-hidden />}
+            label="Pull requests"
+            onClick={onOpenPullRequests}
+          />
+
           <SidebarActivityBell
             items={modeItems}
             projectById={projectById}
@@ -1325,6 +1335,12 @@ export function Sidebar({
                 onClick={onOpenPlugins}
               />
             ) : null}
+
+            <SidebarNavRow
+              icon={<GitPullRequest className="size-4" strokeWidth={1.75} aria-hidden />}
+              label="Pull requests"
+              onClick={onOpenPullRequests}
+            />
           </div>
 
           {/* Bulk bar: appears while a multi-select is held. */}
@@ -1672,9 +1688,27 @@ export function Sidebar({
       <div
         className={cn(
           'shrink-0 border-t border-border-subtle px-2 py-2',
-          collapsed ? 'flex justify-center' : ''
+          collapsed ? 'flex flex-col items-center gap-1' : ''
         )}
       >
+        {/* Pull requests sits with Settings in the footer: it is a destination
+            you return to, not a mode-specific panel, and t3code puts the same
+            control beside the gear. */}
+        <div className={cn(collapsed ? '' : 'mb-1 flex')}>
+          <button
+            type="button"
+            onClick={onOpenPullRequests}
+            aria-label="Pull requests"
+            title="Pull requests"
+            className={cn(
+              'flex items-center gap-2 rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary',
+              collapsed ? 'size-9 justify-center' : 'w-full px-2 py-1.5 text-sm'
+            )}
+          >
+            <GitPullRequest className="size-4 shrink-0" strokeWidth={1.75} aria-hidden />
+            {collapsed ? null : <span>Pull requests</span>}
+          </button>
+        </div>
         <SidebarSettingsMenu
           collapsed={collapsed}
           settings={settings}

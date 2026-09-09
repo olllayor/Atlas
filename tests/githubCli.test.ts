@@ -404,3 +404,40 @@ test('resolving a thread runs the GraphQL mutation', async () => {
   assert.ok(api);
   assert.ok(api.args.some((arg) => String(arg).includes('resolveReviewThread')));
 });
+
+test('enabling auto-merge runs merge --auto with the chosen strategy', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr merge': { code: 0 }
+  });
+
+  await service.runPullRequestAction({
+    root: '/repo',
+    number: 8,
+    action: 'enable-auto-merge',
+    mergeMethod: 'squash'
+  });
+
+  const merge = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'merge');
+  assert.ok(merge);
+  assert.deepEqual(merge.args.slice(0, 3), ['pr', 'merge', '8']);
+  assert.ok(merge.args.includes('--auto'));
+  assert.ok(merge.args.includes('--squash'));
+});
+
+test('updating a branch runs pr update-branch', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr update-branch': { code: 0 }
+  });
+
+  await service.runPullRequestAction({
+    root: '/repo',
+    number: 3,
+    action: 'update-branch'
+  });
+
+  const update = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'update-branch');
+  assert.ok(update);
+  assert.deepEqual(update.args, ['pr', 'update-branch', '3']);
+});

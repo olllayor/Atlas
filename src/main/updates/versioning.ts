@@ -6,11 +6,50 @@ type ParsedVersion = {
   normalized: string;
 };
 
+export type ReleaseAsset = {
+  name: string;
+  downloadUrl: string;
+  size: number;
+};
+
 export type GitHubReleaseSummary = {
   version: ParsedVersion;
   releaseUrl: string;
   releaseNotes: string | null;
+  assets: ReleaseAsset[];
 };
+
+/**
+ * Pick the disk image for the running architecture.
+ *
+ * Atlas ships an unsigned build, so Squirrel.Mac auto-update is not an option
+ * — the update path is "fetch the DMG and hand it to Finder", which means the
+ * one thing that must not go wrong is handing an Intel image to an Apple
+ * Silicon machine. `electron-builder` only suffixes the non-default arch, so
+ * the arm64 image carries `-arm64` and the x64 image carries no marker at all;
+ * matching x64 by *absence* is what keeps that asymmetry from silently
+ * resolving to the wrong file.
+ *
+ * `.blockmap` siblings sit next to every image in the release and would match
+ * a naive `.dmg` substring test, so they are excluded first.
+ */
+export function selectMacInstallerAsset(assets: ReleaseAsset[], arch: string): ReleaseAsset | null {
+  const images = assets.filter(
+    (asset) => asset.name.toLowerCase().endsWith('.dmg') && asset.size > 0
+  );
+  if (images.length === 0) {
+    return null;
+  }
+
+  const hasArm = (asset: ReleaseAsset) => /arm64|aarch64/i.test(asset.name);
+  const hasIntel = (asset: ReleaseAsset) => /x64|x86_64|intel/i.test(asset.name);
+
+  if (arch === 'arm64') {
+    return images.find(hasArm) ?? null;
+  }
+
+  return images.find(hasIntel) ?? images.find((asset) => !hasArm(asset)) ?? null;
+}
 
 const VERSION_PATTERN =
   /^v?(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<prerelease>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;

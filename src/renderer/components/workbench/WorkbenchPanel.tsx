@@ -51,6 +51,7 @@ import { TaskStatusGlyph } from './TaskStatusGlyph';
 import { ToolActivityIconView } from '../transcript/ToolActivityIconView';
 import { BrowserSurface } from './BrowserSurface';
 import { FilesPanel } from './FilesPanel';
+import { PullRequestsPanel } from './PullRequestsPanel';
 import { FileViewerPanel } from './FileViewerPanel';
 import { fileSurfaceLabel } from './fileTreeModel';
 import { SurfacePicker } from './SurfacePicker';
@@ -312,6 +313,15 @@ export function WorkbenchPanel({
           <ReviewPanel conversationId={conversationId} onSendComments={onSendComments} />
         )}
         {active?.kind === 'git' && <GitPanel conversationId={conversationId} />}
+        {active?.kind === 'pullRequests' && (
+          <PullRequestsPanel
+            // Keyed on the conversation so moving between threads shows the
+            // new project's pull requests rather than the previous one's list
+            // with a new project's title over it.
+            key={conversationId ?? 'none'}
+            conversationId={conversationId}
+          />
+        )}
         {active?.kind === 'browser' && (
           <BrowserSurface
             key={active.id}

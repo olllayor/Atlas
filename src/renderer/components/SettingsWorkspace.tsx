@@ -717,8 +717,17 @@ function GeneralPage({
         </SettingsRow>
 
         <SettingsRow title="App updates" description={updateDescription(updateState)}>
-          <ActionButton onClick={onUpdateAction} disabled={updateState.status === 'checking'}>
-            <UpdateIcon className={`h-3.5 w-3.5 ${updateState.status === 'checking' ? 'motion-spin-steps' : ''}`} />
+          <ActionButton
+            onClick={onUpdateAction}
+            disabled={updateState.status === 'checking' || updateState.status === 'downloading'}
+          >
+            <UpdateIcon
+              className={`h-3.5 w-3.5 ${
+                updateState.status === 'checking' || updateState.status === 'downloading'
+                  ? 'motion-spin-steps'
+                  : ''
+              }`}
+            />
             <span>{updateLabel}</span>
           </ActionButton>
         </SettingsRow>
@@ -1847,8 +1856,17 @@ function updateDescription(updateState: AppUpdateSnapshot) {
     return `Version ${updateState.latestVersion} is available.`;
   }
 
+  if (updateState.status === 'downloading') {
+    const percent = updateState.progress ? Math.round(updateState.progress.percent) : null;
+    return percent === null
+      ? `Downloading Atlas ${updateState.latestVersion}\u2026`
+      : `Downloading Atlas ${updateState.latestVersion} \u2014 ${percent}%`;
+  }
+
   if (updateState.status === 'downloaded') {
-    return 'An update has finished downloading and is ready to install.';
+    // Unsigned build: Atlas cannot replace itself, so the honest instruction
+    // is the one the disk image is about to show.
+    return `Atlas ${updateState.latestVersion} is in your Downloads folder. Open it and drag Atlas to Applications.`;
   }
 
   if (updateState.status === 'checking') {
@@ -1875,8 +1893,12 @@ function getUpdateLabel(updateState: AppUpdateSnapshot) {
     return 'Download update';
   }
 
+  if (updateState.status === 'downloading') {
+    return 'Downloading\u2026';
+  }
+
   if (updateState.status === 'downloaded') {
-    return 'Restart to install';
+    return 'Open installer';
   }
 
   return 'Check now';

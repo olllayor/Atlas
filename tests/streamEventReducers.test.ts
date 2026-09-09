@@ -567,3 +567,99 @@ test('applyTerminalErrorFallbackToStore leaves a newer turn alone', () => {
   assert.equal(next.draftsByConversation.c1?.status, 'streaming');
   assert.equal(next.conversationDetails.c1.messages[0].status, 'streaming');
 });
+
+// =============================================================================
+// Sidebar liveness: the terminal fallbacks must settle the conversation row.
+//
+// `sidebarViewModel` reads `conversation.status === 'running'` whenever no
+// draft covers the row, and these fallbacks drop the draft. Before this, a
+// failed post-turn refetch left the row on `Working` with a live ticking
+// timer — forever, because the refetch that just failed is the only thing
+// that normally refreshes the list.
+// =============================================================================
+
+function runningConversation(id = 'c1') {
+  return {
+    id,
+    title: 'A chat',
+    status: 'running' as const,
+    lastError: null,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
+}
+
+test('applyDoneEventToStore settles a running conversation row', () => {
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r1') },
+    requestToConversation: { r1: 'c1' },
+    conversations: [runningConversation()],
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyDoneEventToStore(state, 'c1', { type: 'done', requestId: 'r1', messageId: 'm1' });
+  const next = { ...state, ...patch } as RuntimeEventFanOut;
+
+  assert.equal(next.draftsByConversation.c1, undefined, 'draft is dropped');
+  assert.equal(next.conversations?.[0]?.status, 'completed', 'row no longer reads as running');
+});
+
+test('applyTerminalErrorFallbackToStore marks the row failed, and an abort only idle', () => {
+  const base = {
+    draftsByConversation: {},
+    requestToConversation: { r1: 'c1' },
+    conversations: [runningConversation()],
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut;
+
+  const failed = applyTerminalErrorFallbackToStore(makeFanOut(base), 'c1', {
+    type: 'error',
+    requestId: 'r1',
+    code: 'provider_error',
+    message: 'upstream died',
+    retryable: true,
+  });
+  assert.equal(failed.conversations?.[0]?.status, 'failed');
+  assert.equal(failed.conversations?.[0]?.lastError, 'upstream died');
+
+  // An abort is the user's own decision, so it must not wear a failure —
+  // this mirrors the split ChatEngine persists.
+  const aborted = applyTerminalErrorFallbackToStore(makeFanOut(base), 'c1', {
+    type: 'error',
+    requestId: 'r1',
+    code: 'aborted',
+    message: 'stopped',
+    retryable: false,
+  });
+  assert.equal(aborted.conversations?.[0]?.status, 'idle');
+  assert.equal(aborted.conversations?.[0]?.lastError, null);
+});
+
+test('a newer turn still running keeps the row running', () => {
+  const state = makeFanOut({
+    // The draft names r2: turn r1 failed, but r2 owns the live edge now.
+    draftsByConversation: { c1: makeStreamingDraft('r2') },
+    requestToConversation: { r1: 'c1', r2: 'c1' },
+    conversations: [runningConversation()],
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyTerminalErrorFallbackToStore(state, 'c1', {
+    type: 'error',
+    requestId: 'r1',
+    code: 'provider_error',
+    message: 'upstream died',
+    retryable: true,
+  });
+
+  assert.equal(patch.conversations, undefined, 'the running row is left alone');
+});
+
+test('settling an unrelated conversation does not churn the list identity', () => {
+  const conversations = [runningConversation('other')];
+  const state = makeFanOut({
+    draftsByConversation: { c1: makeStreamingDraft('r1') },
+    requestToConversation: { r1: 'c1' },
+    conversations,
+  } as Partial<RuntimeEventFanOut> as RuntimeEventFanOut);
+
+  const patch = applyDoneEventToStore(state, 'c1', { type: 'done', requestId: 'r1', messageId: 'm1' });
+  assert.equal(patch.conversations, undefined);
+});

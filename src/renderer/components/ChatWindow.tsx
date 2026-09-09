@@ -99,6 +99,7 @@ import {
   type CiteDomRange,
   type CiteSourceAnchor,
 } from '../lib/citeSelection';
+import { mathAwareSelectionText } from '../lib/mathSelection';
 import { CiteToolbar } from './CiteToolbar';
 import { CiteCommentEditor, type CiteCommentAnchorRect } from './CiteCommentEditor';
 import { CiteChip } from './CiteChip';
@@ -185,6 +186,22 @@ const MEASURE = 'w-full';
 /** Jump-to-latest hysteresis: show past this, hide inside the other. */
 const JUMP_SHOW_PX = 120;
 const JUMP_HIDE_PX = 40;
+
+/**
+ * Auto-load-older hysteresis, in pixels from the top of the scroller.
+ *
+ * Paging is armed by leaving the trigger zone and fired by re-entering it,
+ * which is what makes "load the next page" cost a deliberate scroll every
+ * time. Without the arming half, one trip to the top pages the entire
+ * conversation: the restore that follows a prepend lands the reader deep in
+ * the newly inserted rows, and if that landing counted as "still at the top"
+ * the next page fires immediately, forever.
+ *
+ * The gap between the two is what absorbs a restore that undershoots — the
+ * reader has to be a clear screenful away before the next page can arm.
+ */
+const OLDER_LOAD_PX = 160;
+const OLDER_REARM_PX = 800;
 
 /**
  * How far outside the viewport a row may sit before it degrades to plain
@@ -790,11 +807,12 @@ function UserExternalLink({ url }: { url: string }) {
   return (
     <MarkdownAnchor
       href={url}
-      // Link text wears the blue; the brand/favicon mark keeps the bubble's
-      // own text token so it follows every theme instead of going blue.
-      // The `:not([class*='text-'])` guard matches the ui-kit convention —
-      // only untinted svgs (the icon) are recolored, never link text.
-      className="text-[#4D9AF6] underline decoration-[#4D9AF6]/60 underline-offset-2 [&_svg:not([class*='text-'])]:text-text-message"
+      // Link text wears the brand-strong token; the brand/favicon mark keeps
+      // the bubble's own text token so it follows every theme instead of
+      // going blue. The `:not([class*='text-'])` guard matches the ui-kit
+      // convention — only untinted svgs (the icon) are recolored, never link
+      // text.
+      className="text-brand-strong underline decoration-brand-strong/60 underline-offset-2 [&_svg:not([class*='text-'])]:text-text-message"
     >
       {url}
     </MarkdownAnchor>
@@ -1557,6 +1575,8 @@ export function ChatWindow({
   const listRef = useRef<HTMLDivElement | null>(null);
   const pendingPrependRef = useRef<{ conversationId: string; previousMessageCount: number } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
+  /** See `OLDER_LOAD_PX`: paging re-arms only once the reader leaves the top. */
+  const autoLoadArmedRef = useRef(false);
   /** Running calibration of `estimateHistoryRowHeight` against reality. */
   const estimateScaleRef = useRef({ measured: 0, estimated: 0, count: 0 });
 
@@ -2009,6 +2029,7 @@ export function ChatWindow({
     estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
     pendingPrependRef.current = null;
     lastAutoLoadCursorRef.current = null;
+    autoLoadArmedRef.current = false;
 
     const element = scrollRef.current;
     if (!element || !conversationId) {
@@ -2078,9 +2099,10 @@ export function ChatWindow({
    * The old implementation diffed `scrollHeight` before and after, which is
    * measured against *estimated* heights for the newly inserted rows and
    * therefore drifted. Re-anchoring on the message that used to be first is
-   * exact: it was already measured, and any correction as the prepended
-   * rows measure is absorbed by
-   * `shouldAdjustScrollPositionOnItemSizeChange`.
+   * exact: it was already measured, and any correction as the prepended rows
+   * measure is absorbed by the virtualizer's own size-change adjustment,
+   * which shifts `scrollTop` by the delta of any row that resizes above the
+   * current offset.
    */
   useLayoutEffect(() => {
     const pending = pendingPrependRef.current;
@@ -2114,40 +2136,63 @@ export function ChatWindow({
     await onLoadOlderMessages(detail.conversation.id);
   }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages]);
 
+  /*
+    Everything the scroll listener below needs, refreshed every render. The
+    listener binds once per scroller; reading through a ref is what keeps it
+    from being torn down and rebuilt on every stream flush.
+  */
+  const autoLoadStateRef = useRef({ folded, hasOlder, isLoadingOlder, nextCursor, loadOlderMessages });
+  autoLoadStateRef.current = { folded, hasOlder, isLoadingOlder, nextCursor, loadOlderMessages };
+
   /**
-   * Auto-load older history when the top of the list comes into view —
-   * gated on the user having actually scrolled. `startIndex === 0` is true
-   * on the first paint of every thread, which used to fire a page load
-   * nobody asked for on every conversation open.
+   * Auto-load older history when the reader brings the top of the list into
+   * view.
+   *
+   * This is a scroll listener and not a render effect on purpose. The
+   * virtualizer's `range` is derived from `scrollOffset`, which it only
+   * updates when the DOM emits a scroll event — so inside an effect it still
+   * describes where the list was *before* the layout effect above moved it.
+   * Reading `startIndex === 0` there meant the restore's `scrollToIndex` was
+   * invisible to this check: every prepend re-fired instantly on stale state
+   * and drained the whole conversation in one pass, stranding the reader at
+   * the head of the thread. On the scroll event `scrollTop` is, by
+   * construction, current.
    */
   useEffect(() => {
-    // While folded, the top of the *visible* list is the fold boundary, not
-    // the top of the history — auto-loading there would page messages the
-    // fold is hiding. Expansion is what reopens the paging path.
-    if (folded) {
-      return;
-    }
-    if (!hasOlder || isLoadingOlder || !nextCursor || visibleRange?.startIndex !== 0) {
-      return;
-    }
-    if (!userHasScrolledRef.current) {
-      return;
-    }
-    if (lastAutoLoadCursorRef.current === nextCursor) {
+    if (!scrollNode) {
       return;
     }
 
-    lastAutoLoadCursorRef.current = nextCursor;
-    void loadOlderMessages();
-  }, [
-    folded,
-    hasOlder,
-    isLoadingOlder,
-    nextCursor,
-    loadOlderMessages,
-    userHasScrolledRef,
-    visibleRange?.startIndex,
-  ]);
+    const onScroll = () => {
+      const { folded: isFolded, hasOlder: more, isLoadingOlder: loading, nextCursor: cursor, loadOlderMessages: load } =
+        autoLoadStateRef.current;
+      const top = scrollNode.scrollTop;
+
+      if (top > OLDER_REARM_PX) {
+        autoLoadArmedRef.current = true;
+        return;
+      }
+      if (top > OLDER_LOAD_PX || !autoLoadArmedRef.current) {
+        return;
+      }
+      // While folded, the top of the *visible* list is the fold boundary, not
+      // the top of the history — auto-loading there would page messages the
+      // fold is hiding. Expansion is what reopens the paging path.
+      if (isFolded || !more || loading || !cursor) {
+        return;
+      }
+      if (lastAutoLoadCursorRef.current === cursor) {
+        return;
+      }
+
+      autoLoadArmedRef.current = false;
+      lastAutoLoadCursorRef.current = cursor;
+      void load();
+    };
+
+    scrollNode.addEventListener('scroll', onScroll, { passive: true });
+    return () => scrollNode.removeEventListener('scroll', onScroll);
+  }, [scrollNode]);
 
   /**
    * Post-send.
@@ -2564,7 +2609,9 @@ export function ChatWindow({
   const handleContextMenu = useCallback(
     async (event: React.MouseEvent) => {
       const selection = window.getSelection();
-      const rawText = selection?.toString() ?? '';
+      // Rendered equations contribute their TeX source, not flattened
+      // KaTeX glyphs (t3code PR #10698).
+      const rawText = mathAwareSelectionText(selection);
       if (!rawText.trim()) {
         return;
       }

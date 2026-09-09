@@ -7,6 +7,75 @@ import type { McpAuditContext } from '../core/ChatSessionRuntime';
 import { createMcpTools } from './mcpTools';
 
 /**
+ * Per-turn ceiling on MCP tools injected into model context.
+ *
+ * Full lazy search (`search_mcp_tools` on demand) is future work; this is the
+ * safe intermediate, bounding prompt bloat when a user enables chatty servers
+ * while the audit records what each server lost.
+ */
+export const MAX_MCP_TOOLS_PER_TURN = 64;
+
+/**
+ * Picks the tools a turn can afford, fairly.
+ *
+ * Sorting by server then slicing would let one chatty server starve every
+ * alphabetically-later one: a 90-tool `github` server would silence `linear`
+ * completely, and the user would see their tools vanish with no failure. So
+ * deal round-robin instead — every server gives up its Nth tool before any
+ * server gives up its first. Within a server, tools go in name order, so the
+ * survivors are stable turn to turn and the provider's prefix cache holds.
+ *
+ * Under the cap this is still a pure reordering, which is what makes the sort
+ * unconditional: the offered set must not change shape at the boundary.
+ */
+export function selectToolsForTurn<T extends { serverId: string; toolName: string }>(
+  definitions: readonly T[]
+): T[] {
+  const byServer = new Map<string, T[]>();
+  for (const definition of definitions) {
+    const bucket = byServer.get(definition.serverId);
+    if (bucket) bucket.push(definition);
+    else byServer.set(definition.serverId, [definition]);
+  }
+
+  const queues = [...byServer.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, tools]) =>
+      [...tools].sort((a, b) => (a.toolName < b.toolName ? -1 : a.toolName > b.toolName ? 1 : 0))
+    );
+
+  const selected: T[] = [];
+  for (let round = 0; selected.length < MAX_MCP_TOOLS_PER_TURN; round += 1) {
+    let dealt = false;
+    for (const queue of queues) {
+      if (round >= queue.length) continue;
+      if (selected.length >= MAX_MCP_TOOLS_PER_TURN) break;
+      selected.push(queue[round]!);
+      dealt = true;
+    }
+    if (!dealt) break;
+  }
+  return selected;
+}
+
+/** How many tools each server offered but did not get to send, by server id. */
+export function countWithheldByServer(
+  offered: readonly { serverId: string }[],
+  selected: readonly { serverId: string }[]
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const definition of offered) {
+    counts.set(definition.serverId, (counts.get(definition.serverId) ?? 0) + 1);
+  }
+  for (const definition of selected) {
+    const remaining = (counts.get(definition.serverId) ?? 0) - 1;
+    if (remaining > 0) counts.set(definition.serverId, remaining);
+    else counts.delete(definition.serverId);
+  }
+  return counts;
+}
+
+/**
  * Bridges the connection manager into a turn's tool set.
  *
  * Keeps the last successfully built set so the synchronous context meter has
@@ -55,7 +124,9 @@ export function createMcpToolsProvider(
       }
 
       const filter = serverFilter && conversationId ? serverFilter(conversationId) : undefined;
-      const definitions = await manager.listTools(filter);
+      const allDefinitions = await manager.listTools(filter);
+      const definitions = selectToolsForTurn(allDefinitions);
+      const withheldByServer = countWithheldByServer(allDefinitions, definitions);
 
       // One record per server that contributed, naming what it offered. This is
       // the first place data crosses to an external process, and an audit that
@@ -80,9 +151,14 @@ export function createMcpToolsProvider(
             approvalId: null,
             toolCallId: null,
             detail: null,
-            // Names only. The schemas are large, already in the request the
-            // model saw, and add nothing an audit is opened to answer.
-            payload: { tools: offered.map((definition) => definition.toolName) },
+            // Names only. Withheld count is per-server, not the global total:
+            // an audit is opened to find out what *this* server lost.
+            payload: {
+              tools: offered.map((definition) => definition.toolName),
+              ...(withheldByServer.get(server.id)
+                ? { withheldMcpTools: withheldByServer.get(server.id) }
+                : {})
+            },
             // One row per (turn, server): a resumed turn re-listing an
             // unchanged server has nothing new to say, and this is a snapshot
             // of what was offered, not an exhaustive call log.

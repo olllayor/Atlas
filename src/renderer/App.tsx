@@ -1748,6 +1748,11 @@ export default function App() {
   }, [appearance.pointerCursors]);
 
   useEffect(() => {
+    document.documentElement.dataset.diffColorScheme =
+      appearance.diffColorScheme === 'blue-orange' ? 'blue-orange' : 'red-green';
+  }, [appearance.diffColorScheme]);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     const apply = () => {
       const reduced = appearance.reduceMotion === 'on' || (appearance.reduceMotion === 'system' && mediaQuery.matches);

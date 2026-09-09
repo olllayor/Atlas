@@ -683,3 +683,68 @@ test('ClaudeAgentAdapter: normalizes fable model alias to claude-fable-5-1 (t3co
 
   assert.equal(capturedModel, 'claude-fable-5-1');
 });
+
+test('ClaudeAgentAdapter: offering Atlas tools notices once that Claude runs its own', async () => {
+  const fakeQuery = ((): Query => {
+    async function* generator(): AsyncGenerator<SDKMessage, void> {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        duration_ms: 10,
+        duration_api_ms: 5,
+        is_error: false,
+        num_turns: 1,
+        result: 'done',
+        stop_reason: 'end_turn',
+        total_cost_usd: 0,
+        session_id: 'sess-notice',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      } as unknown as SDKMessage;
+    }
+    const gen = generator();
+    (gen as unknown as { close: () => void }).close = () => {};
+    return gen as unknown as Query;
+  }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query;
+
+  const adapter = new ClaudeAgentAdapter({
+    readSettings: () => ({
+      enabled: true,
+      displayName: '',
+      color: '',
+      binaryPath: '',
+      homePath: '',
+      acpCommand: '',
+      launchArgs: '',
+      env: {},
+      customModels: []
+    }),
+    sessions: memoryStore(),
+    defaultDirectory: () => '/tmp/workspace',
+    createQuery: fakeQuery
+  });
+
+  const base = {
+    apiKey: '',
+    modelId: 'sonnet',
+    messages: USER_MESSAGES,
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    tools: { read_file: {} } as never
+  };
+
+  const notices: string[] = [];
+  await adapter.streamChat({
+    ...base,
+    agentContext: { conversationId: 'conv-notice', workspaceRoot: '/tmp/workspace' },
+    onNotice: (notice) => notices.push(notice.code)
+  });
+  assert.deepEqual(notices, ['provider.toolsDelegated']);
+
+  // Title/summary scratch calls carry no conversation, and must stay silent.
+  const scratchNotices: string[] = [];
+  await adapter.streamChat({
+    ...base,
+    onNotice: (notice) => scratchNotices.push(notice.code)
+  });
+  assert.deepEqual(scratchNotices, []);
+});

@@ -579,6 +579,192 @@ export type GitHubPrStatus = {
   pr: GitHubPrInfo | null;
 };
 
+/**
+ * The pull request page's domain.
+ *
+ * Modelled on t3code's `packages/contracts/src/pullRequest.ts`, cut down to the
+ * one host Atlas talks to. Two of its decisions are kept deliberately:
+ *
+ * - Unavailability is a *value with a reason*, not a null. A missing `gh`, a
+ *   signed-out `gh` and a non-GitHub remote are three different fixes, and the
+ *   panel says which rather than showing an empty list.
+ * - Every optional field is `null` rather than absent when the host was asked
+ *   and had nothing to say, so "not loaded yet" stays distinguishable from
+ *   "loaded, and there is none".
+ */
+
+export type PullRequestState = 'open' | 'closed' | 'merged';
+
+/** What a listing asks the host for. `all` is every state, not every field. */
+export type PullRequestListState = 'all' | 'open' | 'closed' | 'merged';
+
+/** Whose pull requests a listing is about. */
+export type PullRequestInvolvement = 'all' | 'authored' | 'reviewing';
+
+/**
+ * The host's summary of its reviews. `review-required` is the *absence* of a
+ * verdict, so the row shows nothing for it — saying "review required" on every
+ * unreviewed pull request says nothing.
+ */
+export type PullRequestReviewDecision = 'approved' | 'changes-requested' | 'review-required';
+
+/** The check rollup, collapsed to the three states a glyph can carry. */
+export type PullRequestChecksState = 'passing' | 'failing' | 'pending';
+
+export type PullRequestMergeability = 'mergeable' | 'conflicting' | 'unknown';
+
+export type PullRequestActor = {
+  login: string;
+  /** The display name, when the host has one. Falls back to the login. */
+  name: string | null;
+  avatarUrl: string | null;
+};
+
+export type PullRequestLabel = {
+  name: string;
+  /** Six hex digits without the `#`, as GitHub writes them. */
+  color: string | null;
+};
+
+export type PullRequestCheckStatus = 'success' | 'failure' | 'pending' | 'skipped' | 'cancelled';
+
+export type PullRequestCheck = {
+  name: string;
+  status: PullRequestCheckStatus;
+  url: string | null;
+};
+
+/** One row of the list. Everything here comes from a single `gh pr list` read. */
+export type PullRequestListEntry = {
+  number: number;
+  title: string;
+  url: string;
+  author: PullRequestActor | null;
+  headRefName: string;
+  baseRefName: string;
+  state: PullRequestState;
+  isDraft: boolean;
+  mergeability: PullRequestMergeability;
+  additions: number;
+  deletions: number;
+  createdAt: string;
+  updatedAt: string;
+  /** Set only once the pull request has been merged. */
+  mergedAt: string | null;
+  /** Logins with a review requested. Team requests are dropped by the decoder. */
+  reviewRequests: string[];
+  labels: PullRequestLabel[];
+  reviewDecision: PullRequestReviewDecision | null;
+  checksState: PullRequestChecksState | null;
+};
+
+/**
+ * Why the panel has nothing to show, when it has nothing to show.
+ *
+ * `hint` is the line under the empty state's heading; `action` is the one
+ * command that fixes it, or null where there is nothing to type.
+ */
+export type PullRequestUnavailable = {
+  reason: 'no-project' | 'not-a-repo' | 'not-github' | 'missing-cli' | 'signed-out';
+  hint: string;
+  action: string | null;
+};
+
+export type PullRequestListRequest = {
+  conversationId: string;
+  state: PullRequestListState;
+  involvement: PullRequestInvolvement;
+  /** Free text handed to the host, already stripped of local qualifiers. */
+  query?: string;
+  limit?: number;
+};
+
+export type PullRequestListResult = {
+  /** Null when the list loaded. Set instead of an empty list when it could not. */
+  unavailable: PullRequestUnavailable | null;
+  entries: PullRequestListEntry[];
+  /** The host had more rows than the page asked for. */
+  truncated: boolean;
+  /** `owner/repo`, so the panel can name what it is listing. */
+  repository: string | null;
+  /** The signed-in login, which is what `authored` and `reviewing` mean. */
+  viewer: string | null;
+};
+
+/** The list row plus everything only a single-pull-request read carries. */
+export type PullRequestDetail = PullRequestListEntry & {
+  body: string;
+  changedFiles: number;
+  closedAt: string | null;
+  /** The head commit, used to tell a stale diff from a current one. */
+  headRefOid: string | null;
+  checks: PullRequestCheck[];
+};
+
+export type PullRequestComment = {
+  id: string;
+  author: PullRequestActor | null;
+  body: string;
+  createdAt: string;
+  url: string | null;
+  /**
+   * A plain comment, or the body of a review. A review with no body and only
+   * line comments is dropped by the decoder — it would render as a blank entry.
+   */
+  kind: 'comment' | 'review';
+  /** Only for a review: the verdict it carried. */
+  verdict: PullRequestReviewDecision | null;
+};
+
+export type PullRequestCommit = {
+  oid: string;
+  messageHeadline: string;
+  author: PullRequestActor | null;
+  committedAt: string | null;
+};
+
+/**
+ * The conversation, read separately from the detail.
+ *
+ * Kept off the detail read because it is the slow half: a long-running pull
+ * request carries hundreds of comments, and the summary tab does not wait for
+ * them.
+ */
+export type PullRequestActivity = {
+  comments: PullRequestComment[];
+  commits: PullRequestCommit[];
+};
+
+/** A pull request the renderer names by number, scoped to a conversation. */
+export type PullRequestRef = {
+  conversationId: string;
+  number: number;
+};
+
+export type PullRequestDiffResult = {
+  patch: string;
+  /** The host or the byte budget cut the patch short. */
+  truncated: boolean;
+};
+
+/**
+ * A write the panel can perform.
+ *
+ * Deliberately short: these are the four that need no further input beyond the
+ * pull request itself. Anything that needs a body goes through `prComment`.
+ */
+export type PullRequestAction = 'close' | 'reopen' | 'ready' | 'merge';
+
+export type PullRequestActionRequest = PullRequestRef & {
+  action: PullRequestAction;
+  /** Only meaningful for `merge`; absent takes the repository's own default. */
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
+};
+
+export type PullRequestCommentRequest = PullRequestRef & {
+  body: string;
+};
+
 export type GitCommitRequest = {
   conversationId: string;
   message: string;
@@ -1233,6 +1419,20 @@ export type ThemeHalvesPreference = {
   dark?: string | null;
 } | null;
 
+/**
+ * Diff color palette (port of t3code PR #10671). `red-green` is the default
+ * GitHub-style palette every theme already authors; `blue-orange` is the
+ * colorblind-safer alternative applied as a `:root` override so themes keep
+ * their full token contract.
+ */
+export type DiffColorScheme = 'red-green' | 'blue-orange';
+
+export const DEFAULT_DIFF_COLOR_SCHEME: DiffColorScheme = 'red-green';
+
+export function isDiffColorScheme(value: unknown): value is DiffColorScheme {
+  return value === 'red-green' || value === 'blue-orange';
+}
+
 export type SettingsSection = 'general' | 'providers' | 'plugins' | 'appearance' | 'keyboard' | 'usage' | 'privacy' | 'beta';
 
 export type SettingsAppearanceSummary = {
@@ -1264,6 +1464,8 @@ export type SettingsAppearanceSummary = {
   translucentSidebar: boolean;
   reduceMotion: ReduceMotionMode;
   pointerCursors: boolean;
+  /** Diff palette: GitHub red-green default, blue-orange alternative. */
+  diffColorScheme: DiffColorScheme;
   /**
    * Render every transcript cell as plain text (Codex's `/raw`).
    *
@@ -1305,6 +1507,7 @@ export const DEFAULT_SETTINGS_APPEARANCE: SettingsAppearanceSummary = {
   translucentSidebar: false,
   reduceMotion: 'system',
   pointerCursors: false,
+  diffColorScheme: DEFAULT_DIFF_COLOR_SCHEME,
   rawTranscript: false,
   persistComposerContextStrip: false,
 };
@@ -1895,6 +2098,16 @@ export type StreamMetaEvent = {
 export type StreamErrorEvent = {
   type: 'error';
   requestId: string;
+  /**
+   * Which conversation settled.
+   *
+   * Terminal events used to name only the request, leaving the renderer to
+   * map it back through `requestToConversation` / live drafts. A window that
+   * reloaded mid-turn has none of that, so the event resolved to nothing and
+   * was dropped — and the sidebar row it was meant to settle stayed on
+   * `Working` forever. Optional so older persisted events still parse.
+   */
+  conversationId?: string;
   code: string;
   message: string;
   retryable: boolean;
@@ -2008,6 +2221,8 @@ export type StreamVisualCompleteEvent = {
 export type StreamDoneEvent = {
   type: 'done';
   requestId: string;
+  /** Which conversation settled — see `StreamErrorEvent.conversationId`. */
+  conversationId?: string;
   messageId: string;
 };
 
@@ -2483,6 +2698,7 @@ export type SettingsUpdateRequest = {
     pointerCursors?: boolean;
     rawTranscript?: boolean;
     persistComposerContextStrip?: boolean;
+    diffColorScheme?: DiffColorScheme;
   };
   keyboard?: {
     keybindings?: import('./keybindings').KeybindingRule[];
@@ -2843,6 +3059,14 @@ export type RendererApi = {
   github: {
     getPrStatus: (conversationId: string) => Promise<GitHubPrStatus>;
     openPr: (url: string) => Promise<void>;
+    /** One page of pull requests, or the reason there is none to show. */
+    listPrs: (request: PullRequestListRequest) => Promise<PullRequestListResult>;
+    /** Null when the number names nothing the host will serve. */
+    getPr: (ref: PullRequestRef) => Promise<PullRequestDetail | null>;
+    getPrActivity: (ref: PullRequestRef) => Promise<PullRequestActivity>;
+    getPrDiff: (ref: PullRequestRef) => Promise<PullRequestDiffResult>;
+    runPrAction: (request: PullRequestActionRequest) => Promise<void>;
+    commentOnPr: (request: PullRequestCommentRequest) => Promise<void>;
   };
   plugins: {
     list: () => Promise<PluginsView>;

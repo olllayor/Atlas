@@ -83,6 +83,32 @@ test('SettingsRepo stores and restores keybindings', (t) => {
   assert.deepEqual(settingsRepo.getKeybindings(), custom);
 });
 
+test('SettingsRepo stores the diff color scheme and falls back for unknown values', (t) => {
+  const { database, raw, tempDir } = createDatabase();
+  const settingsRepo = new SettingsRepo(database);
+
+  t.after(() => {
+    raw.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.equal(settingsRepo.getDiffColorScheme(), 'red-green', 'unset means the default palette');
+
+  settingsRepo.setDiffColorScheme('blue-orange');
+  assert.equal(settingsRepo.getDiffColorScheme(), 'blue-orange');
+
+  settingsRepo.setDiffColorScheme('red-green');
+  assert.equal(settingsRepo.getDiffColorScheme(), 'red-green');
+
+  // A palette from a newer build (or a hand-edited database) must not stick.
+  raw
+    .prepare(
+      `INSERT INTO app_settings (key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run({ key: 'appearance.diffColorScheme', value: JSON.stringify('purple-yellow') });
+  assert.equal(settingsRepo.getDiffColorScheme(), 'red-green');
+});
+
 test('SettingsRepo falls back to defaults when stored keybindings are invalid', (t) => {
   const { database, raw, tempDir } = createDatabase();
   const settingsRepo = new SettingsRepo(database);

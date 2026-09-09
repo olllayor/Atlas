@@ -18,6 +18,7 @@ import {
   FileDiff,
   Files,
   GitBranch,
+  GitPullRequest,
   Globe,
   ListTodo,
   TerminalSquare,
@@ -50,9 +51,9 @@ export type SurfaceDefinition = {
   /** One line under the label in the picker. Says what the surface does. */
   description: string;
   /**
-   * Single letter, uppercase. B, T, F and P stay reserved for Browser,
-   * Terminal, Files and Pull request so the picker's muscle memory survives
-   * those landing.
+   * Single letter, uppercase. B, T, F and P belong to Browser, Terminal,
+   * Files and Pull requests, which is the order the picker's muscle memory
+   * was built around.
    */
   shortcut: string;
   icon: LucideIcon;
@@ -177,6 +178,19 @@ export const SURFACE_DEFINITIONS = [
     shortcut: '',
     icon: File,
     launcher: false,
+    availability: projectAvailability,
+  },
+  {
+    kind: 'pullRequests',
+    label: 'Pull requests',
+    description: 'Review this repository’s pull requests.',
+    shortcut: 'P',
+    icon: GitPullRequest,
+    launcher: true,
+    // Same bar as Diff and Git: the listing is read with `gh` inside the
+    // project folder, so there is nothing to run without one. Whether `gh`
+    // itself is installed and signed in is the panel's own answer — it can
+    // name the command that fixes each, which this two-line hint cannot.
     availability: projectAvailability,
   },
   {

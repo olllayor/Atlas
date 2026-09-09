@@ -3,12 +3,45 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type {
+  PullRequestAction,
+  PullRequestActivity,
+  PullRequestDetail,
+  PullRequestDiffResult,
+  PullRequestInvolvement,
+  PullRequestListEntry,
+  PullRequestListState
+} from '../../shared/contracts';
 import { runCommand } from '../ai/tools/toolRuntime';
+import {
+  PR_ACTIVITY_FIELDS,
+  PR_DETAIL_FIELDS,
+  PR_LIST_FIELDS,
+  decodePullRequestActivity,
+  decodePullRequestDetail,
+  decodePullRequestList
+} from './githubPullRequestJson';
 import { defaultPathDirs } from './IdeLauncher';
 
 /** How long a detection probe is trusted before it is re-run. */
 const DETECTION_TTL_MS = 30_000;
 const GH_TIMEOUT_MS = 20_000;
+
+/**
+ * Listing, activity and diff reads get longer than the 20s a status probe does:
+ * they are one deliberate request each, and a busy repository's first page is
+ * routinely slower than a `gh auth status`.
+ */
+const GH_LIST_TIMEOUT_MS = 45_000;
+
+/**
+ * The ceiling on rows one page may ask for, so a renderer bug cannot turn a
+ * listing into a repository-wide crawl.
+ */
+const PR_LIST_MAX_ROWS = 100;
+
+/** A patch past this is cut, and the caller is told it was. */
+const PR_DIFF_MAX_BYTES = 4 * 1024 * 1024;
 
 export type GitHubSlug = {
   owner: string;
@@ -34,8 +67,14 @@ export type GitHubPullRequest = {
 export type CommandRunner = (
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number }
-) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number }
+) => Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** Set when the ingest budget cut stdout short, which a patch reader must know. */
+  stdoutTruncated?: boolean;
+}>;
 
 export type GitHubCliOptions = {
   platform?: NodeJS.Platform;
@@ -333,6 +372,262 @@ export class GitHubService {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+
+  /**
+   * The signed-in login.
+   *
+   * `authored` and `reviewing` are both defined in terms of it, so the listing
+   * asks once and reuses the answer rather than sending `@me` and hoping every
+   * qualifier reads it the same way.
+   */
+  async getViewerLogin(root: string): Promise<string | null> {
+    const gh = await this.requireGh();
+    const result = await this.run(gh, ['api', 'user', '--jq', '.login'], {
+      cwd: root,
+      timeoutMs: GH_TIMEOUT_MS
+    }).catch(() => null);
+
+    if (!result || result.code !== 0) {
+      return null;
+    }
+
+    const login = result.stdout.trim();
+    return login || null;
+  }
+
+  /**
+   * One page of pull requests.
+   *
+   * Ordering is the reason this goes through `--search` at all: `gh pr list`
+   * answers newest-*created* first, which is not the order the panel reads rows
+   * in — a pull request opened last year and touched this morning belongs at
+   * the top. `sort:updated-desc` is what fixes that, and `gh` takes exactly one
+   * `--search`, so every qualifier joins one string.
+   */
+  async listPullRequests(input: {
+    root: string;
+    state: PullRequestListState;
+    involvement: PullRequestInvolvement;
+    viewer: string | null;
+    query?: string;
+    limit: number;
+  }): Promise<{ entries: PullRequestListEntry[]; truncated: boolean }> {
+    const gh = await this.requireGh();
+    // One row past the page reveals that the repository has more than it shows,
+    // without a second request to find out.
+    const requested = Math.max(1, Math.min(input.limit, PR_LIST_MAX_ROWS)) + 1;
+
+    const args = [
+      'pr',
+      'list',
+      '--state',
+      input.state,
+      '--limit',
+      String(requested),
+      '--json',
+      PR_LIST_FIELDS,
+      ...involvementArgs(input)
+    ];
+
+    const result = await this.run(gh, args, { cwd: input.root, timeoutMs: GH_LIST_TIMEOUT_MS });
+
+    if (result.code !== 0) {
+      const message = result.stderr.trim() || result.stdout.trim();
+      throw new Error(message || 'Could not list pull requests.');
+    }
+
+    const decoded = decodePullRequestList(result.stdout);
+    return {
+      entries: decoded.slice(0, requested - 1),
+      truncated: decoded.length >= requested
+    };
+  }
+
+  async getPullRequestDetail(root: string, number: number): Promise<PullRequestDetail | null> {
+    const gh = await this.requireGh();
+    const result = await this.run(
+      gh,
+      ['pr', 'view', assertPullRequestNumber(number), '--json', PR_DETAIL_FIELDS],
+      { cwd: root, timeoutMs: GH_TIMEOUT_MS }
+    );
+
+    if (result.code !== 0) {
+      const message = result.stderr.trim() || result.stdout.trim();
+      throw new Error(message || `Could not read pull request #${number}.`);
+    }
+
+    return decodePullRequestDetail(result.stdout);
+  }
+
+  async getPullRequestActivity(root: string, number: number): Promise<PullRequestActivity> {
+    const gh = await this.requireGh();
+    const result = await this.run(
+      gh,
+      ['pr', 'view', assertPullRequestNumber(number), '--json', PR_ACTIVITY_FIELDS],
+      { cwd: root, timeoutMs: GH_LIST_TIMEOUT_MS }
+    );
+
+    if (result.code !== 0) {
+      const message = result.stderr.trim() || result.stdout.trim();
+      throw new Error(message || `Could not read the activity on pull request #${number}.`);
+    }
+
+    return decodePullRequestActivity(result.stdout);
+  }
+
+  /**
+   * The patch.
+   *
+   * `--color never` because the panel renders the diff itself, and a patch
+   * carrying escape sequences is not one the renderer can read. A patch cut at
+   * the byte budget is reported as truncated rather than shown as if whole: it
+   * ends mid-file, and a reader who is not told that will believe the file
+   * ended there.
+   */
+  async getPullRequestDiff(root: string, number: number): Promise<PullRequestDiffResult> {
+    const gh = await this.requireGh();
+    const result = await this.run(
+      gh,
+      ['pr', 'diff', assertPullRequestNumber(number), '--color', 'never'],
+      { cwd: root, timeoutMs: GH_LIST_TIMEOUT_MS, maxOutputBytes: PR_DIFF_MAX_BYTES }
+    );
+
+    if (result.code !== 0) {
+      const message = result.stderr.trim() || result.stdout.trim();
+      // GitHub answers 406 rather than a diff once a pull request passes 300
+      // changed files. There is nothing to fall back to here, so say what
+      // happened instead of showing an empty patch.
+      throw new Error(message || `Could not read the diff for pull request #${number}.`);
+    }
+
+    return {
+      patch: result.stdout,
+      truncated: result.stdoutTruncated === true
+    };
+  }
+
+  /** Merges, closes, reopens, or marks a draft ready. */
+  async runPullRequestAction(input: {
+    root: string;
+    number: number;
+    action: PullRequestAction;
+    mergeMethod?: 'merge' | 'squash' | 'rebase';
+  }): Promise<void> {
+    const gh = await this.requireGh();
+    const number = assertPullRequestNumber(input.number);
+    const args = [...PR_ACTION_ARGS[input.action]];
+
+    if (input.action === 'merge' && input.mergeMethod) {
+      args.push(`--${input.mergeMethod}`);
+    }
+
+    const [subcommand, ...flags] = args;
+    const result = await this.run(gh, ['pr', subcommand!, number, ...flags], {
+      cwd: input.root,
+      timeoutMs: GH_TIMEOUT_MS
+    });
+
+    if (result.code !== 0) {
+      const message = result.stderr.trim() || result.stdout.trim();
+      throw new Error(message || `Could not ${input.action} pull request #${input.number}.`);
+    }
+  }
+
+  /** Posts a comment. The body travels as a file, for the same reason a PR body does. */
+  async commentOnPullRequest(root: string, number: number, body: string): Promise<void> {
+    const gh = await this.requireGh();
+    const target = assertPullRequestNumber(number);
+
+    if (!body.trim()) {
+      throw new Error('A comment needs something in it.');
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-pr-comment-'));
+    const bodyFile = join(dir, 'body.md');
+
+    try {
+      await writeFile(bodyFile, body, { encoding: 'utf8', mode: 0o600 });
+      const result = await this.run(
+        gh,
+        ['pr', 'comment', target, '--body-file', bodyFile],
+        { cwd: root, timeoutMs: GH_TIMEOUT_MS }
+      );
+
+      if (result.code !== 0) {
+        const message = result.stderr.trim() || result.stdout.trim();
+        throw new Error(message || 'Could not post the comment.');
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+}
+
+/** The subcommand and fixed flags each action runs as. */
+const PR_ACTION_ARGS: Record<PullRequestAction, readonly string[]> = {
+  close: ['close'],
+  reopen: ['reopen'],
+  ready: ['ready'],
+  merge: ['merge']
+};
+
+/**
+ * A pull request number as argv.
+ *
+ * It reaches `gh` as a positional, so a value that is not a positive integer
+ * would be read as something else entirely — a path, or with a leading dash, a
+ * flag. The renderer only ever sends numbers it was given, which is exactly why
+ * this is checked at the boundary rather than trusted along the way.
+ */
+export function assertPullRequestNumber(value: number): string {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid pull request number: '${value}'.`);
+  }
+  return String(value);
+}
+
+/**
+ * A reader's own words as one search phrase.
+ *
+ * The quotes are the defence, not the formatting: outside them GitHub reads
+ * `is:merged` as a qualifier and `label:x` as another, so text typed into the
+ * filter box could widen the very listing it is meant to narrow. Inside them it
+ * is only text. The two characters that could end the phrase early are escaped,
+ * which GitHub reads back as themselves.
+ */
+export function searchPhrase(query: string): string {
+  return `"${query.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+/**
+ * The involvement and state narrowings, as flags where `gh` has one and as
+ * search qualifiers where it does not.
+ *
+ * `--state closed` includes merged pull requests, so a reader asking for closed
+ * ones additionally excludes them with `is:unmerged` — otherwise the Closed tab
+ * is the Merged tab plus a few.
+ */
+export function involvementArgs(input: {
+  state: PullRequestListState;
+  involvement: PullRequestInvolvement;
+  viewer: string | null;
+  query?: string;
+}): string[] {
+  const query = input.query?.trim() ?? '';
+  const viewer = input.viewer?.trim();
+
+  const terms = [
+    ...(input.involvement === 'reviewing' && viewer ? [`review-requested:${viewer}`] : []),
+    ...(input.state === 'closed' ? ['is:unmerged'] : []),
+    ...(query ? [searchPhrase(query)] : []),
+    'sort:updated-desc'
+  ];
+
+  return [
+    ...(input.involvement === 'authored' && viewer ? ['--author', viewer] : []),
+    '--search',
+    terms.join(' ')
+  ];
 }
 
 function firstPullRequest(raw: string): GitHubPullRequest | null {

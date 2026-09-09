@@ -922,7 +922,11 @@ function isConstraintSentence(sentence: string) {
     lower.includes('only ') ||
     lower.includes('without ') ||
     lower.includes('limit') ||
-    lower.includes('bounded')
+    lower.includes('bounded') ||
+    lower.includes('never ') ||
+    lower.includes('always ') ||
+    lower.includes('denied') ||
+    lower.includes('rejected')
   );
 }
 
@@ -938,7 +942,11 @@ function isDecisionSentence(sentence: string) {
     lower.includes('ship') ||
     lower.includes('we will') ||
     lower.includes('choose') ||
-    lower.includes('use ')
+    lower.includes('use ') ||
+    lower.includes('approved') ||
+    lower.includes('allowed') ||
+    lower.includes('confirmed') ||
+    lower.includes('decided')
   );
 }
 

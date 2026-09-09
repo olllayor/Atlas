@@ -37,6 +37,7 @@ import {
   TOOL_USE_SYSTEM_PROMPT,
   createBuiltInTools,
   describeAgentInstructionsForPrompt,
+  describeEffectiveToolsForPrompt,
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
@@ -56,6 +57,7 @@ import { formatToolError } from '../tools/ToolErrorFormatter';
 import type { SpillStore } from '../tools/spill/SpillStore';
 import { applySpillPolicy } from '../tools/spill/spillPolicy';
 import { applyTimeoutPolicy } from '../guards/timeoutPolicy';
+import { resolveHarnessPromptHint } from './harnessProfiles';
 import { logger, startTimer } from '../../observability/logger';
 import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
@@ -1038,7 +1040,9 @@ export class ChatSessionRuntime {
       siteTools != null,
       toolPermissionMode,
       workspace,
-      visualsEnabled
+      visualsEnabled,
+      request.enableTools && tools ? Object.keys(tools).sort() : [],
+      request.modelId
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
     // Mentioned skill bodies no longer ride in the system prompt; they are
@@ -1144,7 +1148,9 @@ export class ChatSessionRuntime {
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
-    visualsEnabled = false
+    visualsEnabled = false,
+    effectiveToolNames: string[] = [],
+    modelId?: string
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -1159,6 +1165,7 @@ export class ChatSessionRuntime {
       : null;
     // Tell the model what it may actually do, so it does not plan around a tool
     // that was withheld from its tool set.
+    const effectiveToolsPrompt = describeEffectiveToolsForPrompt(effectiveToolNames);
     // Listed only when the tools are, because `load_skill` is the only way to
     // act on the list and it ships with the rest of the tool set.
     const skillsPrompt =
@@ -1194,6 +1201,12 @@ export class ChatSessionRuntime {
       SESSION_SEARCH_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
+      // Per-model hint: only the lightweight tier speaks today, steering
+      // small models away from broad sweeps at the source. Placed with the
+      // other Atlas-owned behavioral blocks, before the effective tool list
+      // and project instructions, so cache-stable per model.
+      ...(modelId && resolveHarnessPromptHint(modelId) ? [resolveHarnessPromptHint(modelId) as string] : []),
+      ...(effectiveToolsPrompt ? [effectiveToolsPrompt] : []),
       ...(skillsPrompt ? [skillsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
@@ -1502,7 +1515,9 @@ export class ChatSessionRuntime {
                 siteTools != null,
                 toolPermissionMode,
                 workspace,
-                visualsEnabled
+                visualsEnabled,
+                request.enableTools && tools ? Object.keys(tools).sort() : [],
+                request.modelId
               )
             ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
         }).budget,
@@ -1556,6 +1571,8 @@ export class ChatSessionRuntime {
             toolPermissionMode,
             workspace,
             visualsEnabled,
+            request.enableTools && tools ? Object.keys(tools).sort() : [],
+            request.modelId
           ) || undefined;
         onRequestHeader?.({
           attempt,

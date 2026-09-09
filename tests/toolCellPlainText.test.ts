@@ -85,11 +85,13 @@ test('raw command cell includes every continuation line of a multi-line command'
     output: 'done',
   });
 
-  // Only two continuation lines are previewed in the rich view.
+  // Only two continuation lines are previewed in the rich view. The head
+  // line joins the block (t3code PR #10898) so the compact `Ran a` label
+  // costs no information in a copy.
   assert.equal(cell.continuation.length, 2);
-  assert.equal(cell.continuationOmitted, 2);
+  assert.equal(cell.continuationOmitted, 3);
 
-  assert.equal(toolCellToPlainText(cell), 'Ran a\nb\nc\nd\ne\ndone');
+  assert.equal(toolCellToPlainText(cell), 'Ran a\na\nb\nc\nd\ne\ndone');
 });
 
 test('an empty finished command says so rather than rendering nothing', () => {

@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { tool } from 'ai';
+import type { LanguageModel } from 'ai';
+import { z } from 'zod';
+
+import type { ProviderStreamRequest } from '../src/main/ai/core/ProviderAdapter.js';
 import {
   DEFAULT_STREAM_CORE_CONFIG,
   createWatchdog,
   resolveMaxOutputTokens,
-  resolveTemperature
+  resolveTemperature,
+  runProviderStream
 } from '../src/main/ai/providers/streamCore.js';
 
 const config = DEFAULT_STREAM_CORE_CONFIG;
@@ -91,4 +97,116 @@ test('watchdog stops firing once disposed', (t) => {
 
   t.mock.timers.tick(60_000);
   assert.equal(watchdog.signal.aborted, false);
+});
+
+// ---------------------------------------------------------------------------
+// Step-limit exhaustion notice: stepCountIs() stops silently, so the stream
+// core must say so explicitly or the turn reads as the model giving up.
+// ---------------------------------------------------------------------------
+
+const zeroUsage = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 }
+};
+
+class LoopingModel {
+  readonly specificationVersion = 'v3' as const;
+  readonly provider = 'looping';
+  readonly modelId = 'looping';
+  readonly supportedUrls = {};
+
+  constructor(private readonly toolCalls: number) {}
+
+  async doGenerate(): Promise<never> {
+    throw new Error('looping model only streams');
+  }
+
+  async doStream() {
+    if (this.toolCalls <= 0) {
+      return {
+        stream: new ReadableStream({
+          start: (controller) => {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            controller.enqueue({ type: 'text-start', id: 't1' });
+            controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' });
+            controller.enqueue({ type: 'text-end', id: 't1' });
+            controller.enqueue({
+              type: 'finish',
+              usage: zeroUsage,
+              finishReason: { unified: 'stop', raw: 'stop' }
+            });
+            controller.close();
+          }
+        })
+      };
+    }
+    this.toolCalls -= 1;
+    const id = `c${this.toolCalls}`;
+    return {
+      stream: new ReadableStream({
+        start: (controller) => {
+          controller.enqueue({ type: 'stream-start', warnings: [] });
+          controller.enqueue({
+            type: 'tool-call',
+            toolCallId: id,
+            toolName: 'probe',
+            input: JSON.stringify({ q: 'same' })
+          });
+          controller.enqueue({
+            type: 'finish',
+            usage: zeroUsage,
+            finishReason: { unified: 'tool-calls', raw: 'tool-calls' }
+          });
+          controller.close();
+        }
+      })
+    };
+  }
+}
+
+function streamRequest(overrides: Partial<ProviderStreamRequest> = {}): ProviderStreamRequest {
+  return {
+    apiKey: 'test-key',
+    modelId: 'test-standard-model',
+    messages: [{ role: 'user', content: 'go' }],
+    tools: {
+      probe: tool({
+        description: 'probe',
+        inputSchema: z.object({ q: z.string() }),
+        execute: async () => ({ ok: true })
+      })
+    },
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    ...overrides
+  };
+}
+
+test('step-limit exhaustion emits a visible notice', async () => {
+  const notices: Array<{ code: string; level: string }> = [];
+  await runProviderStream({
+    model: new LoopingModel(10) as unknown as LanguageModel,
+    request: streamRequest({
+      onNotice: (event) => notices.push({ code: event.code, level: event.level })
+    }),
+    config: { toolStepLimit: 3 }
+  });
+
+  assert.ok(
+    notices.some((notice) => notice.code === 'step-limit-exhausted'),
+    `expected a step-limit-exhausted notice, got ${JSON.stringify(notices)}`
+  );
+});
+
+test('a turn that finishes before the cap stays silent', async () => {
+  const notices: string[] = [];
+  await runProviderStream({
+    model: new LoopingModel(1) as unknown as LanguageModel,
+    request: streamRequest({
+      onNotice: (event) => notices.push(event.code)
+    }),
+    config: { toolStepLimit: 5 }
+  });
+
+  assert.ok(!notices.includes('step-limit-exhausted'));
 });

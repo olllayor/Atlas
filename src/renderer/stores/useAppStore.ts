@@ -2681,10 +2681,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const state = get();
+    // Terminal events name their conversation outright. That is the only
+    // resolution a window which reloaded mid-turn can still perform: its
+    // `requestToConversation` map and live drafts died with the old page, so
+    // inference would return nothing and the event would be dropped —
+    // stranding the sidebar row on `Working`.
     const conversationId =
       event.type === 'runtime-sync'
         ? event.conversationId
-        : resolveConversationIdForRequest(event.requestId, state);
+        : ((event.type === 'done' || event.type === 'error') && event.conversationId) ||
+          resolveConversationIdForRequest(event.requestId, state);
 
     if (!conversationId) {
       return;

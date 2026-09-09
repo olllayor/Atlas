@@ -221,6 +221,7 @@ export class ModelRegistry {
         pointerCursors: this.settingsRepo.getPointerCursors(),
         rawTranscript: this.settingsRepo.getRawTranscript(),
         persistComposerContextStrip: this.settingsRepo.getPersistComposerContextStrip(),
+        diffColorScheme: this.settingsRepo.getDiffColorScheme(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()

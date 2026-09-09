@@ -23,6 +23,7 @@ import type {
   ToolActivitySurface,
 } from './contracts';
 export { summarizeToolGroup } from './toolPresentation';
+import { commandProgram } from './toolGroups';
 import { describeMcpToolName } from './mcp';
 import { isPlanToolPart } from './planTool';
 
@@ -733,17 +734,29 @@ function buildSingleCell(part: ChatToolPart): ToolCell {
     const command = commandOf(part) ?? part.title ?? part.toolName;
     const commandLines = splitLines(command);
     const [head, ...rest] = commandLines;
-    const continuation = rest.slice(0, COMMAND_CONTINUATION_MAX_LINES);
+    /*
+     * Port of t3code PR #10898: a finished long command (multiline or over
+     * 120 chars) collapses to `Ran <program>` instead of inlining the whole
+     * script in the summary row. The full command stays expandable: the head
+     * line joins the continuation block, so expansion and raw mode still
+     * carry every line. Running calls keep the full head — the live label
+     * tracks work in progress, not a settled result.
+     */
+    const isLongCommand = /[\r\n]/.test(command) || command.length > 120;
+    const compactProgram =
+      finished && isLongCommand ? (commandProgram(head ?? '') ?? 'command') : null;
+    const continuationAll = compactProgram && head ? [head, ...rest] : rest;
+    const continuation = continuationAll.slice(0, COMMAND_CONTINUATION_MAX_LINES);
 
     return {
       ...base,
-      label: `${finished ? 'Ran' : 'Running'} ${head ?? ''}`.trim(),
+      label: compactProgram ? `Ran ${compactProgram}` : `${finished ? 'Ran' : 'Running'} ${head ?? ''}`.trim(),
       verb: finished ? 'Ran' : 'Running',
       subject: head ?? '',
       subjectIsCode: true,
       continuation,
-      continuationOmitted: Math.max(0, rest.length - continuation.length),
-      continuationAll: rest,
+      continuationOmitted: Math.max(0, continuationAll.length - continuation.length),
+      continuationAll,
       detail:
         part.state === 'output-error'
           ? { type: 'error', text: part.errorText ?? 'Command failed' }

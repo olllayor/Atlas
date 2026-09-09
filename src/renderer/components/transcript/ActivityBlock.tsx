@@ -106,6 +106,43 @@ function useLiveLogViewport(active: boolean) {
   return { boxRef, fade };
 }
 
+
+/**
+ * Live elapsed time for the `Working for …` label, ported from t3code's
+ * `MessagesTimeline` self-ticking labels.
+ *
+ * It writes its own text node instead of holding the clock in React state.
+ * `ActivityBlock` renders the turn's entire expanded activity log as its
+ * children, so a `setState` every second re-rendered every tool cell in the
+ * fold for the whole time the model was working — on a long turn that is the
+ * most expensive thing on screen doing nothing but restating the same
+ * seconds. Only this span updates now.
+ *
+ * `aria-hidden`: the ticking number is noise to a screen reader, and the
+ * button's `aria-label` already carries a stable name.
+ */
+function WorkingTimer({ startMs }: { startMs: number }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const initial = formatElapsed(Date.now() - startMs);
+
+  useEffect(() => {
+    const update = () => {
+      if (textRef.current) {
+        textRef.current.textContent = formatElapsed(Date.now() - startMs);
+      }
+    };
+    update();
+    const id = window.setInterval(update, 1000);
+    return () => window.clearInterval(id);
+  }, [startMs]);
+
+  return (
+    <span ref={textRef} aria-hidden className="tabular-nums">
+      {initial}
+    </span>
+  );
+}
+
 export function ActivityBlock({
   id,
   isStreaming = false,
@@ -157,28 +194,19 @@ export function ActivityBlock({
   const bounded = open && isStreaming === true && !forceOpen;
   const { boxRef, fade } = useLiveLogViewport(bounded);
 
-  // Live tick for the streaming label. Mounts only while the turn is in
-  // flight; once it settles the effect — and the ticking — goes away.
-  const [nowMs, setNowMs] = useState<number | null>(null);
-  useEffect(() => {
-    if (!isStreaming) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [isStreaming]);
-
   // The measured window is the truthful one — it covers tool time, which the
   // provider's own latency number does not always include.
   const durationMs = timing?.durationMs ?? fallbackDurationMs ?? null;
   const liveStartMs = fallbackStartMs ?? timing?.startedAt ?? null;
-  const label =
-    isStreaming && liveStartMs != null && nowMs != null
-      ? `Working for ${formatElapsed(nowMs - liveStartMs)}`
-      : isStreaming
-        ? 'Working'
-        : durationMs != null && durationMs >= 1000
-          ? `Worked for ${formatElapsed(durationMs)}`
-          : 'Worked';
+  const live = isStreaming && liveStartMs != null;
+  // `label` is what the accessible name and the settled row read. A live turn
+  // is just `Working` here: the ticking seconds are appended in the DOM by
+  // `WorkingTimer`, deliberately outside React's render.
+  const label = isStreaming
+    ? 'Working'
+    : durationMs != null && durationMs >= 1000
+      ? `Worked for ${formatElapsed(durationMs)}`
+      : 'Worked';
 
   return (
     <div className="group/activity my-1.5">
@@ -197,7 +225,15 @@ export function ActivityBlock({
           forceOpen ? 'cursor-default' : 'cursor-pointer'
         )}
       >
-        <span className={cn('shrink-0', isStreaming && 'focus-sweep py-0.5 text-text-secondary')}>{label}</span>
+        <span className={cn('shrink-0', isStreaming && 'focus-sweep py-0.5 text-text-secondary')}>
+          {live ? (
+            <>
+              Working for <WorkingTimer startMs={liveStartMs} />
+            </>
+          ) : (
+            label
+          )}
+        </span>
         <ChevronRight
           aria-hidden
           className={cn(

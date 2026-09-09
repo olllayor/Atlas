@@ -274,7 +274,13 @@ const api: RendererApi = {
   github: {
     getPrStatus: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.githubPrStatus, conversationId),
-    openPr: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.githubOpenPr, url)
+    openPr: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.githubOpenPr, url),
+    listPrs: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrList, request),
+    getPr: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrDetail, ref),
+    getPrActivity: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrActivity, ref),
+    getPrDiff: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrDiff, ref),
+    runPrAction: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrAction, request),
+    commentOnPr: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrComment, request)
   },
   plugins: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsList),

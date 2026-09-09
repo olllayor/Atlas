@@ -16,7 +16,7 @@ import { ChatSessionRuntime } from '../src/main/ai/core/ChatSessionRuntime.js';
 import { OpenCodeAgentAdapter } from '../src/main/ai/providers/opencode/OpenCodeAgentAdapter.js';
 import { createOpenCodeAgentClient } from '../src/main/ai/providers/opencode/OpenCodeAgentClient.js';
 import { OpenCodeRuntime } from '../src/main/ai/providers/opencode/OpenCodeRuntime.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettings.js';
+import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
 
 async function main() {
   const modelId = process.argv[2] ?? 'opencode/big-pickle';

@@ -615,6 +615,9 @@ app.whenReady().then(async () => {
     // the exit hook is a backstop for anything logged during teardown.
     logger.flushSync();
     ptyService.disposeAll();
+    // An in-flight update download holds a socket open; abort so quit is not
+    // waiting on a multi-hundred-megabyte transfer.
+    updateService.cancelDownload();
     // An `opencode serve` child Atlas spawned outlives the window otherwise.
     void opencodeController.shutdown();
     void localAgentController.shutdown();

@@ -47,7 +47,7 @@ The release workflow triggers on tags matching `v*.*.*` such as `v0.1.4` or `v0.
 
 4. The release workflow will automatically:
    - Build macOS DMG and ZIP artifacts for Apple Silicon and Intel
-   - Sign and notarize macOS builds if signing secrets are configured
+   - Produce **unsigned** artifacts (see "Code signing" below)
    - Publish a GitHub Release with the installers, blockmaps, and `latest-mac.yml`
 
 5. Review the published GitHub Release:
@@ -63,14 +63,35 @@ The release workflow triggers on tags matching `v*.*.*` such as `v0.1.4` or `v0.
 - [ ] Update CHANGELOG.md [Unreleased] section header to the new version
 - [ ] Announce release in relevant channels (if applicable)
 
-## Code signing (optional, for production macOS releases)
+## Code signing (not currently enabled)
 
-For macOS notarization and signing, set these repository secrets:
+Releases are **unsigned today**, and setting repository secrets alone will not
+change that: `pnpm package` passes `CSC_IDENTITY_AUTO_DISCOVERY=false`, which
+disables signing even when a certificate is present, and `release.yml` does not
+forward any signing environment to the build step.
 
-- `CSC_LINK` - Base64-encoded signing certificate
-- `CSC_KEY_PASSWORD` - Certificate password
-- `APPLE_API_KEY` - Contents of the App Store Connect `.p8` API key
-- `APPLE_API_KEY_ID` - App Store Connect key ID
-- `APPLE_API_ISSUER` - App Store Connect issuer ID
+Enabling signing means all three of:
 
-If those secrets are absent, the workflow still publishes unsigned macOS artifacts.
+1. Dropping `CSC_IDENTITY_AUTO_DISCOVERY=false` from the `package` script (or
+   releasing via `package:signed` with the flag removed).
+2. Adding a notarization step and passing these secrets through `release.yml`:
+   - `CSC_LINK` - Base64-encoded Developer ID certificate
+   - `CSC_KEY_PASSWORD` - Certificate password
+   - `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` - App Store
+     Connect credentials for notarization
+3. An active Apple Developer Program membership for the Developer ID itself.
+
+### Why this gates auto-update
+
+Until the above is done, in-app auto-update is impossible on macOS, not merely
+unconfigured: Squirrel.Mac refuses to swap an app whose signing identity it
+cannot validate, and electron-builder's documentation is explicit that "macOS
+application must be signed in order for auto updating to work."
+
+The updater therefore does the most it can without a certificate - it downloads
+the correct disk image for the running architecture and opens it, leaving the
+drag to Applications to the user. See `src/main/updates/UpdateService.ts`.
+
+The release pipeline already publishes everything a future auto-updater would
+need (`latest-mac.yml`, per-arch `.zip`, and `.blockmap` files for differential
+downloads), so signing is the only missing piece.

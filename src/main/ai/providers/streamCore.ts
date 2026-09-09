@@ -3,9 +3,11 @@ import type { LanguageModel } from 'ai';
 
 import { ProviderStalledError, RequestTimeoutError } from '../core/ErrorNormalizer';
 import type { ProviderStreamRequest, ProviderStreamResult } from '../core/ProviderAdapter';
+import { resolveHarnessProfile } from '../core/harnessProfiles';
 import {
   createRepeatToolReminderGuard,
-  type RepeatToolReminderConfig
+  repeatVetoPayload,
+  type RepeatToolReminderConfig,
 } from '../guards/repeatToolReminder';
 
 /**
@@ -32,7 +34,7 @@ export type StreamCoreConfig = {
 
 export const DEFAULT_STREAM_CORE_CONFIG: StreamCoreConfig = {
   defaultMaxOutputTokens: 8_192,
-  toolStepLimit: 128,
+  toolStepLimit: 64,
   firstResponseTimeoutMs: 180_000,
   // Must stay above the longest local tool run (the bash tool caps at 120s),
   // otherwise a healthy tool call looks like a dead stream.
@@ -168,6 +170,14 @@ export async function runProviderStream({
   repeatToolReminder
 }: StreamCoreOptions): Promise<ProviderStreamResult> {
   const config = { ...DEFAULT_STREAM_CORE_CONFIG, ...configOverrides };
+  // Model-specific ceiling (v1 heuristic): never exceeds configured cap, only
+  // tightens it for lightweight models that rarely sustain long chains. A
+  // `null` limit means the profile has no opinion, so the configured cap stands.
+  const profile = resolveHarnessProfile(request.modelId ?? '');
+  const effectiveStepLimit =
+    profile.toolStepLimit === null
+      ? config.toolStepLimit
+      : Math.min(config.toolStepLimit, profile.toolStepLimit);
   const watchdog = createWatchdog(config);
   const signal = AbortSignal.any([request.signal, watchdog.signal]);
   const startedAt = Date.now();
@@ -210,14 +220,50 @@ export async function runProviderStream({
     });
   };
 
+  // Pre-execute veto: wrap every tool so a run past VETO_THRESHOLD never
+  // executes again — the model gets the veto payload as the result instead.
+  // The vetoed attempt still flows through `tool-result` above, so the chain
+  // keeps counting and the block persists while the model keeps retrying.
+  const vetoWrappedTools = (() => {
+    if (!repeatGuard || !request.tools) {
+      return request.tools;
+    }
+    const wrapped: Record<string, unknown> = {};
+    for (const [name, def] of Object.entries(request.tools)) {
+      const toolDef = def as { execute?: (...args: never[]) => Promise<unknown> };
+      if (!toolDef || typeof toolDef.execute !== 'function') {
+        wrapped[name] = def;
+        continue;
+      }
+      const originalExecute = toolDef.execute.bind(toolDef);
+      wrapped[name] = {
+        ...toolDef,
+        execute: async (...args: never[]) => {
+          const input = args[0] as unknown;
+          if (repeatGuard.shouldBlock(name, input)) {
+            const count = repeatGuard.peekCount(name, input) + 1;
+            request.onNotice?.({
+              code: 'repeat-veto',
+              level: 'warning',
+              message: `Blocked ${name} × ${count} — identical call vetoed, not executed.`
+            });
+            return repeatVetoPayload(name, count);
+          }
+          return originalExecute(...args);
+        }
+      };
+    }
+    return wrapped as typeof request.tools;
+  })();
+
   try {
     const result = streamText({
       model,
       system: request.system,
       messages: request.messages,
-      tools: request.tools,
+      tools: vetoWrappedTools,
       toolChoice: request.toolChoice,
-      stopWhen: hasTools ? stepCountIs(config.toolStepLimit) : undefined,
+      stopWhen: hasTools ? stepCountIs(effectiveStepLimit) : undefined,
       // Delivery point for the repeat-call guard: when a reminder is queued,
       // append it after the previous step's tool results for this step only.
       // The override is not merged into response.messages, so the nudge is
@@ -393,6 +439,25 @@ export async function runProviderStream({
     // streamText swallows stream errors; re-throw whatever onError captured.
     if (streamError) {
       throw streamError;
+    }
+
+    // Step-budget exhaustion is otherwise silent: `stepCountIs()` just stops,
+    // and the turn reads as the model giving up mid-task. Say so explicitly so
+    // the user can continue rather than wonder. Guarded — mocks and future SDK
+    // shapes without `steps` must not fail a healthy turn.
+    if (hasTools) {
+      try {
+        const finishedSteps = await (result as unknown as { steps?: PromiseLike<unknown[]> }).steps;
+        if (Array.isArray(finishedSteps) && finishedSteps.length >= effectiveStepLimit) {
+          request.onNotice?.({
+            code: 'step-limit-exhausted',
+            level: 'warning',
+            message: `Reached the step limit (${effectiveStepLimit} tool steps). Progress so far is above — reply "continue" to pick up where it stopped.`
+          });
+        }
+      } catch {
+        // Steps unavailable; the turn itself succeeded, so stay silent.
+      }
     }
 
     return {

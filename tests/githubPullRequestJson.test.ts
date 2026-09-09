@@ -4,10 +4,14 @@ import test from 'node:test';
 import {
   PR_DETAIL_FIELDS,
   PR_LIST_FIELDS,
+  buildReviewSubmissionJson,
   decodeCheck,
+  decodeLabelCandidates,
   decodePullRequestActivity,
   decodePullRequestDetail,
   decodePullRequestList,
+  decodeReviewThreads,
+  decodeReviewerCandidates,
   rollupChecksState
 } from '../src/main/workspace/githubPullRequestJson.js';
 
@@ -191,5 +195,104 @@ test('an unparseable timestamp sorts last rather than claiming to be the oldest'
   assert.deepEqual(
     activity.comments.map((comment) => comment.body),
     ['dated', 'undated']
+  );
+});
+
+test('a review submission carries the verdict event and every line comment', () => {
+  const payload = JSON.parse(
+    buildReviewSubmissionJson({
+      verdict: 'request-changes',
+      body: 'Please fix the null check.',
+      comments: [
+        { path: 'src/a.ts', line: 12, side: 'RIGHT', body: 'Needs a guard.' },
+        { path: 'src/b.ts', line: 3, side: 'LEFT', body: 'Deleted too early.' }
+      ]
+    })
+  );
+
+  assert.equal(payload.event, 'REQUEST_CHANGES');
+  assert.equal(payload.body, 'Please fix the null check.');
+  assert.deepEqual(payload.comments, [
+    { path: 'src/a.ts', line: 12, side: 'RIGHT', body: 'Needs a guard.' },
+    { path: 'src/b.ts', line: 3, side: 'LEFT', body: 'Deleted too early.' }
+  ]);
+});
+
+test('review threads decode from the GraphQL envelope', () => {
+  const threads = decodeReviewThreads(
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  id: 'PRRT_1',
+                  isResolved: false,
+                  isOutdated: false,
+                  path: 'src/a.ts',
+                  line: 8,
+                  diffSide: 'RIGHT',
+                  comments: {
+                    nodes: [
+                      {
+                        id: 'PRRC_1',
+                        author: { login: 'reviewer', name: 'Rev' },
+                        body: 'Why?',
+                        createdAt: '2026-09-01T00:00:00Z',
+                        url: 'https://github.com/o/r/pull/1#discussion_r1'
+                      }
+                    ]
+                  }
+                },
+                { id: null, path: 'bad.ts' }
+              ]
+            }
+          }
+        }
+      }
+    })
+  );
+
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0]?.id, 'PRRT_1');
+  assert.equal(threads[0]?.line, 8);
+  assert.equal(threads[0]?.side, 'RIGHT');
+  assert.equal(threads[0]?.comments[0]?.author?.login, 'reviewer');
+});
+
+test('reviewer candidates mark who is already requested', () => {
+  const candidates = decodeReviewerCandidates(
+    JSON.stringify([
+      { login: 'alice', name: 'Alice', avatar_url: 'https://x/a.png' },
+      { login: 'bob' }
+    ]),
+    ['Bob']
+  );
+
+  assert.deepEqual(
+    candidates.map((entry) => [entry.login, entry.isRequested]),
+    [
+      ['alice', false],
+      ['bob', true]
+    ]
+  );
+});
+
+test('label candidates mark which are already applied', () => {
+  const candidates = decodeLabelCandidates(
+    JSON.stringify([
+      { name: 'bug', color: 'd73a4a', description: 'Something broken' },
+      { name: 'docs' }
+    ]),
+    [{ name: 'bug', color: null }]
+  );
+
+  assert.deepEqual(
+    candidates.map((entry) => [entry.name, entry.isApplied]),
+    [
+      ['bug', true],
+      ['docs', false]
+    ]
   );
 });

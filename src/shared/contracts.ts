@@ -691,6 +691,34 @@ export type PullRequestListResult = {
   viewer: string | null;
 };
 
+/** One pull request on the app-wide page, carrying which project it belongs to. */
+export type PullRequestWorkspaceEntry = PullRequestListEntry & {
+  projectRoot: string;
+  projectTitle: string;
+  repository: string;
+};
+
+/**
+ * Every open pull request across every project that has a GitHub remote.
+ *
+ * One page, the way t3code's `/pull-requests` is: a reader arriving here wants
+ * "what needs me", not a project picker first.
+ */
+export type PullRequestWorkspaceListRequest = {
+  state: PullRequestListState;
+  involvement: PullRequestInvolvement;
+  query?: string;
+  limitPerProject?: number;
+};
+
+export type PullRequestWorkspaceListResult = {
+  unavailable: PullRequestUnavailable | null;
+  entries: PullRequestWorkspaceEntry[];
+  /** At least one project had more rows than the page asked for. */
+  truncated: boolean;
+  viewer: string | null;
+};
+
 /** The list row plus everything only a single-pull-request read carries. */
 export type PullRequestDetail = PullRequestListEntry & {
   body: string;
@@ -723,6 +751,41 @@ export type PullRequestCommit = {
   committedAt: string | null;
 };
 
+/** One remark inside a line-anchored review conversation. */
+export type PullRequestThreadComment = {
+  id: string;
+  author: PullRequestActor | null;
+  body: string;
+  createdAt: string;
+  url: string | null;
+};
+
+/**
+ * A conversation anchored to a line of the diff.
+ *
+ * The same remarks the Activity tab shows as a flat timeline, read the other
+ * way: whole threads pinned to their line so the Code tab can show them
+ * beside the code they are about.
+ */
+export type PullRequestReviewThread = {
+  id: string;
+  path: string;
+  /** Null when the host anchors the thread to a file rather than a line. */
+  line: number | null;
+  side: 'LEFT' | 'RIGHT';
+  isResolved: boolean;
+  isOutdated: boolean;
+  comments: PullRequestThreadComment[];
+};
+
+/** A line comment waiting to be sent with a review. */
+export type PullRequestInlineCommentDraft = {
+  path: string;
+  line: number;
+  side: 'LEFT' | 'RIGHT';
+  body: string;
+};
+
 /**
  * The conversation, read separately from the detail.
  *
@@ -733,13 +796,21 @@ export type PullRequestCommit = {
 export type PullRequestActivity = {
   comments: PullRequestComment[];
   commits: PullRequestCommit[];
+  /** Present when the host was asked for review threads. */
+  reviewThreads?: PullRequestReviewThread[];
 };
 
-/** A pull request the renderer names by number, scoped to a conversation. */
-export type PullRequestRef = {
-  conversationId: string;
-  number: number;
-};
+/**
+ * A pull request the renderer names by number.
+ *
+ * Scoped either to a conversation (the workbench panel) or to a project root
+ * (the app-wide Pull requests page). Never both: a conversation already pins
+ * the folder, and a second root would be a second answer to which repository
+ * the number means.
+ */
+export type PullRequestRef =
+  | { conversationId: string; number: number }
+  | { projectRoot: string; number: number };
 
 export type PullRequestDiffResult = {
   patch: string;
@@ -750,19 +821,107 @@ export type PullRequestDiffResult = {
 /**
  * A write the panel can perform.
  *
- * Deliberately short: these are the four that need no further input beyond the
- * pull request itself. Anything that needs a body goes through `prComment`.
+ * Deliberately short: these are the ones that need no further input beyond the
+ * pull request itself. Anything that needs a body goes through `prComment` or
+ * `prSubmitReview`.
+ *
+ * `draft` is the inverse of `ready`: `gh pr ready --undo` puts a ready pull
+ * request back into draft.
+ *
+ * Auto-merge is two actions because they answer different questions: arming
+ * hands the merge to the host once checks pass, and disarming takes that
+ * instruction back.
  */
-export type PullRequestAction = 'close' | 'reopen' | 'ready' | 'merge';
+export type PullRequestAction =
+  | 'close'
+  | 'reopen'
+  | 'ready'
+  | 'draft'
+  | 'merge'
+  | 'enable-auto-merge'
+  | 'disable-auto-merge'
+  | 'update-branch';
+
+export type PullRequestMergeMethod = 'merge' | 'squash' | 'rebase';
 
 export type PullRequestActionRequest = PullRequestRef & {
   action: PullRequestAction;
-  /** Only meaningful for `merge`; absent takes the repository's own default. */
-  mergeMethod?: 'merge' | 'squash' | 'rebase';
+  /** Only meaningful for `merge` and `enable-auto-merge`. */
+  mergeMethod?: PullRequestMergeMethod;
 };
 
 export type PullRequestCommentRequest = PullRequestRef & {
   body: string;
+};
+
+/** What a submitted review says beyond the words in it. */
+export type PullRequestReviewVerdict = 'comment' | 'approve' | 'request-changes';
+
+/**
+ * One review, sent as one request.
+ *
+ * `comments` are line-anchored drafts that leave the host with the verdict —
+ * a half-written review is invisible to everyone else until this is sent.
+ */
+export type PullRequestSubmitReviewRequest = PullRequestRef & {
+  verdict: PullRequestReviewVerdict;
+  /** Required by GitHub for `request-changes`; optional for the other two. */
+  body: string;
+  comments?: PullRequestInlineCommentDraft[];
+};
+
+export type PullRequestThreadReplyRequest = PullRequestRef & {
+  threadId: string;
+  body: string;
+};
+
+export type PullRequestThreadResolutionRequest = PullRequestRef & {
+  threadId: string;
+  resolved: boolean;
+};
+
+/** Somebody a review may be asked of. */
+export type PullRequestReviewerCandidate = {
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+  /** A review has already been asked of them, so pressing them takes it back. */
+  isRequested: boolean;
+};
+
+export type PullRequestLabelCandidate = PullRequestLabel & {
+  description: string | null;
+  isApplied: boolean;
+};
+
+export type PullRequestRequestReviewersRequest = PullRequestRef & {
+  add?: string[];
+  remove?: string[];
+};
+
+export type PullRequestSetLabelsRequest = PullRequestRef & {
+  add?: string[];
+  remove?: string[];
+};
+
+export type PullRequestCreateRequest = {
+  title: string;
+  body: string;
+  /** Absent lets the repository's default branch decide. */
+  base?: string;
+  draft?: boolean;
+  /**
+   * Push the current branch first when it has no upstream or is behind origin.
+   * A pull request cannot exist without the branch being on the remote.
+   */
+  push?: boolean;
+} & ({ conversationId: string } | { projectRoot: string });
+
+export type PullRequestCreateResult = {
+  number: number | null;
+  url: string;
+  /** The branch already had an open pull request; that one was returned. */
+  alreadyExisted: boolean;
 };
 
 export type GitCommitRequest = {
@@ -3061,12 +3220,25 @@ export type RendererApi = {
     openPr: (url: string) => Promise<void>;
     /** One page of pull requests, or the reason there is none to show. */
     listPrs: (request: PullRequestListRequest) => Promise<PullRequestListResult>;
+    /** Every project's pull requests on one page. */
+    listWorkspacePrs: (
+      request: PullRequestWorkspaceListRequest
+    ) => Promise<PullRequestWorkspaceListResult>;
     /** Null when the number names nothing the host will serve. */
     getPr: (ref: PullRequestRef) => Promise<PullRequestDetail | null>;
     getPrActivity: (ref: PullRequestRef) => Promise<PullRequestActivity>;
     getPrDiff: (ref: PullRequestRef) => Promise<PullRequestDiffResult>;
+    getPrThreads: (ref: PullRequestRef) => Promise<PullRequestReviewThread[]>;
     runPrAction: (request: PullRequestActionRequest) => Promise<void>;
     commentOnPr: (request: PullRequestCommentRequest) => Promise<void>;
+    submitReviewOnPr: (request: PullRequestSubmitReviewRequest) => Promise<void>;
+    createPr: (request: PullRequestCreateRequest) => Promise<PullRequestCreateResult>;
+    replyToPrThread: (request: PullRequestThreadReplyRequest) => Promise<void>;
+    setPrThreadResolution: (request: PullRequestThreadResolutionRequest) => Promise<void>;
+    listPrReviewers: (ref: PullRequestRef) => Promise<PullRequestReviewerCandidate[]>;
+    listPrLabels: (ref: PullRequestRef) => Promise<PullRequestLabelCandidate[]>;
+    requestPrReviewers: (request: PullRequestRequestReviewersRequest) => Promise<void>;
+    setPrLabels: (request: PullRequestSetLabelsRequest) => Promise<void>;
   };
   plugins: {
     list: () => Promise<PluginsView>;

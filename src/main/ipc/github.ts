@@ -6,12 +6,25 @@ import type {
   PullRequestActionRequest,
   PullRequestActivity,
   PullRequestCommentRequest,
+  PullRequestCreateRequest,
+  PullRequestCreateResult,
   PullRequestDetail,
   PullRequestDiffResult,
+  PullRequestLabelCandidate,
   PullRequestListRequest,
   PullRequestListResult,
   PullRequestRef,
-  PullRequestUnavailable
+  PullRequestRequestReviewersRequest,
+  PullRequestReviewThread,
+  PullRequestReviewerCandidate,
+  PullRequestSetLabelsRequest,
+  PullRequestSubmitReviewRequest,
+  PullRequestThreadReplyRequest,
+  PullRequestThreadResolutionRequest,
+  PullRequestUnavailable,
+  PullRequestWorkspaceEntry,
+  PullRequestWorkspaceListRequest,
+  PullRequestWorkspaceListResult
 } from '../../shared/contracts';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type { AppDatabase } from '../db/client';
@@ -43,14 +56,33 @@ const DEFAULT_PR_LIST_LIMIT = 30;
  * instead of an empty state that reads like a broken feature.
  *
  * The project is resolved from the conversation row, never from an argument,
- * so the renderer cannot ask about a repository it is not attached to.
+ * so the renderer cannot ask about a repository it is not attached to — except
+ * on the app-wide Pull requests page, which names a project root that must
+ * already be in the projects table.
  */
-async function resolveRepository(
+type RepositoryTarget = { conversationId: string } | { projectRoot: string };
+
+async function resolveRootForTarget(
   db: AppDatabase,
-  githubService: GitHubService,
-  conversationId: string
-): Promise<{ root: string; slug: string } | { unavailable: PullRequestUnavailable }> {
-  const workspace = describeConversationWorkspace(db, conversationId);
+  target: RepositoryTarget
+): Promise<{ root: string; title: string } | { unavailable: PullRequestUnavailable }> {
+  if ('projectRoot' in target) {
+    const project = db.projects.findByRoot(target.projectRoot);
+
+    if (!project || !project.exists) {
+      return {
+        unavailable: {
+          reason: 'no-project',
+          hint: 'That folder is not attached to Atlas, or it is no longer on disk.',
+          action: null
+        }
+      };
+    }
+
+    return { root: project.root, title: project.title };
+  }
+
+  const workspace = describeConversationWorkspace(db, target.conversationId);
   const project = workspace.project;
 
   if (!project || !project.exists) {
@@ -61,6 +93,20 @@ async function resolveRepository(
         action: null
       }
     };
+  }
+
+  return { root: project.root, title: project.title };
+}
+
+async function resolveRepository(
+  db: AppDatabase,
+  githubService: GitHubService,
+  target: RepositoryTarget
+): Promise<{ root: string; slug: string; title: string } | { unavailable: PullRequestUnavailable }> {
+  const resolved = await resolveRootForTarget(db, target);
+
+  if ('unavailable' in resolved) {
+    return resolved;
   }
 
   const cli = await githubService.getStatus();
@@ -85,7 +131,7 @@ async function resolveRepository(
     };
   }
 
-  const slug = await githubService.getOriginSlug(project.root);
+  const slug = await githubService.getOriginSlug(resolved.root);
 
   if (!slug) {
     // Two causes, one message: a folder with no `origin` at all, and one whose
@@ -100,7 +146,11 @@ async function resolveRepository(
     };
   }
 
-  return { root: project.root, slug: `${slug.owner}/${slug.repo}` };
+  return {
+    root: resolved.root,
+    title: resolved.title,
+    slug: `${slug.owner}/${slug.repo}`
+  };
 }
 
 /**
@@ -113,16 +163,28 @@ async function resolveRepository(
 async function requireRepository(
   db: AppDatabase,
   githubService: GitHubService,
-  conversationId: string
+  target: RepositoryTarget
 ): Promise<{ root: string; slug: string }> {
-  const resolved = await resolveRepository(db, githubService, conversationId);
+  const resolved = await resolveRepository(db, githubService, target);
 
   if ('unavailable' in resolved) {
     const { hint, action } = resolved.unavailable;
     throw new Error(action ? `${hint} Run \`${action}\`.` : hint);
   }
 
-  return resolved;
+  return { root: resolved.root, slug: resolved.slug };
+}
+
+function targetOfRef(ref: PullRequestRef): RepositoryTarget {
+  return 'conversationId' in ref
+    ? { conversationId: ref.conversationId }
+    : { projectRoot: ref.projectRoot };
+}
+
+function targetOfRequest(request: { conversationId: string } | { projectRoot: string }): RepositoryTarget {
+  return 'conversationId' in request
+    ? { conversationId: request.conversationId }
+    : { projectRoot: request.projectRoot };
 }
 
 export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService) {
@@ -180,7 +242,7 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
       async (event, request: PullRequestListRequest): Promise<PullRequestListResult> => {
         assertTrustedSender(event);
 
-        const resolved = await resolveRepository(db, githubService, request.conversationId);
+        const resolved = await resolveRepository(db, githubService, { conversationId: request.conversationId });
 
         if ('unavailable' in resolved) {
           return {
@@ -219,13 +281,108 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
     )
   );
 
+  /**
+   * Every project's pull requests on one page.
+   *
+   * Projects without a GitHub remote, a missing `gh`, or a signed-out CLI are
+   * skipped rather than failing the page: one broken checkout is not a reason
+   * to hide every other project's work. The first hard failure (no `gh` at
+   * all) is reported as the page's unavailability instead of an empty list.
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrListWorkspace,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrListWorkspace,
+      async (
+        event,
+        request: PullRequestWorkspaceListRequest
+      ): Promise<PullRequestWorkspaceListResult> => {
+        assertTrustedSender(event);
+
+        const cli = await githubService.getStatus();
+        if (!cli.installed || !cli.authenticated) {
+          return {
+            unavailable: {
+              reason: cli.installed ? 'signed-out' : 'missing-cli',
+              hint: cli.installed
+                ? 'The GitHub CLI is installed but not signed in.'
+                : 'Pull requests are read through the GitHub CLI, which is not installed.',
+              action: cli.installed ? 'gh auth login' : 'brew install gh'
+            },
+            entries: [],
+            truncated: false,
+            viewer: null
+          };
+        }
+
+        const projects = db.projects.list().filter((project) => project.exists && project.isGitRepository);
+        const limit = request.limitPerProject ?? DEFAULT_PR_LIST_LIMIT;
+        const entries: PullRequestWorkspaceEntry[] = [];
+        let truncated = false;
+        let viewer: string | null = null;
+        let sawGitHub = false;
+
+        for (const project of projects) {
+          const slug = await githubService.getOriginSlug(project.root).catch(() => null);
+          if (!slug) continue;
+          sawGitHub = true;
+
+          if (viewer === null) {
+            viewer = await githubService.getViewerLogin(project.root).catch(() => null);
+          }
+
+          try {
+            const page = await githubService.listPullRequests({
+              root: project.root,
+              state: request.state,
+              involvement: request.involvement,
+              viewer,
+              ...(request.query ? { query: request.query } : {}),
+              limit
+            });
+
+            if (page.truncated) truncated = true;
+
+            for (const entry of page.entries) {
+              entries.push({
+                ...entry,
+                projectRoot: project.root,
+                projectTitle: project.title,
+                repository: `${slug.owner}/${slug.repo}`
+              });
+            }
+          } catch {
+            // One project's `gh` failure is not a reason to hide the rest.
+          }
+        }
+
+        if (!sawGitHub) {
+          return {
+            unavailable: {
+              reason: 'not-github',
+              hint: 'No attached project has a GitHub remote on `origin`.',
+              action: null
+            },
+            entries: [],
+            truncated: false,
+            viewer
+          };
+        }
+
+        entries.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+
+        return { unavailable: null, entries, truncated, viewer };
+      }
+    )
+  );
+
   ipcMain.handle(
     IPC_CHANNELS.githubPrDetail,
     withUserFacingErrors(
       IPC_CHANNELS.githubPrDetail,
       async (event, ref: PullRequestRef): Promise<PullRequestDetail | null> => {
         assertTrustedSender(event);
-        const { root } = await requireRepository(db, githubService, ref.conversationId);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
         return githubService.getPullRequestDetail(root, ref.number);
       }
     )
@@ -237,7 +394,7 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
       IPC_CHANNELS.githubPrActivity,
       async (event, ref: PullRequestRef): Promise<PullRequestActivity> => {
         assertTrustedSender(event);
-        const { root } = await requireRepository(db, githubService, ref.conversationId);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
         return githubService.getPullRequestActivity(root, ref.number);
       }
     )
@@ -249,8 +406,20 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
       IPC_CHANNELS.githubPrDiff,
       async (event, ref: PullRequestRef): Promise<PullRequestDiffResult> => {
         assertTrustedSender(event);
-        const { root } = await requireRepository(db, githubService, ref.conversationId);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
         return githubService.getPullRequestDiff(root, ref.number);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrThreads,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrThreads,
+      async (event, ref: PullRequestRef): Promise<PullRequestReviewThread[]> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
+        return githubService.getPullRequestReviewThreads(root, ref.number);
       }
     )
   );
@@ -261,7 +430,7 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
       IPC_CHANNELS.githubPrAction,
       async (event, request: PullRequestActionRequest): Promise<void> => {
         assertTrustedSender(event);
-        const { root } = await requireRepository(db, githubService, request.conversationId);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
         await githubService.runPullRequestAction({
           root,
           number: request.number,
@@ -278,8 +447,160 @@ export function registerGitHubIpc(db: AppDatabase, githubService: GitHubService)
       IPC_CHANNELS.githubPrComment,
       async (event, request: PullRequestCommentRequest): Promise<void> => {
         assertTrustedSender(event);
-        const { root } = await requireRepository(db, githubService, request.conversationId);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
         await githubService.commentOnPullRequest(root, request.number, request.body);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrSubmitReview,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrSubmitReview,
+      async (event, request: PullRequestSubmitReviewRequest): Promise<void> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
+        await githubService.submitPullRequestReview({
+          root,
+          number: request.number,
+          verdict: request.verdict,
+          body: request.body,
+          comments: request.comments ?? []
+        });
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrThreadReply,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrThreadReply,
+      async (event, request: PullRequestThreadReplyRequest): Promise<void> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
+        await githubService.replyToReviewThread({
+          root,
+          threadId: request.threadId,
+          body: request.body
+        });
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrThreadResolve,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrThreadResolve,
+      async (event, request: PullRequestThreadResolutionRequest): Promise<void> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
+        await githubService.setReviewThreadResolution({
+          root,
+          threadId: request.threadId,
+          resolved: request.resolved
+        });
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrReviewers,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrReviewers,
+      async (event, ref: PullRequestRef): Promise<PullRequestReviewerCandidate[]> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
+        return githubService.listReviewerCandidates(root, ref.number);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrLabels,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrLabels,
+      async (event, ref: PullRequestRef): Promise<PullRequestLabelCandidate[]> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(ref));
+        return githubService.listLabelCandidates(root, ref.number);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrRequestReviewers,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrRequestReviewers,
+      async (event, request: PullRequestRequestReviewersRequest): Promise<void> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
+        await githubService.requestReviewers({
+          root,
+          number: request.number,
+          add: request.add,
+          remove: request.remove
+        });
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrSetLabels,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrSetLabels,
+      async (event, request: PullRequestSetLabelsRequest): Promise<void> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRef(request));
+        await githubService.setLabels({
+          root,
+          number: request.number,
+          add: request.add,
+          remove: request.remove
+        });
+      }
+    )
+  );
+
+  /**
+   * Opens a pull request from the panel, pushing the branch first when asked.
+   *
+   * The push is folded in for the same reason the agent tool folds it: a pull
+   * request cannot exist without the branch on the remote, and discovering
+   * "no upstream" after typing a title is a pointless round trip. An existing
+   * pull request is returned rather than treated as a failure.
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.githubPrCreate,
+    withUserFacingErrors(
+      IPC_CHANNELS.githubPrCreate,
+      async (event, request: PullRequestCreateRequest): Promise<PullRequestCreateResult> => {
+        assertTrustedSender(event);
+        const { root } = await requireRepository(db, githubService, targetOfRequest(request));
+
+        const branch = await githubService.getCurrentBranch(root);
+        if (!branch) {
+          throw new Error(
+            'HEAD is detached, so there is no branch to open a pull request from. Switch to a branch first.'
+          );
+        }
+
+        if (request.push !== false) {
+          await githubService.pushBranch(root, branch);
+        }
+
+        const result = await githubService.createPr(root, {
+          title: request.title,
+          body: request.body ?? '',
+          base: request.base,
+          draft: request.draft,
+          branch
+        });
+
+        return {
+          number: result.pr?.number ?? null,
+          url: result.url,
+          alreadyExisted: result.alreadyExisted
+        };
       }
     )
   );

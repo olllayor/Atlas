@@ -22,11 +22,17 @@ import type {
   PullRequestComment,
   PullRequestCommit,
   PullRequestDetail,
+  PullRequestInlineCommentDraft,
   PullRequestLabel,
+  PullRequestLabelCandidate,
   PullRequestListEntry,
   PullRequestMergeability,
   PullRequestReviewDecision,
-  PullRequestState
+  PullRequestReviewThread,
+  PullRequestReviewVerdict,
+  PullRequestReviewerCandidate,
+  PullRequestState,
+  PullRequestThreadComment
 } from '../../shared/contracts';
 
 /**
@@ -421,4 +427,193 @@ export function decodePullRequestActivity(raw: string): PullRequestActivity {
   });
 
   return { comments: merged, commits: decodeCommits(parsed.commits) };
+}
+
+// ---------------------------------------------------------------------------
+// Review threads (GraphQL)
+// ---------------------------------------------------------------------------
+
+/**
+ * Page size for review threads. One ordinary pull request fits in a single
+ * page; a thread longer than ten comments is the rare case and is shown
+ * truncated rather than followed, because following needs a second request
+ * per long thread.
+ */
+const REVIEW_THREAD_PAGE = 50;
+
+export const REVIEW_THREADS_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: ${REVIEW_THREAD_PAGE}) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          diffSide
+          comments(first: 10) {
+            nodes { id author { login name avatarUrl } body createdAt url }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+export const REVIEW_THREAD_REPLY_GRAPHQL_MUTATION = `mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { id }
+  }
+}`;
+
+export const RESOLVE_REVIEW_THREAD_GRAPHQL_MUTATION = `mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } }
+}`;
+
+export const UNRESOLVE_REVIEW_THREAD_GRAPHQL_MUTATION = `mutation($threadId: ID!) {
+  unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } }
+}`;
+
+const REVIEW_EVENT_BY_VERDICT: Record<PullRequestReviewVerdict, string> = {
+  comment: 'COMMENT',
+  approve: 'APPROVE',
+  'request-changes': 'REQUEST_CHANGES'
+};
+
+/**
+ * The whole review as one REST body, which is how GitHub keeps it invisible
+ * until the verdict is sent. Inline comments ride along with the verdict so
+ * a half-written review never shows up on the host.
+ */
+export function buildReviewSubmissionJson(input: {
+  verdict: PullRequestReviewVerdict;
+  body: string;
+  comments: readonly PullRequestInlineCommentDraft[];
+}): string {
+  return JSON.stringify({
+    event: REVIEW_EVENT_BY_VERDICT[input.verdict],
+    body: input.body,
+    comments: input.comments.map((comment) => ({
+      path: comment.path,
+      line: comment.line,
+      side: comment.side,
+      body: comment.body
+    }))
+  });
+}
+
+function decodeThreadComment(value: unknown): PullRequestThreadComment | null {
+  if (!isRecord(value)) return null;
+  const id = nullableString(value.id);
+  if (!id) return null;
+
+  return {
+    id,
+    author: decodeActor(value.author),
+    body: stringOr(value.body, ''),
+    createdAt: stringOr(value.createdAt, ''),
+    url: nullableString(value.url)
+  };
+}
+
+/**
+ * Review threads from the GraphQL payload `gh api graphql` prints.
+ *
+ * A thread with no readable id is dropped rather than failing the page: one
+ * unparseable conversation is not a reason to hide the rest of the review.
+ */
+export function decodeReviewThreads(raw: string): PullRequestReviewThread[] {
+  const parsed = parseJson(raw, 'the pull request review threads');
+  if (!isRecord(parsed)) return [];
+
+  const data = isRecord(parsed.data) ? parsed.data : parsed;
+  const repository = isRecord(data.repository) ? data.repository : null;
+  const pullRequest = repository && isRecord(repository.pullRequest) ? repository.pullRequest : null;
+  const reviewThreads = pullRequest && isRecord(pullRequest.reviewThreads) ? pullRequest.reviewThreads : null;
+  const nodes = reviewThreads && Array.isArray(reviewThreads.nodes) ? reviewThreads.nodes : [];
+
+  const threads: PullRequestReviewThread[] = [];
+
+  for (const node of nodes) {
+    if (!isRecord(node)) continue;
+    const id = nullableString(node.id);
+    if (!id) continue;
+
+    const commentsNode = isRecord(node.comments) && Array.isArray(node.comments.nodes) ? node.comments.nodes : [];
+    const comments: PullRequestThreadComment[] = [];
+    for (const entry of commentsNode) {
+      const comment = decodeThreadComment(entry);
+      if (comment) comments.push(comment);
+    }
+
+    const side = stringOr(node.diffSide, 'RIGHT').toUpperCase();
+    threads.push({
+      id,
+      path: stringOr(node.path, ''),
+      line: typeof node.line === 'number' && Number.isFinite(node.line) ? node.line : null,
+      side: side === 'LEFT' ? 'LEFT' : 'RIGHT',
+      isResolved: node.isResolved === true,
+      isOutdated: node.isOutdated === true,
+      comments
+    });
+  }
+
+  return threads;
+}
+
+/** Collaborators who may be asked for a review, with whether they already are. */
+export function decodeReviewerCandidates(
+  raw: string,
+  requestedLogins: readonly string[]
+): PullRequestReviewerCandidate[] {
+  const parsed = parseJson(raw, 'the repository collaborators');
+  if (!Array.isArray(parsed)) return [];
+
+  const requested = new Set(requestedLogins.map((login) => login.toLowerCase()));
+  const candidates: PullRequestReviewerCandidate[] = [];
+
+  for (const entry of parsed) {
+    if (!isRecord(entry)) continue;
+    const login = nullableString(entry.login);
+    if (!login) continue;
+
+    candidates.push({
+      login,
+      name: nullableString(entry.name),
+      avatarUrl: nullableString(entry.avatar_url) ?? nullableString(entry.avatarUrl),
+      isRequested: requested.has(login.toLowerCase())
+    });
+  }
+
+  candidates.sort((left, right) => left.login.localeCompare(right.login));
+  return candidates;
+}
+
+/** Repository labels, with whether this pull request already wears them. */
+export function decodeLabelCandidates(
+  raw: string,
+  applied: readonly PullRequestLabel[]
+): PullRequestLabelCandidate[] {
+  const parsed = parseJson(raw, 'the repository labels');
+  if (!Array.isArray(parsed)) return [];
+
+  const appliedNames = new Set(applied.map((label) => label.name.toLowerCase()));
+  const candidates: PullRequestLabelCandidate[] = [];
+
+  for (const entry of parsed) {
+    if (!isRecord(entry)) continue;
+    const name = nullableString(entry.name);
+    if (!name) continue;
+
+    candidates.push({
+      name,
+      color: nullableString(entry.color),
+      description: nullableString(entry.description),
+      isApplied: appliedNames.has(name.toLowerCase())
+    });
+  }
+
+  candidates.sort((left, right) => left.name.localeCompare(right.name));
+  return candidates;
 }

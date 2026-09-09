@@ -17,15 +17,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import { GitPullRequest, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type {
+  PullRequestCreateResult,
   PullRequestInvolvement,
   PullRequestListEntry,
   PullRequestListResult,
   PullRequestListState,
 } from '../../../shared/contracts';
-import { notifyError } from '../../lib/notify';
+import { notify, notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 import { PullRequestDetailPanel } from './PullRequestDetailPanel';
 import {
@@ -73,6 +74,7 @@ export function PullRequestsPanel({ conversationId }: { conversationId?: string 
   const [involvement, setInvolvement] = useState<PullRequestInvolvement>('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<number | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   /**
    * Guards against a slow page landing on top of a fast one. Two listings are
@@ -155,9 +157,19 @@ export function PullRequestsPanel({ conversationId }: { conversationId?: string 
           </span>
           <button
             type="button"
+            onClick={() => setShowCreate((open) => !open)}
+            aria-expanded={showCreate}
+            title="Open a pull request for the current branch"
+            className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-sm text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            {showCreate ? <X className="size-3.5" aria-hidden /> : <Plus className="size-3.5" aria-hidden />}
+            {showCreate ? 'Cancel' : 'New'}
+          </button>
+          <button
+            type="button"
             onClick={() => void refresh()}
             aria-label="Refresh pull requests"
-            className="ml-auto rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
           >
             <RefreshCw className={cn('size-3.5', loading && 'motion-spin-steps')} aria-hidden />
           </button>
@@ -229,6 +241,19 @@ export function PullRequestsPanel({ conversationId }: { conversationId?: string 
             </button>
           ) : null}
         </label>
+
+        {showCreate && conversationId ? (
+          <CreatePullRequestForm
+            conversationId={conversationId}
+            onCreated={(created) => {
+              setShowCreate(false);
+              setState('open');
+              setSelected(created.number);
+              void refresh();
+            }}
+            onCancel={() => setShowCreate(false)}
+          />
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
@@ -370,5 +395,158 @@ export function PullRequestEmptyState({
         </code>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Open a pull request for the current branch.
+ *
+ * Push is folded into the request the way the agent tool folds it: a pull
+ * request cannot exist without the branch on the remote, and discovering
+ * "no upstream" after typing a title is a pointless round trip. An existing
+ * pull request is returned rather than treated as a failure — the common
+ * follow-up-commit case is not an error.
+ */
+function CreatePullRequestForm({
+  conversationId,
+  onCreated,
+  onCancel,
+}: {
+  conversationId: string;
+  onCreated: (result: PullRequestCreateResult) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [base, setBase] = useState('');
+  const [draft, setDraft] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [branch, setBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBranch() {
+      if (!window.atlasChat?.github?.getPrStatus) return;
+      try {
+        const status = await window.atlasChat.github.getPrStatus(conversationId);
+        if (!cancelled && status.branch) setBranch(status.branch);
+      } catch {
+        // The form still works without the branch name; the create request
+        // resolves HEAD on the main side either way.
+      }
+    }
+
+    void loadBranch();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  const submit = useCallback(async () => {
+    const nextTitle = title.trim();
+    if (!nextTitle || submitting || !window.atlasChat?.github?.createPr) return;
+
+    setSubmitting(true);
+    try {
+      const result = await window.atlasChat.github.createPr({
+        conversationId,
+        title: nextTitle,
+        body: body.trim(),
+        base: base.trim() || undefined,
+        draft,
+      });
+
+      notify({
+        tone: 'success',
+        title: result.alreadyExisted
+          ? 'This branch already has an open pull request.'
+          : 'Pull request opened.',
+      });
+      onCreated(result);
+    } catch (err) {
+      notifyError('Could not open the pull request', err);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [base, body, conversationId, draft, onCreated, submitting, title]);
+
+  return (
+    <form
+      className="mt-2 flex flex-col gap-2 rounded-md border border-border-subtle bg-bg-surface/40 p-2.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <p className="flex items-center gap-1.5 text-sm text-text-tertiary">
+        <GitPullRequest className="size-3.5" aria-hidden />
+        {branch ? (
+          <>
+            Open a pull request from <code className="font-mono text-text-secondary">{branch}</code>
+          </>
+        ) : (
+          'Open a pull request for the current branch'
+        )}
+      </p>
+
+      <input
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        placeholder="Title"
+        aria-label="Pull request title"
+        className="rounded-md bg-bg-base px-2 py-1.5 text-sm text-text-primary outline-none placeholder:text-text-faint"
+        autoFocus
+      />
+
+      <textarea
+        value={body}
+        onChange={(event) => setBody(event.target.value)}
+        placeholder="Description (optional)"
+        aria-label="Pull request description"
+        rows={3}
+        className="w-full resize-y rounded-md bg-bg-base px-2 py-1.5 text-sm text-text-primary outline-none placeholder:text-text-faint"
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-text-tertiary">
+          <span className="shrink-0">Base</span>
+          <input
+            value={base}
+            onChange={(event) => setBase(event.target.value)}
+            placeholder="default"
+            aria-label="Base branch"
+            className="min-w-0 flex-1 rounded-md bg-bg-base px-2 py-1 font-mono text-xs text-text-primary outline-none placeholder:text-text-faint"
+          />
+        </label>
+
+        <label className="flex shrink-0 items-center gap-1.5 text-sm text-text-tertiary">
+          <input
+            type="checkbox"
+            checked={draft}
+            onChange={(event) => setDraft(event.target.checked)}
+            className="size-3.5 accent-emerald-600"
+          />
+          Draft
+        </label>
+      </div>
+
+      <div className="flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded bg-transparent px-2 py-0.5 text-sm text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={submitting || title.trim().length === 0}
+          className="rounded bg-bg-surface px-2 py-0.5 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {submitting ? 'Opening…' : 'Open pull request'}
+        </button>
+      </div>
+    </form>
   );
 }

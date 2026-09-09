@@ -20,8 +20,16 @@ import type {
   PullRequestActivity,
   PullRequestDetail,
   PullRequestDiffResult,
+  PullRequestInlineCommentDraft,
+  PullRequestLabelCandidate,
+  PullRequestMergeMethod,
+  PullRequestReviewThread,
+  PullRequestReviewVerdict,
+  PullRequestReviewerCandidate,
 } from '../../../shared/contracts';
+import type { DiffLine } from '../../../shared/toolCellGrammar';
 import { parseUnifiedDiff } from '../../../shared/toolCellGrammar';
+import type { ReviewComment } from '../../../shared/review';
 import { notify, notifyError } from '../../lib/notify';
 import { cn } from '../../lib/utils';
 import MessageResponseContent from '../ai-elements/MessageResponseContent';
@@ -52,8 +60,15 @@ const ACTION_LABELS: Record<PullRequestAction, { verb: string; done: string }> =
   close: { verb: 'Close', done: 'Pull request closed.' },
   reopen: { verb: 'Reopen', done: 'Pull request reopened.' },
   ready: { verb: 'Ready for review', done: 'Pull request marked ready for review.' },
+  draft: { verb: 'Convert to draft', done: 'Pull request converted to draft.' },
   merge: { verb: 'Merge', done: 'Pull request merged.' },
 };
+
+const MERGE_METHODS: { value: PullRequestMergeMethod; label: string; title: string }[] = [
+  { value: 'merge', label: 'Merge', title: 'Create a merge commit' },
+  { value: 'squash', label: 'Squash', title: 'Squash commits into one, then merge' },
+  { value: 'rebase', label: 'Rebase', title: 'Rebase commits onto the base branch' },
+];
 
 export function PullRequestDetailPanel({
   conversationId,
@@ -69,6 +84,7 @@ export function PullRequestDetailPanel({
   const [failed, setFailed] = useState(false);
   const [tab, setTab] = useState<DetailTab>('summary');
   const [busy, setBusy] = useState(false);
+  const [mergeMethod, setMergeMethod] = useState<PullRequestMergeMethod>('merge');
 
   const requestRef = useRef(0);
 
@@ -97,12 +113,17 @@ export function PullRequestDetailPanel({
   }, [loadDetail]);
 
   const runAction = useCallback(
-    async (action: PullRequestAction) => {
+    async (action: PullRequestAction, method?: PullRequestMergeMethod) => {
       if (!window.atlasChat?.github?.runPrAction) return;
       setBusy(true);
 
       try {
-        await window.atlasChat.github.runPrAction({ conversationId, number, action });
+        await window.atlasChat.github.runPrAction({
+          conversationId,
+          number,
+          action,
+          ...(method ? { mergeMethod: method } : {}),
+        });
         notify({ tone: 'success', title: ACTION_LABELS[action].done });
         // The host's answer, not a guess at it: a merge that queued behind a
         // required check leaves the pull request open, and re-reading is the
@@ -192,9 +213,34 @@ export function PullRequestDetailPanel({
             </button>
           ) : null}
           {detail.state === 'open' && !detail.isDraft ? (
-            <button type="button" disabled={busy} className={ACTION_CLASS} onClick={() => void runAction('merge')}>
-              Merge
-            </button>
+            <>
+              <label className="flex items-center gap-1 text-sm text-text-tertiary">
+                <span className="sr-only">Merge method</span>
+                <select
+                  value={mergeMethod}
+                  onChange={(event) => setMergeMethod(event.target.value as PullRequestMergeMethod)}
+                  disabled={busy}
+                  className="rounded bg-bg-surface px-1.5 py-0.5 text-sm text-text-secondary outline-none transition-colors hover:bg-bg-hover hover:text-text-primary"
+                >
+                  {MERGE_METHODS.map((method) => (
+                    <option key={method.value} value={method.value} title={method.title}>
+                      {method.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={busy}
+                className={ACTION_CLASS}
+                onClick={() => void runAction('merge', mergeMethod)}
+              >
+                Merge
+              </button>
+              <button type="button" disabled={busy} className={ACTION_CLASS} onClick={() => void runAction('draft')}>
+                Convert to draft
+              </button>
+            </>
           ) : null}
           {detail.state === 'open' ? (
             <button type="button" disabled={busy} className={ACTION_CLASS} onClick={() => void runAction('close')}>
@@ -229,11 +275,19 @@ export function PullRequestDetailPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
-        {tab === 'summary' ? <SummaryTab detail={detail} /> : null}
+        {tab === 'summary' ? (
+          <SummaryTab
+            conversationId={conversationId}
+            detail={detail}
+            onChanged={() => void loadDetail()}
+          />
+        ) : null}
         {tab === 'activity' ? (
           <ActivityTab conversationId={conversationId} number={number} />
         ) : null}
-        {tab === 'diff' ? <DiffTab conversationId={conversationId} number={number} /> : null}
+        {tab === 'diff' ? (
+          <DiffTab conversationId={conversationId} number={number} state={detail.state} />
+        ) : null}
       </div>
     </div>
   );
@@ -289,18 +343,18 @@ function DetailHeaderBar({
   );
 }
 
-function SummaryTab({ detail }: { detail: PullRequestDetail }) {
+function SummaryTab({
+  conversationId,
+  detail,
+  onChanged,
+}: {
+  conversationId: string;
+  detail: PullRequestDetail;
+  onChanged: () => void;
+}) {
   return (
     <div className="flex flex-col gap-3">
-      {detail.labels.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {detail.labels.map((label) => (
-            <span key={label.name} className="rounded-full bg-bg-surface px-2 py-0.5 text-sm text-text-tertiary">
-              {label.name}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <LabelsEditor conversationId={conversationId} detail={detail} onChanged={onChanged} />
 
       {detail.body.trim() ? (
         <MessageResponseContent>{detail.body}</MessageResponseContent>
@@ -308,12 +362,7 @@ function SummaryTab({ detail }: { detail: PullRequestDetail }) {
         <p className="text-sm text-text-faint">No description.</p>
       )}
 
-      {detail.reviewRequests.length > 0 ? (
-        <section>
-          <h3 className="pb-1 pt-2 text-sm font-normal text-text-tertiary">Review requested</h3>
-          <p className="text-sm text-text-secondary">{detail.reviewRequests.join(', ')}</p>
-        </section>
-      ) : null}
+      <ReviewersEditor conversationId={conversationId} detail={detail} onChanged={onChanged} />
 
       {detail.checks.length > 0 ? (
         <section>
@@ -348,10 +397,15 @@ function SummaryTab({ detail }: { detail: PullRequestDetail }) {
 }
 
 /**
- * The conversation, plus a box to add to it.
+ * The conversation, plus a box to add to it — and a review verdict.
  *
- * Loaded on the tab's first visit and kept afterwards, except when a comment is
- * posted — that is the one moment the panel knows its copy is stale.
+ * Loaded on the tab's first visit and kept afterwards, except when a comment or
+ * review is posted — that is the one moment the panel knows its copy is stale.
+ *
+ * One body box carries all three actions. A review is a comment that also
+ * says something about the change, so a separate form would only split what
+ * the reader already wrote. Request-changes needs a body because GitHub does;
+ * the button stays disabled until one is there.
  */
 function ActivityTab({ conversationId, number }: { conversationId: string; number: number }) {
   const [activity, setActivity] = useState<PullRequestActivity | null>(null);
@@ -375,24 +429,46 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
     void load();
   }, [load]);
 
-  const post = useCallback(async () => {
-    const body = draft.trim();
-    if (!body || !window.atlasChat?.github?.commentOnPr) return;
+  const post = useCallback(
+    async (verdict: PullRequestReviewVerdict | 'comment') => {
+      const body = draft.trim();
+      if (posting) return;
+      if (verdict === 'comment' && !body) return;
+      if (verdict === 'request-changes' && !body) return;
 
-    setPosting(true);
-    try {
-      await window.atlasChat.github.commentOnPr({ conversationId, number, body });
-      // Cleared only once the host has it. A failed post that emptied the box
-      // would lose what the reader wrote.
-      setDraft('');
-      notify({ tone: 'success', title: 'Comment posted.' });
-      await load();
-    } catch (err) {
-      notifyError('Could not post the comment', err);
-    } finally {
-      setPosting(false);
-    }
-  }, [conversationId, draft, load, number]);
+      setPosting(true);
+      try {
+        if (verdict === 'comment') {
+          if (!window.atlasChat?.github?.commentOnPr) return;
+          await window.atlasChat.github.commentOnPr({ conversationId, number, body });
+        } else {
+          if (!window.atlasChat?.github?.submitReviewOnPr) return;
+          await window.atlasChat.github.submitReviewOnPr({ conversationId, number, verdict, body });
+        }
+        // Cleared only once the host has it. A failed post that emptied the box
+        // would lose what the reader wrote.
+        setDraft('');
+        notify({
+          tone: 'success',
+          title:
+            verdict === 'comment'
+              ? 'Comment posted.'
+              : verdict === 'approve'
+                ? 'Pull request approved.'
+                : 'Changes requested.',
+        });
+        await load();
+      } catch (err) {
+        notifyError(
+          verdict === 'comment' ? 'Could not post the comment' : 'Could not submit the review',
+          err
+        );
+      } finally {
+        setPosting(false);
+      }
+    },
+    [conversationId, draft, load, number, posting]
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -464,61 +540,173 @@ function ActivityTab({ conversationId, number }: { conversationId: string; numbe
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Leave a comment…"
-          aria-label="Comment on this pull request"
+          placeholder="Leave a comment, or write a review…"
+          aria-label="Comment or review body"
           rows={3}
           className="w-full resize-y rounded-md bg-bg-surface px-2 py-1.5 text-sm text-text-primary outline-none placeholder:text-text-faint"
         />
-        <button
-          type="button"
-          disabled={posting || draft.trim().length === 0}
-          onClick={() => void post()}
-          className={cn(ACTION_CLASS, 'self-end')}
-        >
-          {posting ? 'Posting…' : 'Comment'}
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            disabled={posting || draft.trim().length === 0}
+            onClick={() => void post('comment')}
+            className={ACTION_CLASS}
+          >
+            {posting ? 'Posting…' : 'Comment'}
+          </button>
+          <button
+            type="button"
+            disabled={posting}
+            onClick={() => void post('approve')}
+            className={cn(ACTION_CLASS, 'text-emerald-700 dark:text-emerald-300/90')}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            disabled={posting || draft.trim().length === 0}
+            title="Requesting changes needs a body explaining what to change"
+            onClick={() => void post('request-changes')}
+            className={cn(ACTION_CLASS, 'text-amber-700 dark:text-amber-300/90')}
+          >
+            Request changes
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 /**
- * The patch, through the workbench's own diff chrome.
+ * The patch, plus the review that happens on it.
  *
  * `gh pr diff` prints one unified diff for the whole pull request, which is
  * exactly what `parseUnifiedDiff` already reads for tool output — so a pull
  * request's changes look like every other diff in the app rather than like a
  * second, nearly-identical renderer.
+ *
+ * Hover a line and press `+` to draft an inline comment. Drafts stay local
+ * until a verdict is sent: GitHub keeps a review invisible until the whole of
+ * it is posted, so a half-written one must stay invisible here too.
  */
-function DiffTab({ conversationId, number }: { conversationId: string; number: number }) {
+function DiffTab({
+  conversationId,
+  number,
+  state,
+}: {
+  conversationId: string;
+  number: number;
+  state: PullRequestDetail['state'];
+}) {
   const [result, setResult] = useState<PullRequestDiffResult | null>(null);
+  const [threads, setThreads] = useState<PullRequestReviewThread[]>([]);
   const [loading, setLoading] = useState(false);
+  const [drafts, setDrafts] = useState<PullRequestInlineCommentDraft[]>([]);
+  const [summary, setSummary] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const [activeLine, setActiveLine] = useState<number | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (!window.atlasChat?.github?.getPrDiff) return;
-      setLoading(true);
-      try {
-        const next = await window.atlasChat.github.getPrDiff({ conversationId, number });
-        if (!cancelled) setResult(next);
-      } catch (err) {
-        if (!cancelled) notifyError('Could not load the diff', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const load = useCallback(async () => {
+    if (!window.atlasChat?.github?.getPrDiff) return;
+    setLoading(true);
+    try {
+      const [next, nextThreads] = await Promise.all([
+        window.atlasChat.github.getPrDiff({ conversationId, number }),
+        window.atlasChat.github.getPrThreads({ conversationId, number }).catch(() => []),
+      ]);
+      setResult(next);
+      setThreads(nextThreads);
+    } catch (err) {
+      notifyError('Could not load the diff', err);
+    } finally {
+      setLoading(false);
     }
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
   }, [conversationId, number]);
 
-  const files = useMemo(
-    () => (result ? parseUnifiedDiff(result.patch) : null),
-    [result]
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const files = useMemo(() => (result ? parseUnifiedDiff(result.patch) : null), [result]);
+
+  const commentsFor = useCallback(
+    (line: DiffLine): ReviewComment[] => {
+      const path = activePath;
+      if (!path || line.lineNumber == null) return [];
+
+      const side: PullRequestInlineCommentDraft['side'] = line.sign === '-' ? 'LEFT' : 'RIGHT';
+      return drafts
+        .filter((draft) => draft.path === path && draft.line === line.lineNumber && draft.side === side)
+        .map((draft) => ({
+          id: `${draft.path}:${draft.side}:${draft.line}`,
+          path: draft.path,
+          line: draft.line,
+          code: line.content,
+          body: draft.body,
+        }));
+    },
+    [activePath, drafts]
+  );
+
+  const onAddComment = useCallback(
+    (line: DiffLine) => {
+      if (!activePath || line.lineNumber == null) return;
+      const side: PullRequestInlineCommentDraft['side'] = line.sign === '-' ? 'LEFT' : 'RIGHT';
+      setActiveLine(line.lineNumber);
+      setDrafts((current) => [
+        ...current,
+        { path: activePath, line: line.lineNumber!, side, body: '' },
+      ]);
+    },
+    [activePath]
+  );
+
+  const updateDraftBody = useCallback((index: number, body: string) => {
+    setDrafts((current) =>
+      current.map((draft, i) => (i === index ? { ...draft, body } : draft))
+    );
+  }, []);
+
+  const removeDraft = useCallback((index: number) => {
+    setDrafts((current) => current.filter((_, i) => i !== index));
+  }, []);
+
+  const submit = useCallback(
+    async (verdict: PullRequestReviewVerdict) => {
+      if (submitting || !window.atlasChat?.github?.submitReviewOnPr) return;
+      const filled = drafts.filter((draft) => draft.body.trim());
+      if (verdict === 'comment' && !summary.trim() && filled.length === 0) return;
+      if (verdict === 'request-changes' && !summary.trim()) return;
+
+      setSubmitting(true);
+      try {
+        await window.atlasChat.github.submitReviewOnPr({
+          conversationId,
+          number,
+          verdict,
+          body: summary.trim(),
+          comments: filled,
+        });
+        setDrafts([]);
+        setSummary('');
+        notify({
+          tone: 'success',
+          title:
+            verdict === 'approve'
+              ? 'Pull request approved.'
+              : verdict === 'request-changes'
+                ? 'Changes requested.'
+                : 'Review submitted.',
+        });
+        await load();
+      } catch (err) {
+        notifyError('Could not submit the review', err);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [conversationId, drafts, load, number, submitting, summary]
   );
 
   if (loading && !result) {
@@ -529,24 +717,509 @@ function DiffTab({ conversationId, number }: { conversationId: string; number: n
     return <p className="text-sm text-text-faint">This pull request changes nothing.</p>;
   }
 
+  const openThreads = threads.filter((thread) => !thread.isResolved);
+  const resolvedThreads = threads.filter((thread) => thread.isResolved);
+
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 pb-16">
       {result.truncated ? (
         <p className="text-sm text-amber-600 dark:text-amber-400/90">
           This patch is too large to show in full. What follows ends part-way through.
         </p>
       ) : null}
 
+      {drafts.length > 0 || summary || state === 'open' ? (
+        <ReviewBar
+          drafts={drafts}
+          summary={summary}
+          submitting={submitting}
+          canSubmit={state === 'open'}
+          onSummaryChange={setSummary}
+          onUpdateDraft={updateDraftBody}
+          onRemoveDraft={removeDraft}
+          onSubmit={submit}
+        />
+      ) : null}
+
       {files === null ? (
-        // The parser refused it, so the raw patch is shown rather than nothing:
-        // an unparseable diff is still readable, and hiding it would be worse
-        // than showing it plainly.
         <pre className="app-code-text m-0 overflow-x-auto whitespace-pre text-sm leading-[1.55] text-text-secondary">
           {result.patch}
         </pre>
       ) : (
-        files.map((file, index) => <DiffBlock key={`${file.path ?? 'file'}:${index}`} file={file} />)
+        files.map((file, index) => {
+          const isActive = activePath === file.path;
+          return (
+            <div key={`${file.path ?? 'file'}:${index}`} className="flex flex-col gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setActivePath(isActive ? null : file.path);
+                  setActiveLine(null);
+                }}
+                className={cn(
+                  'rounded px-1 py-0.5 text-left text-sm transition-colors',
+                  isActive
+                    ? 'bg-bg-surface text-text-primary'
+                    : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'
+                )}
+              >
+                {file.path}
+              </button>
+              {isActive ? (
+                <DiffBlock file={file} onAddComment={onAddComment} commentsFor={commentsFor} />
+              ) : (
+                <DiffBlock file={file} />
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {openThreads.length > 0 ? (
+        <section>
+          <h3 className="pb-1 pt-2 text-sm font-normal text-text-tertiary">
+            Open threads · {openThreads.length}
+          </h3>
+          <div className="flex flex-col gap-2">
+            {openThreads.map((thread) => (
+              <ThreadCard
+                key={thread.id}
+                conversationId={conversationId}
+                number={number}
+                thread={thread}
+                onChanged={load}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {resolvedThreads.length > 0 ? (
+        <section>
+          <h3 className="pb-1 pt-2 text-sm font-normal text-text-tertiary">
+            Resolved · {resolvedThreads.length}
+          </h3>
+          <div className="flex flex-col gap-2 opacity-70">
+            {resolvedThreads.map((thread) => (
+              <ThreadCard
+                key={thread.id}
+                conversationId={conversationId}
+                number={number}
+                thread={thread}
+                onChanged={load}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activeLine != null ? (
+        <p className="text-xs text-text-faint">
+          Drafting on {activePath}:{activeLine}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The review form over the Code tab: pending line comments, a summary, and
+ * the verdict that sends the lot. Hidden while the pull request is not open —
+ * a closed change has no review left to submit.
+ */
+function ReviewBar({
+  drafts,
+  summary,
+  submitting,
+  canSubmit,
+  onSummaryChange,
+  onUpdateDraft,
+  onRemoveDraft,
+  onSubmit,
+}: {
+  drafts: PullRequestInlineCommentDraft[];
+  summary: string;
+  submitting: boolean;
+  canSubmit: boolean;
+  onSummaryChange: (body: string) => void;
+  onUpdateDraft: (index: number, body: string) => void;
+  onRemoveDraft: (index: number) => void;
+  onSubmit: (verdict: PullRequestReviewVerdict) => void;
+}) {
+  const filled = drafts.filter((draft) => draft.body.trim());
+
+  return (
+    <div className="sticky top-0 z-10 flex flex-col gap-2 rounded-md border border-border-subtle bg-bg-base/95 p-2.5 backdrop-blur">
+      {drafts.length > 0 ? (
+        <ul className="flex flex-col gap-1.5">
+          {drafts.map((draft, index) => (
+            <li key={`${draft.path}:${draft.side}:${draft.line}:${index}`} className="flex flex-col gap-1">
+              <p className="flex items-center gap-2 text-xs text-text-faint">
+                <code className="font-mono">
+                  {draft.path}:{draft.line}
+                </code>
+                <span>{draft.side === 'LEFT' ? 'old' : 'new'}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveDraft(index)}
+                  className="ml-auto rounded px-1 text-text-tertiary hover:text-text-primary"
+                >
+                  Discard
+                </button>
+              </p>
+              <textarea
+                value={draft.body}
+                onChange={(event) => onUpdateDraft(index, event.target.value)}
+                placeholder="Leave a review comment on this line…"
+                rows={2}
+                className="w-full resize-y rounded bg-bg-surface px-2 py-1 text-sm text-text-primary outline-none placeholder:text-text-faint"
+              />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <textarea
+        value={summary}
+        onChange={(event) => onSummaryChange(event.target.value)}
+        placeholder="Review summary (optional for Comment and Approve)"
+        rows={2}
+        className="w-full resize-y rounded bg-bg-surface px-2 py-1.5 text-sm text-text-primary outline-none placeholder:text-text-faint"
+      />
+
+      {canSubmit ? (
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            disabled={submitting || (filled.length === 0 && !summary.trim())}
+            onClick={() => onSubmit('comment')}
+            className={ACTION_CLASS}
+          >
+            {submitting ? 'Sending…' : 'Comment'}
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => onSubmit('approve')}
+            className={cn(ACTION_CLASS, 'text-emerald-700 dark:text-emerald-300/90')}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            disabled={submitting || !summary.trim()}
+            title="Requesting changes needs a review summary"
+            onClick={() => onSubmit('request-changes')}
+            className={cn(ACTION_CLASS, 'text-amber-700 dark:text-amber-300/90')}
+          >
+            Request changes
+          </button>
+        </div>
+      ) : (
+        <p className="text-right text-xs text-text-faint">Reviews are closed on this pull request.</p>
       )}
     </div>
+  );
+}
+
+function ThreadCard({
+  conversationId,
+  number,
+  thread,
+  onChanged,
+}: {
+  conversationId: string;
+  number: number;
+  thread: PullRequestReviewThread;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [reply, setReply] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const act = useCallback(
+    async (run: () => Promise<void>, done: string) => {
+      setBusy(true);
+      try {
+        await run();
+        notify({ tone: 'success', title: done });
+        setReply('');
+        await onChanged();
+      } catch (err) {
+        notifyError('Could not update the thread', err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [onChanged]
+  );
+
+  return (
+    <div className="rounded-md border border-border-subtle bg-bg-surface/40 p-2">
+      <p className="flex flex-wrap items-center gap-2 pb-1 text-xs text-text-faint">
+        <code className="font-mono">
+          {thread.path}
+          {thread.line != null ? `:${thread.line}` : ''}
+        </code>
+        {thread.isOutdated ? <span>outdated</span> : null}
+        {thread.isResolved ? <span>resolved</span> : null}
+      </p>
+
+      <ul className="flex flex-col gap-2">
+        {thread.comments.map((comment) => (
+          <li key={comment.id}>
+            <p className="flex items-center gap-2 text-xs text-text-faint">
+              <span className="text-text-tertiary">{pullRequestActorLabel(comment.author)}</span>
+              <span>{formatRelativeTime(comment.createdAt)}</span>
+            </p>
+            {comment.body.trim() ? (
+              <MessageResponseContent className="text-sm">{comment.body}</MessageResponseContent>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+
+      <div className="flex flex-col gap-1.5 pt-2">
+        <textarea
+          value={reply}
+          onChange={(event) => setReply(event.target.value)}
+          placeholder="Reply…"
+          rows={2}
+          className="w-full resize-y rounded bg-bg-base px-2 py-1 text-sm text-text-primary outline-none placeholder:text-text-faint"
+        />
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            disabled={busy || !window.atlasChat?.github?.setPrThreadResolution}
+            className={ACTION_CLASS}
+            onClick={() =>
+              void act(
+                () =>
+                  window.atlasChat!.github!.setPrThreadResolution({
+                    conversationId,
+                    number,
+                    threadId: thread.id,
+                    resolved: !thread.isResolved,
+                  }),
+                thread.isResolved ? 'Thread reopened.' : 'Thread resolved.'
+              )
+            }
+          >
+            {thread.isResolved ? 'Reopen' : 'Resolve'}
+          </button>
+          <button
+            type="button"
+            disabled={busy || !reply.trim() || !window.atlasChat?.github?.replyToPrThread}
+            className={ACTION_CLASS}
+            onClick={() =>
+              void act(
+                () =>
+                  window.atlasChat!.github!.replyToPrThread({
+                    conversationId,
+                    number,
+                    threadId: thread.id,
+                    body: reply.trim(),
+                  }),
+                'Reply posted.'
+              )
+            }
+          >
+            Reply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LabelsEditor({
+  conversationId,
+  detail,
+  onChanged,
+}: {
+  conversationId: string;
+  detail: PullRequestDetail;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [candidates, setCandidates] = useState<PullRequestLabelCandidate[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open || candidates !== null) return;
+    let cancelled = false;
+
+    void window.atlasChat?.github
+      ?.listPrLabels?.({ conversationId, number: detail.number })
+      .then((next) => {
+        if (!cancelled) setCandidates(next);
+      })
+      .catch((err) => notifyError('Could not load labels', err));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [candidates, conversationId, detail.number, open]);
+
+  const toggle = useCallback(
+    async (label: PullRequestLabelCandidate) => {
+      if (busy || !window.atlasChat?.github?.setPrLabels) return;
+      setBusy(true);
+      try {
+        await window.atlasChat.github.setPrLabels({
+          conversationId,
+          number: detail.number,
+          ...(label.isApplied ? { remove: [label.name] } : { add: [label.name] }),
+        });
+        setCandidates(null);
+        await onChanged();
+      } catch (err) {
+        notifyError('Could not update labels', err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, conversationId, detail.number, onChanged]
+  );
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {detail.labels.map((label) => (
+          <span
+            key={label.name}
+            className="rounded-full bg-bg-surface px-2 py-0.5 text-sm text-text-tertiary"
+          >
+            {label.name}
+          </span>
+        ))}
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="rounded px-1.5 py-0.5 text-sm text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+        >
+          {open ? 'Done' : 'Labels'}
+        </button>
+      </div>
+
+      {open ? (
+        <ul className="mt-1.5 max-h-40 overflow-y-auto rounded-md border border-border-subtle">
+          {(candidates ?? []).map((label) => (
+            <li key={label.name}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void toggle(label)}
+                className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm transition-colors hover:bg-bg-hover"
+              >
+                <span className="min-w-0 flex-1 truncate text-text-secondary">{label.name}</span>
+                {label.isApplied ? <span className="text-xs text-emerald-600">on</span> : null}
+              </button>
+            </li>
+          ))}
+          {candidates !== null && candidates.length === 0 ? (
+            <li className="px-2 py-1 text-sm text-text-faint">No labels on this repository.</li>
+          ) : null}
+          {candidates === null ? (
+            <li className="px-2 py-1 text-sm text-text-faint">Loading…</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function ReviewersEditor({
+  conversationId,
+  detail,
+  onChanged,
+}: {
+  conversationId: string;
+  detail: PullRequestDetail;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [candidates, setCandidates] = useState<PullRequestReviewerCandidate[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open || candidates !== null) return;
+    let cancelled = false;
+
+    void window.atlasChat?.github
+      ?.listPrReviewers?.({ conversationId, number: detail.number })
+      .then((next) => {
+        if (!cancelled) setCandidates(next);
+      })
+      .catch((err) => notifyError('Could not load reviewers', err));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [candidates, conversationId, detail.number, open]);
+
+  const toggle = useCallback(
+    async (login: string, isRequested: boolean) => {
+      if (busy || !window.atlasChat?.github?.requestPrReviewers) return;
+      setBusy(true);
+      try {
+        await window.atlasChat.github.requestPrReviewers({
+          conversationId,
+          number: detail.number,
+          ...(isRequested ? { remove: [login] } : { add: [login] }),
+        });
+        setCandidates(null);
+        await onChanged();
+      } catch (err) {
+        notifyError('Could not update the review request', err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, conversationId, detail.number, onChanged]
+  );
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-normal text-text-tertiary">Reviewers</h3>
+        <span className="text-sm text-text-secondary">
+          {detail.reviewRequests.length > 0 ? detail.reviewRequests.join(', ') : 'None requested'}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="rounded px-1.5 py-0.5 text-sm text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"
+        >
+          {open ? 'Done' : 'Edit'}
+        </button>
+      </div>
+
+      {open ? (
+        <ul className="mt-1.5 max-h-40 overflow-y-auto rounded-md border border-border-subtle">
+          {(candidates ?? []).map((candidate) => (
+            <li key={candidate.login}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void toggle(candidate.login, candidate.isRequested)}
+                className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm transition-colors hover:bg-bg-hover"
+              >
+                <span className="min-w-0 flex-1 truncate text-text-secondary">
+                  {candidate.login}
+                  {candidate.name ? ` · ${candidate.name}` : ''}
+                </span>
+                {candidate.isRequested ? <span className="text-xs text-emerald-600">requested</span> : null}
+              </button>
+            </li>
+          ))}
+          {candidates !== null && candidates.length === 0 ? (
+            <li className="px-2 py-1 text-sm text-text-faint">No collaborators listed.</li>
+          ) : null}
+          {candidates === null ? (
+            <li className="px-2 py-1 text-sm text-text-faint">Loading…</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </section>
   );
 }

@@ -71,7 +71,7 @@ type RefreshModelsOptions = {
   silent?: boolean;
 };
 
-type AppView = 'chat' | 'settings' | 'landing' | 'sites' | 'plugins';
+type AppView = 'chat' | 'settings' | 'landing' | 'sites' | 'plugins' | 'pullRequests';
 
 /**
  * A composer attachment staged but not yet sent. Structurally identical to
@@ -1855,6 +1855,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ activeView: 'plugins', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closePlugins: () => set({ activeView: 'chat' }),
   closeSites: () => set({ activeView: 'chat' }),
+  openPullRequests: () =>
+    set({
+      activeView: 'pullRequests',
+      commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
+      modelPickerOpen: false
+    }),
+  closePullRequests: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setCommandPaletteOpen: (open) =>
     set(open ? { commandPaletteOpen: open } : { commandPaletteOpen: open, commandPaletteInitialQuery: null }),

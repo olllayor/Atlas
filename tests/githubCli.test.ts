@@ -252,3 +252,155 @@ test('the pull request body travels as a file, never as argv', async () => {
   ]);
   assert.equal(result.url, 'https://github.com/o/r/pull/9');
 });
+
+test('requesting changes without a body is refused before the CLI is called', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 }
+  });
+
+  await assert.rejects(
+    () =>
+      service.submitPullRequestReview({
+        root: '/repo',
+        number: 3,
+        verdict: 'request-changes',
+        body: '   '
+      }),
+    /needs a review body/
+  );
+
+  assert.ok(!calls.some((call) => call.args[0] === 'review'));
+});
+
+test('a review is one command carrying the verdict flag', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr review': { code: 0 }
+  });
+
+  await service.submitPullRequestReview({
+    root: '/repo',
+    number: 12,
+    verdict: 'approve',
+    body: 'Looks good.'
+  });
+
+  const review = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'review');
+  assert.ok(review);
+  assert.deepEqual(review.args.slice(0, 4), ['pr', 'review', '12', '--approve']);
+  assert.ok(review.args.includes('--body-file'));
+  assert.ok(!review.args.some((arg) => arg.includes('Looks good.')));
+});
+
+test('converting to draft runs ready --undo', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr ready': { code: 0 }
+  });
+
+  await service.runPullRequestAction({
+    root: '/repo',
+    number: 4,
+    action: 'draft'
+  });
+
+  const ready = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'ready');
+  assert.ok(ready);
+  assert.deepEqual(ready.args.slice(0, 4), ['pr', 'ready', '4', '--undo']);
+});
+
+test('a review with inline comments goes through the REST reviews endpoint', async () => {
+  const calls: Invocation[] = [];
+  const service = new GitHubService({
+    platform: 'darwin',
+    pathDirs: ['/opt/homebrew/bin'],
+    exists: (path) => path === '/opt/homebrew/bin/gh',
+    run: async (command, args, options) => {
+      calls.push({ command, args, cwd: options.cwd });
+      const name = command.split('/').pop();
+
+      if (name === 'gh' && args[0] === 'auth') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (name === 'git' && args[0] === 'remote') {
+        return { code: 0, stdout: 'git@github.com:owner/repo.git\n', stderr: '' };
+      }
+      if (name === 'gh' && args[0] === 'api') {
+        return { code: 0, stdout: '{}', stderr: '' };
+      }
+
+      return { code: 1, stdout: '', stderr: `unscripted ${name} ${args[0]}` };
+    }
+  });
+
+  await service.submitPullRequestReview({
+    root: '/repo',
+    number: 9,
+    verdict: 'comment',
+    body: 'Overall looks fine.',
+    comments: [{ path: 'src/a.ts', line: 4, side: 'RIGHT', body: 'Rename this.' }]
+  });
+
+  const api = calls.find(
+    (call) => call.args[0] === 'api' && call.args.some((arg) => String(arg).includes('/reviews'))
+  );
+  assert.ok(api);
+  assert.ok(api.args.includes('repos/owner/repo/pulls/9/reviews'));
+  assert.ok(api.args.includes('--input'));
+  assert.ok(!calls.some((call) => call.args[0] === 'pr' && call.args[1] === 'review'));
+});
+
+test('requesting a reviewer uses pr edit --add-reviewer', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr edit': { code: 0 }
+  });
+
+  await service.requestReviewers({
+    root: '/repo',
+    number: 5,
+    add: ['alice']
+  });
+
+  const edit = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'edit');
+  assert.ok(edit);
+  assert.deepEqual(edit.args.slice(0, 3), ['pr', 'edit', '5']);
+  assert.ok(edit.args.includes('--add-reviewer'));
+  assert.ok(edit.args.includes('alice'));
+});
+
+test('setting labels uses pr edit --add-label and --remove-label', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh pr edit': { code: 0 }
+  });
+
+  await service.setLabels({
+    root: '/repo',
+    number: 5,
+    add: ['bug'],
+    remove: ['wip']
+  });
+
+  const edit = calls.find((call) => call.args[0] === 'pr' && call.args[1] === 'edit');
+  assert.ok(edit);
+  assert.ok(edit.args.includes('--add-label'));
+  assert.ok(edit.args.includes('--remove-label'));
+});
+
+test('resolving a thread runs the GraphQL mutation', async () => {
+  const { service, calls } = serviceWith({
+    'gh auth status': { code: 0 },
+    'gh api': { code: 0, stdout: '{}' }
+  });
+
+  await service.setReviewThreadResolution({
+    root: '/repo',
+    threadId: 'PRRT_1',
+    resolved: true
+  });
+
+  const api = calls.find((call) => call.args[0] === 'api' && call.args[1] === 'graphql');
+  assert.ok(api);
+  assert.ok(api.args.some((arg) => String(arg).includes('resolveReviewThread')));
+});

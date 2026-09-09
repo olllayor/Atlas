@@ -276,11 +276,24 @@ const api: RendererApi = {
       ipcRenderer.invoke(IPC_CHANNELS.githubPrStatus, conversationId),
     openPr: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.githubOpenPr, url),
     listPrs: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrList, request),
+    listWorkspacePrs: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.githubPrListWorkspace, request),
     getPr: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrDetail, ref),
     getPrActivity: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrActivity, ref),
     getPrDiff: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrDiff, ref),
+    getPrThreads: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrThreads, ref),
     runPrAction: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrAction, request),
-    commentOnPr: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrComment, request)
+    commentOnPr: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrComment, request),
+    submitReviewOnPr: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrSubmitReview, request),
+    createPr: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrCreate, request),
+    replyToPrThread: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrThreadReply, request),
+    setPrThreadResolution: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.githubPrThreadResolve, request),
+    listPrReviewers: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrReviewers, ref),
+    listPrLabels: (ref) => ipcRenderer.invoke(IPC_CHANNELS.githubPrLabels, ref),
+    requestPrReviewers: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.githubPrRequestReviewers, request),
+    setPrLabels: (request) => ipcRenderer.invoke(IPC_CHANNELS.githubPrSetLabels, request)
   },
   plugins: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.pluginsList),

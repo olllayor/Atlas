@@ -76,6 +76,7 @@ import { ToolCellList } from './transcript/ToolCell';
 import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
+import { decideAutoLoad } from '../lib/chatAutoLoad';
 import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
 import { filterHistoryMessages } from './chatHistoryFilter';
 import { AtlasMark } from './ui/atlas-mark';
@@ -186,22 +187,6 @@ const MEASURE = 'w-full';
 /** Jump-to-latest hysteresis: show past this, hide inside the other. */
 const JUMP_SHOW_PX = 120;
 const JUMP_HIDE_PX = 40;
-
-/**
- * Auto-load-older hysteresis, in pixels from the top of the scroller.
- *
- * Paging is armed by leaving the trigger zone and fired by re-entering it,
- * which is what makes "load the next page" cost a deliberate scroll every
- * time. Without the arming half, one trip to the top pages the entire
- * conversation: the restore that follows a prepend lands the reader deep in
- * the newly inserted rows, and if that landing counted as "still at the top"
- * the next page fires immediately, forever.
- *
- * The gap between the two is what absorbs a restore that undershoots — the
- * reader has to be a clear screenful away before the next page can arm.
- */
-const OLDER_LOAD_PX = 160;
-const OLDER_REARM_PX = 800;
 
 /**
  * How far outside the viewport a row may sit before it degrades to plain
@@ -1575,8 +1560,21 @@ export function ChatWindow({
   const listRef = useRef<HTMLDivElement | null>(null);
   const pendingPrependRef = useRef<{ conversationId: string; previousMessageCount: number } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
-  /** See `OLDER_LOAD_PX`: paging re-arms only once the reader leaves the top. */
+  /** See `decideAutoLoad`: paging re-arms only once the reader leaves the top. */
   const autoLoadArmedRef = useRef(false);
+  /**
+   * Set on conversation open and whenever a page load fires. Cleared only by
+   * a deliberate user scroll (`useTranscriptScroll.onUserScroll`), never by
+   * `scrollToIndex` or virtualizer size corrections.
+   */
+  const autoLoadNeedsGestureRef = useRef(true);
+  /**
+   * While true, measured row heights do not feed `estimateScaleRef`. A
+   * prepend page is a different height mix than the live edge the scale was
+   * calibrated on; letting those measurements collapse the scale rewrote
+   * every remaining estimate and undershot the restore into the load zone.
+   */
+  const estimateScaleFrozenRef = useRef(false);
   /** Running calibration of `estimateHistoryRowHeight` against reality. */
   const estimateScaleRef = useRef({ measured: 0, estimated: 0, count: 0 });
 
@@ -1691,6 +1689,12 @@ export function ChatWindow({
   const { userHasScrolledRef, isScrolledUp } = useTranscriptScroll({
     element: scrollNode,
     onUserScrollUp: stopScroll,
+    onUserScroll: () => {
+      // A real gesture is the only thing that may re-arm paging after a
+      // programmatic restore. Virtualizer corrections never reach here.
+      autoLoadNeedsGestureRef.current = false;
+      estimateScaleFrozenRef.current = false;
+    },
     showAt: JUMP_SHOW_PX,
     hideAt: JUMP_HIDE_PX,
   });
@@ -1735,7 +1739,7 @@ export function ChatWindow({
       const index = Number(element.getAttribute('data-index'));
       const message = Number.isFinite(index) ? visibleMessages[index] : undefined;
 
-      if (message && size > 0) {
+      if (message && size > 0 && !estimateScaleFrozenRef.current) {
         const stats = estimateScaleRef.current;
         stats.measured += size;
         stats.estimated += estimateHistoryRowHeight(message, rawTranscript);
@@ -2030,6 +2034,10 @@ export function ChatWindow({
     pendingPrependRef.current = null;
     lastAutoLoadCursorRef.current = null;
     autoLoadArmedRef.current = false;
+    // The open-at-bottom pin is programmatic. Paging stays disarmed until
+    // the reader actually scrolls.
+    autoLoadNeedsGestureRef.current = true;
+    estimateScaleFrozenRef.current = false;
 
     const element = scrollRef.current;
     if (!element || !conversationId) {
@@ -2132,6 +2140,10 @@ export function ChatWindow({
       conversationId: detail.conversation.id,
       previousMessageCount: historyMessages.length,
     };
+    // Prepended rows must not rewrite the live-edge scale; unfreeze on the
+    // next deliberate user scroll (see `useTranscriptScroll`).
+    estimateScaleFrozenRef.current = true;
+    autoLoadNeedsGestureRef.current = true;
 
     await onLoadOlderMessages(detail.conversation.id);
   }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages]);
@@ -2157,6 +2169,10 @@ export function ChatWindow({
    * and drained the whole conversation in one pass, stranding the reader at
    * the head of the thread. On the scroll event `scrollTop` is, by
    * construction, current.
+   *
+   * Re-arm additionally requires `autoLoadNeedsGestureRef === false`. That
+   * is what stops the restore's own `scrollToIndex` (which lands past
+   * `OLDER_REARM_PX` on estimates) from arming the next page.
    */
   useEffect(() => {
     if (!scrollNode) {
@@ -2166,26 +2182,28 @@ export function ChatWindow({
     const onScroll = () => {
       const { folded: isFolded, hasOlder: more, isLoadingOlder: loading, nextCursor: cursor, loadOlderMessages: load } =
         autoLoadStateRef.current;
-      const top = scrollNode.scrollTop;
 
-      if (top > OLDER_REARM_PX) {
+      const action = decideAutoLoad({
+        scrollTop: scrollNode.scrollTop,
+        armed: autoLoadArmedRef.current,
+        needsUserGesture: autoLoadNeedsGestureRef.current,
+        folded: isFolded,
+        hasOlder: more,
+        isLoadingOlder: loading,
+        cursor,
+        lastCursor: lastAutoLoadCursorRef.current,
+      });
+
+      if (action.type === 'ignore') {
+        return;
+      }
+      if (action.type === 'rearm') {
         autoLoadArmedRef.current = true;
-        return;
-      }
-      if (top > OLDER_LOAD_PX || !autoLoadArmedRef.current) {
-        return;
-      }
-      // While folded, the top of the *visible* list is the fold boundary, not
-      // the top of the history — auto-loading there would page messages the
-      // fold is hiding. Expansion is what reopens the paging path.
-      if (isFolded || !more || loading || !cursor) {
-        return;
-      }
-      if (lastAutoLoadCursorRef.current === cursor) {
         return;
       }
 
       autoLoadArmedRef.current = false;
+      autoLoadNeedsGestureRef.current = true;
       lastAutoLoadCursorRef.current = cursor;
       void load();
     };

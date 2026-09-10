@@ -33,6 +33,7 @@ export const IPC_CHANNELS = {
   providersSetModels: 'providers:setModels',
   providersDiscoverModels: 'providers:discoverModels',
   providersTestConnection: 'providers:testConnection',
+  providersTestModel: 'providers:testModel',
   providersListPresets: 'providers:listPresets',
   conversationsList: 'conversations:list',
   conversationsCreate: 'conversations:create',

@@ -1136,6 +1136,8 @@ import type {
   DiscoveredModel,
   ProviderPreset,
   SetCustomProviderModelsRequest,
+  TestCustomProviderModelRequest,
+  TestCustomProviderModelResult,
   UpdateCustomProviderRequest
 } from './customProviders';
 
@@ -3032,6 +3034,7 @@ export type RendererApi = {
     setModels: (request: SetCustomProviderModelsRequest) => Promise<CustomProvider>;
     discoverModels: (request: DiscoverCustomProviderModelsRequest) => Promise<DiscoveredModel[]>;
     testConnection: (request: DiscoverCustomProviderModelsRequest) => Promise<void>;
+    testModel: (request: TestCustomProviderModelRequest) => Promise<TestCustomProviderModelResult>;
     listPresets: () => Promise<ProviderPreset[]>;
   };
   conversations: {

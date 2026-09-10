@@ -9,6 +9,7 @@ import type {
   CustomProviderModelInput,
   DiscoveredModel,
   ProviderPreset,
+  TestCustomProviderModelResult,
   UpdateCustomProviderRequest
 } from '../../shared/customProviders';
 import { notify } from '../lib/notify';
@@ -62,6 +63,17 @@ type ProvidersState = {
     apiFormat?: CustomProviderApiFormat;
     apiKey?: string;
   }) => Promise<ConnectionTestResult>;
+  /**
+   * One-model smoke test. Returns a structured result rather than throwing so
+   * the model row can paint ok/fail without a store-wide error banner.
+   */
+  testModel: (request: {
+    providerId?: ProviderId;
+    modelId: string;
+    baseUrl?: string;
+    apiFormat?: CustomProviderApiFormat;
+    apiKey?: string;
+  }) => Promise<TestCustomProviderModelResult>;
   clearDiscovered: () => void;
   clearError: () => void;
 };
@@ -224,6 +236,16 @@ export const useProvidersStore = create<ProvidersState>((set, get) => ({
       // The caller renders this inline; a toast on top of that is noise.
       set({ isTesting: false });
       return { ok: false, message };
+    }
+  },
+
+  testModel: async (request) => {
+    try {
+      return await window.atlasChat.providers.testModel(request);
+    } catch (error) {
+      // Defensive: main returns a structured failure. Anything that still
+      // throws is an IPC shape problem, not a bad model.
+      return { ok: false, message: getErrorMessage(error), latencyMs: 0 };
     }
   },
 

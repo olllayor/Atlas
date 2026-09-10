@@ -85,6 +85,7 @@ const api: RendererApi = {
     setModels: (request) => ipcRenderer.invoke(IPC_CHANNELS.providersSetModels, request),
     discoverModels: (request) => ipcRenderer.invoke(IPC_CHANNELS.providersDiscoverModels, request),
     testConnection: (request) => ipcRenderer.invoke(IPC_CHANNELS.providersTestConnection, request),
+    testModel: (request) => ipcRenderer.invoke(IPC_CHANNELS.providersTestModel, request),
     listPresets: () => ipcRenderer.invoke(IPC_CHANNELS.providersListPresets)
   },
   conversations: {

@@ -5,6 +5,7 @@ import type {
   CreateCustomProviderRequest,
   DiscoverCustomProviderModelsRequest,
   SetCustomProviderModelsRequest,
+  TestCustomProviderModelRequest,
   UpdateCustomProviderRequest
 } from '../../shared/customProviders';
 import { IPC_CHANNELS } from '../../shared/ipc';
@@ -79,6 +80,17 @@ export function registerProvidersIpc(service: CustomProviderService) {
       async (event, request: DiscoverCustomProviderModelsRequest) => {
         assertTrustedSender(event);
         await service.testConnection(request);
+      }
+    )
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.providersTestModel,
+    withUserFacingErrors(
+      IPC_CHANNELS.providersTestModel,
+      async (event, request: TestCustomProviderModelRequest) => {
+        assertTrustedSender(event);
+        return service.testModel(request);
       }
     )
   );

@@ -122,14 +122,7 @@ export function LocalAgentsSection() {
 
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
-          Local agents
-        </span>
-        <span className="text-xs text-text-faint">
-          Coding CLIs that run on your machine.
-        </span>
-      </div>
+      <p className="text-xs text-text-faint">Coding CLIs that run on your machine.</p>
 
       {error ? (
         <div className="mt-3 flex items-center justify-between rounded-md border border-error-border bg-error-bg px-3 py-2 text-xs text-error-text">

@@ -1,8 +1,12 @@
 import {
+  CheckCircledIcon,
+  CrossCircledIcon,
   DownloadIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
+  PlayIcon,
   PlusIcon,
+  ReloadIcon,
   TrashIcon
 } from '@radix-ui/react-icons';
 import { useEffect, useMemo, useState } from 'react';
@@ -12,7 +16,8 @@ import type {
   CustomProviderApiFormat,
   CustomProviderModel,
   CustomProviderModelInput,
-  DiscoveredModel
+  DiscoveredModel,
+  TestCustomProviderModelResult
 } from '../../../shared/customProviders';
 import { formatContextWindow } from '../../../shared/customProviders';
 import { notify } from '../../lib/notify';
@@ -41,6 +46,12 @@ type TestState =
   | { kind: 'ok'; message: string }
   | { kind: 'failed'; message: string };
 
+/** Per-model smoke-test paint state, keyed by model id. Lives in the pane, not the store. */
+type ModelTestEntry =
+  | { kind: 'testing' }
+  | { kind: 'ok'; result: TestCustomProviderModelResult }
+  | { kind: 'failed'; result: TestCustomProviderModelResult };
+
 export function ProviderDetail({ provider }: { provider: CustomProvider }) {
   const update = useProvidersStore((state) => state.update);
   const remove = useProvidersStore((state) => state.remove);
@@ -48,6 +59,7 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
   const addModel = useProvidersStore((state) => state.addModel);
   const discoverModels = useProvidersStore((state) => state.discoverModels);
   const testConnection = useProvidersStore((state) => state.testConnection);
+  const testModel = useProvidersStore((state) => state.testModel);
   const isDiscovering = useProvidersStore((state) => state.isDiscovering);
   const isTesting = useProvidersStore((state) => state.isTesting);
   const isSaving = useProvidersStore((state) => state.isSaving);
@@ -68,6 +80,7 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[] | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' });
+  const [modelTests, setModelTests] = useState<Record<string, ModelTestEntry>>({});
 
   const baseUrlSaved = useSavedFlash();
   const nameSaved = useSavedFlash();
@@ -84,6 +97,7 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
     setConfirmingDelete(false);
     setModelFilter('');
     setTestState({ kind: 'idle' });
+    setModelTests({});
   }, [provider.id, provider.name, provider.baseUrl]);
 
   const commitBaseUrl = () => {
@@ -177,6 +191,33 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
     setTestState(
       result.ok ? { kind: 'ok', message: result.message } : { kind: 'failed', message: result.message }
     );
+    notify({
+      tone: result.ok ? 'success' : 'error',
+      title: result.ok ? `${provider.name} connected` : `${provider.name} connection failed`,
+      description: result.ok ? result.message : result.message,
+      // One toast per provider at a time so a rapid re-test replaces the last.
+      id: `provider-test:${provider.id}`
+    });
+  };
+
+  const handleTestModel = async (modelId: string) => {
+    // One row at a time per id; a second click while testing is ignored.
+    if (modelTests[modelId]?.kind === 'testing') {
+      return;
+    }
+
+    setModelTests((current) => ({ ...current, [modelId]: { kind: 'testing' } }));
+    const result = await testModel({ providerId: provider.id, modelId });
+    setModelTests((current) => ({
+      ...current,
+      [modelId]: result.ok ? { kind: 'ok', result } : { kind: 'failed', result }
+    }));
+    notify({
+      tone: result.ok ? 'success' : 'error',
+      title: result.ok ? `${modelId} ok` : `${modelId} failed`,
+      description: result.message,
+      id: `model-test:${provider.id}:${modelId}`
+    });
   };
 
   const deleteModel = (model: CustomProviderModel) => {
@@ -394,6 +435,7 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
         <ul className="mt-3 max-h-[320px] divide-y divide-border-subtle overflow-y-auto rounded-md border border-border-default scroll-container">
           {visibleModels.map((model) => {
             const badge = formatContextWindow(model.contextWindow);
+            const modelTest = modelTests[model.id];
 
             return (
               <li key={model.id} className="flex items-center gap-1.5 px-3 py-1.5">
@@ -409,6 +451,43 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
                     {badge}
                   </span>
                 ) : null}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => void handleTestModel(model.id)}
+                      disabled={modelTest?.kind === 'testing'}
+                      aria-label={`Test ${model.id}`}
+                      className={
+                        modelTest?.kind === 'ok'
+                          ? 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-success transition hover:bg-bg-hover'
+                          : modelTest?.kind === 'failed'
+                            ? 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-error transition hover:bg-error-bg'
+                            : 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary'
+                      }
+                    >
+                      {modelTest?.kind === 'testing' ? (
+                        <ReloadIcon className="h-3.5 w-3.5 animate-spin" />
+                      ) : modelTest?.kind === 'ok' ? (
+                        <CheckCircledIcon className="h-3.5 w-3.5" />
+                      ) : modelTest?.kind === 'failed' ? (
+                        <CrossCircledIcon className="h-3.5 w-3.5" />
+                      ) : (
+                        <PlayIcon className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[320px]">
+                    {modelTest?.kind === 'testing'
+                      ? `Testing ${model.id}…`
+                      : modelTest?.kind === 'ok'
+                        ? modelTest.result.message
+                        : modelTest?.kind === 'failed'
+                          ? `Failed: ${modelTest.result.message}`
+                          : `Test ${model.id}`}
+                  </TooltipContent>
+                </Tooltip>
 
                 <Tooltip>
                   <TooltipTrigger asChild>

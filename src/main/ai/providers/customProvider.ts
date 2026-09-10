@@ -1,13 +1,15 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { generateText } from 'ai';
 import type { LanguageModel } from 'ai';
 
 import type { ModelSummary, ProviderId } from '../../../shared/contracts';
 import type {
   CustomProvider as CustomProviderConfig,
   CustomProviderApiFormat,
-  DiscoveredModel
+  DiscoveredModel,
+  TestCustomProviderModelResult
 } from '../../../shared/customProviders';
 import type {
   ProviderAdapter,
@@ -22,6 +24,8 @@ import { resolveMaxOutputTokens, runProviderStream, DEFAULT_STREAM_CORE_CONFIG }
 const ANTHROPIC_VERSION = '2023-06-01';
 const DISCOVERY_TIMEOUT_MS = 30_000;
 const VALIDATE_TIMEOUT_MS = 20_000;
+/** Long enough for a cold first token on a busy gateway, short enough for a UI button. */
+const MODEL_TEST_TIMEOUT_MS = 25_000;
 
 /**
  * Anthropic authenticates with `x-api-key` and requires a version header; the
@@ -166,6 +170,80 @@ export async function validateCustomProviderCredential(probe: CustomProviderProb
   }
 
   await throwForBadResponse(response);
+}
+
+/**
+ * One-model smoke test. Goes through the same wire shape `streamChat` uses, so
+ * a green result means chat completions to that model id actually work — not
+ * merely that `/models` listed the id.
+ *
+ * Deliberately generate (not stream): the UI only needs ok/fail plus latency,
+ * and a non-streaming call avoids half-open streams on gateways that stall.
+ */
+export async function testCustomProviderModel(
+  probe: CustomProviderProbe & { modelId: string }
+): Promise<TestCustomProviderModelResult> {
+  const startedAt = Date.now();
+  const modelId = probe.modelId.trim();
+  if (!modelId) {
+    return { ok: false, message: 'Pick a model id to test.', latencyMs: 0 };
+  }
+
+  const factory = createLanguageModelFactory(
+    {
+      id: 'test',
+      name: 'test',
+      baseUrl: probe.baseUrl,
+      apiFormat: probe.apiFormat,
+      enabled: true,
+      hasApiKey: Boolean(probe.apiKey),
+      models: [],
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString()
+    },
+    // Local runtimes accept (and some require) an absent key; the factory
+    // still wants a string, so send empty rather than a fake token.
+    probe.apiKey?.trim() || ''
+  );
+
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), MODEL_TEST_TIMEOUT_MS);
+  timer.unref?.();
+
+  try {
+    const result = await generateText({
+      model: factory(modelId),
+      prompt: 'Reply with exactly: ok',
+      maxOutputTokens: 16,
+      abortSignal: abort.signal
+    });
+
+    const text = result.text?.trim() ?? '';
+    return {
+      ok: true,
+      message: text
+        ? `ok · ${Date.now() - startedAt}ms · “${text.slice(0, 40)}${text.length > 40 ? '…' : ''}”`
+        : `ok · ${Date.now() - startedAt}ms`,
+      latencyMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return {
+        ok: false,
+        message: `Timed out after ${MODEL_TEST_TIMEOUT_MS / 1000}s`,
+        latencyMs: Date.now() - startedAt
+      };
+    }
+
+    const raw = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      message: raw.replace(/^Error invoking remote method '[^']+':\s*/, '').slice(0, 240),
+      latencyMs: Date.now() - startedAt
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

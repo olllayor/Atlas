@@ -1,5 +1,5 @@
 import { stepCountIs, streamText } from 'ai';
-import type { LanguageModel } from 'ai';
+import type { LanguageModel, ModelMessage } from 'ai';
 
 import { ProviderStalledError, RequestTimeoutError } from '../core/ErrorNormalizer';
 import type { ProviderStreamRequest, ProviderStreamResult } from '../core/ProviderAdapter';
@@ -16,6 +16,55 @@ import {
  */
 const ABSOLUTE_MAX_OUTPUT_TOKENS = 32_768;
 const MIN_OUTPUT_TOKENS = 256;
+
+/**
+ * Upper bound of the wrap-up window, mirroring Claude Code's taskBudget idea:
+ * the model is told its remaining tool-step budget so it can finish cleanly
+ * instead of dying mid-chain when `stepCountIs()` fires.
+ */
+const STEP_BUDGET_WARN_MAX = 8;
+
+/**
+ * How many tool steps remain before the harness starts telling the model to
+ * wrap up. Always at least 2 so a tiny test limit still gets a chance to
+ * finish; never more than STEP_BUDGET_WARN_MAX.
+ */
+export function stepBudgetWarnWindow(limit: number): number {
+  return Math.max(2, Math.min(STEP_BUDGET_WARN_MAX, Math.floor(limit * 0.25)));
+}
+
+/**
+ * True when this step is inside the wrap-up window (`stepNumber` is 1-based
+ * after the first model call, matching AI SDK `prepareStep`).
+ */
+export function shouldWarnStepBudget(stepNumber: number, limit: number): boolean {
+  if (limit <= 0 || stepNumber <= 0) {
+    return false;
+  }
+  return limit - stepNumber <= stepBudgetWarnWindow(limit);
+}
+
+/**
+ * One-step-only budget reminder. Not persisted into the transcript — same
+ * `prepareStep` contract as the repeat-call guard — so it is model-visible
+ * for this step and gone from history on the next.
+ */
+export function buildStepBudgetReminder(remaining: number, limit: number): ModelMessage {
+  const remainingLabel = remaining === 1 ? '1 tool step' : `${remaining} tool steps`;
+  const text =
+    remaining <= 2
+      ? `Tool-step budget almost exhausted: ${remainingLabel} of ${limit} remaining this turn. ` +
+        `Do not start new work. Finish the current action, then write a clear summary of progress, ` +
+        `what is done, and what still needs doing so the user can continue.`
+      : `Tool-step budget: ${remainingLabel} of ${limit} remaining this turn. ` +
+        `Prefer finishing the current thread of work over starting a large new exploration. ` +
+        `If the task cannot finish in this budget, report concrete progress and the next steps.`;
+
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }]
+  };
+}
 
 export type StreamCoreConfig = {
   /** Fallback ceiling when the catalog has no per-model figure. */
@@ -264,18 +313,26 @@ export async function runProviderStream({
       tools: vetoWrappedTools,
       toolChoice: request.toolChoice,
       stopWhen: hasTools ? stepCountIs(effectiveStepLimit) : undefined,
-      // Delivery point for the repeat-call guard: when a reminder is queued,
-      // append it after the previous step's tool results for this step only.
-      // The override is not merged into response.messages, so the nudge is
-      // model-visible for one step and never persisted to the transcript.
-      prepareStep: repeatGuard
+      // Delivery point for step-local nudges: repeat-call reminders and the
+      // wrap-up budget. Overrides are not merged into response.messages, so
+      // each nudge is model-visible for one step and never persisted.
+      prepareStep: hasTools
         ? ({ messages, stepNumber }) => {
             if (stepNumber === 0) {
               return {};
             }
 
-            const injected = repeatGuard.injectIntoStepMessages(messages);
-            return injected === messages ? {} : { messages: injected };
+            let next = messages;
+            if (repeatGuard) {
+              next = repeatGuard.injectIntoStepMessages(next);
+            }
+
+            if (shouldWarnStepBudget(stepNumber, effectiveStepLimit)) {
+              const remaining = Math.max(0, effectiveStepLimit - stepNumber);
+              next = [...next, buildStepBudgetReminder(remaining, effectiveStepLimit)];
+            }
+
+            return next === messages ? {} : { messages: next };
           }
         : undefined,
       temperature,

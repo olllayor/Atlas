@@ -1697,6 +1697,20 @@ export class ChatSessionRuntime {
           },
           onNotice: (event) => {
             emitEvent({ type: 'notice', requestId, ...event });
+            // Live draft notices vanish when the turn settles. Persist the
+            // step-limit stop as a trailing text part so the transcript and
+            // the next turn's history both keep saying why work stopped.
+            if (event.code === 'step-limit-exhausted') {
+              turnState.parts = [
+                ...turnState.parts,
+                {
+                  id: `notice-step-limit-${requestId}`,
+                  type: 'text',
+                  text: event.message,
+                  state: 'done',
+                },
+              ];
+            }
           },
           onTask: (event) => {
             streamedAnyResponse = true;

@@ -8,10 +8,13 @@ import { z } from 'zod';
 import type { ProviderStreamRequest } from '../src/main/ai/core/ProviderAdapter.js';
 import {
   DEFAULT_STREAM_CORE_CONFIG,
+  buildStepBudgetReminder,
   createWatchdog,
   resolveMaxOutputTokens,
   resolveTemperature,
-  runProviderStream
+  runProviderStream,
+  shouldWarnStepBudget,
+  stepBudgetWarnWindow
 } from '../src/main/ai/providers/streamCore.js';
 
 const config = DEFAULT_STREAM_CORE_CONFIG;
@@ -209,4 +212,49 @@ test('a turn that finishes before the cap stays silent', async () => {
   });
 
   assert.ok(!notices.includes('step-limit-exhausted'));
+});
+
+test('stepBudgetWarnWindow scales with the limit and never drops below 2', () => {
+  // Standard 64-step budget: 25% is 16, capped at 8.
+  assert.equal(stepBudgetWarnWindow(64), 8);
+  // Lightweight 32-step budget: same cap.
+  assert.equal(stepBudgetWarnWindow(32), 8);
+  // Tiny limits still get a wrap-up chance.
+  assert.equal(stepBudgetWarnWindow(3), 2);
+  assert.equal(stepBudgetWarnWindow(8), 2);
+});
+
+test('shouldWarnStepBudget only fires inside the wrap-up window', () => {
+  const limit = 16;
+  const window = stepBudgetWarnWindow(limit);
+  assert.equal(window, 4);
+
+  // Early steps stay silent.
+  assert.equal(shouldWarnStepBudget(0, limit), false);
+  assert.equal(shouldWarnStepBudget(1, limit), false);
+  assert.equal(shouldWarnStepBudget(limit - window - 1, limit), false);
+
+  // Window and the last step warn.
+  assert.equal(shouldWarnStepBudget(limit - window, limit), true);
+  assert.equal(shouldWarnStepBudget(limit - 1, limit), true);
+});
+
+test('buildStepBudgetReminder is a one-step system-reminder, not persisted user text', () => {
+  const reminder = buildStepBudgetReminder(2, 64);
+
+  assert.equal(reminder.role, 'user');
+  const content = reminder.content;
+  assert.ok(Array.isArray(content));
+  const text = (content[0] as { text: string }).text;
+  assert.match(text, /^<system-reminder>/);
+  assert.match(text, /2 tool steps of 64 remaining/);
+  assert.match(text, /write a clear summary/i);
+});
+
+test('buildStepBudgetReminder uses softer wording while steps remain', () => {
+  const reminder = buildStepBudgetReminder(6, 64);
+  const text = (reminder.content as Array<{ text: string }>)[0]!.text;
+  assert.match(text, /6 tool steps of 64 remaining/);
+  assert.match(text, /Prefer finishing/i);
+  assert.doesNotMatch(text, /almost exhausted/i);
 });

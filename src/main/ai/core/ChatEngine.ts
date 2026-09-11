@@ -74,6 +74,7 @@ import type { ExecuteTurnResult } from './ChatSessionRuntime';
 import { ChatSessionRuntime } from './ChatSessionRuntime';
 import { SubagentRuntime } from '../agents/SubagentRuntime';
 import { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
+import { DEFAULT_CHILD_STEPS } from '../agents/subagentCapabilities';
 import { BackgroundLivenessService } from './BackgroundLivenessService';
 import { enrichSubagentEntries } from '../agents/subagentProjections';
 import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
@@ -493,7 +494,7 @@ export class ChatEngine {
           });
         }
       },
-      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth }) => {
+      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth, maxSteps }) => {
         const activeReq = Array.from(this.activeRequests.values()).find(
           (req) => req.request.conversationId === conversationId
         );
@@ -532,7 +533,9 @@ export class ChatEngine {
 
         let turnResult: ExecuteTurnResult;
         let loops = 0;
-        const MAX_CHILD_TURNS = 15;
+        // Honor the spawn-time budget. A hardcoded 15 was the accept-then-ignore
+        // bug: validateSpawnRequest accepted maxSteps and the executor never read it.
+        const MAX_CHILD_TURNS = maxSteps ?? DEFAULT_CHILD_STEPS;
 
         while (true) {
           loops += 1;

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   BROWSER_WEBVIEW_PREFERENCES,
   displayBrowserUrl,
+  formatPageReference,
   hardenWebviewPreferences,
   isBrowsableUrl,
   normalizeBrowserUrl,
@@ -250,4 +251,34 @@ test('a machine holding a dozen ports offers a readable few', () => {
   }));
 
   assert.equal(rankServers(many).length, 8);
+});
+
+// ---------------------------------------------------------------------------
+// The page, back into the thread
+// ---------------------------------------------------------------------------
+
+test('a titled page becomes one markdown line for the composer', () => {
+  assert.equal(
+    formatPageReference('http://localhost:5173/', 'My App'),
+    '[My App](http://localhost:5173/)'
+  );
+});
+
+test('an untitled page is just its URL', () => {
+  assert.equal(formatPageReference('http://localhost:3000/', null), 'http://localhost:3000/');
+  assert.equal(formatPageReference('http://localhost:3000/', '   '), 'http://localhost:3000/');
+});
+
+test('a title that is the URL is not wrapped around itself', () => {
+  assert.equal(
+    formatPageReference('http://localhost:3000/', 'http://localhost:3000/'),
+    'http://localhost:3000/'
+  );
+});
+
+test('a rambling document title is collapsed and capped, not pasted whole', () => {
+  const reference = formatPageReference('http://localhost:5173/', `  Line one\n\tline two  ${'x'.repeat(200)}`);
+  assert.ok(reference.startsWith('[Line one line two '));
+  assert.ok(reference.endsWith('](http://localhost:5173/)'));
+  assert.ok(reference.length < 'http://localhost:5173/'.length + 130);
 });

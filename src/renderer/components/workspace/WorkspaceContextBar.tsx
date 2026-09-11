@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   ClipboardCheck,
   Cloud,
   Code2,
@@ -49,6 +50,7 @@ import { cn } from '../../lib/utils';
 import {
   executionTargetChipText,
   executionTargetRows,
+  contextStripSummaryText,
   revealTargetForChip,
   worktreeBranchShort,
 } from './executionTargetViewModel';
@@ -137,11 +139,12 @@ export function WorkspaceContextBar({
   cloudSandboxEnabled?: boolean;
   /**
    * Post-first-message form: the pre-flight chrome — project, execution
-   * target, branch, PR — is for aiming the *first* message and goes away once
-   * there is history to read; only the event-driven chips (plugin tools,
-   * background jobs) survive, because they surface states the user otherwise
-   * cannot see. The mode menu in the sidebar carries the execution target
-   * from here on.
+   * target, branch, PR — collapses in density, not presence. One summary chip
+   * (folder · execution · branch) stays on the strip so mid-thread context is
+   * still visible; expanding it brings the full controls back. Nothing here has
+   * another home — the sidebar's access menu carries mode and permission only,
+   * never the execution target — so hiding the strip outright would strand the
+   * choice after the first send.
    */
   minimal?: boolean;
   onAttach: () => void;
@@ -166,6 +169,23 @@ export function WorkspaceContextBar({
   const projectType = projectContext?.projectType ?? null;
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+  // Minimal form keeps one summary chip; the full controls are one click away.
+  const [contextExpanded, setContextExpanded] = useState(false);
+  useEffect(() => {
+    setContextExpanded(false);
+  }, [conversationId]);
+  const expanded = !minimal || contextExpanded;
+
+  const executionCopy = executionTargetChipText({
+    target: executionTarget,
+    worktreeBranch: worktreeBranchShort(conversationId),
+  });
+  const summaryText = contextStripSummaryText({
+    projectTitle: project ? project.title : needsProject ? 'Choose folder' : 'No folder',
+    executionLabel: project?.exists ? executionCopy.label : null,
+    branch: project?.exists && project.branch ? project.branch : null,
+  });
+  const summaryAttention = needsProject || isMissing;
 
   const confirmRemoveWorktree = () => {
     setRemoveConfirmOpen(false);
@@ -194,8 +214,8 @@ export function WorkspaceContextBar({
             '-mb-8 mx-5 px-1.5 pb-8 pt-0.5',
             // The tab surface is the pre-flight look — a card peeking out
             // from behind the slab. Minimal form is a quiet chip row with
-            // no card: there is nothing to tab into anymore.
-            !minimal && 'rounded-t-2xl bg-bg-surface'
+            // no card, unless expanded back to the full controls.
+            expanded && 'rounded-t-2xl bg-bg-surface'
           )}
         >
             {/*
@@ -205,7 +225,44 @@ export function WorkspaceContextBar({
               doing one job.
             */}
             <div className="flex items-center gap-0.5">
-              {!minimal ? (
+              {minimal ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <ContextChip
+                      className="max-w-64 shrink-0"
+                      tone={summaryAttention ? 'warning' : 'default'}
+                      aria-label={`Conversation context — ${summaryText || 'no folder'} — ${contextExpanded ? 'collapse' : 'expand'}`}
+                      aria-expanded={contextExpanded}
+                      onClick={() => setContextExpanded((current) => !current)}
+                    >
+                      {summaryAttention ? (
+                        <AlertTriangle
+                          className="size-3.5 shrink-0 text-warning-text"
+                          strokeWidth={1.75}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Folder className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                      )}
+                      <span className="min-w-0 truncate">{summaryText || 'Context'}</span>
+                      <ChevronDown
+                        className={cn(
+                          'size-3 shrink-0 text-text-faint transition-transform',
+                          contextExpanded && 'rotate-180'
+                        )}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                    </ContextChip>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {summaryText || 'No folder attached'}
+                    {contextExpanded ? ' — click to collapse' : ' — click for folder, execution, and branch'}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+
+              {expanded ? (
                 <ProjectMenu
                   conversationId={conversationId}
                   project={project}
@@ -233,7 +290,7 @@ export function WorkspaceContextBar({
             keyed off the conversation. The admission rules (git for worktree,
             the beta flag for cloud) come from the view model, not the JSX.
           */}
-              {!minimal && project?.exists && onExecutionTargetChange ? (
+              {expanded && project?.exists && onExecutionTargetChange ? (
                 <ExecutionTargetChip
                   conversationId={conversationId}
                   executionTarget={executionTarget}
@@ -253,7 +310,7 @@ export function WorkspaceContextBar({
                 />
               ) : null}
 
-              {!minimal && project?.exists && project.branch ? (
+              {expanded && project?.exists && project.branch ? (
                 <BranchChip
                   branch={project.branch}
                   conversationId={conversationId}
@@ -261,7 +318,7 @@ export function WorkspaceContextBar({
                 />
               ) : null}
 
-              {!minimal && project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
+              {expanded && project?.exists ? <PullRequestChip conversationId={conversationId} /> : null}
 
               {/* Renders nothing unless an installed plugin carries tools, so a
                   user with no plugins sees no extra chrome. */}
@@ -270,7 +327,7 @@ export function WorkspaceContextBar({
               {/* Renders nothing unless the conversation owns background jobs. */}
               <JobsChip conversationId={conversationId} />
 
-              {!minimal && needsProject ? (
+              {expanded && needsProject ? (
                 <span className="flex min-w-0 items-center gap-1.5 text-2xs text-text-faint">
                   <AlertTriangle
                     className="size-3 shrink-0 text-warning-text"

@@ -1,11 +1,11 @@
 /**
- * The picker's single-letter shortcuts.
+ * The surfaces' single-letter shortcuts.
  *
- * They fire while the picker is on screen rather than while it is focused:
- * focus moves on any stray click, and a launcher whose keys stop working
- * because the user clicked the panel background is a launcher nobody trusts.
- * That reach is exactly why the guards below are strict — a bare letter is the
- * cheapest key on the keyboard to steal by accident.
+ * They fire app-wide rather than while the picker is focused: focus moves on
+ * any stray click, and a launcher whose keys stop working because the user
+ * clicked the panel background is a launcher nobody trusts. That reach is
+ * exactly why the guards below are strict — a bare letter is the cheapest key
+ * on the keyboard to steal by accident.
  */
 
 export type SurfaceShortcutEvent = Pick<

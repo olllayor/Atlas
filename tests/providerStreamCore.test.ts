@@ -8,11 +8,13 @@ import { z } from 'zod';
 import type { ProviderStreamRequest } from '../src/main/ai/core/ProviderAdapter.js';
 import {
   DEFAULT_STREAM_CORE_CONFIG,
+  buildContextPressureReminder,
   buildStepBudgetReminder,
   createWatchdog,
   resolveMaxOutputTokens,
   resolveTemperature,
   runProviderStream,
+  shouldWarnContextPressure,
   shouldWarnStepBudget,
   stepBudgetWarnWindow
 } from '../src/main/ai/providers/streamCore.js';
@@ -248,7 +250,8 @@ test('buildStepBudgetReminder is a one-step system-reminder, not persisted user 
   const text = (content[0] as { text: string }).text;
   assert.match(text, /^<system-reminder>/);
   assert.match(text, /2 tool steps of 64 remaining/);
-  assert.match(text, /write a clear summary/i);
+  assert.match(text, /MUST now write the user-visible deliverable/i);
+  assert.match(text, /Do not start new work/i);
 });
 
 test('buildStepBudgetReminder uses softer wording while steps remain', () => {
@@ -257,4 +260,39 @@ test('buildStepBudgetReminder uses softer wording while steps remain', () => {
   assert.match(text, /6 tool steps of 64 remaining/);
   assert.match(text, /Prefer finishing/i);
   assert.doesNotMatch(text, /almost exhausted/i);
+});
+
+test('buildStepBudgetReminder quotes the original user instruction in the wrap-up mandate', () => {
+  const reminder = buildStepBudgetReminder(
+    1,
+    64,
+    'Write a grouped index of exports. Keep going one file per call.'
+  );
+  const text = (reminder.content as Array<{ text: string }>)[0]!.text;
+  assert.match(text, /The original request was:/);
+  assert.match(text, /Write a grouped index of exports/);
+});
+
+test('buildStepBudgetReminder truncates a very long user instruction', () => {
+  const longInstruction = `Do the thing. ${'x'.repeat(800)}`;
+  const reminder = buildStepBudgetReminder(2, 64, longInstruction);
+  const text = (reminder.content as Array<{ text: string }>)[0]!.text;
+  assert.ok(text.includes('Do the thing.'));
+  assert.ok(!text.includes('x'.repeat(500)), 'expected truncation of the long tail');
+});
+
+test('shouldWarnContextPressure fires at the 85% boundary and ignores unknown windows', () => {
+  assert.equal(shouldWarnContextPressure(84_999, 100_000), false);
+  assert.equal(shouldWarnContextPressure(85_000, 100_000), true);
+  assert.equal(shouldWarnContextPressure(90_000, undefined), false);
+  assert.equal(shouldWarnContextPressure(90_000, null), false);
+  assert.equal(shouldWarnContextPressure(90_000, 0), false);
+});
+
+test('buildContextPressureReminder reports usage and forbids large reads', () => {
+  const reminder = buildContextPressureReminder(90_000, 100_000);
+  const text = (reminder.content as Array<{ text: string }>)[0]!.text;
+  assert.match(text, /^<system-reminder>/);
+  assert.match(text, /~90%/);
+  assert.match(text, /Do not open large files/i);
 });

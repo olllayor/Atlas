@@ -146,3 +146,15 @@ export function displayBrowserUrl(url: string): string {
     return url;
   }
 }
+
+/**
+ * One line the composer can carry: the page as a markdown link when it has a
+ * title worth keeping, otherwise the bare URL. Titles are collapsed to one
+ * line and capped — a tab left on a 200-character document title must not
+ * eat the prompt it lands in.
+ */
+export function formatPageReference(url: string, title: string | null | undefined): string {
+  const label = (title ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!label || label === url) return url;
+  return `[${label}](${url})`;
+}

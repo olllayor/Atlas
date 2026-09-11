@@ -1498,6 +1498,20 @@ export class ChatSessionRuntime {
       const combinedNotices = [...jobNotices, ...subagentNotices];
       const baseHistory = messagesOverride ?? this.selectModelHistory(request.conversationId);
       const history = combinedNotices.length > 0 ? [...baseHistory, ...combinedNotices] : baseHistory;
+      // Shared by the budget and by mid-stream context-pressure warnings, so
+      // the reminder measures against the same floor the split already used.
+      const fixedFloorTokens =
+        estimateTextTokens(
+          this.buildSystemPrompt(
+            request.enableTools,
+            siteTools != null,
+            toolPermissionMode,
+            workspace,
+            visualsEnabled,
+            request.enableTools && tools ? Object.keys(tools).sort() : [],
+            request.modelId
+          )
+        ) + (tools ? estimateToolDefinitionTokens(tools) : 0);
       const modelInput = this.contextManager.buildModelInput({
         conversationId: request.conversationId,
         history,
@@ -1508,18 +1522,7 @@ export class ChatSessionRuntime {
         budget: this.resolveContextBudget({
           modelHints,
           requestedMaxOutputTokens: request.maxOutputTokens,
-          fixedFloorTokens:
-            estimateTextTokens(
-              this.buildSystemPrompt(
-                request.enableTools,
-                siteTools != null,
-                toolPermissionMode,
-                workspace,
-                visualsEnabled,
-                request.enableTools && tools ? Object.keys(tools).sort() : [],
-                request.modelId
-              )
-            ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
+          fixedFloorTokens,
         }).budget,
       });
 
@@ -1590,6 +1593,8 @@ export class ChatSessionRuntime {
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           modelHints,
+          userInstruction: latestUserText(request.messages),
+          fixedFloorTokens,
           reasoningEffort: request.reasoningEffort,
           toolPermissionMode,
           // Only session-based agent providers read this (see ProviderAdapter).
@@ -1757,8 +1762,66 @@ export class ChatSessionRuntime {
         };
       } catch (error) {
         const normalized = normalizeError(error);
+        const promptTooLong = this.isPromptTooLongError(error, normalized.message);
+
+        // Overflow after tokens already reached the user cannot be retried
+        // into existence: the provider already rejected the next request with
+        // a full window, and dumping the raw provider error mid-transcript is
+        // the worst possible stop. Persist a structured stop instead, matching
+        // the step-limit contract.
+        if (promptTooLong && streamedAnyResponse && !signal.aborted) {
+          const stopMessage =
+            'Stopped: conversation is too long for this model. ' +
+            'Write a short index from what you already have, or start a new chat.';
+
+          logger.warn('turn.context_overflow_after_stream', {
+            requestId,
+            modelId: request.modelId,
+            attempt,
+            code: normalized.code,
+            historyTokens: modelInput.usage.historyTokens,
+          });
+
+          emitEvent({
+            type: 'notice',
+            requestId,
+            code: 'context-overflow',
+            level: 'warning',
+            message: stopMessage,
+          });
+
+          turnState.parts = [
+            ...turnState.parts,
+            {
+              id: `notice-context-overflow-${requestId}`,
+              type: 'text',
+              text: stopMessage,
+              state: 'done',
+            },
+          ];
+
+          let parts: ChatMessagePart[] = finalizeMessageParts(turnState.parts);
+          if (parts.length === 0) {
+            parts = buildFallbackMessageParts({
+              content: stopMessage,
+              reasoning: '',
+              role: 'assistant',
+            });
+          }
+
+          return {
+            content: stopMessage,
+            reasoning: '',
+            parts,
+            pendingApprovals: [...turnState.pendingApprovals.values()],
+            inputTokens: modelInput.usage.historyTokens,
+            outputTokens: 0,
+            latencyMs: attemptElapsed(),
+          };
+        }
+
         const nextMode: ContextBuildMode | null =
-          !streamedAnyResponse && !signal.aborted && this.isPromptTooLongError(error, normalized.message)
+          !streamedAnyResponse && !signal.aborted && promptTooLong
             ? nextCompactionMode(compactionMode)
             : null;
 

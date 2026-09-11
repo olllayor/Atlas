@@ -1,6 +1,7 @@
 import { stepCountIs, streamText } from 'ai';
 import type { LanguageModel, ModelMessage } from 'ai';
 
+import { estimateMessagesTokens } from '../../../shared/tokenEstimate';
 import { ProviderStalledError, RequestTimeoutError } from '../core/ErrorNormalizer';
 import type { ProviderStreamRequest, ProviderStreamResult } from '../core/ProviderAdapter';
 import { resolveHarnessProfile } from '../core/harnessProfiles';
@@ -23,6 +24,16 @@ const MIN_OUTPUT_TOKENS = 256;
  * instead of dying mid-chain when `stepCountIs()` fires.
  */
 const STEP_BUDGET_WARN_MAX = 8;
+
+/**
+ * Fraction of the context window that counts as pressure. Matches
+ * ContextManager's proactive compaction ratio so the model is warned at the
+ * same boundary that already starts dropping older turns.
+ */
+const CONTEXT_PRESSURE_RATIO = 0.85;
+
+/** Cap for the quoted original instruction in the wrap-up nudge. */
+const USER_INSTRUCTION_SNIPPET_CHARS = 400;
 
 /**
  * How many tool steps remain before the harness starts telling the model to
@@ -48,17 +59,79 @@ export function shouldWarnStepBudget(stepNumber: number, limit: number): boolean
  * One-step-only budget reminder. Not persisted into the transcript — same
  * `prepareStep` contract as the repeat-call guard — so it is model-visible
  * for this step and gone from history on the next.
+ *
+ * When the budget is nearly gone this is a mandate, not a preference: soft
+ * "prefer finishing" wording was ignored in mid-size step burns, and the turn
+ * died with no user-visible deliverable.
  */
-export function buildStepBudgetReminder(remaining: number, limit: number): ModelMessage {
+export function buildStepBudgetReminder(
+  remaining: number,
+  limit: number,
+  userInstruction?: string
+): ModelMessage {
   const remainingLabel = remaining === 1 ? '1 tool step' : `${remaining} tool steps`;
+  const instruction = quoteUserInstruction(userInstruction);
   const text =
     remaining <= 2
       ? `Tool-step budget almost exhausted: ${remainingLabel} of ${limit} remaining this turn. ` +
-        `Do not start new work. Finish the current action, then write a clear summary of progress, ` +
-        `what is done, and what still needs doing so the user can continue.`
+        `Do not start new work. Do not open more files or run more searches. ` +
+        `You MUST now write the user-visible deliverable from what you already have — ` +
+        `the grouped index, the summary, or the report the user asked for — as your final reply. ` +
+        (instruction
+          ? `The original request was:\n${instruction}\nWrite that output now.`
+          : `Write the output the user asked for now.`)
       : `Tool-step budget: ${remainingLabel} of ${limit} remaining this turn. ` +
         `Prefer finishing the current thread of work over starting a large new exploration. ` +
-        `If the task cannot finish in this budget, report concrete progress and the next steps.`;
+        `If the task cannot finish in this budget, report concrete progress and the next steps.` +
+        (instruction ? `\n\nOriginal request:\n${instruction}` : '');
+
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }]
+  };
+}
+
+function quoteUserInstruction(userInstruction: string | undefined): string | null {
+  const trimmed = userInstruction?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.length <= USER_INSTRUCTION_SNIPPET_CHARS) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, USER_INSTRUCTION_SNIPPET_CHARS)}…`;
+}
+
+/**
+ * True when estimated prompt size has crossed the pressure boundary. Absent
+ * or unknown windows never warn — the cost of a false positive is a confused
+ * model mid-task, and an unknown window cannot be measured.
+ */
+export function shouldWarnContextPressure(
+  estimatedTokens: number,
+  contextWindow: number | undefined | null,
+  ratio = CONTEXT_PRESSURE_RATIO
+): boolean {
+  if (contextWindow == null || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return false;
+  }
+  return estimatedTokens >= contextWindow * ratio;
+}
+
+/**
+ * One-step-only context-pressure nudge. Same non-persisted `prepareStep`
+ * contract as the step-budget reminder: visible now, gone next step.
+ */
+export function buildContextPressureReminder(
+  estimatedTokens: number,
+  contextWindow: number
+): ModelMessage {
+  const percent = Math.min(100, Math.round((estimatedTokens / contextWindow) * 100));
+  const text =
+    `Context is nearly full (~${percent}% of this model's window). ` +
+    `Do not open large files or dump long tool output into the conversation. ` +
+    `Write a short index of what you already have into a file if the task needs one, ` +
+    `prefer compact answers, and finish the current deliverable instead of expanding scope.`;
 
   return {
     role: 'user',
@@ -206,6 +279,109 @@ export type StreamCoreOptions = {
   repeatToolReminder?: RepeatToolReminderConfig | false;
 };
 
+type WrapUpResult = {
+  content: string;
+  reasoning: string | undefined;
+  responseMessages: ModelMessage[];
+  outputTokens: number | undefined;
+  reasoningTokens: number | undefined;
+};
+
+/**
+ * One tool-free completion after the step budget dies mid-tool-chain.
+ * Failures are swallowed: a failed wrap-up must not discard the work the
+ * main stream already produced.
+ */
+async function runTextOnlyWrapUp({
+  model,
+  system,
+  messages,
+  temperature,
+  maxOutputTokens,
+  signal,
+  onChunk,
+  onReasoningChunk,
+}: {
+  model: LanguageModel;
+  system: string | undefined;
+  messages: ModelMessage[];
+  temperature: number | undefined;
+  maxOutputTokens: number;
+  signal: AbortSignal;
+  onChunk: ProviderStreamRequest['onChunk'];
+  onReasoningChunk: ProviderStreamRequest['onReasoningChunk'];
+}): Promise<WrapUpResult | null> {
+  try {
+    let streamError: unknown;
+    let outputTokens: number | undefined;
+    let reasoningTokens: number | undefined;
+
+    const wrapUp = streamText({
+      model,
+      system,
+      messages: [
+        ...messages,
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                '<system-reminder>\n' +
+                'Tool-step budget is exhausted. Do not call tools. ' +
+                'Write the final user-visible summary or deliverable from what you already produced.\n' +
+                '</system-reminder>',
+            },
+          ],
+        },
+      ],
+      toolChoice: 'none',
+      temperature,
+      maxOutputTokens,
+      abortSignal: signal,
+      onChunk: ({ chunk }) => {
+        if (chunk.type === 'text-delta') {
+          onChunk({ id: chunk.id, delta: chunk.text });
+          return;
+        }
+        if (chunk.type === 'reasoning-delta') {
+          onReasoningChunk?.({ id: chunk.id, delta: chunk.text });
+        }
+      },
+      onFinish: ({ totalUsage }) => {
+        if (!totalUsage) {
+          return;
+        }
+        outputTokens = totalUsage.outputTokens;
+        reasoningTokens = totalUsage.outputTokenDetails?.reasoningTokens ?? totalUsage.reasoningTokens;
+      },
+      onError: ({ error }) => {
+        streamError = error;
+      },
+    });
+
+    await wrapUp.consumeStream();
+    if (streamError) {
+      return null;
+    }
+
+    const content = await wrapUp.text;
+    if (!content?.trim()) {
+      return null;
+    }
+
+    return {
+      content,
+      reasoning: await wrapUp.reasoningText,
+      responseMessages: (await wrapUp.response).messages,
+      outputTokens,
+      reasoningTokens,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The one implementation of provider streaming. Every adapter supplies a model
  * plus provider-specific options; chunk fan-out, usage capture, watchdogs and
@@ -313,9 +489,10 @@ export async function runProviderStream({
       tools: vetoWrappedTools,
       toolChoice: request.toolChoice,
       stopWhen: hasTools ? stepCountIs(effectiveStepLimit) : undefined,
-      // Delivery point for step-local nudges: repeat-call reminders and the
-      // wrap-up budget. Overrides are not merged into response.messages, so
-      // each nudge is model-visible for one step and never persisted.
+      // Delivery point for step-local nudges: repeat-call reminders, the
+      // wrap-up budget, and context pressure. Overrides are not merged into
+      // response.messages, so each nudge is model-visible for one step and
+      // never persisted.
       prepareStep: hasTools
         ? ({ messages, stepNumber }) => {
             if (stepNumber === 0) {
@@ -329,7 +506,19 @@ export async function runProviderStream({
 
             if (shouldWarnStepBudget(stepNumber, effectiveStepLimit)) {
               const remaining = Math.max(0, effectiveStepLimit - stepNumber);
-              next = [...next, buildStepBudgetReminder(remaining, effectiveStepLimit)];
+              next = [
+                ...next,
+                buildStepBudgetReminder(remaining, effectiveStepLimit, request.userInstruction),
+              ];
+            }
+
+            const contextWindow = request.modelHints?.contextWindow;
+            if (contextWindow != null && contextWindow > 0) {
+              const fixedFloor = request.fixedFloorTokens ?? 0;
+              const estimated = estimateMessagesTokens(next) + fixedFloor;
+              if (shouldWarnContextPressure(estimated, contextWindow)) {
+                next = [...next, buildContextPressureReminder(estimated, contextWindow)];
+              }
             }
 
             return next === messages ? {} : { messages: next };
@@ -502,6 +691,10 @@ export async function runProviderStream({
     // and the turn reads as the model giving up mid-task. Say so explicitly so
     // the user can continue rather than wonder. Guarded — mocks and future SDK
     // shapes without `steps` must not fail a healthy turn.
+    let content = await result.text;
+    let reasoning = await result.reasoningText;
+    let responseMessages = (await result.response).messages;
+
     if (hasTools) {
       try {
         const finishedSteps = await (result as unknown as { steps?: PromiseLike<unknown[]> }).steps;
@@ -511,6 +704,35 @@ export async function runProviderStream({
             level: 'warning',
             message: `Reached the step limit (${effectiveStepLimit} tool steps). Progress so far is above — reply "continue" to pick up where it stopped.`
           });
+
+          // Claude Code analogue: when the budget dies mid-tool-chain, force
+          // one text-only follow-up so the turn still ends with a deliverable
+          // instead of an empty tail after a wall of tool calls.
+          const lastStep = finishedSteps[finishedSteps.length - 1] as
+            | { toolCalls?: unknown[] }
+            | undefined;
+          const lastHadTools = Array.isArray(lastStep?.toolCalls) && lastStep.toolCalls.length > 0;
+          if (lastHadTools && !signal.aborted) {
+            const wrapUp = await runTextOnlyWrapUp({
+              model,
+              system: request.system,
+              messages: [...request.messages, ...responseMessages],
+              temperature,
+              maxOutputTokens: Math.min(maxOutputTokens, 4_096),
+              signal,
+              onChunk: request.onChunk,
+              onReasoningChunk: request.onReasoningChunk,
+            });
+            if (wrapUp) {
+              content = wrapUp.content;
+              reasoning = wrapUp.reasoning;
+              // The SDK's response.messages is a narrower assistant/tool union;
+              // the wrap-up messages are ordinary assistant turns.
+              responseMessages = wrapUp.responseMessages as typeof responseMessages;
+              outputTokens = (outputTokens ?? 0) + (wrapUp.outputTokens ?? 0);
+              reasoningTokens = (reasoningTokens ?? 0) + (wrapUp.reasoningTokens ?? 0);
+            }
+          }
         }
       } catch {
         // Steps unavailable; the turn itself succeeded, so stay silent.
@@ -518,9 +740,9 @@ export async function runProviderStream({
     }
 
     return {
-      content: await result.text,
-      reasoning: await result.reasoningText,
-      responseMessages: (await result.response).messages,
+      content,
+      reasoning,
+      responseMessages,
       inputTokens,
       outputTokens,
       reasoningTokens,

@@ -61,9 +61,9 @@ import {
   type RightPanelKind,
   type RightPanelSurface,
   type SurfaceId,
-  nextOrdinalResourceId,
   surfaceResourceId,
 } from './rightPanelModel';
+import { openSurfaceKind, takenTerminalIds } from './surfaceOpen';
 import type { SurfaceContext } from './surfaceRegistry';
 import { terminalLabel } from './terminalsModel';
 
@@ -181,48 +181,22 @@ export function WorkbenchPanel({
 
   /**
    * Terminal is the one kind the picker cannot open by name: every click is a
-   * *new* shell, so the id is allocated against both the tabs already open and
-   * the shells already running — including the dock's `term-1`, which has no
-   * tab of its own to collide with.
+   * *new* shell, so the id is allocated against the tabs already open, the
+   * shells main knows about, and the dock's `term-1` — `surfaceOpen.ts` owns
+   * that allocation for every launcher, and the live terminal list rides along
+   * here as extras.
    */
-  /**
-   * Every shell id this conversation is already using: the ones main knows
-   * about, the dock's primary, and every pane of every open terminal tab —
-   * including panes whose shell has not been spawned yet, which is the case
-   * for a split restored from a previous session.
-   */
-  const takenTerminalIds = () => {
+  const takenShellIds = () => {
     const taken = new Set<string>([PRIMARY_TERMINAL_ID]);
     for (const terminal of terminals) taken.add(terminal.terminalId);
-    for (const surface of panel.surfaces) {
-      if (surface.kind !== 'terminal') continue;
-      const rootId = surfaceResourceId(surface);
-      if (!rootId) continue;
-      taken.add(rootId);
-      for (const paneId of paneGroups[terminalGroupKey(conversationId, rootId)]?.terminalIds ?? []) {
-        taken.add(paneId);
-      }
-    }
+    for (const id of takenTerminalIds(conversationId)) taken.add(id);
     return [...taken];
   };
 
   const openKind = (kind: RightPanelKind) => {
-    if (kind === 'browser') {
-      // Each browser tab owns its own guest, so a new tab is a new id rather
-      // than a second view of the page already open.
-      const open = panel.surfaces
-        .filter((surface) => surface.kind === 'browser')
-        .map((surface) => surfaceResourceId(surface) ?? '');
-      openSurface(conversationId, 'browser', nextOrdinalResourceId('view', open));
-      return;
-    }
-
-    if (kind !== 'terminal') {
-      openSurface(conversationId, kind);
-      return;
-    }
-
-    openSurface(conversationId, 'terminal', nextTerminalId(takenTerminalIds()));
+    openSurfaceKind(conversationId, kind, {
+      extraTerminalIds: terminals.map((terminal) => terminal.terminalId),
+    });
   };
 
   /**
@@ -325,6 +299,7 @@ export function WorkbenchPanel({
         {active?.kind === 'browser' && (
           <BrowserSurface
             key={active.id}
+            conversationId={conversationId}
             viewId={browserViewKey(conversationId, surfaceResourceId(active) ?? 'view-1')}
           />
         )}
@@ -352,7 +327,7 @@ export function WorkbenchPanel({
               conversationId={conversationId}
               rootTerminalId={surfaceResourceId(active) ?? PRIMARY_TERMINAL_ID}
               terminals={terminals}
-              allocateTerminalId={() => nextTerminalId(takenTerminalIds())}
+              allocateTerminalId={() => nextTerminalId(takenShellIds())}
               onCloseSurface={() => closeSurfaceAt(active.id)}
               onAddSelectionToPrompt={onAddSelectionToPrompt}
             />

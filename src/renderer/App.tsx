@@ -342,7 +342,7 @@ export default function App() {
   const onboardingRequestedSettingsRef = useRef(false);
   const wasSettingsViewRef = useRef(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [telemetryEnabled, setTelemetryEnabledState] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabledState] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 60_000);

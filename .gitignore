@@ -24,7 +24,8 @@ plan.md
 .kilocode/
 npx
 skills-lock.json
-skills/
+# Root project skills only. Bundled plugin skills under resources/plugins must ship.
+/skills/
 .pnpm-store/
 
 # Claude Code agent worktrees

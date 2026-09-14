@@ -336,6 +336,8 @@ function BetaPage({
   const [testResult, setTestResult] = useState<{ success: boolean; text: string } | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployStep, setDeployStep] = useState<string | null>(null);
+  // Packaged builds cannot ship workers/cloud-sandbox; remote URL + secret still works.
+  const canDeployCloudSandbox = settings?.chat.canDeployCloudSandbox ?? true;
 
   useEffect(() => {
     setWorkerUrl(settings?.chat.cloudSandboxWorkerUrl ?? '');
@@ -528,18 +530,44 @@ function BetaPage({
 
         <SettingsRow
           title="Automated Worker Setup"
-          description="Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler."
+          description={
+            canDeployCloudSandbox
+              ? 'Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler.'
+              : 'In-app deploy needs a source checkout — packaged apps do not bundle the worker. Paste a worker URL and secret below instead.'
+          }
         >
           <div className="flex flex-col gap-2 items-end">
-            <button
-              type="button"
-              onClick={handleAutoDeploy}
-              disabled={isDeploying}
-              className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'motion-spin-steps' : ''}`} />
-              <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
-            </button>
+            {canDeployCloudSandbox ? (
+              <button
+                type="button"
+                onClick={handleAutoDeploy}
+                disabled={isDeploying}
+                className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'motion-spin-steps' : ''}`} />
+                <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
+              </button>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* span: a disabled button swallows pointer events needed for the tooltip. */}
+                  <span className="inline-flex">
+                    <button
+                      type="button"
+                      onClick={handleAutoDeploy}
+                      disabled
+                      className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition disabled:opacity-50"
+                    >
+                      <RocketIcon className="h-3.5 w-3.5" />
+                      <span>⚡ Deploy Cloud Sandbox</span>
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Unavailable in packaged builds. Configure a remote worker URL and secret instead.
+                </TooltipContent>
+              </Tooltip>
+            )}
             {deployStep ? (
               <span className="text-2xs text-text-tertiary animate-pulse font-mono">
                 {deployStep}

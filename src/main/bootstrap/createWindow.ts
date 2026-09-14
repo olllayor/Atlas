@@ -9,6 +9,7 @@ import {
 import { shell } from 'electron/common';
 
 import type { DesignTheme, ThemeColorOverride, ThemeMode } from '../../shared/contracts';
+import { isBrowsableUrl } from '../../shared/browser';
 import { installWebviewHardening } from '../browser/webviewSecurity';
 import {
   chromeStateSignature as chromeSignature,
@@ -252,7 +253,13 @@ export function createWindow({
   installWebviewHardening(window);
 
   window.webContents.setWindowOpenHandler(({ url }: HandlerDetails) => {
-    void shell.openExternal(url);
+    // The URL is chosen by the page, so the scheme is checked here rather
+    // than trusted. `shell.openExternal` on `file:`/`javascript:`/custom
+    // schemes is a way to launch things outside the sandbox without the
+    // user meaning to.
+    if (isBrowsableUrl(url)) {
+      void shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 

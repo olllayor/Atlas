@@ -9,6 +9,7 @@ import { mkdir } from 'node:fs/promises';
 
 import type { McpServerConfig, McpToolAnnotations } from '../../../shared/mcp';
 import { buildMcpServerEnv, isAllowedMcpEndpointUrl, isValidMcpCommand } from '../../../shared/mcp';
+import { withAugmentedPathEnv } from '../../bootstrap/resolvePathEnv.js';
 import { logger } from '../../observability/logger';
 
 /** Codex's defaults, kept so a server tuned for one behaves the same in the other. */
@@ -408,12 +409,17 @@ export class McpClientManager {
     return new StdioClientTransport({
       command: server.command,
       args: server.args,
-      env: buildMcpServerEnv({
-        env,
-        envVars: server.envVars,
-        pluginRoot: server.pluginRoot,
-        pluginDataDir: server.pluginDataDir
-      }),
+      // Augmented PATH so a Finder-launched packaged app finds Homebrew/npm
+      // installs when the server command is a bare name like `npx`.
+      env: buildMcpServerEnv(
+        {
+          env,
+          envVars: server.envVars,
+          pluginRoot: server.pluginRoot,
+          pluginDataDir: server.pluginDataDir
+        },
+        withAugmentedPathEnv(process.env)
+      ),
       cwd: server.cwd ?? undefined,
       stderr: 'pipe'
     });

@@ -41,7 +41,8 @@
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",
     "package": "pnpm run icons:mac && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --x64 --arm64 --publish never",
-    "package:signed": "pnpm run icons:mac && CSC_IDENTITY_AUTO_DISCOVERY=false DEBUG=electron-osx-sign*,electron-notarize* electron-builder --mac --x64 --arm64 --publish never -c.mac.sign=./scripts/sign-macos.mjs"
+    "package:signed": "pnpm run icons:mac && ATLAS_REQUIRE_SIGNING=1 DEBUG=electron-osx-sign* electron-builder --mac --x64 --arm64 --publish never -c.mac.sign=./scripts/sign-macos.mjs",
+    "package:notarized": "pnpm run icons:mac && ATLAS_REQUIRE_SIGNING=1 DEBUG=electron-osx-sign*,electron-notarize* electron-builder --mac --x64 --arm64 --publish never -c.mac.sign=./scripts/sign-macos.mjs -c.mac.notarize=true"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
@@ -143,7 +144,14 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/stats.html"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/keytar/**",
+      "**/node_modules/node-pty/**"
     ],
     "extraResources": [
       {
@@ -165,7 +173,10 @@
       "files": [
         "out/**/*",
         "package.json",
+        "!**/*.map",
+        "!**/stats.html",
         "!**/node_modules/node-pty/prebuilds/win32-*/**/*",
+        "!**/node_modules/node-pty/prebuilds/linux-*/**/*",
         "!**/node_modules/node-pty/third_party/conpty/**/*"
       ],
       "sign": "./scripts/sign-macos.mjs",

@@ -10,7 +10,7 @@ jobs:
   verify:
     name: Build & Typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -29,5 +29,39 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Test
+        run: pnpm test
+
       - name: Build
         run: pnpm build
+
+  package-macos:
+    name: Package (macOS arm64)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # arm64-only for PR CI speed; dual-arch packaging is release.yml's job.
+      - name: Package arm64 (unsigned)
+        run: |
+          pnpm run icons:mac
+          CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never
+
+      - name: List release artifacts
+        run: ls -la release/

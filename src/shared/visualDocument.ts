@@ -189,6 +189,11 @@ export function buildStandaloneVisualWindowHtml({
 <head>
   <meta charset="utf-8" />
   <meta name="color-scheme" content="${theme.colorScheme}" />
+  <!-- Outer shell only: chrome styles + one sandboxed agent document. Deny
+       everything else so a hostile visual cannot pull remote assets into this
+       chrome. Agent markup is a data: URL, not srcdoc — Chromium inherits the
+       parent CSP into srcdoc, which would also freeze agent scripts. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; frame-src 'self' data: blob:; img-src data: blob:" />
   <title>${escapeHtml(safeTitle)}</title>
   <style>
     :root{
@@ -213,7 +218,7 @@ export function buildStandaloneVisualWindowHtml({
     <h1>${escapeHtml(safeTitle)}</h1>
     <span>Sandboxed visual</span>
   </header>
-  <iframe sandbox="allow-scripts" srcdoc="${escapeAttribute(srcdoc)}" title="${escapeAttribute(safeTitle)}"></iframe>
+  <iframe sandbox="allow-scripts" src="data:text/html;charset=utf-8,${encodeURIComponent(srcdoc)}" title="${escapeAttribute(safeTitle)}"></iframe>
 </body>
 </html>`;
 }

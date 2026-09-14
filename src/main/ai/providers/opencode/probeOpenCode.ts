@@ -12,6 +12,7 @@
 
 import { execFile } from 'node:child_process';
 
+import { resolveCommandOnPath } from '../../../bootstrap/resolvePathEnv.js';
 import {
   compareOpenCodeVersions,
   parseOpenCodeVersionOutput
@@ -130,7 +131,10 @@ export async function probeOpenCode(input: ProbeInput): Promise<OpenCodeProbeRes
     ...(input.deps?.connectOwnedServer ? { connectOwnedServer: input.deps.connectOwnedServer } : {})
   };
 
-  const binaryCommand = input.settings.binaryPath.trim() || 'opencode';
+  // A bare name is resolved to an absolute path via the augmented PATH so a
+  // Finder-launched packaged app finds Homebrew/npm installs.
+  const configured = input.settings.binaryPath.trim();
+  const binaryCommand = configured || resolveCommandOnPath('opencode') || 'opencode';
   const isExternal = openCodeServerMode(input.settings) === 'external';
   // Only a pure-external deployment may skip the CLI: a spawned server has to
   // come from a local binary, so there is nothing to skip.

@@ -7,11 +7,19 @@ import { app } from 'electron';
 
 import type { SettingsRepo } from '../../../db/repositories/settingsRepo';
 import { cloudHealthCheck } from './cloudflareComputer';
+import { cloudSandboxDeployAvailability } from './cloudSandboxDeployAvailability';
+
+export { PACKAGED_DEPLOY_UNAVAILABLE_ERROR, cloudSandboxDeployAvailability } from './cloudSandboxDeployAvailability';
+export type { CloudSandboxDeployAvailability } from './cloudSandboxDeployAvailability';
 
 const execFileAsync = promisify(execFile);
 
 export function generateRandomSecret(): string {
   return `atlas_cs_${randomUUID().replace(/-/g, '')}`;
+}
+
+export function canDeployCloudSandboxWorker(): boolean {
+  return cloudSandboxDeployAvailability(app.isPackaged).canDeploy;
 }
 
 export function resolveWorkerDirectory(): string | null {
@@ -35,9 +43,20 @@ export type DeployResult = {
   url?: string;
   secret?: string;
   error?: string;
+  /** Machine-readable reason when deploy is unavailable rather than merely failed. */
+  code?: 'packaged-unavailable';
 };
 
 export async function deployCloudSandboxWorker(settingsRepo: SettingsRepo): Promise<DeployResult> {
+  const availability = cloudSandboxDeployAvailability(app.isPackaged);
+  if (!availability.canDeploy) {
+    return {
+      success: false,
+      code: availability.code,
+      error: availability.error,
+    };
+  }
+
   const workerDir = resolveWorkerDirectory();
 
   if (!workerDir || !existsSync(workerDir)) {

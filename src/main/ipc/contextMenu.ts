@@ -1,4 +1,5 @@
 import { BrowserWindow, Menu, type MenuItemConstructorOptions, clipboard, ipcMain, shell } from 'electron';
+import { isBrowsableUrl } from '../../shared/browser';
 import { IPC_CHANNELS } from '../../shared/ipc';
 import type {
   ChatContextMenuAction,
@@ -71,21 +72,23 @@ export function attachContextMenu(window: BrowserWindow): void {
         },
       ];
       if (linkURL) {
-        template.push(
-          { type: 'separator' },
-          {
+        template.push({ type: 'separator' });
+        // Page-chosen href: only http(s) may reach the OS handler. Other
+        // schemes still offer Copy Link Address.
+        if (isBrowsableUrl(linkURL)) {
+          template.push({
             label: 'Open Link in Browser',
             click: () => {
               void shell.openExternal(linkURL);
             },
+          });
+        }
+        template.push({
+          label: 'Copy Link Address',
+          click: () => {
+            clipboard.writeText(linkURL);
           },
-          {
-            label: 'Copy Link Address',
-            click: () => {
-              clipboard.writeText(linkURL);
-            },
-          },
-        );
+        });
       }
       Menu.buildFromTemplate(template).popup({ window });
       return;
@@ -94,21 +97,24 @@ export function attachContextMenu(window: BrowserWindow): void {
     if (params.linkURL && !params.selectionText) {
       // Owned menu: suppress Chromium's default or both pop up at once.
       event.preventDefault();
-      const linkMenu = Menu.buildFromTemplate([
-        {
+      const linkURL = params.linkURL;
+      const template: MenuItemConstructorOptions[] = [];
+      // Page-chosen href: only http(s) may reach the OS handler.
+      if (isBrowsableUrl(linkURL)) {
+        template.push({
           label: 'Open Link in Browser',
           click: () => {
-            void shell.openExternal(params.linkURL);
+            void shell.openExternal(linkURL);
           },
+        });
+      }
+      template.push({
+        label: 'Copy Link Address',
+        click: () => {
+          clipboard.writeText(linkURL);
         },
-        {
-          label: 'Copy Link Address',
-          click: () => {
-            clipboard.writeText(params.linkURL);
-          },
-        },
-      ]);
-      linkMenu.popup({ window });
+      });
+      Menu.buildFromTemplate(template).popup({ window });
     }
   });
 }
@@ -135,7 +141,7 @@ export function registerContextMenuIpc(): void {
         const hasLink = linkURL.length > 0;
         // Renderer-supplied href: only http(s) may launch a browser. Anything
         // else (javascript:, file:, data:) still offers Copy Link Address.
-        const canOpenLink = /^https?:\/\//i.test(linkURL);
+        const canOpenLink = isBrowsableUrl(linkURL);
 
         return new Promise<ChatContextMenuAction | null>((resolve) => {
           let resolved = false;

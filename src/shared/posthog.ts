@@ -13,13 +13,26 @@ function getEnv(key: string, fallback: string) {
   return fallback;
 }
 
-export function isTelemetryEnabled(): boolean {
-  if (typeof process === 'undefined') return true;
+/**
+ * Explicit ATLAS_TELEMETRY_ENABLED override, or null when unset.
+ * Used by main to distinguish "forced off" from "defer to preference file".
+ */
+export function telemetryEnvOverride(): boolean | null {
+  if (typeof process === 'undefined' || !process.env) return null;
   const value = process.env.ATLAS_TELEMETRY_ENABLED;
-  if (value !== undefined) {
-    return value !== 'false' && value !== '0';
-  }
+  if (value === undefined || value === '') return null;
+  if (value === 'false' || value === '0') return false;
   return true;
+}
+
+/**
+ * Telemetry is opt-in. A first run must not silently phone home, so this is
+ * false unless ATLAS_TELEMETRY_ENABLED explicitly forces it on. The per-user
+ * preference file (Settings toggle) is the other path to enable — main merges
+ * that preference via PostHogClient.telemetryEnabledWithPreference().
+ */
+export function isTelemetryEnabled(): boolean {
+  return telemetryEnvOverride() === true;
 }
 
 export const POSTHOG_CONFIG = {

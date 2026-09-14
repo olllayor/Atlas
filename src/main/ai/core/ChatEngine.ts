@@ -46,6 +46,7 @@ import {
   sumAttachmentSize,
 } from '../../../shared/attachments';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
+import { isBrowsableUrl } from '../../../shared/browser';
 import type { GoalRuntime } from '../goal/goalRuntime';
 import { GOAL_CONTINUATION_STEER, GOAL_PROGRESS_TOOLS } from '../goal/goalRuntime';
 import {
@@ -1688,7 +1689,7 @@ export class ChatEngine {
   }
 
   async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
-    const { BrowserWindow } = await import('electron');
+    const { BrowserWindow, shell } = await import('electron');
     const srcdoc = buildVisualSrcDoc({
       visualId: request.visualId,
       content: request.content,
@@ -1713,6 +1714,23 @@ export class ChatEngine {
         nodeIntegration: false,
         sandbox: true,
       }
+    });
+
+    // Agent content is a sandboxed iframe; the outer document is only chrome.
+    // Never spawn another Electron window from here — http(s) goes to the
+    // system browser, everything else is dropped.
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (isBrowsableUrl(url)) {
+        void shell.openExternal(url);
+      }
+      return { action: 'deny' };
+    });
+
+    // This window loads one data: document and must stay on it. Any
+    // navigation away (including a hostile iframe trying to take over the
+    // parent) is refused.
+    window.webContents.on('will-navigate', (event) => {
+      event.preventDefault();
     });
 
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);

@@ -9,12 +9,14 @@ import {
   isBrowsableUrl,
   normalizeBrowserUrl,
 } from '../src/shared/browser.js';
+import { buildStandaloneVisualWindowHtml } from '../src/shared/visualDocument.js';
 import {
   PortDiscovery,
   parseLsofListeners,
   rankServers,
 } from '../src/main/browser/PortDiscovery.js';
 import { nextOrdinalResourceId } from '../src/renderer/components/workbench/rightPanelModel.js';
+import type { VisualThemeTokens } from '../src/shared/contracts.js';
 
 // ---------------------------------------------------------------------------
 // Guest privileges — the part that must not regress quietly
@@ -75,6 +77,40 @@ test('only http and https are navigable', () => {
   assert.equal(isBrowsableUrl('javascript:alert(1)'), false);
   assert.equal(isBrowsableUrl('atlas://deep/link'), false);
   assert.equal(isBrowsableUrl('not a url'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Standalone visual shell — the outer document around a sandboxed iframe
+// ---------------------------------------------------------------------------
+
+test('the standalone visual shell ships a deny-by-default CSP', () => {
+  const theme: VisualThemeTokens = {
+    colorScheme: 'dark',
+    background: '#000000',
+    panel: '#111111',
+    text: '#ffffff',
+    mutedText: '#888888',
+    border: '#333333',
+    accent: '#66aaff',
+    errorBackground: '#2a0000',
+    errorBorder: '#aa3333',
+    errorText: '#ff8888',
+  };
+  const html = buildStandaloneVisualWindowHtml({
+    title: 'Shell',
+    srcdoc: '<p>agent</p>',
+    theme,
+  });
+
+  assert.match(html, /http-equiv="Content-Security-Policy"/);
+  assert.match(html, /default-src 'none'/);
+  assert.match(html, /style-src 'unsafe-inline'/);
+  assert.match(html, /frame-src 'self' data: blob:/);
+  assert.match(html, /sandbox="allow-scripts"/);
+  // Agent markup must be a data: URL, not srcdoc — srcdoc inherits the parent CSP.
+  assert.match(html, /src="data:text\/html;charset=utf-8,/);
+  assert.doesNotMatch(html, /srcdoc=/);
+  assert.match(html, /agent/);
 });
 
 // ---------------------------------------------------------------------------

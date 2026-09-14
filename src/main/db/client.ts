@@ -22,11 +22,17 @@ import { PluginAuditRepo } from './repositories/pluginAuditRepo';
 import { LocalAgentSessionsRepo } from './repositories/localAgentSessionsRepo';
 import { OpenCodeSessionsRepo } from './repositories/opencodeSessionsRepo';
 import { applySchema } from './schema';
+import { openSqliteDatabaseWithRecovery, type DatabaseRecovery } from './sqliteRecovery';
 
 export type SqliteDatabase = InstanceType<typeof Database>;
 
 export type AppDatabase = {
   raw: SqliteDatabase;
+  /**
+   * Non-null when the on-disk file was corrupt, quarantined, and a fresh
+   * database was opened in its place. The caller logs and notifies the user.
+   */
+  recovery: DatabaseRecovery | null;
   conversations: ConversationsRepo;
   conversationGoals: ConversationGoalsRepo;
   conversationSummaries: ConversationSummariesRepo;
@@ -58,39 +64,49 @@ export function createAppDatabase(
 ): AppDatabase {
   mkdirSync(dirname(databasePath), { recursive: true });
 
-  const raw = new Database(databasePath);
+  const { raw, recovery } = openSqliteDatabaseWithRecovery(
+    databasePath,
+    (path) => {
+      const db = new Database(path);
 
-  // Connection-level performance pragmas. `journal_mode = WAL` lives in the
-  // schema (it persists in the file); everything here is per-connection and
-  // must be set on every open.
-  //
-  // `synchronous = NORMAL` is the deliberate durability tradeoff: under WAL it
-  // keeps every committed transaction durable across an application crash
-  // (the data is in the WAL file), while a power loss / OS crash may roll back
-  // the most recent commits instead of waiting on an fsync per commit. The
-  // event log is replayable from the provider and the transcript rebuilds from
-  // it on reconnect, so that window is acceptable; the fsync-per-commit it
-  // removes sat on the streaming hot path (one commit per coalesced flush).
-  // See `RuntimeStateRepo.recordEvent` for the write cadence.
-  raw.pragma('synchronous = NORMAL');
-  // Contention is only ever against our own checkpoints, but a five-second
-  // wait beats a spurious SQLITE_BUSY surfacing as a failed turn.
-  raw.pragma('busy_timeout = 5000');
-  // 16 MB page cache (default is 2 MB): the event-log and message UPDATEs
-  // touch the same hot pages every flush, and 16 MB is nothing next to a
-  // multi-GB transcript database.
-  raw.pragma('cache_size = -16000');
-  // 256 MB memory-mapped I/O: accelerates reads and index lookups by avoiding
-  // repeated read() syscalls and buffer copies into user space.
-  raw.pragma('mmap_size = 268435456');
+      // Connection-level performance pragmas. `journal_mode = WAL` lives in the
+      // schema (it persists in the file); everything here is per-connection and
+      // must be set on every open.
+      //
+      // `synchronous = NORMAL` is the deliberate durability tradeoff: under WAL it
+      // keeps every committed transaction durable across an application crash
+      // (the data is in the WAL file), while a power loss / OS crash may roll back
+      // the most recent commits instead of waiting on an fsync per commit. The
+      // event log is replayable from the provider and the transcript rebuilds from
+      // it on reconnect, so that window is acceptable; the fsync-per-commit it
+      // removes sat on the streaming hot path (one commit per coalesced flush).
+      // See `RuntimeStateRepo.recordEvent` for the write cadence.
+      db.pragma('synchronous = NORMAL');
+      // Contention is only ever against our own checkpoints, but a five-second
+      // wait beats a spurious SQLITE_BUSY surfacing as a failed turn.
+      db.pragma('busy_timeout = 5000');
+      // 16 MB page cache (default is 2 MB): the event-log and message UPDATEs
+      // touch the same hot pages every flush, and 16 MB is nothing next to a
+      // multi-GB transcript database.
+      db.pragma('cache_size = -16000');
+      // 256 MB memory-mapped I/O: accelerates reads and index lookups by avoiding
+      // repeated read() syscalls and buffer copies into user space.
+      db.pragma('mmap_size = 268435456');
 
-  applySchema(raw);
+      return db;
+    },
+    // Schema application is part of the open attempt: a corrupt file often
+    // survives `new Database` and only blows up when sqlite_master is read.
+    applySchema,
+  );
+
   const toolExecutions = new ToolExecutionsRepo(raw);
   const runtimeState = new RuntimeStateRepo(raw);
   const conversations = new ConversationsRepo(raw, attachmentStore, toolExecutions, runtimeState);
 
   return {
     raw,
+    recovery,
     conversations,
     conversationGoals: new ConversationGoalsRepo(raw),
     conversationSummaries: new ConversationSummariesRepo(raw),

@@ -47,7 +47,8 @@ The release workflow triggers on tags matching `v*.*.*` such as `v0.1.4` or `v0.
 
 4. The release workflow will automatically:
    - Build macOS DMG and ZIP artifacts for Apple Silicon and Intel
-   - Produce **unsigned** artifacts (see "Code signing" below)
+   - Produce **unsigned** artifacts by default (see "Code signing" below)
+   - Run post-package verification (`ls`, `codesign -dv`; strict verify when signed)
    - Publish a GitHub Release with the installers, blockmaps, and `latest-mac.yml`
 
 5. Review the published GitHub Release:
@@ -63,35 +64,86 @@ The release workflow triggers on tags matching `v*.*.*` such as `v0.1.4` or `v0.
 - [ ] Update CHANGELOG.md [Unreleased] section header to the new version
 - [ ] Announce release in relevant channels (if applicable)
 
-## Code signing (not currently enabled)
+## Code signing
 
-Releases are **unsigned today**, and setting repository secrets alone will not
-change that: `pnpm package` passes `CSC_IDENTITY_AUTO_DISCOVERY=false`, which
-disables signing even when a certificate is present, and `release.yml` does not
-forward any signing environment to the build step.
+### Current default: unsigned
 
-Enabling signing means all three of:
+Releases ship **unsigned** until a Developer ID certificate is configured.
+`pnpm package` sets `CSC_IDENTITY_AUTO_DISCOVERY=false` so electron-builder
+never attempts signing. `release.yml` chooses the unsigned path when
+`secrets.CSC_LINK` is empty. This is intentional, not a bug: there is no Apple
+Developer account on this project yet, and the pipeline is fail-closed so a
+half-configured secret cannot silently produce a "signed" release that Gatekeeper
+still rejects.
 
-1. Dropping `CSC_IDENTITY_AUTO_DISCOVERY=false` from the `package` script (or
-   releasing via `package:signed` with the flag removed).
-2. Adding a notarization step and passing these secrets through `release.yml`:
-   - `CSC_LINK` - Base64-encoded Developer ID certificate
-   - `CSC_KEY_PASSWORD` - Certificate password
-   - `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` - App Store
-     Connect credentials for notarization
-3. An active Apple Developer Program membership for the Developer ID itself.
+### Packaging scripts
 
-### Why this gates auto-update
+| Script | Behavior |
+| --- | --- |
+| `pnpm package` | Unsigned. `CSC_IDENTITY_AUTO_DISCOVERY=false`. Local/dev distribution. |
+| `pnpm package:signed` | Sets `ATLAS_REQUIRE_SIGNING=1`. Uses `scripts/sign-macos.mjs`. **Throws** if no identity is resolved. Does not notarize. |
+| `pnpm package:notarized` | Same as signed, plus `-c.mac.notarize=true`. Notarization runs only when Apple API env vars are present; missing API vars fail the notarize step. |
 
-Until the above is done, in-app auto-update is impossible on macOS, not merely
-unconfigured: Squirrel.Mac refuses to swap an app whose signing identity it
-cannot validate, and electron-builder's documentation is explicit that "macOS
-application must be signed in order for auto updating to work."
+`scripts/sign-macos.mjs` is the fail-closed gate. When `ATLAS_REQUIRE_SIGNING`
+is set and electron-builder passes no identity, the hook throws instead of
+returning. Unsigned builds leave the flag unset, so the hook no-ops.
 
-The updater therefore does the most it can without a certificate - it downloads
-the correct disk image for the running architecture and opens it, leaving the
-drag to Applications to the user. See `src/main/updates/UpdateService.ts`.
+### Enabling signed releases (when certs exist)
 
-The release pipeline already publishes everything a future auto-updater would
-need (`latest-mac.yml`, per-arch `.zip`, and `.blockmap` files for differential
-downloads), so signing is the only missing piece.
+Add these GitHub Actions repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `CSC_LINK` | Base64-encoded Developer ID Application certificate (`.p12`) |
+| `CSC_KEY_PASSWORD` | Password for the `.p12` |
+| `CSC_NAME` | Optional. Exact identity name if not using auto-discovery |
+| `APPLE_API_KEY` | Contents of the App Store Connect API `.p8` key (workflow writes it to a temp file; electron-builder expects a path) |
+| `APPLE_API_KEY_ID` | API key ID |
+| `APPLE_API_ISSUER` | API issuer UUID |
+
+`release.yml` then picks the path automatically:
+
+1. `CSC_LINK` empty → `pnpm package` (unsigned). Current behavior.
+2. `CSC_LINK` set, Apple API secrets incomplete → `pnpm package:signed`.
+3. `CSC_LINK` + all three Apple API secrets set → `pnpm package:notarized`.
+
+No workflow change is required after adding the secrets.
+
+### Local signed package
+
+With a Developer ID Application cert in your login keychain:
+
+```bash
+pnpm package:signed
+```
+
+Or with an explicit cert file:
+
+```bash
+export CSC_LINK="$(base64 < DeveloperID.p12 | tr -d '\n')"
+export CSC_KEY_PASSWORD='...'
+pnpm package:signed
+```
+
+Without an identity, `package:signed` fails immediately. That is the point.
+
+### Local notarized package
+
+```bash
+export APPLE_API_KEY=/path/to/AuthKey_XXX.p8
+export APPLE_API_KEY_ID=...
+export APPLE_API_ISSUER=...
+# plus CSC_LINK / keychain identity
+pnpm package:notarized
+```
+
+### What still cannot work without an Apple account
+
+- Obtaining a Developer ID Application certificate
+- App Store Connect API keys for notarization
+- Gatekeeper acceptance on user machines (`spctl --assess` fails for unsigned apps)
+- Squirrel.Mac auto-update (refuses to swap an app whose signing identity it cannot validate). See `src/main/updates/UpdateService.ts` — the updater currently downloads the DMG for the running arch and opens it, leaving drag-to-Applications to the user.
+
+The release pipeline already publishes everything a future auto-updater needs
+(`latest-mac.yml`, per-arch `.zip`, `.blockmap` files). Signing is the only
+missing piece, and the CI path is ready the moment secrets appear.

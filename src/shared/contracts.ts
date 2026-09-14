@@ -1721,6 +1721,12 @@ export type SettingsChatSummary = {
    * render a "Clear secret" affordance without ever holding the value.
    */
   cloudSandboxHasSecret: boolean;
+  /**
+   * Whether in-app worker deploy can run. False in packaged builds, which do
+   * not bundle `workers/cloud-sandbox`. Remote URL + secret configuration
+   * stays available either way.
+   */
+  canDeployCloudSandbox: boolean;
 };
 
 export type SettingsSummary = {
@@ -2969,7 +2975,13 @@ export type RendererApi = {
     validateProviderKey: (providerId: ProviderId, secret?: string) => Promise<SettingsSummary>;
     updatePreferences: (patch: SettingsUpdateRequest) => Promise<SettingsSummary>;
     testCloudSandbox: (url?: string, secret?: string) => Promise<{ success: boolean; latencyMs?: number; version?: string; error?: string }>;
-    deployCloudSandbox: () => Promise<{ success: boolean; url?: string; secret?: string; error?: string }>;
+    deployCloudSandbox: () => Promise<{
+      success: boolean;
+      url?: string;
+      secret?: string;
+      error?: string;
+      code?: 'packaged-unavailable';
+    }>;
     generateCloudSandboxSecret: () => Promise<string>;
     /** Deep OpenCode integration (Beta). Absent settings read back as defaults. */
     opencode: {

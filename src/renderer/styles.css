@@ -1944,3 +1944,84 @@ html[data-translucent-sidebar='true'] body,
 html[data-translucent-sidebar='true'] .app-shell {
   background: transparent;
 }
+
+/*
+ * Diff palette override (port of t3code PR #10671). `red-green` is the
+ * default every theme already authors, so only `blue-orange` needs rules:
+ * the colorblind-safer alternative. `:root` + attribute outranks the theme
+ * selectors, which is the point — an explicit user choice beats theme
+ * authorship, counts included. Values mirror upstream's mobile palette.
+ */
+:root[data-diff-color-scheme='blue-orange'] {
+  --diff-add-bg: #142a45;
+  --diff-del-bg: #3e2718;
+  --diff-add-fg: #60a5fa;
+  --diff-del-fg: #fb923c;
+  --diff-add-gutter-bg: transparent;
+  --diff-del-gutter-bg: transparent;
+  --diff-add-fg-count: #60a5fa;
+  --diff-del-fg-count: #fb923c;
+}
+:root[data-theme='light'][data-diff-color-scheme='blue-orange'] {
+  --diff-add-bg: #e7f0ff;
+  --diff-del-bg: #fff0e3;
+  --diff-add-fg: #2563eb;
+  --diff-del-fg: #c2410c;
+  --diff-add-gutter-bg: #bfd6f8;
+  --diff-del-gutter-bg: #fbd3a9;
+  --diff-add-fg-count: #2563eb;
+  --diff-del-fg-count: #c2410c;
+}
+
+/* Math equations (port of t3code PR #10698). Shares the prose layout; only a
+   wide equation owns horizontal overflow via its own viewport scroller, so the
+   transcript's vertical wheel is never trapped. */
+.markdown-math {
+  color: inherit;
+}
+.markdown-math-display {
+  display: block;
+  position: relative;
+  margin-block: 1.25em;
+  min-width: 0;
+}
+.markdown-math-display .markdown-math-viewport {
+  display: block;
+  overflow-x: auto;
+  padding-block: 0.5em;
+}
+.markdown-math .katex-display {
+  margin: 0;
+}
+.markdown-math .katex-display > .katex {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+}
+.markdown-math-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.9em;
+  font-size: 0.75rem;
+  opacity: 0;
+}
+.markdown-math-actions button {
+  cursor: pointer;
+}
+.markdown-math:hover .markdown-math-actions,
+.markdown-math:focus-within .markdown-math-actions {
+  opacity: 1;
+}
+.markdown-math-source {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  margin-top: 0.5em;
+}
+@media (hover: none) {
+  .markdown-math-actions {
+    opacity: 1;
+  }
+}

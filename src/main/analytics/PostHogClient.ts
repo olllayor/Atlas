@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { app } from 'electron';
 import { PostHog } from 'posthog-node';
 
-import { POSTHOG_CONFIG, isTelemetryEnabled } from '../../shared/posthog';
+import { POSTHOG_CONFIG, isTelemetryEnabled, telemetryEnvOverride } from '../../shared/posthog';
 
 const ANONYMOUS_ID_FILENAME = 'anonymous_id';
 const FIRST_LAUNCH_FLAG_FILENAME = 'first_launch_done';
@@ -35,10 +35,16 @@ function readTelemetryPreferenceFile(): boolean | null {
   }
 }
 
+/**
+ * Opt-in gate. Precedence:
+ * 1. ATLAS_TELEMETRY_ENABLED env force (true/false)
+ * 2. userData/telemetry_enabled preference file (Settings toggle)
+ * 3. default OFF — first run never phones home
+ */
 function telemetryEnabledWithPreference(): boolean {
-  const fileValue = readTelemetryPreferenceFile();
-  if (fileValue !== null) return fileValue;
-  return isTelemetryEnabled();
+  const envForce = telemetryEnvOverride();
+  if (envForce !== null) return envForce;
+  return readTelemetryPreferenceFile() === true;
 }
 
 function isFirstLaunch(): boolean {

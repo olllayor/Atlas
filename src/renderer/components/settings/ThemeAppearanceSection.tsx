@@ -4,9 +4,11 @@ import {
   CONTRAST_DEFAULT,
   CONTRAST_MAX,
   CONTRAST_MIN,
+  DEFAULT_DIFF_COLOR_SCHEME,
   GLASS_OPACITY_DEFAULT,
   GLASS_OPACITY_MAX,
   GLASS_OPACITY_MIN,
+  type DiffColorScheme,
   type SettingsAppearanceSummary,
   type ThemeMode,
 } from '../../../shared/contracts';
@@ -32,6 +34,7 @@ import {
 import { ThemeImportDialog } from './ThemeImportDialog';
 import { ThemeLibraryCard } from './ThemeLibraryCard';
 import { ThemeWireframe, type ThemeWireframeColors } from './ThemeWireframe';
+import { DiffColorsPreview } from './DiffColorsPreview';
 import { applyAppearanceContrast } from '../../lib/themeOverrides';
 
 type ThemeCardItem = {
@@ -311,8 +314,7 @@ export function ThemeAppearanceSection({
   };
 
   // Contrast slider with local draft to prevent async IPC rubber-banding during drag
-  const contrastValue = appearance.contrast ?? CONTRAST_DEFAULT;
-  const [draftContrast, setDraftContrast] = useState<number>(contrastValue);
+  const contrastValue = appearance.contrast ?? CONTRAST_DEFAULT;  const [draftContrast, setDraftContrast] = useState<number>(contrastValue);
 
   useEffect(() => {
     setDraftContrast(contrastValue);
@@ -338,6 +340,10 @@ export function ThemeAppearanceSection({
 
   const contrastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glassTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Unknown stored values fall back to the default palette, same as main.
+  const diffScheme: DiffColorScheme =
+    appearance.diffColorScheme === 'blue-orange' ? 'blue-orange' : 'red-green';
 
   useEffect(() => {
     return () => {
@@ -566,6 +572,62 @@ export function ThemeAppearanceSection({
             style={{ '--settings-slider-progress': `${glassProgress}%` } as CSSProperties}
             className="settings-range h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)]"
           />
+        </div>
+      </div>
+
+      {/* Diff colors (port of t3code PR #10671) */}
+      <div className="border-t border-[var(--border-subtle)] pt-4">
+        <div className="flex items-center justify-between">
+          <div className="min-w-0 pr-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-[var(--text-primary)]">Diff colors</span>
+              {diffScheme !== DEFAULT_DIFF_COLOR_SCHEME ? (
+                <button
+                  type="button"
+                  aria-label="Reset diff colors"
+                  title="Reset to default diff colors"
+                  onClick={() => onAppearancePatch({ diffColorScheme: DEFAULT_DIFF_COLOR_SCHEME })}
+                  className="inline-flex size-5 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
+                >
+                  <Undo2 className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+              Palette for additions and deletions, including change counts. Blue and orange is
+              easier to tell apart for red-green color blindness.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3">
+          <DiffColorsPreview />
+          <div className="flex gap-2" role="radiogroup" aria-label="Diff colors">
+            {(
+              [
+                { value: 'red-green', label: 'Red & green' },
+                { value: 'blue-orange', label: 'Blue & orange' },
+              ] as const satisfies ReadonlyArray<{ value: DiffColorScheme; label: string }>
+            ).map((option) => {
+              const isActive = diffScheme === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={isActive}
+                  onClick={() => onAppearancePatch({ diffColorScheme: option.value })}
+                  className={`flex-1 cursor-pointer rounded-xl border px-2 py-2 text-sm outline-none transition-all ${
+                    isActive
+                      ? 'border-[var(--accent)] ring-1 ring-[var(--accent)] text-[var(--text-primary)] font-medium'
+                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] font-normal hover:border-[var(--border-medium)] hover:bg-[var(--bg-hover)]'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 

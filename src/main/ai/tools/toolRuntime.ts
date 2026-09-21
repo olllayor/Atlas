@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { access, readdir, stat } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, existsSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
 import { BoundedCommandOutput } from './commandOutputCap';
@@ -931,6 +931,26 @@ async function ensureWorkingDirectoryReadable(cwd: string) {
 }
 
 /**
+ * Shell plus the flags that carry the command, newest shell first.
+ *
+ * zsh is the macOS default and stays first, but Linux hosts do not always
+ * ship it — a hardcoded `/bin/zsh` turned every bash-tool call into
+ * `spawn ENOENT` there. bash keeps the `-lc` form; plain sh only gets `-c`.
+ */
+function resolveLocalShell(): { command: string; preArgs: string[] } {
+  if (process.platform === 'win32') {
+    return { command: 'cmd.exe', preArgs: ['/d', '/s', '/c'] };
+  }
+  if (existsSync('/bin/zsh')) {
+    return { command: '/bin/zsh', preArgs: ['-lc'] };
+  }
+  if (existsSync('/bin/bash')) {
+    return { command: '/bin/bash', preArgs: ['-lc'] };
+  }
+  return { command: '/bin/sh', preArgs: ['-c'] };
+}
+
+/**
  * Inline budget for a bash stream whose full content was spilled to disk.
  * Kept well under the result-level spill threshold (50 KB) — even with BOTH
  * stdout and stderr spilled — so the generic spill policy passes the result
@@ -985,8 +1005,8 @@ export async function bashToolExecute(input: {
   const cwd = resolveWorkspaceCwd(workspace);
   await ensureWorkingDirectoryReadable(cwd);
 
-  const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/zsh';
-  const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', input.command] : ['-lc', input.command];
+  const shell = resolveLocalShell();
+  const shellArgs = [...shell.preArgs, input.command];
 
   const mechanism = await detectSandboxMechanism();
   // The escalation flag only means anything where there is a sandbox to
@@ -996,7 +1016,7 @@ export async function bashToolExecute(input: {
   const policy: SandboxPolicy = escalated
     ? { fs: { kind: 'danger-full-access' }, network: 'allow' }
     : deriveSandboxPolicy(workspace, permissionMode);
-  const launch = buildSandboxedLaunch([shell, ...shellArgs], policy, mechanism);
+  const launch = buildSandboxedLaunch([shell.command, ...shellArgs], policy, mechanism);
 
   const combinedEnv = { ...process.env, ...launch.env, ...(workspace?.env ?? {}) };
 

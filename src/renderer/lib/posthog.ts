@@ -8,10 +8,14 @@ import { POSTHOG_CONFIG } from '../../shared/posthog';
   below is written against a client that may not exist yet: `initPostHog` starts
   the load and returns immediately, and events captured before it lands are held
   in `pendingEvents` and replayed in order once it does.
+
+  Telemetry is opt-in: until main reports an enabled preference (Settings toggle
+  or ATLAS_TELEMETRY_ENABLED force), the client is never loaded and nothing is
+  sent. Opting in later starts the load from `setTelemetryEnabled`.
 */
 let client: PostHog | null = null;
 let clientLoad: Promise<void> | null = null;
-let telemetryEnabled = true;
+let telemetryEnabled = false;
 
 type PendingEvent = { event: string; properties?: Record<string, unknown> };
 
@@ -20,22 +24,33 @@ const MAX_PENDING_EVENTS = 50;
 const pendingEvents: PendingEvent[] = [];
 
 /**
- * Starts loading the PostHog client. Safe to call more than once — subsequent
- * calls join the in-flight load.
+ * Starts loading the PostHog client once telemetry is enabled. Safe to call
+ * more than once — subsequent calls join the in-flight load, or no-op when
+ * telemetry is still off (a later opt-in re-invokes this).
  */
 export function initPostHog() {
   if (clientLoad) return clientLoad;
 
-  const { apiKey, host } = POSTHOG_CONFIG;
-  if (!apiKey) {
-    // No key: drop whatever queued, and never look again.
-    pendingEvents.length = 0;
-    clientLoad = Promise.resolve();
-    return clientLoad;
-  }
+  clientLoad = (async () => {
+    // Gate on the preference first so a disabled install never fetches the
+    // client bundle or opens any PostHog connection.
+    const enabled = await syncTelemetryStatus();
+    if (!enabled) {
+      pendingEvents.length = 0;
+      clientLoad = null;
+      return;
+    }
 
-  clientLoad = import('posthog-js')
-    .then(({ default: posthog }) => {
+    const { apiKey, host } = POSTHOG_CONFIG;
+    if (!apiKey) {
+      // No key: drop whatever queued, and never look again.
+      pendingEvents.length = 0;
+      clientLoad = null;
+      return;
+    }
+
+    try {
+      const { default: posthog } = await import('posthog-js');
       posthog.init(apiKey, {
         api_host: host,
         capture_pageview: false,
@@ -47,11 +62,12 @@ export function initPostHog() {
       client = posthog;
       applyTelemetryStateToClient();
       flushPendingEvents();
-    })
-    .catch((err) => {
+    } catch (err) {
       console.warn('[PostHog] Failed to initialize:', err);
       pendingEvents.length = 0;
-    });
+      clientLoad = null;
+    }
+  })();
 
   return clientLoad;
 }
@@ -77,8 +93,8 @@ export async function syncTelemetryStatus(): Promise<boolean> {
     applyTelemetryStateToClient();
     return telemetryEnabled;
   } catch {
-    // Default to enabled
-    telemetryEnabled = true;
+    // Opt-in default: fail closed.
+    telemetryEnabled = false;
     return telemetryEnabled;
   }
 }
@@ -88,6 +104,12 @@ export async function setTelemetryEnabled(enabled: boolean): Promise<boolean> {
     const next = await window.atlasChat.posthog.setTelemetryEnabled(enabled);
     telemetryEnabled = next;
     applyTelemetryStateToClient();
+    if (next) {
+      // Opting in may happen after the gated init no-op'd; start the client now.
+      void initPostHog();
+    } else {
+      pendingEvents.length = 0;
+    }
     return next;
   } catch (err) {
     console.warn('[PostHog] Failed to update telemetry preference:', err);

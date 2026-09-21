@@ -8,6 +8,8 @@ import type {
   DiscoverCustomProviderModelsRequest,
   DiscoveredModel,
   SetCustomProviderModelsRequest,
+  TestCustomProviderModelRequest,
+  TestCustomProviderModelResult,
   UpdateCustomProviderRequest
 } from '../../../shared/customProviders';
 import {
@@ -27,6 +29,7 @@ import type { KeychainStore } from '../../secrets/keychain';
 import {
   CustomProviderAdapter,
   discoverCustomProviderModels,
+  testCustomProviderModel,
   validateCustomProviderCredential
 } from '../providers/customProvider';
 import type { ProviderRegistry } from './providerRegistry';
@@ -357,6 +360,26 @@ export class CustomProviderService {
 
   async testConnection(request: DiscoverCustomProviderModelsRequest) {
     await validateCustomProviderCredential(await this.resolveProbe(request));
+  }
+
+  /**
+   * Model-level smoke test. Resolves the same probe as connection test, then
+   * actually chats that model id. Never throws for a provider rejection —
+   * the UI wants a structured ok/fail, not a red IPC banner.
+   */
+  async testModel(request: TestCustomProviderModelRequest): Promise<TestCustomProviderModelResult> {
+    try {
+      const probe = await this.resolveProbe(request);
+      return await testCustomProviderModel({ ...probe, modelId: request.modelId });
+    } catch (error) {
+      const message =
+        error instanceof CustomProviderValidationError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      return { ok: false, message, latencyMs: 0 };
+    }
   }
 
   /**

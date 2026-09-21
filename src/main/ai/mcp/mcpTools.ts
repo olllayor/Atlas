@@ -18,11 +18,11 @@ const MAX_RESULT_CHARS = 60_000;
  * Cap on a tool description.
  *
  * A description is author-controlled text that reaches the model on every turn
- * the tool is offered, and the format puts no ceiling on it. A bundle shipping
- * a page of prose per tool is either careless or crowding out its neighbours;
- * either way the model does not need more than this to choose.
+ * the tool is offered, and the format puts no ceiling on it. Kept tight so a
+ * bundle shipping prose per tool cannot crowd out history: full detail stays
+ * one `search_mcp_tools`-style call away (future lazy step), choice needs less.
  */
-const MAX_TOOL_DESCRIPTION_CHARS = 4_000;
+const MAX_TOOL_DESCRIPTION_CHARS = 1_500;
 
 /** Bound on an inlined embedded-resource body, which is a result inside a result. */
 const MAX_EMBEDDED_RESOURCE_CHARS = 8_000;

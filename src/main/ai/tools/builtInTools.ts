@@ -90,6 +90,23 @@ export function describeToolPermissionsForPrompt(mode: ToolPermissionMode) {
 }
 
 /**
+ * Effective tool list for this turn, so model does not plan around withheld tools.
+ * Sorted, capped at 80 names to bound prompt cost. Returns null when empty so
+ * caller can omit fragment entirely (e.g. tools-disabled turns).
+ */
+export function describeEffectiveToolsForPrompt(toolNames: string[]): string | null {
+  if (toolNames.length === 0) return null;
+  const sorted = [...toolNames].sort();
+  const shown = sorted.slice(0, 80);
+  const more = sorted.length - shown.length;
+  return (
+    `Available tools this turn (${sorted.length}): ${shown.join(', ')}` +
+    (more > 0 ? ` (+${more} more)` : '') +
+    `. Do not plan around tools not listed.`
+  );
+}
+
+/**
  * Prompt fragment for the workspace mode.
  *
  * Codex's default-mode block explicitly cancels the other mode's instructions

@@ -2,6 +2,8 @@ import type {
   ProviderId,
   ChatMessagePart,
   ConversationPage,
+  ConversationStatus,
+  ConversationSummary,
   RuntimeEventEnvelope,
   RuntimeStateSnapshot,
   StreamEvent,
@@ -66,11 +68,20 @@ export type RuntimeEventFanOut = {
   runtimeSequenceByConversation: Record<string, number>;
   activitiesByConversation?: Record<string, WorkLogEntry[]>;
   queuedByConversation?: Record<string, QueuedFollowupEntry[]>;
+  /**
+   * The sidebar's copy of the conversation list.
+   *
+   * Present so the terminal fallbacks can settle a row's `status` themselves.
+   * The sidebar reads `conversation.status === 'running'` whenever no draft
+   * covers the row, and the *only* thing that normally refreshes this list is
+   * the very refetch those fallbacks exist to stand in for.
+   */
+  conversations?: ConversationSummary[];
 };
 
 export type RuntimeEventFanOutPatch = Partial<Pick<
   RuntimeEventFanOut,
-  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation' | 'queuedByConversation'
+  'draftsByConversation' | 'conversationDetails' | 'requestToConversation' | 'runtimeSequenceByConversation' | 'activitiesByConversation' | 'queuedByConversation' | 'conversations'
 >>;
 
 export type Patch = RuntimeEventFanOutPatch | ((state: RuntimeEventFanOut) => RuntimeEventFanOutPatch | RuntimeEventFanOut);
@@ -546,6 +557,43 @@ function needsPartFinalize(parts: ChatMessagePart[]): boolean {
 }
 
 /**
+ * Settle one row of the sidebar's conversation list, locally.
+ *
+ * The sidebar's `isRunning` falls through to `conversation.status === 'running'`
+ * whenever no draft covers the row, and a terminal fallback drops the draft.
+ * Without this the row keeps rendering `Working` with a live ticking timer —
+ * seeded from `startedAt`, so it looks like real progress — until something
+ * unrelated happens to refetch the list. The main process has already written
+ * these exact values; this is the renderer catching up when it could not read
+ * them back.
+ *
+ * Returns the original array when there is nothing to change, so an unrelated
+ * terminal event does not churn the list's identity.
+ */
+function settleConversationStatus(
+  conversations: ConversationSummary[] | undefined,
+  conversationId: string,
+  status: ConversationStatus,
+  lastError: string | null
+): ConversationSummary[] | undefined {
+  if (!conversations) return conversations;
+  const index = conversations.findIndex((conversation) => conversation.id === conversationId);
+  if (index === -1) return conversations;
+
+  const current = conversations[index]!;
+  if (current.status === status && (current.lastError ?? null) === lastError) return conversations;
+
+  const next = [...conversations];
+  next[index] = {
+    ...current,
+    status,
+    lastError,
+    completedAt: new Date().toISOString()
+  };
+  return next;
+}
+
+/**
  * Local stand-in for the `done` branch's refetch-and-merge. Drops only the
  * draft that owns this request (a queued follow-up's placeholder must
  * survive), closes the finished message by exact id, and releases the
@@ -593,10 +641,19 @@ export function applyDoneEventToStore(
     }
   }
 
+  // Mirrors what ChatEngine already persisted for a finished turn.
+  const nextConversations = settleConversationStatus(
+    state.conversations,
+    conversationId,
+    'completed',
+    null
+  );
+
   if (
     nextDrafts === state.draftsByConversation &&
     nextDetails === state.conversationDetails &&
-    nextRequestToConversation === state.requestToConversation
+    nextRequestToConversation === state.requestToConversation &&
+    nextConversations === state.conversations
   ) {
     return {};
   }
@@ -604,7 +661,8 @@ export function applyDoneEventToStore(
   return {
     draftsByConversation: nextDrafts,
     conversationDetails: nextDetails,
-    requestToConversation: nextRequestToConversation
+    requestToConversation: nextRequestToConversation,
+    ...(nextConversations === state.conversations ? {} : { conversations: nextConversations })
   };
 }
 
@@ -669,10 +727,24 @@ export function applyTerminalErrorFallbackToStore(
     }
   }
 
+  // Same split ChatEngine persists: an abort is the user's decision, so the
+  // row goes back to idle rather than wearing a failure it did not have.
+  // Only when this request owns the live edge — a newer turn still running
+  // must keep the row running.
+  const nextConversations = ownsLiveEdge
+    ? settleConversationStatus(
+        state.conversations,
+        conversationId,
+        event.code === 'aborted' ? 'idle' : 'failed',
+        event.code === 'aborted' ? null : event.message
+      )
+    : state.conversations;
+
   if (
     nextDrafts === state.draftsByConversation &&
     nextDetails === state.conversationDetails &&
-    nextRequestToConversation === state.requestToConversation
+    nextRequestToConversation === state.requestToConversation &&
+    nextConversations === state.conversations
   ) {
     return {};
   }
@@ -680,6 +752,7 @@ export function applyTerminalErrorFallbackToStore(
   return {
     draftsByConversation: nextDrafts,
     conversationDetails: nextDetails,
-    requestToConversation: nextRequestToConversation
+    requestToConversation: nextRequestToConversation,
+    ...(nextConversations === state.conversations ? {} : { conversations: nextConversations })
   };
 }

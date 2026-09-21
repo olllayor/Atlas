@@ -46,6 +46,7 @@ import {
   sumAttachmentSize,
 } from '../../../shared/attachments';
 import { buildStandaloneVisualWindowHtml, buildVisualSrcDoc } from '../../../shared/visualDocument';
+import { isBrowsableUrl } from '../../../shared/browser';
 import type { GoalRuntime } from '../goal/goalRuntime';
 import { GOAL_CONTINUATION_STEER, GOAL_PROGRESS_TOOLS } from '../goal/goalRuntime';
 import {
@@ -74,11 +75,13 @@ import type { ExecuteTurnResult } from './ChatSessionRuntime';
 import { ChatSessionRuntime } from './ChatSessionRuntime';
 import { SubagentRuntime } from '../agents/SubagentRuntime';
 import { SubagentContinuationManager } from '../agents/SubagentContinuationManager';
+import { DEFAULT_CHILD_STEPS } from '../agents/subagentCapabilities';
 import { BackgroundLivenessService } from './BackgroundLivenessService';
 import { enrichSubagentEntries } from '../agents/subagentProjections';
 import { ToolExecutionTracker } from '../tools/ToolExecutionTracker';
 import type { ToolStateStore } from '../tools/ToolStateStore';
 import { shouldPersistResponseMessages } from './persistResponseMessages';
+import { canonicalizeArgumentsFuzzy } from '../guards/repeatToolReminder';
 import type { TurnCheckpointHooks } from '../../workspace/CheckpointCoordinator';
 import { NOOP_TURN_CHECKPOINTS } from '../../workspace/CheckpointCoordinator';
 import {
@@ -314,6 +317,15 @@ export class ChatEngine {
     return listener;
   }
   private readonly bufferedEvents = new Map<string, BufferedRequestEvents>();
+  /**
+   * Cross-turn denial chain: user-declined approvals end their turn, so the
+   * per-turn repeat guard can never reach threshold on them. This counts
+   * consecutive denied turns for the same tool+args per conversation and
+   * nudges once the model is clearly hammering a refused call. Reset on any
+   * approval accept or whenever a turn runs a tool to completion (observed in
+   * `handleRuntimeStreamEvent` below).
+   */
+  private readonly denialRepeat = new Map<string, { key: string; count: number; toolName: string }>();
   private readonly backgroundLiveness: import('./BackgroundLivenessService').BackgroundLivenessService;
   private readonly continuationManager: SubagentContinuationManager;
   private readonly subagentRuntime: SubagentRuntime;
@@ -483,7 +495,7 @@ export class ChatEngine {
           });
         }
       },
-      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth }) => {
+      childExecutor: async ({ conversationId, prompt, model, role, tools, outputFile, signal, onEvent, parentAgentId, depth, maxSteps }) => {
         const activeReq = Array.from(this.activeRequests.values()).find(
           (req) => req.request.conversationId === conversationId
         );
@@ -522,7 +534,9 @@ export class ChatEngine {
 
         let turnResult: ExecuteTurnResult;
         let loops = 0;
-        const MAX_CHILD_TURNS = 15;
+        // Honor the spawn-time budget. A hardcoded 15 was the accept-then-ignore
+        // bug: validateSpawnRequest accepted maxSteps and the executor never read it.
+        const MAX_CHILD_TURNS = maxSteps ?? DEFAULT_CHILD_STEPS;
 
         while (true) {
           loops += 1;
@@ -1394,6 +1408,7 @@ export class ChatEngine {
         this.sendEvent(followupEntry.window, {
           type: 'error',
           requestId,
+          conversationId: followupEntry.request.conversationId,
           code: 'aborted',
           message: 'Message was cancelled while waiting to be sent.',
           retryable: false,
@@ -1561,6 +1576,37 @@ export class ChatEngine {
 
     if (request.decision === 'decline' || request.decision === 'cancel') {
       active.resolvedApprovals?.clear();
+      // Cross-turn denial chain: the per-turn repeat guard never sees these
+      // (each denial ends its turn), so count them here per conversation.
+      // Input is read off the streamed part, same seam as
+      // `isSandboxEscalatedCall` above.
+      const deniedPart = active.parts.find(
+        (candidate): candidate is Extract<ChatMessagePart, { type: 'tool' }> =>
+          candidate.type === 'tool' && candidate.toolCallId === resolved.toolCallId
+      );
+      const deniedInput =
+        deniedPart?.input ?? (deniedPart?.rawInput ? parseJsonObject(deniedPart.rawInput) : null);
+      const deniedToolName = resolved.toolName ?? 'unknown tool';
+      const denialKey = JSON.stringify([deniedToolName, canonicalizeArgumentsFuzzy(deniedInput)]);
+      const prior = this.denialRepeat.get(active.request.conversationId);
+      const denialCount = prior && prior.key === denialKey ? prior.count + 1 : 1;
+      this.denialRepeat.set(active.request.conversationId, {
+        key: denialKey,
+        count: denialCount,
+        toolName: deniedToolName
+      });
+      if (denialCount === 3 || denialCount === 5 || (denialCount >= 10 && denialCount % 2 === 0)) {
+        this.sendToWindow(active.window, {
+          type: 'notice',
+          requestId: request.requestId,
+          code: 'repeat-denial-reminder',
+          level: 'warning',
+          message:
+            denialCount >= 10
+              ? `${deniedToolName} was denied ${denialCount}x in a row — the model keeps requesting a refused call. Ask it to change approach.`
+              : `${deniedToolName} was denied ${denialCount}x in a row with equivalent arguments — the model may be stuck requesting a refused call.`
+        });
+      }
       this.recordRuntimeEnvelope(active, {
         eventId: randomUUID(),
         conversationId: active.request.conversationId,
@@ -1610,6 +1656,9 @@ export class ChatEngine {
     if (!active.resolvedApprovals) {
       active.resolvedApprovals = new Map();
     }
+    // An approval accept breaks any denial streak for this conversation —
+    // the model is no longer hammering a refused call.
+    this.denialRepeat.delete(active.request.conversationId);
     active.resolvedApprovals.set(request.approvalId, {
       approvalId: request.approvalId,
       approved: true,
@@ -1640,7 +1689,7 @@ export class ChatEngine {
   }
 
   async openVisualWindow(sourceWindow: BrowserWindow, request: OpenVisualWindowRequest) {
-    const { BrowserWindow } = await import('electron');
+    const { BrowserWindow, shell } = await import('electron');
     const srcdoc = buildVisualSrcDoc({
       visualId: request.visualId,
       content: request.content,
@@ -1665,6 +1714,23 @@ export class ChatEngine {
         nodeIntegration: false,
         sandbox: true,
       }
+    });
+
+    // Agent content is a sandboxed iframe; the outer document is only chrome.
+    // Never spawn another Electron window from here — http(s) goes to the
+    // system browser, everything else is dropped.
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (isBrowsableUrl(url)) {
+        void shell.openExternal(url);
+      }
+      return { action: 'deny' };
+    });
+
+    // This window loads one data: document and must stay on it. Any
+    // navigation away (including a hostile iframe trying to take over the
+    // parent) is refused.
+    window.webContents.on('will-navigate', (event) => {
+      event.preventDefault();
     });
 
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -1851,6 +1917,7 @@ export class ChatEngine {
       this.sendEvent(active.window, {
         type: 'error',
         requestId,
+        conversationId: active.request.conversationId,
         code: normalized.code,
         message: normalized.message,
         retryable: normalized.retryable
@@ -1988,6 +2055,7 @@ export class ChatEngine {
     this.sendEvent(window, {
       type: 'done',
       requestId,
+      conversationId: active?.request.conversationId,
       messageId: result.messageId
     });
   }
@@ -2071,6 +2139,12 @@ export class ChatEngine {
       GOAL_PROGRESS_TOOLS.has(event.toolName)
     ) {
       active.goalProgress = true;
+    }
+
+    // A tool that ran to completion breaks any denial streak: the model moved
+    // on from whatever it was being refused.
+    if (event.type === 'tool-output-available' && !event.preliminary) {
+      this.denialRepeat.delete(active.request.conversationId);
     }
 
     if (
@@ -2224,7 +2298,24 @@ export class ChatEngine {
   }
 
   private sendEvent(window: BrowserWindow, event: StreamEvent) {
-    this.sendToWindow(window, event);
+    if (this.sendToWindow(window, event)) {
+      return;
+    }
+
+    // The window that started the turn is gone — reloaded during development,
+    // closed, or crashed. Streaming deltas are safe to drop (a reconnecting
+    // renderer rebuilds them from the runtime-sync snapshot), but a terminal
+    // event is the only thing that tells the renderer to stop showing this
+    // conversation as running. Losing one leaves the sidebar row on `Working`
+    // with a live timer, and nothing else ever refreshes that status.
+    if (event.type !== 'done' && event.type !== 'error') {
+      return;
+    }
+
+    const fallback = this.resolveMainWindow();
+    if (fallback && fallback !== window) {
+      this.sendToWindow(fallback, event);
+    }
   }
 
   private normalizeStreamEvent(

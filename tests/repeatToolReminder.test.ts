@@ -8,9 +8,13 @@ import { z } from 'zod';
 import type { ProviderStreamRequest } from '../src/main/ai/core/ProviderAdapter.js';
 import {
   DEFAULT_REPEAT_TOOL_REMINDER_CONFIG,
+  REPEAT_VETO_AFTER,
   canonicalizeArguments,
+  canonicalizeArgumentsFuzzy,
   createRepeatToolReminderGuard,
+  normalizeFuzzyString,
   previewArguments,
+  repeatVetoPayload,
   validateThresholds,
   wildcardToRegExp
 } from '../src/main/ai/guards/repeatToolReminder.js';
@@ -200,15 +204,17 @@ test('caps the detailed reminder arguments while detection still keys on the ful
   assert.ok(!reminders[1]!.text.includes(bigPayload));
 });
 
-test('past the highest threshold the chain goes silent', () => {
+test('past the highest threshold hard-stop fires every 2 repeats from 10 onward', () => {
   const guard = createRepeatToolReminderGuard();
   const reminders = observeCalls(
     guard,
-    Array.from({ length: 11 }, () => ({ toolName: 'probe', input: {} }))
+    Array.from({ length: 12 }, () => ({ toolName: 'probe', input: {} }))
   ).filter(Boolean);
 
-  // Reminders fire only at the exact configured counts: 3, 5, 8 — never beyond.
-  assert.equal(reminders.length, 3);
+  // Exact thresholds 3, 5, 8 plus hard-stop at 10, 12.
+  assert.equal(reminders.length, 5);
+  assert.ok(reminders[3]!.text.includes('HARD STOP'));
+  assert.ok(reminders[4]!.text.includes('HARD STOP'));
 });
 
 test('injectIntoStepMessages appends queued reminders once and drains them', () => {
@@ -241,6 +247,52 @@ test('reset clears both the chain and any queued reminders', () => {
 
   // The chain restarted: one more identical call is count 1, not 3.
   assert.equal(guard.observe({ toolName: 'probe', input: {} }), undefined);
+});
+
+test('fuzzy normalization collapses whitespace, separators and trailing slashes', () => {
+  assert.equal(normalizeFuzzyString('  src//a/./b/  '), 'src/a/b');
+  assert.equal(normalizeFuzzyString('a\r\nb'), 'a\nb');
+  assert.equal(
+    canonicalizeArgumentsFuzzy({ q: '  src//a/./b/  ' }),
+    canonicalizeArgumentsFuzzy({ q: 'src/a/b' })
+  );
+  // Genuinely different values still differ.
+  assert.notEqual(canonicalizeArgumentsFuzzy({ q: 'src/a/b' }), canonicalizeArgumentsFuzzy({ q: 'src/a/c' }));
+});
+
+test('fuzzy variants keep the chain alive instead of resetting it', () => {
+  const guard = createRepeatToolReminderGuard({ thresholds: [3] });
+  guard.observe({ toolName: 'probe', input: { q: 'src//a/b/' } });
+  guard.observe({ toolName: 'probe', input: { q: 'src/a/b' } });
+  const reminder = guard.observe({ toolName: 'probe', input: { q: '  src/a/b  ' } });
+
+  assert.ok(reminder);
+  assert.equal(reminder.summary, 'probe × 3');
+});
+
+test('observeDenied counts exactly like observe (SDK-filtered denials)', () => {
+  const guard = createRepeatToolReminderGuard({ thresholds: [2] });
+  guard.observe({ toolName: 'probe', input: { q: 'x' } });
+  const reminder = guard.observeDenied({ toolName: 'probe', input: { q: 'x' } });
+
+  assert.ok(reminder);
+  assert.equal(reminder.summary, 'probe × 2');
+});
+
+test('shouldBlock fires past VETO_THRESHOLD and peekCount does not advance', () => {
+  const guard = createRepeatToolReminderGuard({ thresholds: [99] });
+  for (let i = 0; i < REPEAT_VETO_AFTER; i += 1) {
+    guard.observe({ toolName: 'probe', input: { q: 'same' } });
+  }
+
+  assert.equal(guard.peekCount('probe', { q: 'same' }), REPEAT_VETO_AFTER);
+  assert.equal(guard.shouldBlock('probe', { q: 'same' }), true);
+  assert.equal(guard.shouldBlock('probe', { q: 'different' }), false);
+  // Peek is side-effect free: the count is unchanged.
+  assert.equal(guard.peekCount('probe', { q: 'same' }), REPEAT_VETO_AFTER);
+  const veto = repeatVetoPayload('probe', REPEAT_VETO_AFTER + 1);
+  assert.equal(veto.type, 'repeat-veto');
+  assert.ok(veto.reason.includes('BLOCKED'));
 });
 
 // ---------------------------------------------------------------------------
@@ -554,8 +606,35 @@ test('e2e: calls whose execute throws still count', async () => {
   assert.equal(reminderTextsSeen(model).length, 1);
 });
 
-test('e2e: repeatToolReminder: false disables the guard entirely', async () => {
+test('e2e: past VETO_THRESHOLD the call is vetoed, not executed', async () => {
+  let executions = 0;
+  const vetoTools = {
+    probe: tool({
+      description: 'probe',
+      inputSchema: z.object({ q: z.string() }),
+      execute: async () => {
+        executions += 1;
+        return { ok: true };
+      }
+    })
+  };
   const model = new ScriptedModel([
+    ...Array.from({ length: 14 }, (_, i) => toolCall(`c${i + 1}`, 'probe', { q: 'same' })),
+    { kind: 'text', text: 'done' }
+  ]);
+  const notices: Array<{ code: string }> = [];
+
+  await runProviderStream({
+    model: model as unknown as LanguageModel,
+    request: streamRequest({ tools: vetoTools, onNotice: (event) => notices.push(event as { code: string }) })
+  });
+
+  // 12 executed, 13th and 14th vetoed.
+  assert.equal(executions, REPEAT_VETO_AFTER);
+  assert.ok(notices.some((n) => n.code === 'repeat-veto'));
+});
+
+test('e2e: repeatToolReminder: false disables the guard entirely', async () => {  const model = new ScriptedModel([
     toolCall('c1', 'probe', { q: 'same' }),
     toolCall('c2', 'probe', { q: 'same' }),
     toolCall('c3', 'probe', { q: 'same' }),

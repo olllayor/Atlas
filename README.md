@@ -48,6 +48,7 @@ Modern AI workflows shouldn't be trapped behind walled gardens, expensive monthl
 - **Extensible Plugin System** — Install bundles from folders and marketplaces, serve their MCP servers on demand, and gate which plugin tools each chat can reach, with automated security audits and connector verification.
 - **Integrated Terminal** — Tabbed terminal sessions with split panes powered by `@xterm/xterm` and `node-pty` for local debugging.
 - **Right Panel Surfaces** — Open workbench views, sites, and agents beside the chat instead of losing your place in the thread.
+- **GitHub Pull Requests** — List, filter, and review pull requests beside the chat, with diffs, checks, comments, and review threads.
 
 ### 📊 Interactive Visual Artifacts & Rendering
 - **Sandboxed Visual Documents** — Inline live rendering for HTML, web applications, and UI components with full-screen expansion.

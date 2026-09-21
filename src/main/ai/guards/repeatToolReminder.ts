@@ -38,17 +38,21 @@ import type { ModelMessage } from 'ai';
  * user's transcript.
  *
  * Known limitations (mirrors dsh's own, plus one port-specific):
- * - Exact-match detection only; near-identical variants (a tweaked path, extra
- *   whitespace inside a value) evade the chain.
- * - Advisory only; never escalates to blocking.
- * - Past the highest threshold a chain goes silent (reminders fire only at the
- *   exact configured counts).
- * - PORT-SPECIFIC: calls denied by the approval ladder are NOT counted. The AI
- *   SDK surfaces those as a `tool-output-denied` chunk that its `onChunk`
- *   allowlist filters out, so they never reach the observation point — unlike
- *   dsh, whose `tools/post-execute` seam sees denials. A tool that internally
- *   refuses (returns an `execution-denied`-shaped result) still produces a
- *   normal `tool-result` chunk and IS counted.
+ * - Near-identical variants are caught by fuzzy normalization (whitespace,
+ *   line-ending, path-separator and trailing-slash differences collapse), but
+ *   a semantically different argument that fuzzy-normalizes identically still
+ *   counts — acceptable for an advisory nudge, and the veto path below quotes
+ *   the exact arguments so the model can see the difference.
+ * - Advisory by default; escalates to a pre-execute veto via `shouldBlock`
+ *   once the run passes VETO_THRESHOLD (see `applyRepeatVeto` in streamCore).
+ * - Past highest threshold hard-stop fires every 2 repeats from
+ *   REPEAT_HARD_STOP_AFTER onward (10, 12, ...).
+ * - PORT-SPECIFIC (fixed): user-denied approvals never reach the `tool-result`
+ *   observation point — the AI SDK filters the denial chunk and ChatEngine
+ *   ends the turn. Those are counted via `observeDenied`, wired from the
+ *   approval-decline path, and via a conversation-scoped denial tracker in
+ *   ChatEngine for denials that span turns (a per-turn guard can never reach
+ *   threshold 3 when each denial ends its turn).
  */
 
 export interface RepeatToolReminderConfig {
@@ -83,6 +87,23 @@ export interface RepeatToolReminderGuard {
    */
   observe(event: { toolName: string | undefined; input: unknown }): RepeatToolReminder | undefined;
   /**
+   * Observe one denied attempt (approval declined, or SDK-filtered denial).
+   * Counts identically to `observe`: a model hammering a refused call is
+   * exactly the loop worth breaking. Separated so callers can route denials
+   * that never reach the `tool-result` observation point.
+   */
+  observeDenied(event: { toolName: string | undefined; input: unknown }): RepeatToolReminder | undefined;
+  /**
+   * Pre-execute veto check. Returns true when the given call would continue a
+   * run already past VETO_THRESHOLD — the caller should refuse to execute and
+   * return the veto payload instead. Peek-only: never advances the chain (the
+   * post-execute `observe` still counts the vetoed attempt, so the block
+   * persists while the model keeps retrying).
+   */
+  shouldBlock(toolName: string | undefined, input: unknown): boolean;
+  /** Current consecutive-repeat count for the given call (0 when untracked). */
+  peekCount(toolName: string | undefined, input: unknown): number;
+  /**
    * Inject any queued reminders into the next step's messages (prepareStep),
    * appending them after the previous step's tool results, then drain the
    * queue. Returns the SAME reference when nothing is queued so the caller can
@@ -105,6 +126,38 @@ export const DEFAULT_REPEAT_TOOL_REMINDER_CONFIG: Required<RepeatToolReminderCon
   exclude: ['update_plan'],
   argumentsPreviewChars: 500
 };
+
+/**
+ * Hard stop: past highest threshold guard went silent, letting doom loops run
+ * to step cap. From here remind every 2 repeats with stop-now wording.
+ * Pairs with the pre-execute veto at VETO_THRESHOLD and the lowered step cap
+ * 64 to bound burn.
+ */
+export const REPEAT_HARD_STOP_AFTER = 10;
+
+/**
+ * Pre-execute veto: once a run passes this length, the execute-wrapper
+ * refuses to run the call and returns a veto payload instead. Above the
+ * hard-stop (10) so the model gets two advisory nudges first; below the
+ * lightweight step cap (32) so the veto actually saves budget.
+ */
+export const REPEAT_VETO_AFTER = 12;
+
+function vetoReminder(toolName: string, count: number): string {
+  return (
+    `BLOCKED: ${toolName} called ${count}x consecutively with equivalent arguments. ` +
+    `This call was not executed. Stop calling this tool with these arguments. ` +
+    `Summarize evidence gathered so far and finish the turn, or try a fundamentally different action.`
+  );
+}
+
+function hardStopReminder(toolName: string, count: number): string {
+  return (
+    `HARD STOP: ${toolName} called ${count}x consecutively with identical arguments. ` +
+    `Stop calling tools. Summarize evidence gathered so far and finish turn now, ` +
+    `or try fundamentally different action. Further repeats waste budget.`
+  );
+}
 
 /**
  * The gentle first-threshold reminder. Keyed to `thresholds[0]`, not a literal
@@ -157,6 +210,51 @@ export function sortJsonValue(value: unknown): unknown {
 /** Canonical string form of a call's arguments: deep key-sort, then stringify. */
 export function canonicalizeArguments(argumentsValue: unknown): string {
   return JSON.stringify(sortJsonValue(argumentsValue));
+}
+
+/**
+ * Fuzzy string normalization for loop detection: collapse the trivial
+ * variants that evaded exact-match detection (extra whitespace, CRLF vs LF,
+ * backslash vs slash paths, trailing slashes, ./ prefixes). Deliberately
+ * conservative — values that differ by more than this still count as
+ * different calls and reset the chain.
+ */
+export function normalizeFuzzyString(value: string): string {
+  let out = value.replace(/\r\n/g, '\n');
+  out = out.replace(/\\/g, '/');
+  out = out.trim();
+  // Collapse runs of spaces/tabs (not newlines — code shape is preserved).
+  out = out.replace(/[ \t]+/g, ' ');
+  // Collapse duplicate slashes, strip ./ segments and trailing slashes.
+  out = out.replace(/\/{2,}/g, '/');
+  out = out.replace(/(^|\/)\.\//g, '$1');
+  if (out.length > 1) {
+    out = out.replace(/\/+$/g, '');
+  }
+  return out;
+}
+
+export function fuzzySortJsonValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return normalizeFuzzyString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(fuzzySortJsonValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = fuzzySortJsonValue(record[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+/** Fuzzy chain key: same shape as canonical, but trivial variants collapse. */
+export function canonicalizeArgumentsFuzzy(argumentsValue: unknown): string {
+  return JSON.stringify(fuzzySortJsonValue(argumentsValue));
 }
 
 /** Compile one `*`-wildcard pattern to an anchored RegExp (every other regex metacharacter is matched literally). */
@@ -262,21 +360,51 @@ export function createRepeatToolReminderGuard(
     }
 
     const canonical = canonicalizeArguments(event.input);
-    const key = JSON.stringify([event.toolName, canonical]);
+    // Fuzzy key: trivial variants (whitespace, path separators) keep the
+    // chain alive; genuinely different arguments reset it. Display still
+    // quotes the exact canonical form so the model sees what it sent.
+    const fuzzy = canonicalizeArgumentsFuzzy(event.input);
+    const key = JSON.stringify([event.toolName, fuzzy]);
     const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1;
     chain = { key, count };
 
-    if (!thresholdSet.has(count)) {
-      return undefined;
+    if (thresholdSet.has(count)) {
+      const text =
+        count === thresholds[0]
+          ? GENTLE_REMINDER
+          : detailedReminder(event.toolName, count, previewArguments(canonical, argumentsPreviewChars));
+      const reminder = { text, summary: `${event.toolName} × ${count}` };
+      pending.push(reminderUserMessage(text));
+      return reminder;
     }
 
-    const text =
-      count === thresholds[0]
-        ? GENTLE_REMINDER
-        : detailedReminder(event.toolName, count, previewArguments(canonical, argumentsPreviewChars));
-    const reminder = { text, summary: `${event.toolName} × ${count}` };
-    pending.push(reminderUserMessage(text));
-    return reminder;
+    const maxThreshold = thresholds[thresholds.length - 1]!;
+    if (count >= REPEAT_HARD_STOP_AFTER && count > maxThreshold && count % 2 === 0) {
+      const text = hardStopReminder(event.toolName, count);
+      const reminder = { text, summary: `${event.toolName} × ${count} STOP` };
+      pending.push(reminderUserMessage(text));
+      return reminder;
+    }
+
+    return undefined;
+  }
+
+  function observeDenied(event: { toolName: string | undefined; input: unknown }): RepeatToolReminder | undefined {
+    // Denied attempts count exactly like executed ones; routing through the
+    // same chain keeps exact/fuzzy semantics identical.
+    return observe(event);
+  }
+
+  function peekCount(toolName: string | undefined, input: unknown): number {
+    if (!toolName || !tracked(toolName)) {
+      return 0;
+    }
+    const key = JSON.stringify([toolName, canonicalizeArgumentsFuzzy(input)]);
+    return chain !== undefined && chain.key === key ? chain.count : 0;
+  }
+
+  function shouldBlock(toolName: string | undefined, input: unknown): boolean {
+    return peekCount(toolName, input) >= REPEAT_VETO_AFTER;
   }
 
   function injectIntoStepMessages(messages: ModelMessage[]): ModelMessage[] {
@@ -294,5 +422,14 @@ export function createRepeatToolReminderGuard(
     pending.length = 0;
   }
 
-  return { observe, injectIntoStepMessages, reset };
+  return { observe, observeDenied, shouldBlock, peekCount, injectIntoStepMessages, reset };
+}
+
+/**
+ * Pre-execute veto payload: returned instead of running the tool when
+ * `shouldBlock` fires. Shaped as a normal result (not a throw) so the loop
+ * records it, counts it, and shows the model why nothing ran.
+ */
+export function repeatVetoPayload(toolName: string, count: number): { type: string; reason: string } {
+  return { type: 'repeat-veto', reason: vetoReminder(toolName, count) };
 }

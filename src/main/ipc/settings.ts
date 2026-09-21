@@ -285,6 +285,13 @@ export function registerSettingsIpc({ settingsRepo, modelRegistry, keychain, ope
         settingsRepo.setPersistComposerContextStrip(appearancePatch.persistComposerContextStrip);
       }
 
+      if (
+        appearancePatch?.diffColorScheme === 'red-green' ||
+        appearancePatch?.diffColorScheme === 'blue-orange'
+      ) {
+        settingsRepo.setDiffColorScheme(appearancePatch.diffColorScheme);
+      }
+
       if (patch?.keyboard?.keybindings) {
         settingsRepo.setKeybindings(patch.keyboard.keybindings);
       }

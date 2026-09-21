@@ -18,8 +18,8 @@
  */
 
 /**
- * Surfaces that exist today. Pull request lands in a later phase; adding one
- * is an entry here plus an entry in the registry.
+ * Surfaces that exist today. Adding one is an entry here plus an entry in the
+ * registry.
  */
 export const RIGHT_PANEL_KINDS = [
   'diff',
@@ -30,6 +30,7 @@ export const RIGHT_PANEL_KINDS = [
   'files',
   'file',
   'browser',
+  'pullRequests',
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { countCompletedAssistantTurns, deriveJumpState } from '../src/renderer/components/jumpToLatest.js';
+import { countMessagesBelowViewport, deriveJumpState } from '../src/renderer/components/jumpToLatest.js';
 
 const loadContext = () => import('../src/renderer/components/ai-elements/context.js');
 
@@ -71,16 +71,57 @@ test('the spoken label makes the same claim as the visible one', async () => {
   assert.equal(toSpokenPercentage('100'), '100');
 });
 
-test('only finished assistant replies count as arrivals', () => {
-  const messages = [
-    { role: 'user' as const, status: 'complete' as const },
-    { role: 'assistant' as const, status: 'complete' as const },
-    { role: 'user' as const, status: 'complete' as const },
-    // The reply currently streaming is visibly happening, not news.
-    { role: 'assistant' as const, status: 'streaming' as const },
-  ];
+test('counts only rows after the last visible virtualizer index', () => {
+  // 20 rows, viewport ends at index 2 → indexes 3..19 are below (17).
+  assert.equal(
+    countMessagesBelowViewport({
+      messageCount: 20,
+      lastVisibleIndex: 2,
+    }),
+    17
+  );
+});
 
-  assert.equal(countCompletedAssistantTurns(messages), 1);
+test('a partially visible last row is already seen', () => {
+  assert.equal(
+    countMessagesBelowViewport({
+      messageCount: 5,
+      lastVisibleIndex: 4,
+    }),
+    0
+  );
+});
+
+test('the live streaming row sits outside the virtualizer and still counts', () => {
+  assert.equal(
+    countMessagesBelowViewport({
+      messageCount: 4,
+      lastVisibleIndex: 1,
+      hasStreamingRow: true,
+    }),
+    3
+  );
+});
+
+test('an empty transcript with only a streaming row still has one to jump to', () => {
+  assert.equal(
+    countMessagesBelowViewport({
+      messageCount: 0,
+      lastVisibleIndex: -1,
+      hasStreamingRow: true,
+    }),
+    1
+  );
+});
+
+test('a negative last index cannot overshoot the total', () => {
+  assert.equal(
+    countMessagesBelowViewport({
+      messageCount: 3,
+      lastVisibleIndex: -1,
+    }),
+    3
+  );
 });
 
 test('content growth while following the bottom does not raise the pill', () => {
@@ -90,72 +131,35 @@ test('content growth while following the bottom does not raise the pill', () => 
   const state = deriveJumpState({
     isScrolledUp: true,
     isAtBottom: true,
-    completedAssistantCount: 5,
-    seenAssistantCount: 3,
+    messageCount: 20,
+    lastVisibleIndex: 2,
   });
 
   assert.equal(state.isDetached, false);
-  assert.equal(state.unreadCount, 0);
+  assert.equal(state.messagesBelow, 0);
 });
 
-test('reading history shows the pill, and counts only what arrived since', () => {
+test('reading history shows the pill with how many rows sit below the viewport', () => {
   const state = deriveJumpState({
     isScrolledUp: true,
     isAtBottom: false,
-    completedAssistantCount: 5,
-    seenAssistantCount: 3,
+    messageCount: 20,
+    lastVisibleIndex: 2,
   });
 
   assert.equal(state.isDetached, true);
-  assert.equal(state.unreadCount, 2);
+  assert.equal(state.messagesBelow, 17);
 });
 
-test('scrolling up with nothing new offers the jump without a count', () => {
+test('detached on the last row offers the jump without a count', () => {
+  // Scrolled up inside a tall final message: nothing after the last index.
   const state = deriveJumpState({
     isScrolledUp: true,
     isAtBottom: false,
-    completedAssistantCount: 3,
-    seenAssistantCount: 3,
+    messageCount: 8,
+    lastVisibleIndex: 7,
   });
 
   assert.equal(state.isDetached, true);
-  assert.equal(state.unreadCount, 0);
-});
-
-test('sending a message cannot register as unread', () => {
-  // Sending adds a user row and opens a streaming assistant row in one commit.
-  // Neither is a completed assistant turn, so the count cannot move — which is
-  // what produced the bogus "2 new" on a freshly sent message.
-  const before = countCompletedAssistantTurns([
-    { role: 'user', status: 'complete' },
-    { role: 'assistant', status: 'complete' },
-  ]);
-  const afterSend = countCompletedAssistantTurns([
-    { role: 'user', status: 'complete' },
-    { role: 'assistant', status: 'complete' },
-    { role: 'user', status: 'complete' },
-    { role: 'assistant', status: 'streaming' },
-  ]);
-
-  assert.equal(afterSend, before);
-  assert.equal(
-    deriveJumpState({
-      isScrolledUp: true,
-      isAtBottom: false,
-      completedAssistantCount: afterSend,
-      seenAssistantCount: before,
-    }).unreadCount,
-    0
-  );
-});
-
-test('a stale anchor from a longer thread cannot go negative', () => {
-  const state = deriveJumpState({
-    isScrolledUp: true,
-    isAtBottom: false,
-    completedAssistantCount: 1,
-    seenAssistantCount: 9,
-  });
-
-  assert.equal(state.unreadCount, 0);
+  assert.equal(state.messagesBelow, 0);
 });

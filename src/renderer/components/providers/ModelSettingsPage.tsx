@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ProviderSelection } from '../../stores/useProvidersStore';
 import { useProvidersStore } from '../../stores/useProvidersStore';
 import { ProviderLogo } from '../../lib/providerLogos';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { ConfirmDialog } from './ConfirmDialog';
 import { LocalAgentsSection } from './LocalAgentsSection';
 import { ProviderDetail } from './ProviderDetail';
@@ -12,10 +13,14 @@ import { ProviderForm } from './ProviderForm';
 /**
  * Settings → Providers.
  *
- * Two kinds of provider, two surfaces, because they have almost nothing in
- * common: local agents are CLIs that sign themselves in and carry their own
- * catalog, while custom endpoints are URLs plus a key. Mixing them into one
- * list meant every row lied about half its neighbours.
+ * Two kinds of provider, two tabs. Local agents are CLIs that sign themselves
+ * in and carry their own catalog; custom endpoints are URLs plus a key. Stacked
+ * vertically the page never fit one viewport, so the agent list pushed the
+ * endpoint rail off-screen. Tabs keep one surface visible without scrolling past
+ * the other.
+ *
+ * Both panels stay mounted (`forceMount` + inactive hidden) so an unsaved
+ * provider form and the agent list survive a tab switch.
  */
 export function ModelSettingsPage() {
   const providers = useProvidersStore((state) => state.providers);
@@ -26,6 +31,7 @@ export function ModelSettingsPage() {
 
   const [formDirty, setFormDirty] = useState(false);
   const [pendingSelection, setPendingSelection] = useState<{ next: ProviderSelection } | null>(null);
+  const [tab, setTab] = useState('endpoints');
 
   useEffect(() => {
     void load();
@@ -53,71 +59,90 @@ export function ModelSettingsPage() {
   const hasProviders = providers.length > 0;
 
   return (
-    <div className="space-y-10">
-      <LocalAgentsSection />
+    <div>
+      <Tabs value={tab} onValueChange={setTab} className="gap-4">
+        <TabsList className="w-full max-w-md">
+          <TabsTrigger value="agents">Local agents</TabsTrigger>
+          <TabsTrigger value="endpoints">Providers</TabsTrigger>
+        </TabsList>
 
-      <div>
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
-            Custom endpoints
-          </span>
-          <span className="text-xs text-text-muted">
-            Any OpenAI-, Anthropic- or Responses-compatible API.
-          </span>
-        </div>
+        <TabsContent
+          value="agents"
+          forceMount
+          className="data-[state=inactive]:hidden"
+        >
+          <LocalAgentsSection />
+        </TabsContent>
 
-        <div className="mt-3 flex min-h-[420px] rounded-lg border border-border-default">
-          <aside className="flex w-[220px] shrink-0 flex-col rounded-l-lg border-r border-border-default bg-bg-subtle p-2">
-            <div className="min-h-0 flex-1 overflow-y-auto scroll-container">
-              {isLoading && !hasProviders ? (
-                <p className="px-2 py-1.5 text-xs text-text-muted">Loading…</p>
-              ) : null}
-
-              {providers.map((provider) => (
-                <RailItem
-                  key={provider.id}
-                  label={provider.name}
-                  providerId={provider.id}
-                  active={provider.id === selectedProviderId}
-                  // Green only when the provider is both enabled and usable.
-                  tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
-                  onClick={() => requestSelect(provider.id)}
-                />
-              ))}
+        <TabsContent
+          value="endpoints"
+          forceMount
+          className="data-[state=inactive]:hidden"
+        >
+          <div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
+                Custom endpoints
+              </span>
+              <span className="text-xs text-text-muted">
+                Any OpenAI-, Anthropic- or Responses-compatible API.
+              </span>
             </div>
 
-            {hasProviders ? (
-              <button
-                type="button"
-                onClick={() => requestSelect(null)}
-                className={`mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
-                  selectedProviderId === null
-                    ? 'bg-bg-hover text-text-primary'
-                    : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-              >
-                <PlusIcon className="h-3.5 w-3.5 shrink-0" />
-                Add endpoint
-              </button>
-            ) : null}
-          </aside>
+            <div className="mt-3 flex min-h-[420px] rounded-lg border border-border-default">
+              <aside className="flex w-[220px] shrink-0 flex-col rounded-l-lg border-r border-border-default bg-bg-subtle p-2">
+                <div className="min-h-0 flex-1 overflow-y-auto scroll-container">
+                  {isLoading && !hasProviders ? (
+                    <p className="px-2 py-1.5 text-xs text-text-muted">Loading…</p>
+                  ) : null}
 
-          <div className="min-w-0 flex-1 p-6">
-            {!hasProviders && !isLoading && isOnForm ? (
-              <p className="mb-5 text-sm leading-relaxed text-text-tertiary">
-                No endpoints yet. Add one below to start chatting — a name, an endpoint and (usually) a key
-                is all it takes.
-              </p>
-            ) : null}
+                  {providers.map((provider) => (
+                    <RailItem
+                      key={provider.id}
+                      label={provider.name}
+                      providerId={provider.id}
+                      active={provider.id === selectedProviderId}
+                      // Green only when the provider is both enabled and usable.
+                      tone={provider.enabled && provider.hasApiKey ? 'ready' : 'idle'}
+                      onClick={() => requestSelect(provider.id)}
+                    />
+                  ))}
+                </div>
 
-            {selected ? (
-              <ProviderDetail provider={selected} />
-            ) : (
-              <ProviderForm onCreated={() => setFormDirty(false)} onDirtyChange={handleDirtyChange} />
-            )}
+                {hasProviders ? (
+                  <button
+                    type="button"
+                    onClick={() => requestSelect(null)}
+                    className={`mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition ${
+                      selectedProviderId === null
+                        ? 'bg-bg-hover text-text-primary'
+                        : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+                    }`}
+                  >
+                    <PlusIcon className="h-3.5 w-3.5 shrink-0" />
+                    Add endpoint
+                  </button>
+                ) : null}
+              </aside>
+
+              <div className="min-w-0 flex-1 p-6">
+                {!hasProviders && !isLoading && isOnForm ? (
+                  <p className="mb-5 text-sm leading-relaxed text-text-tertiary">
+                    No endpoints yet. Add one below to start chatting — a name, an endpoint and (usually) a
+                    key is all it takes.
+                  </p>
+                ) : null}
+
+                {selected ? (
+                  <ProviderDetail provider={selected} />
+                ) : (
+                  <ProviderForm onCreated={() => setFormDirty(false)} onDirtyChange={handleDirtyChange} />
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
 
       <ConfirmDialog
         open={pendingSelection != null}

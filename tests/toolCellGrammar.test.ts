@@ -416,9 +416,93 @@ describe('buildToolCells', () => {
       }),
     ]);
 
+    // Multiline finished commands compact to `Ran <program>` (t3code PR
+    // #10898), so the head line joins the continuation block to stay
+    // expandable rather than living in the label.
+    assert.equal(cells[0].label, 'Ran one');
     assert.equal(cells[0].subject, 'one');
-    assert.deepEqual(cells[0].continuation, ['two', 'three']);
-    assert.equal(cells[0].continuationOmitted, 2);
+    assert.deepEqual(cells[0].continuation, ['one', 'two']);
+    assert.equal(cells[0].continuationOmitted, 3);
+    assert.deepEqual(cells[0].continuationAll, ['one', 'two', 'three', 'four', 'five']);
+  });
+
+  it('keeps a long completed command compact and expandable (t3code PR #10898)', () => {
+    const heredoc = "python3 - <<'PY'\nprint('verification complete')\nPY";
+    const longSingleLine = `python3 -c "print('${'x'.repeat(120)}')"`;
+    const cases: Array<{ command: string; output: string; head: string }> = [
+      { command: heredoc, output: '', head: "python3 - <<'PY'" },
+      { command: heredoc, output: 'Script finished successfully', head: "python3 - <<'PY'" },
+      {
+        command: "python3 - <<'PY'\r\nprint('verification complete')\r\nPY",
+        output: 'Script finished successfully',
+        head: "python3 - <<'PY'",
+      },
+      { command: longSingleLine, output: '', head: longSingleLine },
+    ];
+
+    for (const { command, output, head } of cases) {
+      const cells = buildToolCells([
+        toolPart({
+          toolName: 'bash',
+          toolType: 'command_execution',
+          input: { command },
+          output,
+        }),
+      ]);
+
+      assert.equal(cells.length, 1);
+      assert.equal(cells[0].label, 'Ran python3');
+      assert.ok(
+        !cells[0].label.includes('print('),
+        'the collapsed row must not inline the script'
+      );
+      // The full command survives in the continuation block, so expansion
+      // (and raw mode) still reveal every line even with no output.
+      const expanded = cells[0].continuationAll.join('\n');
+      assert.ok(expanded.includes(head), 'expansion keeps the head line');
+      assert.ok(
+        expanded.includes(command.split(/\r?\n/).at(-1)!),
+        'expansion keeps the tail line'
+      );
+      if (output) {
+        const detail = cells[0].detail;
+        assert.equal(detail.type, 'text');
+        assert.ok(
+          detail.type === 'text' && detail.allLines.join('\n').includes(output),
+          'expansion keeps the output too'
+        );
+      } else {
+        assert.equal(cells[0].detail.type, 'text', 'empty output stays expandable');
+      }
+    }
+  });
+
+  it('leaves a short one-line completed command alone', () => {
+    const cells = buildToolCells([
+      toolPart({
+        toolName: 'bash',
+        toolType: 'command_execution',
+        input: { command: 'pnpm test' },
+        output: 'ok',
+      }),
+    ]);
+
+    assert.equal(cells[0].label, 'Ran pnpm test');
+    assert.deepEqual(cells[0].continuationAll, []);
+  });
+
+  it('leaves a running long command expanded while it is live', () => {
+    const cells = buildToolCells([
+      toolPart({
+        toolName: 'bash',
+        toolType: 'command_execution',
+        state: 'input-available',
+        input: { command: "python3 - <<'PY'\nprint('verification complete')\nPY" },
+      }),
+    ]);
+
+    assert.equal(cells[0].status, 'running');
+    assert.ok(cells[0].label.startsWith('Running python3 - '), 'live rows keep the full head');
   });
 
   it('builds a diff detail with a +/- summary for file edits', () => {

@@ -2,15 +2,16 @@ import { CodeBlock } from '@/components/CodeBlock';
 import { cn } from '@/lib/utils';
 import { cjk } from '@streamdown/cjk';
 import { code } from '@streamdown/code';
-import { math } from '@streamdown/math';
 import { mermaid } from '@streamdown/mermaid';
 import type { ComponentProps } from 'react';
-import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins, type Components, type CustomRenderer } from 'streamdown';
+import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins, type Components, type CustomRenderer, type MathPlugin } from 'streamdown';
 
 import { streamdownCodeLanguages } from './codeLanguages';
 import { markdownTableComponents } from './markdown-table';
 import { ChatMarkdownImage, rehypeMarkStandaloneImages } from './chat-markdown-image';
 import { MarkdownAnchor } from './chat-markdown-link';
+import { MarkdownMath } from '../MarkdownMath';
+import { rehypeMathSource, remarkMath } from '../../../shared/markdownMath.js';
 import { remarkRewriteFileRefLinks } from '../../../shared/fileRefLinks';
 
 export type MessageResponseInnerProps = ComponentProps<typeof Streamdown>;
@@ -23,6 +24,38 @@ const streamdownRenderers: CustomRenderer[] = [
 ];
 
 type MdastNode = { type?: string; lang?: string | null; children?: MdastNode[] };
+
+type HastNode = { properties?: Record<string, unknown> };
+
+/**
+ * Math rendering (port of t3code PR #10698, adapted to Streamdown).
+ *
+ * Streamdown's bundled `@streamdown/math` only parses `$$` display math
+ * (single-dollar inline is off) and renders failures as red error text with
+ * no way to copy the TeX. The shared `remarkMath` grammar recognizes
+ * `$…$`, `$$…$$`, `\(…\)`, `\[…\]` with Pandoc-style currency guards, and
+ * `MarkdownMath` renders via lazily-loaded KaTeX with Copy TeX + source
+ * toggle, falling back to readable mono source.
+ */
+const atlasMathPlugin: MathPlugin = {
+  name: 'katex',
+  type: 'math',
+  remarkPlugin: remarkMath,
+  // Runs after sanitize (Streamdown appends the math rehype plugin last)
+  // and restores sources the sanitizer stripped.
+  rehypePlugin: rehypeMathSource,
+};
+
+/** Keep the math source attribute through sanitization (mirrors upstream). */
+const mathAllowedTags = { span: ['dataMathSource'] };
+
+function MarkdownSpan({ node, children, ...props }: ComponentProps<'span'> & { node?: unknown }) {
+  const source = (node as HastNode | undefined)?.properties?.dataMathSource;
+  if (typeof source === 'string') {
+    return <MarkdownMath source={source} />;
+  }
+  return <span {...props}>{children}</span>;
+}
 
 /**
  * Tag untagged fences as `text`.
@@ -64,7 +97,7 @@ const streamdownRehypePlugins = [
   rehypeMarkStandaloneImages,
 ];
 
-const streamdownPlugins = { cjk, code, math, mermaid, renderers: streamdownRenderers };
+const streamdownPlugins = { cjk, code, math: atlasMathPlugin, mermaid, renderers: streamdownRenderers };
 // `table: false` is belt-and-braces — `markdownTableComponents` replaces the
 // wrapper that hosts the copy/download/fullscreen toolbar outright.
 const streamdownControls = { code: false, table: false } as const;
@@ -72,6 +105,7 @@ const streamdownComponents = {
   ...markdownTableComponents,
   a: MarkdownAnchor,
   img: ChatMarkdownImage,
+  span: MarkdownSpan,
 } as Components;
 
 export default function MessageResponseContent({ className, ...props }: MessageResponseInnerProps) {
@@ -84,6 +118,7 @@ export default function MessageResponseContent({ className, ...props }: MessageR
       components={streamdownComponents}
       controls={streamdownControls}
       plugins={streamdownPlugins}
+      allowedTags={mathAllowedTags}
       remarkPlugins={streamdownRemarkPlugins}
       rehypePlugins={streamdownRehypePlugins}
       {...props}

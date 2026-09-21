@@ -13,24 +13,28 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ExternalLink, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ExternalLink, MessageSquarePlus, RotateCw } from 'lucide-react';
 
 import type { DiscoveredServer } from '../../../shared/browser';
 import {
   BROWSER_PARTITION,
   BROWSER_WEBVIEW_PREFERENCES,
   displayBrowserUrl,
+  formatPageReference,
   normalizeBrowserUrl,
 } from '../../../shared/browser';
 import { cn } from '../../lib/utils';
+import { useAppStore } from '../../stores/useAppStore';
 import { useBrowserStore, useBrowserView } from '../../stores/useBrowserStore';
 
 export type BrowserSurfaceProps = {
   /** Identifies this tab's guest, so two browser tabs never share a page. */
   viewId: string;
+  /** Which conversation's composer a sent page lands in. */
+  conversationId: string;
 };
 
-export function BrowserSurface({ viewId }: BrowserSurfaceProps) {
+export function BrowserSurface({ viewId, conversationId }: BrowserSurfaceProps) {
   const view = useBrowserView(viewId);
   const navigate = useBrowserStore((state) => state.navigate);
   const setTitle = useBrowserStore((state) => state.setTitle);
@@ -58,6 +62,24 @@ export function BrowserSurface({ viewId }: BrowserSurfaceProps) {
     setFailure(null);
     navigate(viewId, url);
   }, [draft, navigate, viewId]);
+
+  /*
+    The other half of the preview loop: the page comes back into the thread
+    as one markdown line appended to this conversation's draft, and focus
+    follows it to the composer. No toast — the draft visibly growing is the
+    confirmation, per the toast rules.
+  */
+  const sendToComposer = useCallback(() => {
+    if (!view.url) return;
+    const reference = formatPageReference(view.url, view.title);
+    const store = useAppStore.getState();
+    const current = store.composerDraftsByConversation[conversationId] ?? '';
+    store.setComposerDraft(
+      conversationId,
+      current.trim() ? `${current.replace(/\s+$/, '')}\n${reference}` : reference
+    );
+    store.requestComposerFocus();
+  }, [conversationId, view.title, view.url]);
 
   useEffect(() => {
     const guest = webviewRef.current;
@@ -171,6 +193,10 @@ export function BrowserSurface({ viewId }: BrowserSurfaceProps) {
             invalid ? 'border-error' : 'border-border-subtle focus:border-border-strong'
           )}
         />
+
+        <NavButton label="Send page to composer" onClick={sendToComposer}>
+          <MessageSquarePlus className="size-3.5" aria-hidden />
+        </NavButton>
 
         <NavButton
           label="Open in browser"

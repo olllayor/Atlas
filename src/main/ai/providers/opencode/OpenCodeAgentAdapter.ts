@@ -385,9 +385,9 @@ export class OpenCodeAgentAdapter implements ProviderAdapter {
 
       if (request.tools && Object.keys(request.tools).length > 0) {
         request.onNotice?.({
-          code: 'opencode.toolsDelegated',
+          code: 'provider.toolsDelegated',
           level: 'info',
-          message: 'OpenCode runs its own tools for this turn; Atlas shows them as they happen.'
+          message: 'OpenCode runs its own tools and sampling for this turn; Atlas tools stay behind, Atlas shows results as they happen.'
         });
       }
 

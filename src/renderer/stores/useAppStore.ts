@@ -71,7 +71,7 @@ type RefreshModelsOptions = {
   silent?: boolean;
 };
 
-type AppView = 'chat' | 'settings' | 'landing' | 'sites' | 'plugins';
+type AppView = 'chat' | 'settings' | 'landing' | 'sites' | 'plugins' | 'pullRequests';
 
 /**
  * A composer attachment staged but not yet sent. Structurally identical to
@@ -307,6 +307,8 @@ type AppState = {
   closePlugins: () => void;
   openSites: () => void;
   closeSites: () => void;
+  openPullRequests: () => void;
+  closePullRequests: () => void;
   setSettingsSection: (section: SettingsSection) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setCommandPaletteInitialQuery: (query: string | null) => void;
@@ -1855,6 +1857,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ activeView: 'plugins', commandPaletteOpen: false, commandPaletteInitialQuery: null, modelPickerOpen: false }),
   closePlugins: () => set({ activeView: 'chat' }),
   closeSites: () => set({ activeView: 'chat' }),
+  openPullRequests: () =>
+    set({
+      activeView: 'pullRequests',
+      commandPaletteOpen: false,
+      commandPaletteInitialQuery: null,
+      modelPickerOpen: false
+    }),
+  closePullRequests: () => set({ activeView: 'chat' }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setCommandPaletteOpen: (open) =>
     set(open ? { commandPaletteOpen: open } : { commandPaletteOpen: open, commandPaletteInitialQuery: null }),
@@ -2681,10 +2691,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const state = get();
+    // Terminal events name their conversation outright. That is the only
+    // resolution a window which reloaded mid-turn can still perform: its
+    // `requestToConversation` map and live drafts died with the old page, so
+    // inference would return nothing and the event would be dropped —
+    // stranding the sidebar row on `Working`.
     const conversationId =
       event.type === 'runtime-sync'
         ? event.conversationId
-        : resolveConversationIdForRequest(event.requestId, state);
+        : ((event.type === 'done' || event.type === 'error') && event.conversationId) ||
+          resolveConversationIdForRequest(event.requestId, state);
 
     if (!conversationId) {
       return;

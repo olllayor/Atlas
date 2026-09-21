@@ -336,6 +336,8 @@ function BetaPage({
   const [testResult, setTestResult] = useState<{ success: boolean; text: string } | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployStep, setDeployStep] = useState<string | null>(null);
+  // Packaged builds cannot ship workers/cloud-sandbox; remote URL + secret still works.
+  const canDeployCloudSandbox = settings?.chat.canDeployCloudSandbox ?? true;
 
   useEffect(() => {
     setWorkerUrl(settings?.chat.cloudSandboxWorkerUrl ?? '');
@@ -528,18 +530,44 @@ function BetaPage({
 
         <SettingsRow
           title="Automated Worker Setup"
-          description="Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler."
+          description={
+            canDeployCloudSandbox
+              ? 'Deploy your Cloud Sandbox worker and provision security secrets to Cloudflare automatically using Wrangler.'
+              : 'In-app deploy needs a source checkout — packaged apps do not bundle the worker. Paste a worker URL and secret below instead.'
+          }
         >
           <div className="flex flex-col gap-2 items-end">
-            <button
-              type="button"
-              onClick={handleAutoDeploy}
-              disabled={isDeploying}
-              className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'motion-spin-steps' : ''}`} />
-              <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
-            </button>
+            {canDeployCloudSandbox ? (
+              <button
+                type="button"
+                onClick={handleAutoDeploy}
+                disabled={isDeploying}
+                className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                <RocketIcon className={`h-3.5 w-3.5 ${isDeploying ? 'motion-spin-steps' : ''}`} />
+                <span>{isDeploying ? 'Deploying to Cloudflare…' : '⚡ Deploy Cloud Sandbox'}</span>
+              </button>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* span: a disabled button swallows pointer events needed for the tooltip. */}
+                  <span className="inline-flex">
+                    <button
+                      type="button"
+                      onClick={handleAutoDeploy}
+                      disabled
+                      className="flex items-center gap-1.5 h-8 rounded-md bg-brand px-3 text-xs font-medium text-brand-foreground transition disabled:opacity-50"
+                    >
+                      <RocketIcon className="h-3.5 w-3.5" />
+                      <span>⚡ Deploy Cloud Sandbox</span>
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Unavailable in packaged builds. Configure a remote worker URL and secret instead.
+                </TooltipContent>
+              </Tooltip>
+            )}
             {deployStep ? (
               <span className="text-2xs text-text-tertiary animate-pulse font-mono">
                 {deployStep}
@@ -717,8 +745,17 @@ function GeneralPage({
         </SettingsRow>
 
         <SettingsRow title="App updates" description={updateDescription(updateState)}>
-          <ActionButton onClick={onUpdateAction} disabled={updateState.status === 'checking'}>
-            <UpdateIcon className={`h-3.5 w-3.5 ${updateState.status === 'checking' ? 'motion-spin-steps' : ''}`} />
+          <ActionButton
+            onClick={onUpdateAction}
+            disabled={updateState.status === 'checking' || updateState.status === 'downloading'}
+          >
+            <UpdateIcon
+              className={`h-3.5 w-3.5 ${
+                updateState.status === 'checking' || updateState.status === 'downloading'
+                  ? 'motion-spin-steps'
+                  : ''
+              }`}
+            />
             <span>{updateLabel}</span>
           </ActionButton>
         </SettingsRow>
@@ -1847,8 +1884,17 @@ function updateDescription(updateState: AppUpdateSnapshot) {
     return `Version ${updateState.latestVersion} is available.`;
   }
 
+  if (updateState.status === 'downloading') {
+    const percent = updateState.progress ? Math.round(updateState.progress.percent) : null;
+    return percent === null
+      ? `Downloading Atlas ${updateState.latestVersion}\u2026`
+      : `Downloading Atlas ${updateState.latestVersion} \u2014 ${percent}%`;
+  }
+
   if (updateState.status === 'downloaded') {
-    return 'An update has finished downloading and is ready to install.';
+    // Unsigned build: Atlas cannot replace itself, so the honest instruction
+    // is the one the disk image is about to show.
+    return `Atlas ${updateState.latestVersion} is in your Downloads folder. Open it and drag Atlas to Applications.`;
   }
 
   if (updateState.status === 'checking') {
@@ -1875,8 +1921,12 @@ function getUpdateLabel(updateState: AppUpdateSnapshot) {
     return 'Download update';
   }
 
+  if (updateState.status === 'downloading') {
+    return 'Downloading\u2026';
+  }
+
   if (updateState.status === 'downloaded') {
-    return 'Restart to install';
+    return 'Open installer';
   }
 
   return 'Check now';

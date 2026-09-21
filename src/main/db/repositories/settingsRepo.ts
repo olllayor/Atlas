@@ -21,6 +21,7 @@ import {
   CONTRAST_MAX,
   CONTRAST_MIN,
   DEFAULT_BORDER_RADIUS,
+  DEFAULT_DIFF_COLOR_SCHEME,
   DEFAULT_SETTINGS_APPEARANCE,
   GLASS_OPACITY_DEFAULT,
   GLASS_OPACITY_MAX,
@@ -50,8 +51,8 @@ import {
   isReasoningEffort,
   isToolPermissionMode
 } from '../../../shared/chatParameters';
-import type { BorderRadiusMode, CredentialStatus, DesignTheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ReduceMotionMode, ThemeColorOverride, ThemeMode } from '../../../shared/contracts';
-import { isDesignTheme } from '../../../shared/contracts';
+import type { BorderRadiusMode, CredentialStatus, DesignTheme, DiffColorScheme, FontFamilyOverride, ProviderCredentialSummary, ProviderId, ReduceMotionMode, ThemeColorOverride, ThemeMode } from '../../../shared/contracts';
+import { isDesignTheme, isDiffColorScheme } from '../../../shared/contracts';
 import type { KeybindingRule } from '../../../shared/keybindings';
 import { decodeKeybindingRules, parseKeybindingRules } from '../../../shared/keybindingSchemas';
 import type { SqliteDatabase } from '../client';
@@ -849,6 +850,21 @@ export class SettingsRepo {
 
   setPersistComposerContextStrip(value: boolean) {
     this.setJsonSetting('appearance.persistComposerContextStrip', value);
+  }
+
+  getDiffColorScheme(): DiffColorScheme {
+    const value = this.getJsonSetting<unknown>(
+      'appearance.diffColorScheme',
+      DEFAULT_SETTINGS_APPEARANCE.diffColorScheme
+    );
+    return isDiffColorScheme(value) ? value : DEFAULT_SETTINGS_APPEARANCE.diffColorScheme;
+  }
+
+  setDiffColorScheme(value: DiffColorScheme) {
+    this.setJsonSetting(
+      'appearance.diffColorScheme',
+      isDiffColorScheme(value) ? value : DEFAULT_DIFF_COLOR_SCHEME
+    );
   }
 
   getKeybindings(): KeybindingRule[] {

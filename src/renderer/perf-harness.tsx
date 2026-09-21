@@ -359,7 +359,9 @@ function Harness() {
               isLoadingOlder={false}
               onOpenSettings={() => {}}
               onSuggestionClick={() => {}}
-              onLoadOlderMessages={async () => {}}
+              onLoadOlderMessages={(conversationId) =>
+                useAppStore.getState().loadOlderMessages(conversationId)
+              }
               onRespondToolApproval={async () => {}}
             />
           </TooltipProvider>

@@ -5,11 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> Releases v0.1.15 through v0.1.18 were cut on `main` and have not been merged
-> back into `dev`, so `dev` still reports version 0.1.14. The entries below
-> describe what shipped; the branch divergence is a separate problem.
-
 ## [Unreleased]
+
+### Added
+- GitHub pull requests in the workbench: list with sort and filters,
+  detail with diffs, checks, comments, review threads, labels, and
+  reviewer requests.
+- Dev-server auto-open hook with browser surface improvements and
+  surface picker groups.
+- Tool-step budget wrap-up: the model is told its remaining step budget
+  so turns finish cleanly instead of dying mid-chain, and the
+  step-limit stop is persisted in the transcript.
+
+### Changed
+- macOS packaging hardened for unsigned distribution with signed and
+  notarized paths when certificates exist, plus post-package verification.
+- Telemetry is opt-in, production sourcemaps are dropped, and native
+  modules unpack from asar.
+- CI runs tests and packages macOS arm64; release builds pin Python 3.11
+  for native rebuilds.
+
+### Fixed
+- OpenCode missing-binary crash restored: the serve spawn fails its own
+  call with a clear ENOENT message while keeping Finder PATH resolution,
+  with regression coverage.
+- Context overflow after partial streaming now persists a structured stop
+  notice instead of throwing the raw provider error mid-transcript.
+- Pull request surfaces use theme contract tokens instead of raw Tailwind
+  palette colors, so status colors follow all five design themes.
+- Fresh dev-server icon fallback reused when the root source is absent.
+- Main crash handlers, SQLite corrupt-file quarantine, Finder PATH for
+  OpenCode and MCP, Cloud Sandbox deploy gate when packaged, and
+  openExternal http allowlist with visual window nav lock.
 
 ## [0.2.1] - 2026-09-08
 
@@ -129,7 +156,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security-oriented Electron architecture with a typed preload bridge.
 - macOS app icon generation and release packaging.
 
-[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/olllayor/Atlas/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/olllayor/Atlas/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/olllayor/Atlas/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/olllayor/Atlas/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/olllayor/Atlas/compare/v0.1.15...v0.1.16

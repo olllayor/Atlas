@@ -13,6 +13,7 @@ import {
   formatContextWindow
 } from '../../../shared/customProviders';
 import { useProvidersStore } from '../../stores/useProvidersStore';
+import { notify } from '../../lib/notify';
 import { AddModelDialog } from './AddModelDialog';
 import { ApiFormatSelect } from './ApiFormatSelect';
 import { ApiKeyInput } from './ApiKeyInput';
@@ -136,6 +137,12 @@ export function ProviderForm({
     setTestState({ kind: 'testing' });
     const result = await testConnection(probe);
     setTestState(result.ok ? { kind: 'ok', message: result.message } : { kind: 'failed', message: result.message });
+    notify({
+      tone: result.ok ? 'success' : 'error',
+      title: result.ok ? 'Connection ok' : 'Connection failed',
+      description: result.message,
+      id: 'provider-form-test'
+    });
   };
 
   const handleSubmit = async () => {

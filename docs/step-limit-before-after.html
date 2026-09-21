@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Step-limit: before vs after</title>
+<style>
+  :root {
+    --bg: #000;
+    --ink: #fff;
+    --muted: #8a8a8a;
+    --line: #222;
+    --before: #f07178;
+    --after: #7fd99a;
+    --warn: #e6c07b;
+    --accent: #61afef;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 40px 28px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    color: var(--muted);
+    margin: 0 0 36px;
+    max-width: 72ch;
+  }
+  h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 40px 0 14px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  .panel {
+    border: 1px solid var(--line);
+    border-radius: 0;
+    padding: 18px 18px 16px;
+    background: #050505;
+  }
+  .panel h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tag {
+    font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 3px 6px;
+    border: 1px solid currentColor;
+  }
+  .tag.before { color: var(--before); }
+  .tag.after { color: var(--after); }
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 4px;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .step:last-child { border-bottom: 0; }
+  .n {
+    font: 12px/22px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    text-align: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+  }
+  .step.bad .n { color: var(--before); border-color: var(--before); }
+  .step.good .n { color: var(--after); border-color: var(--after); }
+  .step strong { display: block; font-weight: 600; }
+  .step span { color: var(--muted); display: block; margin-top: 2px; }
+  .code {
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0a0a0a;
+    border: 1px solid var(--line);
+    padding: 12px 14px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    color: #c8c8c8;
+    margin: 10px 0 0;
+  }
+  .code .c { color: #6a737d; }
+  .code .k { color: var(--accent); }
+  .code .s { color: #98c379; }
+  .code .w { color: var(--warn); }
+  .code .b { color: var(--before); }
+  .code .g { color: var(--after); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  td.num {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap;
+  }
+  .cite {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .cite code {
+    font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #aaa;
+  }
+  .callout {
+    border-left: 2px solid var(--accent);
+    padding: 10px 14px;
+    margin: 20px 0;
+    color: #c8c8c8;
+  }
+  .callout strong { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tool-step budget: before vs after</h1>
+  <p class="lede">
+    Atlas agents were dying mid-task because <code>stepCountIs(64)</code> (32 on lightweight models)
+    hard-stops the stream with no wrap-up and no durable reason. Claude Code’s Agent SDK
+    solves this with <code>taskBudget</code>: the model knows remaining budget and finishes cleanly.
+    This change ports that idea, then persists the stop if the cap is still hit.
+  </p>
+
+  <h2>The two paths</h2>
+  <div class="grid">
+    <div class="panel">
+      <h3><span class="tag before">BEFORE</span> Silent mid-task stop</h3>
+      <div class="flow">
+        <div class="step bad">
+          <div class="n">1</div>
+          <div>
+            <strong>Agent tools through the task</strong>
+            <span>64 tool steps (32 if flash/mini/haiku/turbo)</span>
+          </div>
+        </div>
+        <div class="step bad">
+          <div class="n">2</div>
+          <div>
+            <strong>Budget burns with no signal</strong>
+            <span>Model never told remaining steps. Keeps exploring.</span>
+          </div>
+        </div>
+        <div class="step bad">
+          <div class="n">3</div>
+          <div>
+            <strong>stepCountIs() hard-stops</strong>
+            <span>Stream ends mid-chain. No final summary.</span>
+          </div>
+        </div>
+        <div class="step bad">
+          <div class="n">4</div>
+          <div>
+            <strong>Notice is ephemeral</strong>
+            <span>“Reached the step limit…” lives only on the live draft.</span>
+          </div>
+        </div>
+        <div class="step bad">
+          <div class="n">5</div>
+          <div>
+            <strong>Turn settles, reason gone</strong>
+            <span>User sees a completed-looking answer that just stopped.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3><span class="tag after">AFTER</span> Budget-aware wrap-up</h3>
+      <div class="flow">
+        <div class="step good">
+          <div class="n">1</div>
+          <div>
+            <strong>Agent tools through the task</strong>
+            <span>Same 64 / 32 hard cap. Safety net unchanged.</span>
+          </div>
+        </div>
+        <div class="step good">
+          <div class="n">2</div>
+          <div>
+            <strong>Wrap-up window opens</strong>
+            <span>Last 8 steps (or 25%): remaining budget injected each step.</span>
+          </div>
+        </div>
+        <div class="step good">
+          <div class="n">3</div>
+          <div>
+            <strong>Model finishes or reports</strong>
+            <span>Near 1–2 left: stop new work, write progress + next steps.</span>
+          </div>
+        </div>
+        <div class="step good">
+          <div class="n">4</div>
+          <div>
+            <strong>If cap still hits: notice persists</strong>
+            <span>Appended as trailing text part on the assistant message.</span>
+          </div>
+        </div>
+        <div class="step good">
+          <div class="n">5</div>
+          <div>
+            <strong>Transcript and next turn keep the reason</strong>
+            <span>User sees why. Model history can continue from there.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>Claude Code reference.</strong>
+    <code>taskBudget</code> in <code>@anthropic-ai/claude-agent-sdk</code>:
+    “the model is made aware of its remaining token budget so it can pace tool use and wrap up before the limit.”
+    Hitting <code>maxTurns</code> returns typed <code>error_max_turns</code>, not silence.
+  </div>
+
+  <h2>What changed in code</h2>
+  <div class="grid">
+    <div class="panel">
+      <h3>streamCore.ts · prepareStep</h3>
+      <div class="code"><span class="c">// BEFORE: only repeat-guard, else undefined</span>
+prepareStep: repeatGuard
+  ? ({ messages, stepNumber }) => { ... }
+  : <span class="b">undefined</span>
+
+<span class="c">// AFTER: always on when tools exist</span>
+prepareStep: hasTools
+  ? ({ messages, stepNumber }) => {
+      let next = messages;
+      <span class="k">if</span> (repeatGuard) next = repeatGuard.inject(...)
+      <span class="k">if</span> (<span class="g">shouldWarnStepBudget</span>(stepNumber, limit))
+        next = [...next,
+          <span class="g">buildStepBudgetReminder</span>(remaining, limit)]
+      return next === messages ? {} : { messages: next }
+    }
+  : undefined</div>
+    </div>
+    <div class="panel">
+      <h3>ChatSessionRuntime.ts · onNotice</h3>
+      <div class="code"><span class="c">// BEFORE: live draft only</span>
+onNotice: (event) => {
+  emitEvent({ type: <span class="s">'notice'</span>, ...event })
+}
+
+<span class="c">// AFTER: notice also becomes a text part</span>
+onNotice: (event) => {
+  emitEvent({ type: <span class="s">'notice'</span>, ...event })
+  <span class="k">if</span> (event.code === <span class="s">'step-limit-exhausted'</span>) {
+    turnState.parts = [...turnState.parts, {
+      id: <span class="s">`notice-step-limit-${requestId}`</span>,
+      type: <span class="s">'text'</span>,
+      text: event.message,
+      state: <span class="s">'done'</span>,
+    }]
+  }
+}</div>
+    </div>
+  </div>
+
+  <h2>Budget numbers</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Model tier</th>
+        <th>Hard cap</th>
+        <th>Wrap-up window</th>
+        <th>Warn starts at step</th>
+        <th>Before</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Standard / heavy</td>
+        <td class="num">64</td>
+        <td class="num">8 steps</td>
+        <td class="num">step 57</td>
+        <td>No warning, silent stop</td>
+      </tr>
+      <tr>
+        <td>Lightweight (flash/mini/haiku/turbo)</td>
+        <td class="num">32</td>
+        <td class="num">8 steps</td>
+        <td class="num">step 25</td>
+        <td>No warning, silent stop</td>
+      </tr>
+      <tr>
+        <td>Tiny test limit (3)</td>
+        <td class="num">3</td>
+        <td class="num">2 steps</td>
+        <td class="num">step 2</td>
+        <td>No warning, silent stop</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>User-visible outcome</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Situation</th>
+        <th>Before</th>
+        <th>After</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Agent wraps up in time</td>
+        <td>N/A (never told to wrap up)</td>
+        <td>Final summary in the message</td>
+      </tr>
+      <tr>
+        <td>Cap still hit</td>
+        <td>Looks like a normal completed stop</td>
+        <td>Trailing text: “Reached the step limit (N)… reply continue”</td>
+      </tr>
+      <tr>
+        <td>Next turn after a stop</td>
+        <td>Model has no stored stop reason</td>
+        <td>Reason is in assistant history</td>
+      </tr>
+      <tr>
+        <td>Live streaming UI</td>
+        <td>Transient draft notice only</td>
+        <td>Same live notice + durable part</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="cite">
+    Files: <code>src/main/ai/providers/streamCore.ts</code>,
+    <code>src/main/ai/core/ChatSessionRuntime.ts</code>,
+    <code>tests/providerStreamCore.test.ts</code>.
+    Commit <code>8072d54</code> on <code>mimo</code>.
+  </p>
+</div>
+</body>
+</html>

@@ -432,7 +432,7 @@ test('offering Atlas tools notices once that opencode runs its own', async () =>
   });
   await adapter.streamChat(request);
 
-  assert.deepEqual(notices, ['opencode.toolsDelegated']);
+  assert.deepEqual(notices, ['provider.toolsDelegated']);
 });
 
 const PERMISSION_ASK = {

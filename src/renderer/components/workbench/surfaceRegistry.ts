@@ -18,6 +18,7 @@ import {
   FileDiff,
   Files,
   GitBranch,
+  GitPullRequest,
   Globe,
   ListTodo,
   TerminalSquare,
@@ -50,9 +51,9 @@ export type SurfaceDefinition = {
   /** One line under the label in the picker. Says what the surface does. */
   description: string;
   /**
-   * Single letter, uppercase. B, T, F and P stay reserved for Browser,
-   * Terminal, Files and Pull request so the picker's muscle memory survives
-   * those landing.
+   * Single letter, uppercase. B, T, F and P belong to Browser, Terminal,
+   * Files and Pull requests, which is the order the picker's muscle memory
+   * was built around.
    */
   shortcut: string;
   icon: LucideIcon;
@@ -180,6 +181,19 @@ export const SURFACE_DEFINITIONS = [
     availability: projectAvailability,
   },
   {
+    kind: 'pullRequests',
+    label: 'Pull requests',
+    description: 'Review this repository’s pull requests.',
+    shortcut: 'P',
+    icon: GitPullRequest,
+    launcher: true,
+    // Same bar as Diff and Git: the listing is read with `gh` inside the
+    // project folder, so there is nothing to run without one. Whether `gh`
+    // itself is installed and signed in is the panel's own answer — it can
+    // name the command that fixes each, which this two-line hint cannot.
+    availability: projectAvailability,
+  },
+  {
     kind: 'agents',
     label: 'Agents',
     description: 'Follow subagents and workflows.',
@@ -200,11 +214,47 @@ export const SURFACE_DEFINITIONS = [
 const DEFINITIONS_BY_KIND = new Map<RightPanelKind, SurfaceDefinition>(
   SURFACE_DEFINITIONS.map((definition) => [definition.kind, definition])
 );
-
 export function surfaceDefinition(kind: RightPanelKind): SurfaceDefinition | undefined {
   return DEFINITIONS_BY_KIND.get(kind);
 }
 
 export function surfaceLabel(kind: RightPanelKind): string {
   return DEFINITIONS_BY_KIND.get(kind)?.label ?? kind;
+}
+
+/**
+ * Work mode has no project folder, so the picker would otherwise open onto a
+ * grid that is half grayed-out IDE cards — technically honest, reads as an
+ * empty product. Grouped instead: the surfaces that work here lead, and the
+ * project-gated ones sit behind a secondary "Needs Code mode" group rather
+ * than interleaved with what the user can actually open.
+ *
+ * Code mode keeps registry order untouched: when everything relevant is
+ * available there is nothing to demote, and re-sorting would only break the
+ * shortcut muscle memory the picker was built around.
+ */
+export const WORK_MODE_LEAD_ORDER: readonly RightPanelKind[] = [
+  'browser',
+  'terminal',
+  'tasks',
+  'agents',
+];
+
+export function groupPickerActions<T extends { kind: RightPanelKind; available: boolean }>(
+  actions: readonly T[],
+  mode: WorkspaceMode
+): { primary: T[]; secondary: T[] } {
+  const available = actions.filter((action) => action.available);
+  const unavailable = actions.filter((action) => !action.available);
+  if (mode === 'code' || unavailable.length === 0) {
+    return { primary: [...actions], secondary: [] };
+  }
+
+  const rank = new Map<RightPanelKind, number>(
+    WORK_MODE_LEAD_ORDER.map((kind, index) => [kind, index])
+  );
+  const lead = [...available].sort(
+    (left, right) => (rank.get(left.kind) ?? 99) - (rank.get(right.kind) ?? 99)
+  );
+  return { primary: lead, secondary: unavailable };
 }

@@ -11,7 +11,7 @@
  * in the same workspace is a merge conflict waiting for a name.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import { ChevronDown, ChevronRight, File, FolderClosed, FolderOpen, RefreshCw, Search, X } from 'lucide-react';
 
@@ -26,6 +26,16 @@ import { buildFileTree, filterFilePaths, flattenFileTree } from './fileTreeModel
 
 /** Beyond this a search result list stops being something you scan. */
 const MAX_SEARCH_RESULTS = 200;
+
+/**
+ * The empty-workspace illustration, lazy so the `motion` runtime (its only
+ * weighty dependency) never reaches the startup bundle. It loads on first
+ * paint of the empty state, which is the only place it is ever shown.
+ */
+const FolderIllustration = lazy(() => import('../ui/folder-component'));
+
+/** `size="sm"` renders the folder on its 0.65× canvas: ~209 wide, ~176 tall. */
+const FOLDER_ILLUSTRATION_HEIGHT = 176;
 
 export type FilesPanelProps = {
   conversationId: string;
@@ -156,10 +166,7 @@ export function FilesPanel({ conversationId, onOpenFile }: FilesPanelProps) {
         ) : loading && entries.length === 0 ? (
           <Message title="Reading the workspace" body="Listing every file the project tracks." />
         ) : entries.length === 0 ? (
-          <Message
-            title="No files to show"
-            body="Attach a project folder to this conversation, or check that the folder is not empty."
-          />
+          <FolderEmptyMessage />
         ) : searching ? (
           <SearchResults
             matches={search.matches}
@@ -301,6 +308,28 @@ function Message({ title, body }: { title: string; body: string }) {
     <div className="flex flex-col items-center justify-center gap-1.5 px-6 py-12 text-center">
       <p className="text-base text-text-secondary">{title}</p>
       <p className="max-w-[36ch] text-sm leading-relaxed text-text-faint">{body}</p>
+    </div>
+  );
+}
+
+/**
+ * The no-files state, with the animated folder as its subject. The folder is
+ * a decorative SVG scene — hover fans the cards, click lifts the flap — so it
+ * stays out of the accessibility tree and the panel's real affordances live
+ * in the toolbar above.
+ */
+function FolderEmptyMessage() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-1 px-6 py-8 text-center">
+      <div style={{ height: FOLDER_ILLUSTRATION_HEIGHT }} className="flex items-center justify-center">
+        <Suspense fallback={null}>
+          <FolderIllustration size="sm" color="black" aria-hidden />
+        </Suspense>
+      </div>
+      <p className="text-base text-text-secondary">No files to show</p>
+      <p className="max-w-[36ch] text-sm leading-relaxed text-text-faint">
+        Attach a project folder to this conversation, or check that the folder is not empty.
+      </p>
     </div>
   );
 }

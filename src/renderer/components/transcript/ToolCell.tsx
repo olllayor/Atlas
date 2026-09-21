@@ -791,6 +791,10 @@ function CellDetail({
   if (detail.type === 'error') {
     return (
       <div className={cn(DETAIL_INDENT, 'mt-1')}>
+        {/* The continuation carries the full command for compacted long
+            commands (t3code PR #10898) — a failed run must not hide the
+            command that failed. Null when there is no continuation. */}
+        <CommandContinuation cell={cell} />
         <pre className="app-code-text scrollbar-auto-hide m-0 min-w-0 overflow-x-auto whitespace-pre leading-[1.55] text-error">
           {detail.text}
         </pre>

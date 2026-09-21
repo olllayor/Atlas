@@ -76,7 +76,8 @@ import { ToolCellList } from './transcript/ToolCell';
 import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
-import { countCompletedAssistantTurns, deriveJumpState } from './jumpToLatest';
+import { decideAutoLoad } from '../lib/chatAutoLoad';
+import { deriveJumpState } from './jumpToLatest';
 import { filterHistoryMessages } from './chatHistoryFilter';
 import { AtlasMark } from './ui/atlas-mark';
 import { AtlasLoader, AtlasLoaderRow } from './ui/atlas-loader';
@@ -99,6 +100,7 @@ import {
   type CiteDomRange,
   type CiteSourceAnchor,
 } from '../lib/citeSelection';
+import { mathAwareSelectionText } from '../lib/mathSelection';
 import { CiteToolbar } from './CiteToolbar';
 import { CiteCommentEditor, type CiteCommentAnchorRect } from './CiteCommentEditor';
 import { CiteChip } from './CiteChip';
@@ -790,11 +792,12 @@ function UserExternalLink({ url }: { url: string }) {
   return (
     <MarkdownAnchor
       href={url}
-      // Link text wears the blue; the brand/favicon mark keeps the bubble's
-      // own text token so it follows every theme instead of going blue.
-      // The `:not([class*='text-'])` guard matches the ui-kit convention —
-      // only untinted svgs (the icon) are recolored, never link text.
-      className="text-[#4D9AF6] underline decoration-[#4D9AF6]/60 underline-offset-2 [&_svg:not([class*='text-'])]:text-text-message"
+      // Link text wears the brand-strong token; the brand/favicon mark keeps
+      // the bubble's own text token so it follows every theme instead of
+      // going blue. The `:not([class*='text-'])` guard matches the ui-kit
+      // convention — only untinted svgs (the icon) are recolored, never link
+      // text.
+      className="text-brand-strong underline decoration-brand-strong/60 underline-offset-2 [&_svg:not([class*='text-'])]:text-text-message"
     >
       {url}
     </MarkdownAnchor>
@@ -1557,6 +1560,21 @@ export function ChatWindow({
   const listRef = useRef<HTMLDivElement | null>(null);
   const pendingPrependRef = useRef<{ conversationId: string; previousMessageCount: number } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
+  /** See `decideAutoLoad`: paging re-arms only once the reader leaves the top. */
+  const autoLoadArmedRef = useRef(false);
+  /**
+   * Set on conversation open and whenever a page load fires. Cleared only by
+   * a deliberate user scroll (`useTranscriptScroll.onUserScroll`), never by
+   * `scrollToIndex` or virtualizer size corrections.
+   */
+  const autoLoadNeedsGestureRef = useRef(true);
+  /**
+   * While true, measured row heights do not feed `estimateScaleRef`. A
+   * prepend page is a different height mix than the live edge the scale was
+   * calibrated on; letting those measurements collapse the scale rewrote
+   * every remaining estimate and undershot the restore into the load zone.
+   */
+  const estimateScaleFrozenRef = useRef(false);
   /** Running calibration of `estimateHistoryRowHeight` against reality. */
   const estimateScaleRef = useRef({ measured: 0, estimated: 0, count: 0 });
 
@@ -1671,6 +1689,12 @@ export function ChatWindow({
   const { userHasScrolledRef, isScrolledUp } = useTranscriptScroll({
     element: scrollNode,
     onUserScrollUp: stopScroll,
+    onUserScroll: () => {
+      // A real gesture is the only thing that may re-arm paging after a
+      // programmatic restore. Virtualizer corrections never reach here.
+      autoLoadNeedsGestureRef.current = false;
+      estimateScaleFrozenRef.current = false;
+    },
     showAt: JUMP_SHOW_PX,
     hideAt: JUMP_HIDE_PX,
   });
@@ -1715,7 +1739,7 @@ export function ChatWindow({
       const index = Number(element.getAttribute('data-index'));
       const message = Number.isFinite(index) ? visibleMessages[index] : undefined;
 
-      if (message && size > 0) {
+      if (message && size > 0 && !estimateScaleFrozenRef.current) {
         const stats = estimateScaleRef.current;
         stats.measured += size;
         stats.estimated += estimateHistoryRowHeight(message, rawTranscript);
@@ -2009,6 +2033,11 @@ export function ChatWindow({
     estimateScaleRef.current = { measured: 0, estimated: 0, count: 0 };
     pendingPrependRef.current = null;
     lastAutoLoadCursorRef.current = null;
+    autoLoadArmedRef.current = false;
+    // The open-at-bottom pin is programmatic. Paging stays disarmed until
+    // the reader actually scrolls.
+    autoLoadNeedsGestureRef.current = true;
+    estimateScaleFrozenRef.current = false;
 
     const element = scrollRef.current;
     if (!element || !conversationId) {
@@ -2078,9 +2107,10 @@ export function ChatWindow({
    * The old implementation diffed `scrollHeight` before and after, which is
    * measured against *estimated* heights for the newly inserted rows and
    * therefore drifted. Re-anchoring on the message that used to be first is
-   * exact: it was already measured, and any correction as the prepended
-   * rows measure is absorbed by
-   * `shouldAdjustScrollPositionOnItemSizeChange`.
+   * exact: it was already measured, and any correction as the prepended rows
+   * measure is absorbed by the virtualizer's own size-change adjustment,
+   * which shifts `scrollTop` by the delta of any row that resizes above the
+   * current offset.
    */
   useLayoutEffect(() => {
     const pending = pendingPrependRef.current;
@@ -2110,44 +2140,77 @@ export function ChatWindow({
       conversationId: detail.conversation.id,
       previousMessageCount: historyMessages.length,
     };
+    // Prepended rows must not rewrite the live-edge scale; unfreeze on the
+    // next deliberate user scroll (see `useTranscriptScroll`).
+    estimateScaleFrozenRef.current = true;
+    autoLoadNeedsGestureRef.current = true;
 
     await onLoadOlderMessages(detail.conversation.id);
   }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages]);
 
+  /*
+    Everything the scroll listener below needs, refreshed every render. The
+    listener binds once per scroller; reading through a ref is what keeps it
+    from being torn down and rebuilt on every stream flush.
+  */
+  const autoLoadStateRef = useRef({ folded, hasOlder, isLoadingOlder, nextCursor, loadOlderMessages });
+  autoLoadStateRef.current = { folded, hasOlder, isLoadingOlder, nextCursor, loadOlderMessages };
+
   /**
-   * Auto-load older history when the top of the list comes into view —
-   * gated on the user having actually scrolled. `startIndex === 0` is true
-   * on the first paint of every thread, which used to fire a page load
-   * nobody asked for on every conversation open.
+   * Auto-load older history when the reader brings the top of the list into
+   * view.
+   *
+   * This is a scroll listener and not a render effect on purpose. The
+   * virtualizer's `range` is derived from `scrollOffset`, which it only
+   * updates when the DOM emits a scroll event — so inside an effect it still
+   * describes where the list was *before* the layout effect above moved it.
+   * Reading `startIndex === 0` there meant the restore's `scrollToIndex` was
+   * invisible to this check: every prepend re-fired instantly on stale state
+   * and drained the whole conversation in one pass, stranding the reader at
+   * the head of the thread. On the scroll event `scrollTop` is, by
+   * construction, current.
+   *
+   * Re-arm additionally requires `autoLoadNeedsGestureRef === false`. That
+   * is what stops the restore's own `scrollToIndex` (which lands past
+   * `OLDER_REARM_PX` on estimates) from arming the next page.
    */
   useEffect(() => {
-    // While folded, the top of the *visible* list is the fold boundary, not
-    // the top of the history — auto-loading there would page messages the
-    // fold is hiding. Expansion is what reopens the paging path.
-    if (folded) {
-      return;
-    }
-    if (!hasOlder || isLoadingOlder || !nextCursor || visibleRange?.startIndex !== 0) {
-      return;
-    }
-    if (!userHasScrolledRef.current) {
-      return;
-    }
-    if (lastAutoLoadCursorRef.current === nextCursor) {
+    if (!scrollNode) {
       return;
     }
 
-    lastAutoLoadCursorRef.current = nextCursor;
-    void loadOlderMessages();
-  }, [
-    folded,
-    hasOlder,
-    isLoadingOlder,
-    nextCursor,
-    loadOlderMessages,
-    userHasScrolledRef,
-    visibleRange?.startIndex,
-  ]);
+    const onScroll = () => {
+      const { folded: isFolded, hasOlder: more, isLoadingOlder: loading, nextCursor: cursor, loadOlderMessages: load } =
+        autoLoadStateRef.current;
+
+      const action = decideAutoLoad({
+        scrollTop: scrollNode.scrollTop,
+        armed: autoLoadArmedRef.current,
+        needsUserGesture: autoLoadNeedsGestureRef.current,
+        folded: isFolded,
+        hasOlder: more,
+        isLoadingOlder: loading,
+        cursor,
+        lastCursor: lastAutoLoadCursorRef.current,
+      });
+
+      if (action.type === 'ignore') {
+        return;
+      }
+      if (action.type === 'rearm') {
+        autoLoadArmedRef.current = true;
+        return;
+      }
+
+      autoLoadArmedRef.current = false;
+      autoLoadNeedsGestureRef.current = true;
+      lastAutoLoadCursorRef.current = cursor;
+      void load();
+    };
+
+    scrollNode.addEventListener('scroll', onScroll, { passive: true });
+    return () => scrollNode.removeEventListener('scroll', onScroll);
+  }, [scrollNode]);
 
   /**
    * Post-send.
@@ -2277,45 +2340,23 @@ export function ChatWindow({
   }, [draft?.requestId, scrollToBottom, hasBlockingSelection]);
 
   // ---------------------------------------------------------------------
-  // Jump-to-latest / unread
+  // Jump-to-latest
   // ---------------------------------------------------------------------
 
-  const completedAssistantCount = useMemo(() => countCompletedAssistantTurns(historyMessages), [historyMessages]);
-
-  /**
-   * What counts as seen. Tracks the arrival count while the view is following
-   * the live edge, then freezes the moment the user reads away from it, so
-   * "unread" is growth since that point.
-   */
-  const seenAssistantCountRef = useRef(0);
-  const [seenAssistantCount, setSeenAssistantCount] = useState(0);
-
-  const { isDetached, unreadCount } = deriveJumpState({
+  /*
+    The pill counts rows the jump would skip: everything after the last
+    visible virtualizer row, plus the live streaming row (which lives outside
+    the list). `visibleRange.endIndex` is the viewport range, not the
+    overscanned render set, so a partially visible last row already counts as
+    seen.
+  */
+  const { isDetached, messagesBelow } = deriveJumpState({
     isScrolledUp,
     isAtBottom,
-    completedAssistantCount,
-    seenAssistantCount,
+    messageCount: visibleMessages.length,
+    lastVisibleIndex: visibleRange?.endIndex ?? -1,
+    hasStreamingRow: isStreaming,
   });
-
-  useEffect(() => {
-    // A conversation switch starts from what is on screen; the previous
-    // thread's backlog is not unread in this one.
-    seenAssistantCountRef.current = completedAssistantCount;
-    setSeenAssistantCount(completedAssistantCount);
-    // Deliberately keyed on the conversation alone: this is the reset, and must
-    // not re-run as the count changes within a conversation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
-
-  useEffect(() => {
-    if (isDetached || seenAssistantCountRef.current === completedAssistantCount) {
-      return;
-    }
-
-    // Attached, so everything that has landed has been seen.
-    seenAssistantCountRef.current = completedAssistantCount;
-    setSeenAssistantCount(completedAssistantCount);
-  }, [completedAssistantCount, isDetached]);
 
   // ---------------------------------------------------------------------
   // Turn-completion announcement
@@ -2564,7 +2605,9 @@ export function ChatWindow({
   const handleContextMenu = useCallback(
     async (event: React.MouseEvent) => {
       const selection = window.getSelection();
-      const rawText = selection?.toString() ?? '';
+      // Rendered equations contribute their TeX source, not flattened
+      // KaTeX glyphs (t3code PR #10698).
+      const rawText = mathAwareSelectionText(selection);
       if (!rawText.trim()) {
         return;
       }
@@ -2769,7 +2812,11 @@ export function ChatWindow({
         )}
       >
         <ArrowDown className="h-3.5 w-3.5" />
-        <span>{unreadCount > 0 ? `${unreadCount} new` : 'Latest'}</span>
+        <span>
+          {messagesBelow > 0
+            ? `${messagesBelow} message${messagesBelow === 1 ? '' : 's'}`
+            : 'Latest'}
+        </span>
       </button>
 
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">

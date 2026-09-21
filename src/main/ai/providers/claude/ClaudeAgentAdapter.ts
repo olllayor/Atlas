@@ -330,6 +330,17 @@ export class ClaudeAgentAdapter implements ProviderAdapter {
       });
     }
 
+    // Delegation boundary (parity with opencode/acp adapters): Claude runs its
+    // own tools and sampling for this turn; Atlas toolset stays behind.
+    // Non-ephemeral only so title/summary scratch calls stay silent.
+    if (!ephemeral && request.tools && Object.keys(request.tools).length > 0) {
+      request.onNotice?.({
+        code: 'provider.toolsDelegated',
+        level: 'info',
+        message: 'Claude runs its own tools for this turn; Atlas shows them as they happen.'
+      });
+    }
+
     const abortController = new AbortController();
     let liveQuery: Query | null = null;
     const onAbort = () => {

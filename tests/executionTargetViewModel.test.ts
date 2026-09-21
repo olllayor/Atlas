@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  contextStripSummaryText,
   executionTargetChipText,
   executionTargetRows,
   revealTargetForChip,
@@ -102,4 +103,20 @@ test('reveal follows a real worktree; every other state reveals the project root
   // Cloud (even with a leftover worktree) → project.
   assert.equal(revealTargetForChip({ executionTarget: 'cloud', hasWorktree: true }), 'project');
   assert.equal(revealTargetForChip({ executionTarget: 'cloud', hasWorktree: false }), 'project');
+});
+
+test('minimal strip summary joins folder, execution and branch, dropping empties', () => {
+  assert.equal(
+    contextStripSummaryText({ projectTitle: 'Atlas', executionLabel: 'Local', branch: 'main' }),
+    'Atlas · Local · main'
+  );
+  assert.equal(
+    contextStripSummaryText({ projectTitle: 'Atlas', executionLabel: null, branch: null }),
+    'Atlas'
+  );
+  assert.equal(
+    contextStripSummaryText({ projectTitle: '  ', executionLabel: 'Cloud', branch: '' }),
+    'Cloud'
+  );
+  assert.equal(contextStripSummaryText({}), '');
 });

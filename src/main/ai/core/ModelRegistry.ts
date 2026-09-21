@@ -18,7 +18,13 @@ export class ModelRegistry {
      * Read lazily so a provider added at runtime shows up without rebuilding
      * the registry object graph.
      */
-    private readonly customProvidersRepo: Pick<CustomProvidersRepo, 'list'> | null = null
+    private readonly customProvidersRepo: Pick<CustomProvidersRepo, 'list'> | null = null,
+    /**
+     * Whether in-app Cloud Sandbox deploy can run. Production wires
+     * `canDeployCloudSandboxWorker` (false in packaged builds). Defaults true
+     * so headless/unit contexts get a complete summary without Electron.
+     */
+    private readonly canDeployCloudSandboxFn: () => boolean = () => true
   ) {}
 
   /**
@@ -221,6 +227,7 @@ export class ModelRegistry {
         pointerCursors: this.settingsRepo.getPointerCursors(),
         rawTranscript: this.settingsRepo.getRawTranscript(),
         persistComposerContextStrip: this.settingsRepo.getPersistComposerContextStrip(),
+        diffColorScheme: this.settingsRepo.getDiffColorScheme(),
       },
       keyboard: {
         keybindings: this.settingsRepo.getKeybindings()
@@ -243,6 +250,7 @@ export class ModelRegistry {
         // needs to know whether one is configured so the UI can afford the
         // correct affordance (show/hide the "Clear" button, etc.).
         cloudSandboxHasSecret: this.settingsRepo.hasCloudSandboxWorkerSecret(),
+        canDeployCloudSandbox: this.canDeployCloudSandboxFn(),
       },
       showFreeOnlyByDefault: this.settingsRepo.getShowFreeOnlyByDefault(),
       pluginsBetaEnabled: this.settingsRepo.getPluginsBetaEnabled(),

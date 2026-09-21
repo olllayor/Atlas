@@ -1,39 +1,42 @@
-import type { ChatMessage } from '../../shared/contracts';
-
 /**
  * When the jump-to-latest pill shows, and what number it wears.
  *
- * Extracted from `ChatWindow` because both halves had a bug that was invisible
- * inside a component: the pill appeared over threads nobody had scrolled, and
- * it counted the user's own message as unread.
+ * Extracted from `ChatWindow` so the detached state and the below-viewport
+ * count stay pure and testable.
  */
 
 export type JumpState = {
   /** The user is reading history and the view is not following the live edge. */
   isDetached: boolean;
-  /** Assistant replies that landed while detached. */
-  unreadCount: number;
+  /**
+   * Transcript rows the user would land past by jumping: history after the
+   * last visible virtualizer row, plus the live streaming row when present.
+   */
+  messagesBelow: number;
 };
 
 /**
- * Assistant turns that have *finished*.
+ * How many transcript rows sit at or after `lastVisibleIndex + 1`.
  *
- * The transcript's message count is the wrong basis. Sending grows it by two in
- * one commit — the optimistic user row plus the assistant row opened for the
- * reply — so a message-count anchor scored "2 new" for text the user had just
- * typed and an answer streaming in front of them. Neither is news:
- *
- * - the user's own send is theirs, and is never an assistant row;
- * - the reply still streaming is visibly happening, and is not yet `complete`.
+ * `lastVisibleIndex` is the virtualizer's visible-range end (not the
+ * overscanned render list), so a partially visible last row is already
+ * "seen" and is not counted below. `-1` means nothing has been rendered yet.
  */
-export function countCompletedAssistantTurns(messages: Pick<ChatMessage, 'role' | 'status'>[]): number {
-  let count = 0;
-  for (const message of messages) {
-    if (message.role === 'assistant' && message.status === 'complete') {
-      count += 1;
-    }
+export function countMessagesBelowViewport({
+  messageCount,
+  lastVisibleIndex,
+  hasStreamingRow = false,
+}: {
+  messageCount: number;
+  lastVisibleIndex: number;
+  hasStreamingRow?: boolean;
+}): number {
+  if (messageCount <= 0) {
+    return hasStreamingRow ? 1 : 0;
   }
-  return count;
+
+  const historyBelow = Math.max(0, messageCount - 1 - lastVisibleIndex);
+  return historyBelow + (hasStreamingRow ? 1 : 0);
 }
 
 /**
@@ -49,18 +52,22 @@ export function countCompletedAssistantTurns(messages: Pick<ChatMessage, 'role' 
 export function deriveJumpState({
   isScrolledUp,
   isAtBottom,
-  completedAssistantCount,
-  seenAssistantCount,
+  messageCount,
+  lastVisibleIndex,
+  hasStreamingRow = false,
 }: {
   isScrolledUp: boolean;
   isAtBottom: boolean;
-  completedAssistantCount: number;
-  seenAssistantCount: number;
+  messageCount: number;
+  lastVisibleIndex: number;
+  hasStreamingRow?: boolean;
 }): JumpState {
   const isDetached = isScrolledUp && !isAtBottom;
 
   return {
     isDetached,
-    unreadCount: isDetached ? Math.max(0, completedAssistantCount - seenAssistantCount) : 0,
+    messagesBelow: isDetached
+      ? countMessagesBelowViewport({ messageCount, lastVisibleIndex, hasStreamingRow })
+      : 0,
   };
 }

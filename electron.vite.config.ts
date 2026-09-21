@@ -7,10 +7,16 @@ import { visualizer } from 'rollup-plugin-visualizer';
 
 dotenv.config();
 
+// Bundle stats only when explicitly requested; otherwise no stats.html lands in
+// out/renderer (and therefore never in a package).
+const isAnalyze = process.env.ANALYZE === '1' || process.env.ANALYZE === 'true';
+
 export default defineConfig({
   main: {
     build: {
-      sourcemap: true,
+      // Production packages must not ship maps (also excluded via package.json
+      // build.files). Dev debugging uses electron-vite dev, not out/.
+      sourcemap: false,
       externalizeDeps: {
         exclude: ['@opencode-ai/sdk']
       },
@@ -29,7 +35,7 @@ export default defineConfig({
   },
   preload: {
     build: {
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         output: {
           format: 'cjs',
@@ -44,7 +50,9 @@ export default defineConfig({
     plugins: [
       react(),
       tailwindcss(),
-      visualizer({ filename: 'out/renderer/stats.html', open: false, gzipSize: true })
+      ...(isAnalyze
+        ? [visualizer({ filename: 'out/renderer/stats.html', open: false, gzipSize: true })]
+        : [])
     ],
     resolve: {
       alias: {

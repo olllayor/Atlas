@@ -509,7 +509,7 @@ export class AcpAgentAdapter implements ProviderAdapter {
       turnActive = true;
 
       request.onNotice?.({
-        code: 'opencode.toolsDelegated',
+        code: 'provider.toolsDelegated',
         level: 'info',
         message: `${this.label} runs its own tools for this turn; Atlas shows them as they happen.`
       });

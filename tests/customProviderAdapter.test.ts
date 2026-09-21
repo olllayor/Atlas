@@ -4,7 +4,8 @@ import test from 'node:test';
 import {
   buildAuthHeaders,
   buildModelsUrl,
-  parseDiscoveredModels
+  parseDiscoveredModels,
+  testCustomProviderModel
 } from '../src/main/ai/providers/customProvider.js';
 
 // Runtime-built keys avoid static scanner false-positives in test fixtures.
@@ -106,4 +107,16 @@ test('parseDiscoveredModels survives malformed payloads', () => {
   }
 
   assert.deepEqual(parseDiscoveredModels('chat-completions', { data: [{ object: 'model' }, { id: 42 }] }), []);
+});
+
+test('model smoke test fails loud on an empty model id without hitting the network', async () => {
+  const result = await testCustomProviderModel({
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: '',
+    modelId: '   '
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.latencyMs, 0);
+  assert.match(result.message, /model id/i);
 });

@@ -574,6 +574,6 @@ test('missing binary rejects the connect instead of an uncaught exception', asyn
   // A spawn that never happens emits `error` and no `exit` — without a
   // listener that is an uncaught exception in the main process.
   child.emit('error', Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }));
-  await assert.rejects(connecting, /spawn opencode ENOENT/);
+  await assert.rejects(connecting, /spawn .*opencode ENOENT/);
   await harness.runtime.shutdown().catch(() => undefined);
 });

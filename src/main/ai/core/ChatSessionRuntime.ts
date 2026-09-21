@@ -37,6 +37,7 @@ import {
   TOOL_USE_SYSTEM_PROMPT,
   createBuiltInTools,
   describeAgentInstructionsForPrompt,
+  describeEffectiveToolsForPrompt,
   describeToolPermissionsForPrompt,
   describeWorkspaceModeForPrompt
 } from '../tools/builtInTools';
@@ -56,6 +57,7 @@ import { formatToolError } from '../tools/ToolErrorFormatter';
 import type { SpillStore } from '../tools/spill/SpillStore';
 import { applySpillPolicy } from '../tools/spill/spillPolicy';
 import { applyTimeoutPolicy } from '../guards/timeoutPolicy';
+import { resolveHarnessPromptHint } from './harnessProfiles';
 import { logger, startTimer } from '../../observability/logger';
 import { MissingCredentialError, computeRetryDelayMs, normalizeError, sleep } from './ErrorNormalizer';
 import type { ProviderAdapter, ProviderStreamResult } from './ProviderAdapter';
@@ -1038,7 +1040,9 @@ export class ChatSessionRuntime {
       siteTools != null,
       toolPermissionMode,
       workspace,
-      visualsEnabled
+      visualsEnabled,
+      request.enableTools && tools ? Object.keys(tools).sort() : [],
+      request.modelId
     );
     const systemTokens = estimateTextTokens(baseSystemPrompt);
     // Mentioned skill bodies no longer ride in the system prompt; they are
@@ -1144,7 +1148,9 @@ export class ChatSessionRuntime {
     siteToolsActive: boolean,
     toolPermissionMode: ToolPermissionMode = DEFAULT_TOOL_PERMISSION_MODE,
     workspace: ToolWorkspace = DEFAULT_TOOL_WORKSPACE,
-    visualsEnabled = false
+    visualsEnabled = false,
+    effectiveToolNames: string[] = [],
+    modelId?: string
   ) {
     // The Sites instructions only ship when the Sites tools do, so a turn that
     // did not opt in is not nudged toward building one.
@@ -1159,6 +1165,7 @@ export class ChatSessionRuntime {
       : null;
     // Tell the model what it may actually do, so it does not plan around a tool
     // that was withheld from its tool set.
+    const effectiveToolsPrompt = describeEffectiveToolsForPrompt(effectiveToolNames);
     // Listed only when the tools are, because `load_skill` is the only way to
     // act on the list and it ships with the rest of the tool set.
     const skillsPrompt =
@@ -1194,6 +1201,12 @@ export class ChatSessionRuntime {
       SESSION_SEARCH_SYSTEM_PROMPT,
       describeWorkspaceModeForPrompt(workspace.mode, workspace),
       describeToolPermissionsForPrompt(toolPermissionMode),
+      // Per-model hint: only the lightweight tier speaks today, steering
+      // small models away from broad sweeps at the source. Placed with the
+      // other Atlas-owned behavioral blocks, before the effective tool list
+      // and project instructions, so cache-stable per model.
+      ...(modelId && resolveHarnessPromptHint(modelId) ? [resolveHarnessPromptHint(modelId) as string] : []),
+      ...(effectiveToolsPrompt ? [effectiveToolsPrompt] : []),
       ...(skillsPrompt ? [skillsPrompt] : []),
       ...(agentInstructionsPrompt ? [agentInstructionsPrompt] : [])
     ].join('\n\n');
@@ -1485,6 +1498,20 @@ export class ChatSessionRuntime {
       const combinedNotices = [...jobNotices, ...subagentNotices];
       const baseHistory = messagesOverride ?? this.selectModelHistory(request.conversationId);
       const history = combinedNotices.length > 0 ? [...baseHistory, ...combinedNotices] : baseHistory;
+      // Shared by the budget and by mid-stream context-pressure warnings, so
+      // the reminder measures against the same floor the split already used.
+      const fixedFloorTokens =
+        estimateTextTokens(
+          this.buildSystemPrompt(
+            request.enableTools,
+            siteTools != null,
+            toolPermissionMode,
+            workspace,
+            visualsEnabled,
+            request.enableTools && tools ? Object.keys(tools).sort() : [],
+            request.modelId
+          )
+        ) + (tools ? estimateToolDefinitionTokens(tools) : 0);
       const modelInput = this.contextManager.buildModelInput({
         conversationId: request.conversationId,
         history,
@@ -1495,16 +1522,7 @@ export class ChatSessionRuntime {
         budget: this.resolveContextBudget({
           modelHints,
           requestedMaxOutputTokens: request.maxOutputTokens,
-          fixedFloorTokens:
-            estimateTextTokens(
-              this.buildSystemPrompt(
-                request.enableTools,
-                siteTools != null,
-                toolPermissionMode,
-                workspace,
-                visualsEnabled
-              )
-            ) + (tools ? estimateToolDefinitionTokens(tools) : 0),
+          fixedFloorTokens,
         }).budget,
       });
 
@@ -1556,6 +1574,8 @@ export class ChatSessionRuntime {
             toolPermissionMode,
             workspace,
             visualsEnabled,
+            request.enableTools && tools ? Object.keys(tools).sort() : [],
+            request.modelId
           ) || undefined;
         onRequestHeader?.({
           attempt,
@@ -1573,6 +1593,8 @@ export class ChatSessionRuntime {
           temperature: request.temperature,
           maxOutputTokens: request.maxOutputTokens,
           modelHints,
+          userInstruction: latestUserText(request.messages),
+          fixedFloorTokens,
           reasoningEffort: request.reasoningEffort,
           toolPermissionMode,
           // Only session-based agent providers read this (see ProviderAdapter).
@@ -1680,6 +1702,20 @@ export class ChatSessionRuntime {
           },
           onNotice: (event) => {
             emitEvent({ type: 'notice', requestId, ...event });
+            // Live draft notices vanish when the turn settles. Persist the
+            // step-limit stop as a trailing text part so the transcript and
+            // the next turn's history both keep saying why work stopped.
+            if (event.code === 'step-limit-exhausted') {
+              turnState.parts = [
+                ...turnState.parts,
+                {
+                  id: `notice-step-limit-${requestId}`,
+                  type: 'text',
+                  text: event.message,
+                  state: 'done',
+                },
+              ];
+            }
           },
           onTask: (event) => {
             streamedAnyResponse = true;
@@ -1726,8 +1762,66 @@ export class ChatSessionRuntime {
         };
       } catch (error) {
         const normalized = normalizeError(error);
+        const promptTooLong = this.isPromptTooLongError(error, normalized.message);
+
+        // Overflow after tokens already reached the user cannot be retried
+        // into existence: the provider already rejected the next request with
+        // a full window, and dumping the raw provider error mid-transcript is
+        // the worst possible stop. Persist a structured stop instead, matching
+        // the step-limit contract.
+        if (promptTooLong && streamedAnyResponse && !signal.aborted) {
+          const stopMessage =
+            'Stopped: conversation is too long for this model. ' +
+            'Write a short index from what you already have, or start a new chat.';
+
+          logger.warn('turn.context_overflow_after_stream', {
+            requestId,
+            modelId: request.modelId,
+            attempt,
+            code: normalized.code,
+            historyTokens: modelInput.usage.historyTokens,
+          });
+
+          emitEvent({
+            type: 'notice',
+            requestId,
+            code: 'context-overflow',
+            level: 'warning',
+            message: stopMessage,
+          });
+
+          turnState.parts = [
+            ...turnState.parts,
+            {
+              id: `notice-context-overflow-${requestId}`,
+              type: 'text',
+              text: stopMessage,
+              state: 'done',
+            },
+          ];
+
+          let parts: ChatMessagePart[] = finalizeMessageParts(turnState.parts);
+          if (parts.length === 0) {
+            parts = buildFallbackMessageParts({
+              content: stopMessage,
+              reasoning: '',
+              role: 'assistant',
+            });
+          }
+
+          return {
+            content: stopMessage,
+            reasoning: '',
+            parts,
+            pendingApprovals: [...turnState.pendingApprovals.values()],
+            inputTokens: modelInput.usage.historyTokens,
+            outputTokens: 0,
+            latencyMs: attemptElapsed(),
+          };
+        }
+
         const nextMode: ContextBuildMode | null =
-          !streamedAnyResponse && !signal.aborted && this.isPromptTooLongError(error, normalized.message)
+          !streamedAnyResponse && !signal.aborted && promptTooLong
             ? nextCompactionMode(compactionMode)
             : null;
 

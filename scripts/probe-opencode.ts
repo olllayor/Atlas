@@ -16,7 +16,7 @@ import {
   probeOpenCode
 } from '../src/main/ai/providers/opencode/probeOpenCode.js';
 import { OpenCodeRuntime } from '../src/main/ai/providers/opencode/OpenCodeRuntime.js';
-import { defaultOpenCodeSettings } from '../src/shared/opencodeSettings.js';
+import { defaultOpenCodeSettings } from '../src/shared/opencodeSettingsSchema.js';
 
 function parseArgs(argv: readonly string[]) {
   const args: Record<string, string | boolean> = {};

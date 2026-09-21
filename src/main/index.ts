@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserWindow, app, ipcMain, nativeTheme } from 'electron/main';
+import { BrowserWindow, app, dialog, ipcMain, nativeTheme } from 'electron/main';
 import { shell } from 'electron/common';
 
 import { ChatEngine } from './ai/core/ChatEngine';
@@ -12,6 +12,7 @@ import { CustomProviderService } from './ai/core/CustomProviderService';
 import { migrateLegacyBuiltInProviders } from './ai/core/legacyProviderMigration';
 import { ModelRegistry } from './ai/core/ModelRegistry';
 import { createSiteTools, shouldLoadSiteTools } from './ai/tools/siteTools';
+import { canDeployCloudSandboxWorker } from './ai/tools/sandbox/cloudDeployService';
 import { SpillStore } from './ai/tools/spill/SpillStore';
 import { BackgroundJobRegistry, type JobSnapshot } from './ai/jobs/BackgroundJobRegistry';
 import type { ProviderAdapter } from './ai/core/ProviderAdapter';
@@ -22,6 +23,7 @@ import { registerAttachmentProtocolHandler } from './attachments/attachmentProto
 import { NativeAppIconResolver } from './assets/NativeAppIconResolver';
 import { registerNativeAppIconProtocolHandler } from './assets/nativeAppIconProtocol';
 import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
+import { installCrashHandlers } from './bootstrap/crashHandlers';
 import { registerPrivilegedSchemes } from './bootstrap/privilegedSchemes';
 import { getDockIcon } from './bootstrap/iconPath';
 import { perfMark, perfNow } from './bootstrap/perfTrace';
@@ -121,6 +123,9 @@ const DATABASE_FILENAME = 'atlas-chat.db';
 const LEGACY_DATABASE_FILENAMES = ['atlas-chat.db', 'cheapchat.db'];
 const LEGACY_USER_DATA_DIRECTORIES = ['Atlas', 'CheapChat', 'cheapchat'];
 
+// Before any other side effect: a throw during a later import still exits
+// cleanly and leaves a log line instead of a zombie main process.
+installCrashHandlers();
 app.setName(APP_NAME);
 
 // Dev-only escape hatch: `ATLAS_REMOTE_DEBUG_PORT=9223 pnpm dev` exposes the
@@ -273,6 +278,19 @@ app.whenReady().then(async () => {
       .map(([providerId]) => providerId)
   );
   perfMark('db:open+schema');
+  if (database.recovery) {
+    // Loud on purpose: quarantine means prior history was set aside, and a
+    // silent empty app is worse than a warning the user can act on.
+    logger.error('db.quarantined', database.recovery);
+    void dialog
+      .showMessageBox({
+        type: 'warning',
+        title: 'Local database recovered',
+        message: 'Atlas could not read its local database and started with a fresh one.',
+        detail: `The previous file was kept as:\n${database.recovery.quarantinedTo}\n\nYour old chat history is preserved in that file but is not loaded.`,
+      })
+      .catch(reportBackgroundFailure('db.quarantine_dialog_failed'));
+  }
   const spillStore = new SpillStore(await resolveSpillsDirectory());
   // One registry for every long-running producer (background bash today;
   // subagents and terminals can register as kinds later). Conversation-fenced:
@@ -324,7 +342,8 @@ app.whenReady().then(async () => {
     database.settings,
     keychain,
     providers,
-    database.customProviders
+    database.customProviders,
+    canDeployCloudSandboxWorker
   );
 
   /**
@@ -615,6 +634,9 @@ app.whenReady().then(async () => {
     // the exit hook is a backstop for anything logged during teardown.
     logger.flushSync();
     ptyService.disposeAll();
+    // An in-flight update download holds a socket open; abort so quit is not
+    // waiting on a multi-hundred-megabyte transfer.
+    updateService.cancelDownload();
     // An `opencode serve` child Atlas spawned outlives the window otherwise.
     void opencodeController.shutdown();
     void localAgentController.shutdown();
@@ -969,7 +991,11 @@ app.whenReady().then(async () => {
   });
   captureFirstLaunchIfNeeded();
   window.once('show', () => {
-    updateService.start();
+    // Auto-update checks only make sense for a packaged build; dev runs
+    // against the working tree and has nothing to update to.
+    if (app.isPackaged) {
+      updateService.start();
+    }
     capturePostHogEvent(POSTHOG_EVENTS.APP_LAUNCHED);
     // Deliberately after the window is up rather than beside the other
     // priming above: these are child processes, and spawning them while the

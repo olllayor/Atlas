@@ -23,6 +23,17 @@ export type ProviderStreamRequest = {
    */
   modelHints?: ModelRuntimeHints;
   /**
+   * The user instruction this turn is answering. Re-injected by the
+   * step-budget wrap-up so a mid-chain stop still produces the required
+   * output format rather than a generic apology.
+   */
+  userInstruction?: string;
+  /**
+   * Token cost already committed by the system prompt and tool schemas.
+   * Combined with per-step message estimates for context-pressure warnings.
+   */
+  fixedFloorTokens?: number;
+  /**
    * Requested thinking budget. Each adapter maps it onto its own wire format;
    * models without a thinking mode ignore it.
    */

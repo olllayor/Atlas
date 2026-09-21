@@ -103,3 +103,19 @@ export function revealTargetForChip(options: {
 }): 'project' | 'worktree' {
   return options.executionTarget === 'worktree' && options.hasWorktree ? 'worktree' : 'project';
 }
+
+/**
+ * The minimal strip's single chip: folder, execution target and branch in one
+ * line, so mid-thread context stays visible without the full pre-flight row.
+ * Empty segments are dropped rather than printed as placeholders.
+ */
+export function contextStripSummaryText(options: {
+  projectTitle?: string | null;
+  executionLabel?: string | null;
+  branch?: string | null;
+}): string {
+  return [options.projectTitle, options.executionLabel, options.branch]
+    .map((segment) => segment?.trim() ?? '')
+    .filter((segment) => segment.length > 0)
+    .join(' · ');
+}

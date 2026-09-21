@@ -59,6 +59,11 @@ const SettingsWorkspaceRoute = lazy(() =>
 const SitesWorkspace = lazy(() =>
   import('./components/sites/SitesWorkspace').then((module) => ({ default: module.SitesWorkspace }))
 );
+const PullRequestsWorkspace = lazy(() =>
+  import('./components/pullRequests/PullRequestsWorkspace').then((module) => ({
+    default: module.PullRequestsWorkspace
+  }))
+);
 const PluginsWorkspace = lazy(() =>
   import('./components/plugins/PluginsWorkspace').then((module) => ({
     default: module.PluginsWorkspace,
@@ -81,6 +86,7 @@ import { usePersistentFlag, useResizablePanel, useViewportWidth } from './hooks/
 import { useIsFullScreen } from './hooks/useIsFullScreen';
 import { computeColumns } from './lib/columns';
 import { useSubagentComposerState } from './hooks/useSubagentComposerState';
+import { useDevServerAutoOpen } from './hooks/useDevServerAutoOpen';
 import { useWorkspaceContext } from './hooks/useWorkspaceContext';
 const VisualGallery = lazy(() =>
   import('./components/ai-elements/visual-gallery').then((module) => ({
@@ -94,6 +100,17 @@ const XAILandingPage = lazy(() =>
 );
 import { AtlasLoader } from './components/ui/atlas-loader';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from './lib/keybindingCommands';
+import {
+  SHORTCUT_BLOCKING_LAYERS,
+  surfaceShortcutActionForKey,
+  surfaceShortcutTargetsTypingContext,
+} from './components/workbench/surfaceShortcuts';
+import {
+  openSurfaceKind,
+  openableSurfaceActions,
+  resolveSurfaceContext,
+  surfaceKindForOpenCommand,
+} from './components/workbench/surfaceOpen';
 import {
   isEditableTarget,
   resolveShortcutCommand,
@@ -325,7 +342,7 @@ export default function App() {
   const onboardingRequestedSettingsRef = useRef(false);
   const wasSettingsViewRef = useRef(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [telemetryEnabled, setTelemetryEnabledState] = useState(true);
+  const [telemetryEnabled, setTelemetryEnabledState] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 60_000);
@@ -411,6 +428,8 @@ export default function App() {
     openSites,
     openPlugins,
     closeSites,
+    openPullRequests,
+    closePullRequests,
     projects,
     refreshProjects,
     attachProject,
@@ -512,6 +531,8 @@ export default function App() {
       openLanding: state.openLanding,
       closeLanding: state.closeLanding,
       openSites: state.openSites,
+      openPullRequests: state.openPullRequests,
+      closePullRequests: state.closePullRequests,
       openPlugins: state.openPlugins,
       closeSites: state.closeSites,
       projects: state.projects,
@@ -569,9 +590,10 @@ export default function App() {
   /**
    * The context strip above the composer is pre-flight chrome — folder,
    * execution target, branch, PR, all there to aim the first message. Once
-   * the conversation has history it collapses to its minimal form (jobs and
-   * plugin-tool chips only): the chips that remain are ones with no other
-   * home, and the slab below gets the composer row to itself.
+   * the conversation has history it collapses to one summary chip (folder ·
+   * execution · branch) with the full controls one click away: the execution
+   * target has no other home, so it must stay reachable mid-thread. Mode and
+   * permission persist separately in the composer's access chip.
    */
 
 
@@ -1317,6 +1339,8 @@ export default function App() {
             !selectedConversationId) ||
           ((definition.command === 'workspace.mode.toggle' || definition.command === 'workspace.project.attach') &&
             (activeView !== 'chat' || !selectedConversationId)) ||
+          (surfaceKindForOpenCommand(definition.command) !== null &&
+            (activeView !== 'chat' || !selectedConversationId)) ||
           (definition.command === 'plugins.open' && !(settings?.pluginsBetaEnabled ?? false)),
         section: definition.section,
         shortcutLabel: shortcutLabelForCommand(resolvedKeybindings, definition.command, {
@@ -1440,6 +1464,19 @@ export default function App() {
       }
 
       openRightPanelSurface('diff');
+      return;
+    }
+
+    // One palette row per surface. Diff is covered by `workbench.review.open`
+    // above, so it has no second row here.
+    const surfaceKind = surfaceKindForOpenCommand(command);
+    if (surfaceKind) {
+      live.setCommandPaletteOpen(false);
+      if (liveActiveView !== 'chat' || !liveSelectedConversationId) {
+        return;
+      }
+
+      openSurfaceKind(liveSelectedConversationId, surfaceKind);
       return;
     }
 
@@ -1748,6 +1785,11 @@ export default function App() {
   }, [appearance.pointerCursors]);
 
   useEffect(() => {
+    document.documentElement.dataset.diffColorScheme =
+      appearance.diffColorScheme === 'blue-orange' ? 'blue-orange' : 'red-green';
+  }, [appearance.diffColorScheme]);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     const apply = () => {
       const reduced = appearance.reduceMotion === 'on' || (appearance.reduceMotion === 'system' && mediaQuery.matches);
@@ -1810,6 +1852,13 @@ export default function App() {
     }
     prevRunningAgentsCountRef.current = runningAgentsCount;
   }, [openRightPanelSurface, runningAgentsCount]);
+
+  /*
+    The preview loop's other half: once an agent has run in this conversation,
+    a newly serving local port opens a Browser surface on it with a toast/undo.
+    Same placement as the agents auto-open above, so the two stay visibly paired.
+  */
+  useDevServerAutoOpen(selectedConversationId, runningAgentsCount);
 
   // Badges (⌘B / ⌘N / ⌘1-9) appear only while the modifier is held, and only
   // after a short hold so a quick ⌘K / ⌘S never flashes the whole sidebar.
@@ -1918,6 +1967,47 @@ export default function App() {
       window.removeEventListener('blur', onWindowBlur);
     };
   }, [keybindingContext, resolvedKeybindings, runCommand, shortcutPlatform]);
+
+  /**
+   * The surfaces' single-letter launchers (B for Browser, T for Terminal, …).
+   *
+   * They used to live in the empty-state picker, so they died the moment any
+   * surface opened. Letters launch surfaces everywhere now, under the same
+   * guards the picker used: typing contexts keep their keystrokes, open
+   * overlays own the keyboard, and unavailable surfaces stay silent. Capture
+   * phase with `stopPropagation` so a claimed letter never also reaches the
+   * keybinding handler below it.
+   */
+  const handleSurfaceShortcut = useEffectEvent((event: KeyboardEvent) => {
+    const live = useAppStore.getState();
+    if (live.activeView !== 'chat') return;
+    if (live.commandPaletteOpen || live.modelPickerOpen) return;
+    const conversationId = live.selectedConversationId;
+    if (!conversationId) return;
+
+    const context = resolveSurfaceContext(conversationId);
+    if (!context) return;
+    const action = surfaceShortcutActionForKey(openableSurfaceActions(context), event);
+    if (!action) return;
+    if (document.querySelector(SHORTCUT_BLOCKING_LAYERS)) return;
+    if (event.target instanceof Element && surfaceShortcutTargetsTypingContext(event.target)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    openSurfaceKind(conversationId, action.kind);
+  });
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      handleSurfaceShortcut(event);
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [handleSurfaceShortcut]);
 
   if (bootstrapping) return <LoadingScreen />;
   if (!initialized || bootstrapError) {
@@ -2084,6 +2174,7 @@ export default function App() {
             if (!(settings?.sitesBetaEnabled ?? false)) return;
             runViewTransition(() => openSites());
           }}
+          onOpenPullRequests={() => runViewTransition(() => openPullRequests())}
           onOpenPlugins={() => runViewTransition(() => openPlugins())}
           showSites={settings?.sitesBetaEnabled ?? false}
           showPlugins={settings?.pluginsBetaEnabled ?? false}
@@ -2141,6 +2232,10 @@ export default function App() {
             to what you were doing — and the sidebar is how you get back, so
             covering it would strand the user with no way out but a button.
 
+            Pull requests is the same shape: a destination beside the chats,
+            not a full-window takeover. t3code keeps the sidebar on
+            `/pull-requests` for that reason.
+
             The chat is swapped out rather than covered. An overlay left the
             composer mounted underneath at the same z-index, so it painted over
             the catalogue and stayed focusable behind it; stacking order is the
@@ -2149,7 +2244,9 @@ export default function App() {
           {/* The beta switch is checked here as well as in the sidebar: a
               window sitting on the plugins view while the flag turns off falls
               back to the chat rather than squatting on a hidden feature. */}
-          {activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
+          {activeView === 'pullRequests' ? (
+            <PullRequestsWorkspace onBack={() => runViewTransition(() => closePullRequests())} />
+          ) : activeView === 'plugins' && (settings?.pluginsBetaEnabled ?? false) ? (
             <PluginsWorkspace />
           ) : (
             <>

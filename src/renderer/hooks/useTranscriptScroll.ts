@@ -28,9 +28,10 @@ import { toolGroupConsumesUpwardNavigation } from '../components/chat/ChatView.l
  * t3code PR #9106.
  *
  * The same listener set answers two other questions the library answers
- * badly: whether the user has ever scrolled at all (so auto-load-older does
- * not fire on first paint), and how far from the bottom we are with
- * hysteresis (so the jump-to-latest pill does not strobe at the threshold).
+ * badly: whether the user has scrolled at all (`userHasScrolledRef`), and
+ * how far from the bottom we are with hysteresis (so the jump-to-latest
+ * pill does not strobe). `onUserScroll` is the deliberate-gesture signal
+ * auto-load-older needs so a programmatic restore cannot re-arm paging.
  */
 
 const UPWARD_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
@@ -61,12 +62,19 @@ export type TranscriptScrollState = {
 export function useTranscriptScroll({
   element,
   onUserScrollUp,
+  onUserScroll,
   showAt = 120,
   hideAt = 40,
 }: {
   element: HTMLElement | null;
   /** Called on any upward scroll gesture. Expected to be idempotent. */
   onUserScrollUp: () => void;
+  /**
+   * Called on any deliberate user scroll (wheel, touch, scroll keys),
+   * upward or not. Auto-load-older uses this to re-arm paging after a
+   * programmatic restore; virtualizer corrections never reach it.
+   */
+  onUserScroll?: () => void;
   /** Distance from bottom at which "scrolled up" turns on. */
   showAt?: number;
   /** Distance from bottom at which it turns back off. */
@@ -77,6 +85,8 @@ export function useTranscriptScroll({
   const distanceFromBottomRef = useRef(0);
   const onUserScrollUpRef = useRef(onUserScrollUp);
   onUserScrollUpRef.current = onUserScrollUp;
+  const onUserScrollRef = useRef(onUserScroll);
+  onUserScrollRef.current = onUserScroll;
 
   useEffect(() => {
     if (!element) {
@@ -85,8 +95,13 @@ export function useTranscriptScroll({
 
     let touchStartY = 0;
 
-    const escapeUp = () => {
+    const noteUserScroll = () => {
       userHasScrolledRef.current = true;
+      onUserScrollRef.current?.();
+    };
+
+    const escapeUp = () => {
+      noteUserScroll();
       onUserScrollUpRef.current();
     };
 
@@ -100,10 +115,10 @@ export function useTranscriptScroll({
         if (!toolGroupConsumesUpwardNavigation(event.target)) {
           escapeUp();
         } else {
-          userHasScrolledRef.current = true;
+          noteUserScroll();
         }
       } else if (event.deltaY > 1) {
-        userHasScrolledRef.current = true;
+        noteUserScroll();
       }
     };
 
@@ -112,12 +127,12 @@ export function useTranscriptScroll({
     };
 
     const handleTouchMove = (event: TouchEvent) => {
-      userHasScrolledRef.current = true;
+      noteUserScroll();
       const y = event.touches[0]?.clientY ?? touchStartY;
       // Finger travelling *down* the screen drags the content down, i.e.
       // scrolls the transcript up.
       if (y - touchStartY > 2) {
-        escapeUp();
+        onUserScrollUpRef.current();
       }
       touchStartY = y;
     };
@@ -128,13 +143,13 @@ export function useTranscriptScroll({
       }
       if (UPWARD_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) {
         if (toolGroupConsumesUpwardNavigation(event.target)) {
-          userHasScrolledRef.current = true;
+          noteUserScroll();
           return;
         }
         escapeUp();
         return;
       }
-      userHasScrolledRef.current = true;
+      noteUserScroll();
     };
 
     const measure = () => {

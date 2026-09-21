@@ -125,6 +125,26 @@ export type DiscoverCustomProviderModelsRequest = {
   apiKey?: string;
 };
 
+/**
+ * One model-level smoke test: send a tiny completion to that model id, not
+ * just `/models`. A provider can list a model and still reject it at chat time.
+ */
+export type TestCustomProviderModelRequest = {
+  providerId?: ProviderId;
+  modelId: string;
+  /** Same unsaved-form escape hatch as DiscoverCustomProviderModelsRequest. */
+  baseUrl?: string;
+  apiFormat?: CustomProviderApiFormat;
+  apiKey?: string;
+};
+
+export type TestCustomProviderModelResult = {
+  ok: boolean;
+  message: string;
+  /** Milliseconds from request start until the model settled or failed. */
+  latencyMs: number;
+};
+
 export type DiscoveredModel = {
   id: string;
   label: string;

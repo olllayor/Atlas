@@ -13,6 +13,7 @@
 
 import { spawn as defaultSpawn, type ChildProcess } from 'node:child_process';
 
+import { resolveCommandOnPath } from '../../../bootstrap/resolvePathEnv.js';
 import type { OpenCodeSettings } from '../../../../shared/opencodeSettings.js';
 import { openCodeServerMode } from '../../../../shared/opencodeSettings.js';
 import {
@@ -297,7 +298,10 @@ export class OpenCodeRuntime {
     },
     port: number
   ): Promise<RunningServer> {
-    const command = input.settings.binaryPath.trim() || 'opencode';
+    // A bare name is resolved to an absolute path via the augmented PATH so a
+    // Finder-launched packaged app finds Homebrew/npm installs.
+    const configured = input.settings.binaryPath.trim();
+    const command = configured || resolveCommandOnPath('opencode') || 'opencode';
     const args = [
       'serve',
       `--hostname=${OPENCODE_DEFAULT_HOSTNAME}`,

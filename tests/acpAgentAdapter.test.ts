@@ -418,7 +418,7 @@ test('a fresh conversation creates a session, sets the model, and seeds history'
   assert.equal(result.content, 'acp answer');
   assert.equal(result.inputTokens, 11);
   assert.equal(result.cachedInputTokens, 1);
-  assert.ok(notices.some((notice) => notice.code === 'opencode.toolsDelegated'));
+  assert.ok(notices.some((notice) => notice.code === 'provider.toolsDelegated'));
   assert.ok(!notices.some((notice) => notice.code === 'opencode.acpApprovalsDenied'));
 });
 

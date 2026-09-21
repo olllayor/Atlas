@@ -31,6 +31,10 @@ export const KEYBINDING_COMMANDS = [
   'conversation.jump.7',
   'conversation.jump.8',
   'conversation.jump.9',
+  'openheard.board.open',
+  'openheard.roadmap.open',
+  'openheard.changelog.open',
+  'openheard.newPost.open',
 ] as const;
 
 export type KeybindingCommand = (typeof KEYBINDING_COMMANDS)[number];

@@ -1,4 +1,5 @@
 import type { ConversationSummary, KeybindingCommand } from '../../shared/contracts';
+import { OPENHEARD_CHROME_COMMANDS } from '../../shared/openheard';
 
 export type AppCommandDefinition = {
   command: KeybindingCommand;
@@ -247,6 +248,14 @@ export const APP_COMMAND_DEFINITIONS: AppCommandDefinition[] = [
     description: `Select conversation ${index + 1} in the current sidebar order.`,
     section: 'Navigation' as const,
     showInCommandPalette: false,
+  })),
+  ...OPENHEARD_CHROME_COMMANDS.map((entry) => ({
+    command: entry.id,
+    title: entry.title,
+    description: entry.description,
+    section: 'General' as const,
+    allowWhileEditable: true,
+    keywords: entry.keywords,
   })),
 ];
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-21
+
 ### Added
 - GitHub pull requests in the workbench: list with sort and filters,
   detail with diffs, checks, comments, review threads, labels, and
@@ -33,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notice instead of throwing the raw provider error mid-transcript.
 - Pull request surfaces use theme contract tokens instead of raw Tailwind
   palette colors, so status colors follow all five design themes.
-- Fresh dev-server icon fallback reused when the root source is absent.
+- Committed macOS icons reused when the root source is absent.
+- Bash tool falls back from zsh to bash or sh on hosts without zsh
+  instead of failing with spawn ENOENT.
+- SQLite quarantine names stay unique when two quarantines land in the
+  same millisecond.
 - Main crash handlers, SQLite corrupt-file quarantine, Finder PATH for
   OpenCode and MCP, Cloud Sandbox deploy gate when packaged, and
   openExternal http allowlist with visual window nav lock.
@@ -156,7 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security-oriented Electron architecture with a typed preload bridge.
 - macOS app icon generation and release packaging.
 
-[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/olllayor/Atlas/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/olllayor/Atlas/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/olllayor/Atlas/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/olllayor/Atlas/compare/v0.1.17...v0.1.18

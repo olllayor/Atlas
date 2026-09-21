@@ -1,14 +1,12 @@
+import type { KeybindingCommand } from './keybindings';
+
 export type OpenHeardDestination =
   | { readonly kind: 'board' }
   | { readonly kind: 'roadmap' }
   | { readonly kind: 'changelog' }
   | { readonly kind: 'newPost' };
 
-export type OpenHeardChromeCommandId =
-  | 'openheard.board.open'
-  | 'openheard.roadmap.open'
-  | 'openheard.changelog.open'
-  | 'openheard.newPost.open';
+export type OpenHeardChromeCommandId = Extract<KeybindingCommand, `openheard.${string}`>;
 
 export type OpenHeardChromeCommand = {
   id: OpenHeardChromeCommandId;
@@ -19,12 +17,10 @@ export type OpenHeardChromeCommand = {
 };
 
 export const OPENHEARD_PUBLIC_ORIGIN = 'https://atlas.openheard.com';
-export const OPENHEARD_BOARD_ID = 'atlas-features';
-export const OPENHEARD_WORKSPACE_TOKEN_ENV = 'OPENHEARD_WORKSPACE_TOKEN';
 
 /**
- * Single place public path shapes live. `newPost` opens the board root because
- * compose is client-side and has no dedicated public route yet.
+ * `newPost` opens the board root because compose is client-side and has no
+ * dedicated public route yet.
  */
 export function openHeardPublicUrl(destination: OpenHeardDestination): string {
   switch (destination.kind) {

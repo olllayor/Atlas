@@ -1,0 +1,6 @@
+{
+  "name": "openheard",
+  "version": "1.0.0",
+  "description": "Triage Atlas feature feedback on the OpenHeard board.",
+  "skills": "./skills/"
+}

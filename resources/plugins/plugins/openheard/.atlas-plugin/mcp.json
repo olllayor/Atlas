@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "openheard": {
+      "type": "http",
+      "url": "https://atlas.openheard.com/api/mcp",
+      "bearer_token_env_var": "OPENHEARD_WORKSPACE_TOKEN"
+    }
+  }
+}

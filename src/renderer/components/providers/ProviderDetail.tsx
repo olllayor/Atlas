@@ -147,6 +147,12 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
     const discovered = await discoverModels({ providerId: provider.id });
     if (discovered.length > 0) {
       setDiscoveredModels(discovered);
+    } else {
+      notify({
+        tone: 'warning',
+        title: 'No models found',
+        description: 'The endpoint returned an empty catalog. Check the base URL or add a model by ID.',
+      });
     }
   };
 
@@ -255,7 +261,7 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
 
   return (
     <div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         {renaming ? (
           <input
             value={nameDraft}
@@ -270,26 +276,26 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
                 setRenaming(false);
               }
             }}
-            className={`${fieldInputClass} min-w-0 flex-1 text-md`}
+            className={`${fieldInputClass} min-w-0 flex-1 basis-40 text-md`}
           />
         ) : (
           <>
-            <h2 className="min-w-0 truncate text-md text-text-primary" title={provider.name}>
+            <h2 className="min-w-0 flex-1 basis-40 truncate text-md text-text-primary" title={provider.name}>
               {provider.name}
             </h2>
             <button
               type="button"
               onClick={() => setRenaming(true)}
               aria-label="Rename provider"
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
             >
-              <Pencil1Icon className="h-4 w-4" />
+              <Pencil1Icon className="h-4 w-4" aria-hidden />
             </button>
             <SavedHint show={nameSaved.saved} />
           </>
         )}
 
-        <span className="flex-1" />
+        <span className="hidden flex-1 sm:block" />
 
         <label className="flex shrink-0 items-center gap-2 text-xs text-text-tertiary">
           <span>{provider.enabled ? 'Enabled' : 'Disabled'}</span>
@@ -307,9 +313,9 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
               type="button"
               onClick={() => setConfirmingDelete(true)}
               aria-label={`Remove ${provider.name}`}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
             >
-              <TrashIcon className="h-4 w-4" />
+              <TrashIcon className="h-4 w-4" aria-hidden />
             </button>
           </TooltipTrigger>
           <TooltipContent>Remove {provider.name}</TooltipContent>
@@ -387,14 +393,14 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
           type="button"
           onClick={() => void handleTest()}
           disabled={isTesting}
-          className="inline-flex h-9 items-center rounded-md border border-border-default bg-bg-subtle px-3 text-xs text-text-primary transition hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-9 items-center rounded-md bg-bg-button px-3 text-xs font-medium text-text-inverse transition hover:bg-bg-button-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Test connection
+          {isTesting ? 'Testing…' : 'Test connection'}
         </button>
         <TestResult state={testState} />
       </div>
 
-      <div className="mt-7 flex items-center justify-between gap-3">
+      <div className="mt-7 flex flex-wrap items-center justify-between gap-3">
         <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
           Models · {provider.models.length}
         </span>
@@ -402,16 +408,16 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
           type="button"
           onClick={() => void handleFetchModels()}
           disabled={isDiscovering}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-default bg-bg-subtle px-2.5 text-xs text-text-primary transition hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-default bg-transparent px-2.5 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <DownloadIcon className="h-3.5 w-3.5" />
+          <DownloadIcon className="h-3.5 w-3.5" aria-hidden />
           {isDiscovering ? 'Fetching…' : 'Fetch from endpoint'}
         </button>
       </div>
 
       {provider.models.length > 6 ? (
         <div className="relative mt-3">
-          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
+          <MagnifyingGlassIcon aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
           <input
             value={modelFilter}
             onChange={(event) => setModelFilter(event.target.value)}
@@ -424,11 +430,11 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
       ) : null}
 
       {provider.models.length === 0 ? (
-        <p className="mt-3 rounded-md border border-dashed border-border-default px-3 py-6 text-center text-xs text-text-muted">
+        <p role="status" className="mt-3 rounded-md border border-dashed border-border-default px-3 py-6 text-center text-xs text-text-muted">
           No models yet. Add one by ID, or fetch the list from the endpoint.
         </p>
       ) : visibleModels.length === 0 ? (
-        <p className="mt-3 rounded-md border border-dashed border-border-default px-3 py-6 text-center text-xs text-text-muted">
+        <p role="status" className="mt-3 rounded-md border border-dashed border-border-default px-3 py-6 text-center text-xs text-text-muted">
           No models match “{modelFilter.trim()}”.
         </p>
       ) : (
@@ -458,23 +464,23 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
                       type="button"
                       onClick={() => void handleTestModel(model.id)}
                       disabled={modelTest?.kind === 'testing'}
-                      aria-label={`Test ${model.id}`}
+                      aria-label={`Test ${model.id}${modelTest?.kind === 'ok' ? ' (passed)' : modelTest?.kind === 'failed' ? ' (failed)' : ''}`}
                       className={
                         modelTest?.kind === 'ok'
-                          ? 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-success transition hover:bg-bg-hover'
+                          ? 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-success transition hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]'
                           : modelTest?.kind === 'failed'
-                            ? 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-error transition hover:bg-error-bg'
-                            : 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary'
+                            ? 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-error transition hover:bg-error-bg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]'
+                            : 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]'
                       }
                     >
                       {modelTest?.kind === 'testing' ? (
-                        <ReloadIcon className="h-3.5 w-3.5 animate-spin" />
+                        <ReloadIcon className="h-3.5 w-3.5 animate-spin" aria-hidden />
                       ) : modelTest?.kind === 'ok' ? (
-                        <CheckCircledIcon className="h-3.5 w-3.5" />
+                        <CheckCircledIcon className="h-3.5 w-3.5" aria-hidden />
                       ) : modelTest?.kind === 'failed' ? (
-                        <CrossCircledIcon className="h-3.5 w-3.5" />
+                        <CrossCircledIcon className="h-3.5 w-3.5" aria-hidden />
                       ) : (
-                        <PlayIcon className="h-3.5 w-3.5" />
+                        <PlayIcon className="h-3.5 w-3.5" aria-hidden />
                       )}
                     </button>
                   </TooltipTrigger>
@@ -498,9 +504,9 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
                         setDialogOpen(true);
                       }}
                       aria-label={`Edit ${model.id}`}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
                     >
-                      <Pencil1Icon className="h-3.5 w-3.5" />
+                      <Pencil1Icon className="h-3.5 w-3.5" aria-hidden />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Edit {model.id}</TooltipContent>
@@ -512,9 +518,9 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
                       type="button"
                       onClick={() => setPendingModelDelete(model)}
                       aria-label={`Remove ${model.id}`}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
                     >
-                      <TrashIcon className="h-3.5 w-3.5" />
+                      <TrashIcon className="h-3.5 w-3.5" aria-hidden />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Remove {model.id}</TooltipContent>
@@ -573,7 +579,10 @@ export function ProviderDetail({ provider }: { provider: CustomProvider }) {
         open={pendingModelDelete != null}
         title="Remove this model?"
         description={
-          <span className="break-all font-mono text-xs">{pendingModelDelete?.id}</span>
+          <span>
+            <span className="block text-xs text-text-tertiary">From {provider.name}:</span>
+            <span className="mt-0.5 block break-all font-mono text-xs text-text-primary">{pendingModelDelete?.id}</span>
+          </span>
         }
         confirmLabel="Remove"
         tone="danger"
@@ -619,7 +628,7 @@ function TestResult({ state }: { state: TestState }) {
   }
 
   if (state.kind === 'testing') {
-    return <span className="text-xs text-text-tertiary">Testing…</span>;
+    return <span role="status" className="text-xs text-text-tertiary">Testing…</span>;
   }
 
   if (state.kind === 'ok') {
@@ -631,7 +640,7 @@ function TestResult({ state }: { state: TestState }) {
   }
 
   return (
-    <span role="alert" className="min-w-0 truncate text-xs text-error" title={state.message}>
+    <span role="alert" className="min-w-0 max-w-full break-words text-xs text-error" title={state.message}>
       Failed: {state.message}
     </span>
   );

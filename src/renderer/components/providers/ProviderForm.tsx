@@ -1,4 +1,4 @@
-import { ChevronDownIcon, Cross2Icon, DownloadIcon, PlusIcon } from '@radix-ui/react-icons';
+import { ChevronDownIcon, DownloadIcon, PlusIcon, TrashIcon } from '@radix-ui/react-icons';
 import { useEffect, useMemo, useState } from 'react';
 
 import type {
@@ -130,6 +130,12 @@ export function ProviderForm({
     const discovered = await discoverModels(probe);
     if (discovered.length > 0) {
       setDiscoveredModels(discovered);
+    } else if (canProbe) {
+      notify({
+        tone: 'warning',
+        title: 'No models found',
+        description: 'The endpoint returned an empty catalog. Check the base URL or add a model by ID.',
+      });
     }
   };
 
@@ -172,7 +178,7 @@ export function ProviderForm({
 
   return (
     <div>
-      <h2 className="text-md text-text-primary">Add model provider</h2>
+      <h2 className="text-md text-text-primary">Add endpoint</h2>
       <p className="mt-1.5 text-sm text-text-tertiary">
         Point Atlas at any OpenAI-, Anthropic- or Responses-compatible endpoint.
       </p>
@@ -257,7 +263,7 @@ export function ProviderForm({
       </Field>
 
       <div className="mt-6">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
             Models
           </span>
@@ -265,15 +271,16 @@ export function ProviderForm({
             type="button"
             onClick={() => void handleFetchModels()}
             disabled={!canProbe || isDiscovering}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-default bg-bg-subtle px-2.5 text-xs text-text-primary transition hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+            title={!canProbe ? 'Enter a name and valid base URL first' : 'Fetch models from endpoint'}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-default bg-transparent px-2.5 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <DownloadIcon className="h-3.5 w-3.5" />
+            <DownloadIcon className="h-3.5 w-3.5" aria-hidden />
             {isDiscovering ? 'Fetching…' : 'Fetch from endpoint'}
           </button>
         </div>
 
         {models.length > 0 ? (
-          <ul className="mt-3 max-h-[280px] divide-y divide-border-subtle overflow-y-auto rounded-md border border-border-default scroll-container">
+          <ul className="mt-3 max-h-[280px] divide-y divide-border-subtle overflow-y-auto overscroll-contain rounded-md border border-border-default scroll-container">
             {models.map((model) => {
               const badge = formatContextWindow(model.contextWindow ?? null);
 
@@ -291,22 +298,27 @@ export function ProviderForm({
                     type="button"
                     onClick={() => setModels((current) => current.filter((entry) => entry.id !== model.id))}
                     aria-label={`Remove ${model.id}`}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-bg-hover hover:text-error"
+                    title={`Remove ${model.id}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition hover:bg-error-bg hover:text-error focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
                   >
-                    <Cross2Icon className="h-3.5 w-3.5" />
+                    <TrashIcon className="h-3.5 w-3.5" aria-hidden />
                   </button>
                 </li>
               );
             })}
           </ul>
-        ) : null}
+        ) : (
+          <p className="mt-3 rounded-md border border-dashed border-border-default px-3 py-4 text-center text-xs text-text-muted">
+            No models staged yet. Fetch from the endpoint or add one by ID.
+          </p>
+        )}
 
         <button
           type="button"
           onClick={() => setDialogOpen(true)}
-          className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-md border border-border-default bg-bg-subtle px-3 text-xs text-text-primary transition hover:bg-bg-hover"
+          className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-md border border-border-default bg-bg-subtle px-3 text-xs font-medium text-text-primary transition hover:bg-bg-hover"
         >
-          <PlusIcon className="h-3.5 w-3.5" />
+          <PlusIcon className="h-3.5 w-3.5" aria-hidden />
           Add model
         </button>
       </div>
@@ -316,18 +328,26 @@ export function ProviderForm({
           type="button"
           onClick={() => void handleSubmit()}
           disabled={isSaving || !isValid}
-          className="inline-flex h-9 items-center rounded-md bg-bg-button px-4 text-xs text-text-inverse transition hover:bg-bg-button-hover disabled:cursor-not-allowed disabled:opacity-60"
+          title={!isValid ? 'Enter a name and valid base URL to continue' : 'Add this endpoint'}
+          aria-describedby={!isValid ? 'add-endpoint-hint' : undefined}
+          className="inline-flex h-9 items-center rounded-md bg-bg-button px-4 text-xs font-medium text-text-inverse transition hover:bg-bg-button-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isSaving ? 'Adding…' : 'Add provider'}
+          {isSaving ? 'Adding…' : 'Add endpoint'}
         </button>
         <button
           type="button"
           onClick={() => void handleTest()}
           disabled={!canProbe || isTesting}
-          className="inline-flex h-9 items-center rounded-md border border-border-default bg-bg-subtle px-3 text-xs text-text-primary transition hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+          title={!canProbe ? 'Enter a name and valid base URL first' : 'Test connection'}
+          className="inline-flex h-9 items-center rounded-md border border-border-default bg-transparent px-3 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Test connection
+          {isTesting ? 'Testing…' : 'Test connection'}
         </button>
+        {!isValid ? (
+          <span id="add-endpoint-hint" className="w-full text-2xs text-text-faint">
+            Enter a name and a valid https:// base URL to enable saving.
+          </span>
+        ) : null}
         <TestResult state={testState} />
       </div>
 
@@ -399,7 +419,7 @@ function TestResult({ state }: { state: TestState }) {
   }
 
   if (state.kind === 'testing') {
-    return <span className="text-xs text-text-tertiary">Testing…</span>;
+    return <span role="status" className="text-xs text-text-tertiary">Testing…</span>;
   }
 
   if (state.kind === 'ok') {
@@ -411,7 +431,7 @@ function TestResult({ state }: { state: TestState }) {
   }
 
   return (
-    <span role="alert" className="min-w-0 truncate text-xs text-error" title={state.message}>
+    <span role="alert" className="min-w-0 max-w-full break-words text-xs text-error" title={state.message}>
       Failed: {state.message}
     </span>
   );
@@ -419,6 +439,6 @@ function TestResult({ state }: { state: TestState }) {
 
 function ChevronGlyph() {
   return (
-    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary" />
+    <ChevronDownIcon aria-hidden className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary" />
   );
 }

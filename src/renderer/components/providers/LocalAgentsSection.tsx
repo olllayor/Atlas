@@ -125,20 +125,21 @@ export function LocalAgentsSection() {
       <p className="text-xs text-text-faint">Coding CLIs that run on your machine.</p>
 
       {error ? (
-        <div className="mt-3 flex items-center justify-between rounded-md border border-error-border bg-error-bg px-3 py-2 text-xs text-error-text">
-          <span>{error}</span>
+        <div role="alert" className="mt-3 flex items-center justify-between gap-3 rounded-md border border-error-border bg-error-bg px-3 py-2 text-xs text-error-text">
+          <span className="min-w-0 flex-1 break-words">{error}</span>
           <button
             type="button"
             onClick={clearError}
-            className="ml-3 text-2xs uppercase tracking-[var(--tracking-label)] text-error-text/70 transition hover:text-error-text"
+            aria-label="Dismiss error"
+            className="ml-3 h-7 shrink-0 rounded px-2 text-2xs uppercase tracking-[var(--tracking-label)] text-error-text/70 transition hover:bg-error-bg hover:text-error-text hover:brightness-110 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
           >
             Dismiss
           </button>
         </div>
       ) : null}
 
-      <div className="mt-4 grid grid-cols-[15.5rem_1fr] gap-6">
-        <div className="flex flex-col gap-1">
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[15.5rem_1fr] md:gap-6">
+        <div className="flex flex-col gap-1" role="listbox" aria-label="Local agents">
           {agents.map((agent) => (
             <AgentRow
               key={agent.id}
@@ -151,7 +152,7 @@ export function LocalAgentsSection() {
             />
           ))}
           {isLoading && agents.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-text-faint">
+            <div role="status" className="px-3 py-6 text-center text-xs text-text-faint">
               Detecting local agents…
             </div>
           ) : null}
@@ -161,8 +162,11 @@ export function LocalAgentsSection() {
           {selected ? (
             <AgentDetail key={selected.id} agent={selected} />
           ) : (
-            <div className="py-12 text-center text-xs text-text-faint">
-              Select an agent to view its configuration.
+            <div className="py-12 text-center">
+              <p className="text-xs text-text-faint">Select an agent to view its configuration.</p>
+              {!isLoading && agents.length > 0 ? (
+                <p className="mt-1 text-2xs text-text-faint">Pick one from the list to configure its runtime and models.</p>
+              ) : null}
             </div>
           )}
         </div>
@@ -192,16 +196,18 @@ function AgentRow({
 
   return (
     <div
+      role="option"
+      aria-selected={selected}
       onClick={onSelect}
-      role="button"
       tabIndex={0}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           onSelect();
         }
       }}
-      className={`group flex items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition ${
+      className={`group flex cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] ${
         selected ? 'bg-bg-hover text-text-primary' : 'hover:bg-bg-hover/50 text-text-secondary'
       }`}
     >
@@ -219,22 +225,17 @@ function AgentRow({
       </div>
 
       {canEnable ? (
-        <div onClick={(event) => event.stopPropagation()}>
+        <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
           <Switch checked={agent.enabled} onCheckedChange={onToggle} aria-label={`Enable ${name}`} />
         </div>
       ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="cursor-not-allowed opacity-40">
-              <Switch checked={false} disabled aria-label={`${name} unavailable`} />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            {agent.transport === 'none'
-              ? agent.unsupportedReason ?? 'Not supported yet.'
-              : `Install ${agent.binaryDefault} first.`}
-          </TooltipContent>
-        </Tooltip>
+        <span className="cursor-not-allowed opacity-40" title={agent.transport === 'none'
+          ? agent.unsupportedReason ?? 'Not supported yet.'
+          : `Install ${agent.binaryDefault} first.`}>
+          <Switch checked={false} disabled aria-label={`${name} unavailable: ${agent.transport === 'none'
+            ? agent.unsupportedReason ?? 'not supported yet'
+            : `install ${agent.binaryDefault} first`}`} />
+        </span>
       )}
     </div>
   );
@@ -397,13 +398,13 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
         </span>
       </p>
 
-      <div className="mt-5 flex gap-5 border-b border-border-subtle">
+      <div className="mt-5 flex gap-5 border-b border-border-subtle" role="tablist" aria-label="Agent settings">
         <TabButton active={tab === 'configuration'} onClick={() => setTab('configuration')}>
           Configuration
         </TabButton>
         <TabButton active={tab === 'models'} onClick={() => setTab('models')}>
           Models
-          <span className="ml-1.5 text-text-faint">
+          <span className="ml-1.5 text-text-faint" title={advertised === null ? `${modelCount} custom models` : `${advertised} advertised + ${modelCount} custom`}>
             {advertised === null ? modelCount : `${advertised + modelCount}`}
           </span>
         </TabButton>
@@ -428,8 +429,9 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
             </div>
           </Field>
 
-          <div className="mt-4 flex items-center gap-2">
-            <span className="text-xs text-text-secondary">Accent:</span>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span id={`accent-label-${agent.id}`} className="text-xs text-text-secondary">Accent:</span>
+            <span role="group" aria-labelledby={`accent-label-${agent.id}`} className="flex items-center gap-2">
             {LOCAL_AGENT_COLORS.map((color) => (
               <button
                 key={color}
@@ -437,11 +439,12 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
                 onClick={() => void save({ color })}
                 aria-label={`${color} accent`}
                 aria-pressed={agent.color === color}
-                className={`h-5 w-5 rounded-full transition ${SWATCH_CLASS[color]} ${
+                className={`size-7 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-base)] ${SWATCH_CLASS[color]} ${
                   agent.color === color ? 'ring-2 ring-text-primary ring-offset-2 ring-offset-bg-base' : ''
                 }`}
               />
             ))}
+            </span>
           </div>
 
           <div className="mt-7 text-2xs font-medium uppercase tracking-[var(--tracking-label)] text-text-faint">
@@ -613,16 +616,19 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
 
           <div className="mt-6">
             <div className="flex items-baseline justify-between">
-              <label className="block text-xs font-medium text-text-primary">Environment variables</label>
+              <span id={`env-label-${agent.id}`} className="block text-xs font-medium text-text-primary">Environment variables</span>
               <span className="text-2xs text-text-faint">Injected into the agent's process.</span>
-            </div>            <div className="mt-2 space-y-2">
+            </div>            <div className="mt-2 space-y-2" role="group" aria-labelledby={`env-label-${agent.id}`}>
               {envRows.map((row, index) => (
                 <div key={index} className="flex items-center gap-2">
+                  <label className="sr-only" htmlFor={`env-key-${agent.id}-${index}`}>Variable name {index + 1}</label>
                   <input
+                    id={`env-key-${agent.id}-${index}`}
                     className={`${fieldInputClass} font-mono text-xs`}
                     placeholder="NAME"
                     value={row.key}
                     spellCheck={false}
+                    autoComplete="off"
                     onChange={(event) => {
                       const next = [...envRows];
                       next[index] = { key: event.target.value, value: row.value };
@@ -630,11 +636,14 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
                     }}
                     onBlur={() => saveEnv(envRows)}
                   />
+                  <label className="sr-only" htmlFor={`env-value-${agent.id}-${index}`}>Variable value {index + 1}{row.key ? ` for ${row.key}` : ''}</label>
                   <input
+                    id={`env-value-${agent.id}-${index}`}
                     className={`${fieldInputClass} font-mono text-xs`}
                     placeholder="value"
                     value={row.value}
                     spellCheck={false}
+                    autoComplete="off"
                     onChange={(event) => {
                       const next = [...envRows];
                       next[index] = { key: row.key, value: event.target.value };
@@ -649,17 +658,17 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
                       setEnvRows(next);
                       saveEnv(next);
                     }}
-                    aria-label="Remove variable"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-faint transition hover:bg-bg-hover hover:text-text-primary"
+                    aria-label={`Remove variable ${row.key || index + 1}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-faint transition hover:bg-bg-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <X aria-hidden className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
               <button
                 type="button"
                 onClick={() => setEnvRows([...envRows, { key: '', value: '' }])}
-                className="text-xs text-text-tertiary transition hover:text-text-primary"
+                className="inline-flex h-8 items-center rounded-md border border-border-subtle px-3 text-xs text-text-secondary transition hover:bg-bg-hover hover:text-text-primary"
               >
                 + Add variable
               </button>
@@ -685,10 +694,14 @@ function AgentDetail({ agent }: { agent: LocalAgentStatusView }) {
             </p>
 
             <div className="mt-3 flex items-center gap-2">
+              <label className="sr-only" htmlFor={`custom-model-${agent.id}`}>Add custom model ID</label>
               <input
+                id={`custom-model-${agent.id}`}
                 className={`${fieldInputClass} font-mono text-xs`}
                 placeholder="e.g. deepseek/deepseek-r1"
                 value={newModel}
+                autoComplete="off"
+                spellCheck={false}
                 onChange={(event) => setNewModel(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -779,8 +792,19 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
-      className={`pb-2 text-xs font-medium transition ${
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const tabs = Array.from(e.currentTarget.parentElement?.querySelectorAll('[role="tab"]') ?? []);
+        const idx = tabs.indexOf(e.currentTarget);
+        const next = e.key === 'ArrowRight' ? tabs[(idx + 1) % tabs.length] : tabs[(idx - 1 + tabs.length) % tabs.length];
+        (next as HTMLElement | undefined)?.focus();
+        (next as HTMLElement | undefined)?.click();
+      }}
+      className={`pb-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] ${
         active
           ? 'border-b-2 border-text-primary text-text-primary'
           : 'text-text-tertiary hover:text-text-secondary'

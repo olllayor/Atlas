@@ -50,7 +50,14 @@ export function looksLikeSqliteCorruption(error: unknown): boolean {
  */
 export function quarantineDatabaseFiles(databasePath: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const quarantineBase = `${databasePath}.corrupt-${stamp}`;
+  // Millisecond stamps collide when two quarantines land in the same tick
+  // (the test does exactly that). Never reuse a name that is already taken.
+  let quarantineBase = `${databasePath}.corrupt-${stamp}`;
+  const taken = (base: string) =>
+    existsSync(base) || existsSync(`${base}-wal`) || existsSync(`${base}-shm`);
+  for (let attempt = 1; taken(quarantineBase); attempt += 1) {
+    quarantineBase = `${databasePath}.corrupt-${stamp}-${attempt}`;
+  }
 
   for (const suffix of ['', '-wal', '-shm']) {
     const source = `${databasePath}${suffix}`;

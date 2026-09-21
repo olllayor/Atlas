@@ -18,6 +18,7 @@ import {
 import { applyThemePalette, resolveEffectiveTheme } from './lib/themePalette';
 import type { AppUpdateSnapshot, AtlasDeepLink, DesignTheme, FontFamilyOverride, KeybindingCommand, StreamEvent, ThemeMode } from '../shared/contracts';
 import { getDefaultKeybindingRules, resolveKeybindingRules } from '../shared/keybindings';
+import { OPENHEARD_CHROME_COMMANDS, openHeardPublicUrl } from '../shared/openheard';
 import type { ToolPermissionMode } from '../shared/chatParameters';
 import { DEFAULT_REASONING_EFFORT, DEFAULT_TOOL_PERMISSION_MODE } from '../shared/chatParameters';
 import type { ExecutionTarget, WorkspaceMode } from '../shared/workspaceModes';
@@ -1522,6 +1523,13 @@ export default function App() {
       runViewTransition(() => {
         live.openSettings('general');
       });
+      return;
+    }
+
+    const openHeardCommand = OPENHEARD_CHROME_COMMANDS.find((entry) => entry.id === command);
+    if (openHeardCommand) {
+      live.setCommandPaletteOpen(false);
+      void window.atlasChat.browser.openExternal(openHeardPublicUrl(openHeardCommand.destination));
       return;
     }
 

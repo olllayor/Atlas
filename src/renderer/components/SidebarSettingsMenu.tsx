@@ -1,12 +1,17 @@
 import {
+  ChatBubbleIcon,
   DotsHorizontalIcon,
   GearIcon,
+  Pencil2Icon,
+  ReaderIcon,
   ReloadIcon,
+  RowsIcon,
   TimerIcon,
   UpdateIcon,
 } from '@radix-ui/react-icons';
 
 import type { AppUpdateSnapshot, ConversationStats, SettingsSection, SettingsSummary } from '../../shared/contracts';
+import { openHeardPublicUrl } from '../../shared/openheard';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { cn } from '../lib/utils';
 import {
@@ -289,6 +294,42 @@ export function SidebarSettingsMenu({
               {'>_'}
             </span>
             <span>Landing page</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'board' }));
+            }}
+            className="px-3 text-sm"
+          >
+            <ChatBubbleIcon className="h-4 w-4 text-[var(--text-muted)]" />
+            <span>Feature board</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'roadmap' }));
+            }}
+            className="px-3 text-sm"
+          >
+            <RowsIcon className="h-4 w-4 text-[var(--text-muted)]" />
+            <span>Roadmap</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'changelog' }));
+            }}
+            className="px-3 text-sm"
+          >
+            <ReaderIcon className="h-4 w-4 text-[var(--text-muted)]" />
+            <span>Changelog</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'newPost' }));
+            }}
+            className="px-3 text-sm"
+          >
+            <Pencil2Icon className="h-4 w-4 text-[var(--text-muted)]" />
+            <span>Suggest an idea</span>
           </DropdownMenuItem>
 
           <DropdownMenuSeparator className="mx-0 my-1 border-[var(--border-default)]" />

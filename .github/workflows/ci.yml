@@ -23,6 +23,11 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # keytar links libsecret on Linux; without it every test that touches
+      # the keychain fails at dlopen with ERR_DLOPEN_FAILED.
+      - name: Install Linux keychain libs
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-0
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -66,7 +71,7 @@ jobs:
       - name: Package arm64 (unsigned)
         run: |
           pnpm run icons:mac
-          CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never
+          CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac --arm64 --publish never
 
       - name: List release artifacts
         run: ls -la release/

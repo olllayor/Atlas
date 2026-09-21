@@ -105,7 +105,13 @@ test('enabling registers the adapter and announces the catalog change', async ()
 });
 
 test('disabling unregisters the adapter and shuts the server down', async () => {
-  const { controller, registry, shutdowns } = buildController();
+  const { controller, registry, shutdowns } = buildController({
+    ...defaultOpenCodeSettings(),
+    enabled: true,
+    // Pretend the CLI is fine so the probe reaches the connect step even on
+    // hosts without the real binary on PATH (see the lease test below).
+    binaryPath: process.execPath
+  });
 
   await controller.updateSettings({ enabled: true });
   await controller.probe().catch(() => undefined);

@@ -201,6 +201,8 @@ function ThemeExtensionIcon({ extension }: { extension: OpenVsxThemeExtension })
       {extension.iconUrl && !failed ? (
         <img
           alt=""
+          width={36}
+          height={36}
           className="size-full object-cover"
           loading="lazy"
           referrerPolicy="no-referrer"
@@ -208,7 +210,7 @@ function ThemeExtensionIcon({ extension }: { extension: OpenVsxThemeExtension })
           onError={() => setFailed(true)}
         />
       ) : (
-        <Palette className="size-4 text-accent" />
+        <Palette aria-hidden className="size-4 text-accent" />
       )}
     </div>
   );
@@ -216,7 +218,7 @@ function ThemeExtensionIcon({ extension }: { extension: OpenVsxThemeExtension })
 
 function SkeletonCard() {
   return (
-    <div className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-card/40 p-3.5 animate-pulse">
+    <div aria-hidden className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-card/40 p-3.5 animate-pulse motion-reduce:animate-none">
       <div className="flex gap-2.5 items-center">
         <div className="size-9 rounded-lg bg-muted/80" />
         <div className="space-y-1.5 flex-1">
@@ -423,7 +425,7 @@ export function ThemeSearchSection({
           </InputGroupAddon>
           <InputGroupInput
             aria-label="Search Open VSX themes"
-            autoFocus
+            autoFocus={typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches}
             onChange={(event) => setQuery(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -431,7 +433,8 @@ export function ThemeSearchSection({
                 void runSearch(query.trim());
               }
             }}
-            placeholder="Search 1,000+ community themes..."
+            placeholder="Search 1,000+ community themes…"
+            autoComplete="off"
             type="text"
             value={query}
           />
@@ -445,9 +448,9 @@ export function ThemeSearchSection({
                   setResults(null);
                   setError(null);
                 }}
-                className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
               >
-                <X className="size-3.5" />
+                <X aria-hidden className="size-3.5" />
               </button>
             </InputGroupAddon>
           ) : null}
@@ -456,7 +459,7 @@ export function ThemeSearchSection({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="flex flex-wrap min-w-0 items-center gap-1.5 py-0.5">
             <span className="text-[11px] font-medium text-muted-foreground shrink-0 flex items-center gap-1 mr-1">
-              <Sparkles className="size-3 text-accent" /> Popular:
+              <Sparkles aria-hidden className="size-3 text-accent" /> Popular:
             </span>
             {SUGGESTED_SEARCHES.map((suggestion) => {
               const isSelected = query.trim().toLowerCase() === suggestion.toLowerCase();
@@ -469,7 +472,7 @@ export function ThemeSearchSection({
                     setQuery(suggestion);
                     void runSearch(suggestion);
                   }}
-                  className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium transition-all cursor-pointer ${
+                  className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors cursor-pointer ${
                     isSelected
                       ? 'bg-accent text-accent-foreground shadow-2xs font-semibold'
                       : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground border border-border/40'
@@ -483,7 +486,7 @@ export function ThemeSearchSection({
 
           {results && results.length > 0 ? (
             <div className="flex shrink-0 items-center gap-1.5 ml-auto pl-2 border-l border-border/40">
-              <span className="text-[11px] text-muted-foreground shrink-0">Sort:</span>
+              <label htmlFor="theme-sort" className="text-[11px] text-muted-foreground shrink-0">Sort:</label>
               <Select
                 disabled={installingId !== null}
                 value={sortBy}
@@ -493,7 +496,7 @@ export function ThemeSearchSection({
                   if (query.trim()) void runSearch(query.trim(), s);
                 }}
               >
-                <SelectTrigger className="h-6.5 w-44 text-xs bg-muted/40 border-border/60">
+                <SelectTrigger id="theme-sort" className="h-6.5 w-44 text-xs bg-muted/40 border-border/60">
                   <SelectValue>
                     {SORT_OPTIONS.find((option) => option.value === sortBy)?.label}
                   </SelectValue>
@@ -511,8 +514,8 @@ export function ThemeSearchSection({
         </div>
 
         {error ? (
-          <div className="flex items-center justify-between rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
-            <p className="min-w-0 flex-1">{error}</p>
+          <div role="alert" className="flex items-center justify-between gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
+            <p className="min-w-0 flex-1 break-words">{error}</p>
             <Button
               size="sm"
               variant="outline"
@@ -526,7 +529,7 @@ export function ThemeSearchSection({
       </div>
 
       {/* Scrollable list - single clean scroll container */}
-      <div className="flex-1 min-h-0 overflow-y-auto pr-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-2">
         {isSearching ? (
           <div className="grid gap-3 sm:grid-cols-2">
             <SkeletonCard />
@@ -536,8 +539,8 @@ export function ThemeSearchSection({
           </div>
         ) : displayedThemes.length === 0 ? (
           <div className="flex h-full min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed border-border/80 text-center p-6">
-            <Palette className="size-8 text-muted-foreground/50 mb-2" />
-            <p className="text-sm font-medium">No themes matching “{query}”</p>
+            <Palette aria-hidden className="size-8 text-muted-foreground/50 mb-2" />
+            <p className="max-w-full break-words text-sm font-medium">No themes matching “{query}”</p>
             <p className="mt-1 text-xs text-muted-foreground">
               Try searching for “Dracula”, “Catppuccin”, “Tokyo”, or “Nord”.
             </p>
@@ -554,7 +557,7 @@ export function ThemeSearchSection({
               return (
                 <div
                   key={extension.id}
-                  className="group flex flex-col justify-between rounded-xl border border-border/70 bg-card/60 p-3.5 transition-all hover:bg-muted/30 hover:border-border hover:shadow-2xs"
+                  className="group flex flex-col justify-between rounded-xl border border-border/70 bg-card/60 p-3.5 transition-colors hover:bg-muted/30 hover:border-border hover:shadow-2xs"
                 >
                   <div className="space-y-2">
                     <div className="flex items-start gap-2.5 min-w-0">
@@ -573,16 +576,17 @@ export function ThemeSearchSection({
                       </div>
                     </div>
 
-                    <p className="line-clamp-2 min-h-7 text-[11px] text-muted-foreground leading-relaxed">
+                    <p className="line-clamp-2 min-h-8 text-[11px] text-muted-foreground leading-relaxed">
                       {extension.description || 'Community color theme for Atlas and VS Code.'}
                     </p>
 
                     {previewColors.length > 0 ? (
-                      <div className="flex items-center gap-1.5 pt-0.5" aria-hidden="true">
+                      <div className="flex items-center gap-1.5 pt-0.5" role="img" aria-label={`${extension.name} palette: ${previewColors.slice(0, 5).join(', ')}`}>
                         {previewColors.map((hex, i) => (
                           <span
                             key={i}
-                            className="size-3 rounded-full ring-1 ring-border/50 shadow-2xs transition-transform hover:scale-125"
+                            aria-hidden
+                            className="size-3 rounded-full ring-1 ring-border/50 shadow-2xs"
                             style={{ backgroundColor: hex }}
                             title={hex}
                           />
@@ -618,11 +622,11 @@ export function ThemeSearchSection({
                       {isInstalling ? (
                         <Spinner className="size-3" />
                       ) : isInstalled ? (
-                        <Check className="size-3 text-success" />
+                        <Check aria-hidden className="size-3 text-success" />
                       ) : (
-                        <PackagePlus className="size-3" />
+                        <PackagePlus aria-hidden className="size-3" />
                       )}
-                      {isInstalling ? 'Installing…' : isInstalled ? 'Installed' : 'Install'}
+                      {isInstalling ? 'Installing…' : isInstalled ? 'Update' : 'Install'}
                     </Button>
                   </div>
                 </div>

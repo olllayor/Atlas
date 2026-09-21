@@ -28,9 +28,9 @@ function SettingResetButton({ label, onClick }: { label: string; onClick: () => 
       aria-label={"Reset " + label}
       title={"Reset " + label + " to default"}
       onClick={onClick}
-      className="inline-flex size-4 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
+      className="inline-flex size-7 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
     >
-      <Undo2 className="size-3" />
+      <Undo2 aria-hidden className="size-3" />
     </button>
   );
 }
@@ -50,12 +50,12 @@ function FontSizeSelect({
 
   return (
     <Select value={String(value)} onValueChange={(val) => onChange(Number(val))}>
-      <SelectTrigger size="sm" className="w-20 shrink-0 text-xs">
+      <SelectTrigger size="sm" aria-label={`Font size ${value} pixels`} className="w-20 shrink-0 text-xs tabular-nums">
         <SelectValue>{value} px</SelectValue>
       </SelectTrigger>
       <SelectContent align="end" className="max-h-56">
         {options.map((px) => (
-          <SelectItem key={px} value={String(px)} className="text-xs">
+          <SelectItem key={px} value={String(px)} className="text-xs tabular-nums">
             {px} px
           </SelectItem>
         ))}
@@ -79,15 +79,15 @@ function TypographyRow({
 }) {
   return (
     <div className="py-3">
-      <div className="flex items-start justify-between gap-6">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-0 flex-1 basis-48">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-[var(--text-primary)]">{title}</span>
             {resetAction}
           </div>
           <div className="mt-0.5 text-xs text-[var(--text-secondary)]">{description}</div>
         </div>
-        <div className="shrink-0">{control}</div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">{control}</div>
       </div>
       {children}
     </div>
@@ -130,16 +130,16 @@ export function SettingsTypographySection({
   return (
     <section className="border-t border-[var(--border-subtle)] pt-6">
       {/* Header with Advanced switch */}
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-md font-semibold text-[var(--text-primary)]">Typography</h3>
+          <h2 className="text-sm font-semibold text-[var(--text-primary)]">Typography</h2>
           <p className="text-xs text-[var(--text-secondary)]">
             Configure interface, editor, code and terminal typefaces.
           </p>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-[var(--text-secondary)]">
-          <span>Advanced</span>
-          <Switch checked={advanced} onCheckedChange={handleToggleAdvanced} aria-label="Toggle advanced typography" />
+          <span id="typography-advanced-label">Advanced</span>
+          <Switch checked={advanced} onCheckedChange={handleToggleAdvanced} aria-labelledby="typography-advanced-label" />
         </label>
       </div>
 
@@ -166,10 +166,10 @@ export function SettingsTypographySection({
                 ) : null
               }
               control={
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <FontFamilyPicker
                     value={sansFamily}
-                    placeholder="System sans"
+                    placeholder="System sans…"
                     onSelect={(fam) =>
                       onAppearancePatch({
                         fontFamilySans: fam,
@@ -191,7 +191,7 @@ export function SettingsTypographySection({
                 </div>
               }
             >
-              <PromptFontPreview family={sansFamily} size={promptSize} />
+              <PromptFontPreview family={sansFamily} size={interfaceSize} />
             </TypographyRow>
 
             <TypographyRow
@@ -213,10 +213,10 @@ export function SettingsTypographySection({
                 ) : null
               }
               control={
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <FontFamilyPicker
                     value={codeFamily}
-                    placeholder="System mono"
+                    placeholder="System mono…"
                     requireMonospace
                     onSelect={(fam) =>
                       onAppearancePatch({
@@ -240,12 +240,12 @@ export function SettingsTypographySection({
               }
             >
               <CodeFontPreview family={codeFamily} size={codeSize} />
-              <TerminalFontPreview family={codeFamily} size={codeSize} />
+              <TerminalFontPreview family={terminalFamily || codeFamily} size={terminalSize || codeSize} />
             </TypographyRow>
 
             <TypographyRow
               title="Font smoothing"
-              description="Render text with thinner grayscale anti-aliasing instead of macOS&#39;s heavier default."
+              description="Render text with thinner grayscale anti-aliasing instead of macOS’s heavier default."
               resetAction={
                 !fontSmoothing ? (
                   <SettingResetButton

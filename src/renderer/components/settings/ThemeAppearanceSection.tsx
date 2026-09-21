@@ -390,7 +390,7 @@ export function ThemeAppearanceSection({
           <h3 className="text-sm font-semibold text-[var(--text-primary)]">Color scheme</h3>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {(['system', 'light', 'dark'] as const).map((mode) => {
             const isActive = themeMode === mode;
             return (
@@ -398,8 +398,9 @@ export function ThemeAppearanceSection({
                 key={mode}
                 type="button"
                 aria-pressed={isActive}
+                aria-label={`${mode} color scheme`}
                 onClick={() => onThemeModeChange(mode)}
-                className={`group flex flex-col items-center gap-2 rounded-xl border p-2.5 outline-none transition-all cursor-pointer ${
+                className={`group flex flex-col items-center gap-2 rounded-xl border p-2.5 outline-none transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                   isActive
                     ? 'border-[var(--accent)] ring-1 ring-[var(--accent)] bg-transparent shadow-sm'
                     : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-medium)] hover:bg-[var(--bg-hover)]'
@@ -417,7 +418,7 @@ export function ThemeAppearanceSection({
                     isActive ? 'text-[var(--text-primary)] font-medium' : 'text-[var(--text-secondary)] font-normal'
                   }`}
                 >
-                  {mode}
+                  {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
                 </span>
               </button>
             );
@@ -435,7 +436,7 @@ export function ThemeAppearanceSection({
               onClick={handleCreateTheme}
               className="inline-flex h-6 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-xs font-medium text-[var(--text-secondary)] shadow-2xs transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] hover:border-[var(--border-medium)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
             >
-              <Paintbrush className="size-3 text-[var(--text-muted)]" />
+              <Paintbrush aria-hidden className="size-3 text-[var(--text-muted)]" />
               <span>Create theme</span>
             </button>
             <button
@@ -447,7 +448,7 @@ export function ThemeAppearanceSection({
               }}
               className="inline-flex h-6 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-xs font-medium text-[var(--text-secondary)] shadow-2xs transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] hover:border-[var(--border-medium)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
             >
-              <Plus className="size-3 text-[var(--text-muted)]" />
+              <Plus aria-hidden className="size-3 text-[var(--text-muted)]" />
               <span>Add theme</span>
             </button>
           </div>
@@ -486,10 +487,10 @@ export function ThemeAppearanceSection({
       </div>
 
       {/* 3. Contrast Slider */}
-      <div className="flex items-center justify-between border-t border-[var(--border-subtle)] pt-4">
-        <div className="min-w-0 pr-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t border-[var(--border-subtle)] pt-4">
+        <div className="min-w-0 flex-1 basis-48 pr-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-[var(--text-primary)]">Contrast</span>
+            <label htmlFor="contrast-slider" className="text-sm font-medium text-[var(--text-primary)]">Contrast</label>
             {draftContrast !== CONTRAST_DEFAULT ? (
               <button
                 type="button"
@@ -498,7 +499,7 @@ export function ThemeAppearanceSection({
                 onClick={() => handleContrastCommit(CONTRAST_DEFAULT)}
                 className="inline-flex size-5 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
               >
-                <Undo2 className="size-3.5" />
+                <Undo2 aria-hidden className="size-3.5" />
               </button>
             ) : null}
           </div>
@@ -507,11 +508,12 @@ export function ThemeAppearanceSection({
           </p>
         </div>
 
-        <div className="flex shrink-0 items-center gap-3 w-56">
-          <span className="min-w-[52px] rounded-md bg-[var(--bg-elevated)] border border-[var(--border-subtle)] px-2 py-0.5 text-center font-mono text-xs font-medium tabular-nums text-[var(--text-primary)]">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 sm:w-56">
+          <output htmlFor="contrast-slider" className="min-w-[52px] rounded-md bg-[var(--bg-elevated)] border border-[var(--border-subtle)] px-2 py-0.5 text-center font-mono text-xs font-medium tabular-nums text-[var(--text-primary)]">
             {draftContrast}%
-          </span>
+          </output>
           <input
+            id="contrast-slider"
             type="range"
             min={CONTRAST_MIN}
             max={CONTRAST_MAX}
@@ -519,22 +521,23 @@ export function ThemeAppearanceSection({
             aria-label="Contrast"
             onChange={(e) => handleContrastChange(Number(e.target.value))}
             onPointerUp={() => handleContrastCommit(draftContrast)}
+            onBlur={() => handleContrastCommit(draftContrast)}
             onKeyUp={(e) => {
               if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') {
                 handleContrastCommit(Number((e.target as HTMLInputElement).value));
               }
             }}
             style={{ '--settings-slider-progress': `${contrastProgress}%` } as CSSProperties}
-            className="settings-range h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)]"
+            className="settings-range h-1.5 min-w-32 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] touch-manipulation"
           />
         </div>
       </div>
 
       {/* Glass Opacity Slider */}
-      <div className="flex items-center justify-between border-t border-[var(--border-subtle)] pt-4">
-        <div className="min-w-0 pr-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-t border-[var(--border-subtle)] pt-4">
+        <div className="min-w-0 flex-1 basis-48 pr-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-[var(--text-primary)]">Glass opacity</span>
+            <label htmlFor="glass-opacity-slider" className="text-sm font-medium text-[var(--text-primary)]">Glass opacity</label>
             {draftGlassOpacity !== GLASS_OPACITY_DEFAULT ? (
               <button
                 type="button"
@@ -543,7 +546,7 @@ export function ThemeAppearanceSection({
                 onClick={() => handleGlassOpacityCommit(GLASS_OPACITY_DEFAULT)}
                 className="inline-flex size-5 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
               >
-                <Undo2 className="size-3.5" />
+                <Undo2 aria-hidden className="size-3.5" />
               </button>
             ) : null}
           </div>
@@ -552,11 +555,12 @@ export function ThemeAppearanceSection({
           </p>
         </div>
 
-        <div className="flex shrink-0 items-center gap-3 w-56">
-          <span className="min-w-12 rounded-md bg-[var(--bg-elevated)] border border-[var(--border-subtle)] px-2 py-0.5 text-center font-mono text-xs font-medium tabular-nums text-[var(--text-primary)]">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 sm:w-56">
+          <output htmlFor="glass-opacity-slider" className="min-w-12 rounded-md bg-[var(--bg-elevated)] border border-[var(--border-subtle)] px-2 py-0.5 text-center font-mono text-xs font-medium tabular-nums text-[var(--text-primary)]">
             {draftGlassOpacity}%
-          </span>
+          </output>
           <input
+            id="glass-opacity-slider"
             type="range"
             min={GLASS_OPACITY_MIN}
             max={GLASS_OPACITY_MAX}
@@ -564,13 +568,14 @@ export function ThemeAppearanceSection({
             aria-label="Glass opacity"
             onChange={(e) => handleGlassOpacityChange(Number(e.target.value))}
             onPointerUp={() => handleGlassOpacityCommit(draftGlassOpacity)}
+            onBlur={() => handleGlassOpacityCommit(draftGlassOpacity)}
             onKeyUp={(e) => {
               if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') {
                 handleGlassOpacityCommit(Number((e.target as HTMLInputElement).value));
               }
             }}
             style={{ '--settings-slider-progress': `${glassProgress}%` } as CSSProperties}
-            className="settings-range h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)]"
+            className="settings-range h-1.5 min-w-32 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--bg-active)] accent-[var(--accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] touch-manipulation"
           />
         </div>
       </div>
@@ -580,7 +585,7 @@ export function ThemeAppearanceSection({
         <div className="flex items-center justify-between">
           <div className="min-w-0 pr-4">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-[var(--text-primary)]">Diff colors</span>
+              <span id="diff-colors-label" className="text-sm font-medium text-[var(--text-primary)]">Diff colors</span>
               {diffScheme !== DEFAULT_DIFF_COLOR_SCHEME ? (
                 <button
                   type="button"
@@ -589,7 +594,7 @@ export function ThemeAppearanceSection({
                   onClick={() => onAppearancePatch({ diffColorScheme: DEFAULT_DIFF_COLOR_SCHEME })}
                   className="inline-flex size-5 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] cursor-pointer"
                 >
-                  <Undo2 className="size-3.5" />
+                  <Undo2 aria-hidden className="size-3.5" />
                 </button>
               ) : null}
             </div>
@@ -602,11 +607,18 @@ export function ThemeAppearanceSection({
 
         <div className="mt-3 grid grid-cols-1 gap-3">
           <DiffColorsPreview />
-          <div className="flex gap-2" role="radiogroup" aria-label="Diff colors">
+          <div className="flex gap-2" role="radiogroup" aria-labelledby="diff-colors-label" onKeyDown={(e) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            e.preventDefault();
+            const order = ['red-green', 'blue-orange'] as const;
+            const idx = order.indexOf(diffScheme);
+            const next = e.key === 'ArrowRight' ? order[(idx + 1) % order.length]! : order[(idx - 1 + order.length) % order.length]!;
+            onAppearancePatch({ diffColorScheme: next });
+          }}>
             {(
               [
-                { value: 'red-green', label: 'Red & green' },
-                { value: 'blue-orange', label: 'Blue & orange' },
+                { value: 'red-green', label: 'Red and green' },
+                { value: 'blue-orange', label: 'Blue and orange' },
               ] as const satisfies ReadonlyArray<{ value: DiffColorScheme; label: string }>
             ).map((option) => {
               const isActive = diffScheme === option.value;
@@ -616,8 +628,9 @@ export function ThemeAppearanceSection({
                   type="button"
                   role="radio"
                   aria-checked={isActive}
+                  tabIndex={isActive ? 0 : -1}
                   onClick={() => onAppearancePatch({ diffColorScheme: option.value })}
-                  className={`flex-1 cursor-pointer rounded-xl border px-2 py-2 text-sm outline-none transition-all ${
+                  className={`flex-1 cursor-pointer rounded-xl border px-2 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                     isActive
                       ? 'border-[var(--accent)] ring-1 ring-[var(--accent)] text-[var(--text-primary)] font-medium'
                       : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] font-normal hover:border-[var(--border-medium)] hover:bg-[var(--bg-hover)]'

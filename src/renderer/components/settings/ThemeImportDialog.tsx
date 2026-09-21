@@ -254,7 +254,7 @@ function ThemeJsonEditor({
         autoCapitalize="off"
         autoComplete="off"
         autoCorrect="off"
-        className="relative z-10 block h-64 w-full resize-y bg-transparent p-3 font-mono leading-relaxed text-foreground caret-accent outline-none placeholder:text-muted-foreground/40 selection:bg-accent selection:text-accent-foreground"
+        className="relative z-10 block h-64 max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent p-3 font-mono leading-relaxed text-foreground caret-accent outline-none placeholder:text-muted-foreground/40 selection:bg-accent selection:text-accent-foreground"
         disabled={disabled}
         onChange={(e) => onChange(e.currentTarget.value)}
         onScroll={handleScroll}
@@ -486,7 +486,7 @@ export function ThemeImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl h-[640px] flex flex-col gap-0 p-0 overflow-hidden bg-background border border-border/80 shadow-2xl rounded-2xl">
+      <DialogContent className="max-w-3xl flex flex-col gap-0 p-0 overflow-hidden bg-background border border-border/80 shadow-2xl rounded-2xl max-h-[90vh] h-auto min-h-[480px]">
         <DialogHeader className="shrink-0 p-5 pb-3 border-b border-border/40">
           <div className="flex items-center justify-between">
             <div>
@@ -507,15 +507,15 @@ export function ThemeImportDialog({
           >
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="community">
-                <Globe className="size-3.5" />
+                <Globe aria-hidden className="size-3.5" />
                 Community
               </TabsTrigger>
               <TabsTrigger value="file">
-                <FileUp className="size-3.5" />
+                <FileUp aria-hidden className="size-3.5" />
                 Import File
               </TabsTrigger>
               <TabsTrigger value="code">
-                <Code2 className="size-3.5" />
+                <Code2 aria-hidden className="size-3.5" />
                 Theme Code
               </TabsTrigger>
             </TabsList>
@@ -524,11 +524,11 @@ export function ThemeImportDialog({
 
         {/* Conflict Resolution Banner */}
         {pendingThemes.length > 0 && pendingTheme ? (
-          <div className="border-b border-warning/20 bg-warning/10 p-4">
+          <div role="alert" className="border-b border-warning/20 bg-warning/10 p-4">
             <div className="flex items-start gap-3">
-              <AlertCircle className="size-4 shrink-0 text-warning mt-0.5" />
+              <AlertCircle aria-hidden className="size-4 shrink-0 text-warning mt-0.5" />
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-foreground">
+                <p className="truncate text-xs font-semibold text-foreground" title={pendingTheme.label}>
                   A theme named “{pendingTheme.label}” is already installed.
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
@@ -610,15 +610,16 @@ export function ThemeImportDialog({
 
               {stagedFileTheme ? (
                 <div className="rounded-xl border border-border/80 bg-card/60 p-4 space-y-3 shadow-2xs">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="flex size-10 items-center justify-center rounded-lg bg-accent/10 border border-accent/20 text-accent">
-                        <Palette className="size-5" />
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-semibold text-foreground">
-                          {stagedFileTheme.theme.label}
-                        </h4>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 border border-accent/20 text-accent">
+                          <Palette aria-hidden className="size-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="truncate text-sm font-semibold text-foreground" title={stagedFileTheme.theme.label}>
+                            {stagedFileTheme.theme.label}
+                          </h4>
                         <p className="text-xs text-muted-foreground">
                           {stagedFileTheme.fileName} · {formatByteSize(stagedFileTheme.fileSize)}
                         </p>
@@ -631,6 +632,7 @@ export function ThemeImportDialog({
                           ? 'Light mode'
                           : 'Dark mode'}
                     </Badge>
+                    </div>
                   </div>
 
                   {/* Swatch preview */}
@@ -670,52 +672,55 @@ export function ThemeImportDialog({
                       className="text-xs gap-1.5"
                       onClick={() => handleCommitThemes([stagedFileTheme.theme])}
                     >
-                      <Check className="size-3.5" />
+                      <Check aria-hidden className="size-3.5" />
                       Install Theme
                     </Button>
                   </div>
                 </div>
               ) : (
                 <div
+                  role="button"
+                  tabIndex={0}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
                   onClick={() => fileInputRef.current?.click()}
-                  className={`flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-10 text-center transition-all cursor-pointer ${
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                  aria-label="Import theme file. Activate to browse for a JSON file, or drag and drop."
+                  className={`flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed p-10 text-center transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                     isDragOver
                       ? 'border-accent bg-accent/5 scale-[0.99]'
                       : 'border-border/70 hover:border-border hover:bg-card/40'
                   }`}
                 >
-                  <div className="flex size-14 items-center justify-center rounded-2xl bg-muted/70 text-accent mb-3 border border-border/50">
-                    <UploadCloud className="size-7" />
-                  </div>
-                  <h4 className="text-sm font-semibold text-foreground">
+                  <span className="flex size-14 items-center justify-center rounded-2xl bg-muted/70 text-accent mb-3 border border-border/50">
+                    <UploadCloud aria-hidden className="size-7" />
+                  </span>
+                  <span className="text-sm font-semibold text-foreground">
                     Drop your theme file here
-                  </h4>
-                  <p className="mt-1 text-xs text-muted-foreground max-w-sm">
-                    Drag and drop any VS Code, T3 Code, or Atlas <code className="font-mono text-foreground font-medium">.json</code> theme file, or click to browse.
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="mt-4 text-xs gap-1.5"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fileInputRef.current?.click();
-                    }}
+                  </span>
+                  <span className="mt-1 text-xs text-muted-foreground max-w-sm">
+                    Drag and drop any VS Code, T3 Code, or Atlas <code translate="no" className="font-mono text-foreground font-medium">.json</code> theme file, or click to browse.
+                  </span>
+                  <span
+                    aria-hidden
+                    className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium"
                   >
-                    <FileCode className="size-3.5" />
+                    <FileCode aria-hidden className="size-3.5" />
                     Browse Files
-                  </Button>
+                  </span>
                 </div>
               )}
 
               {error ? (
-                <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                  <AlertCircle className="size-4 shrink-0" />
-                  <span>{error}</span>
+                <div role="alert" className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle aria-hidden className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">{error}</span>
                 </div>
               ) : null}
             </div>
@@ -723,10 +728,10 @@ export function ThemeImportDialog({
 
           {/* TAB 3: THEME CODE */}
           {activeTab === 'code' ? (
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground font-medium">Preset Template:</span>
+                  <label htmlFor="theme-template" className="text-xs text-muted-foreground font-medium">Preset Template:</label>
                   <Select
                     onValueChange={(val) => {
                       const template = THEME_TEMPLATES[val];
@@ -736,8 +741,8 @@ export function ThemeImportDialog({
                       }
                     }}
                   >
-                    <SelectTrigger className="h-7 w-46 text-xs bg-muted/40 border-border/60">
-                      <SelectValue placeholder="Load a template..." />
+                    <SelectTrigger id="theme-template" className="h-7 w-46 text-xs bg-muted/40 border-border/60">
+                      <SelectValue placeholder="Load a template…" />
                     </SelectTrigger>
                     <SelectContent>
                       {Object.entries(THEME_TEMPLATES).map(([key, t]) => (
@@ -758,13 +763,15 @@ export function ThemeImportDialog({
                     onClick={handleFormatJson}
                     disabled={!themeJson.trim()}
                   >
-                    <Wand2 className="size-3 mr-1" />
+                    <Wand2 aria-hidden className="size-3 mr-1" />
                     Format JSON
                   </Button>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
+                    aria-label="Clear theme JSON"
+                    title="Clear theme JSON"
                     className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
                     onClick={() => {
                       setThemeJson('');
@@ -772,7 +779,7 @@ export function ThemeImportDialog({
                     }}
                     disabled={!themeJson.trim()}
                   >
-                    <Trash2 className="size-3" />
+                    <Trash2 aria-hidden className="size-3" />
                   </Button>
                 </div>
               </div>
@@ -787,12 +794,12 @@ export function ThemeImportDialog({
               />
 
               {liveParsedTheme ? (
-                <div className="flex items-center justify-between rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
-                  <div className="flex items-center gap-2">
-                    <Check className="size-3.5" />
-                    <span>Valid theme: <strong>{liveParsedTheme.label}</strong></span>
+                <div role="status" className="flex items-center justify-between gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Check aria-hidden className="size-3.5 shrink-0" />
+                    <span className="truncate">Valid theme: <strong>{liveParsedTheme.label}</strong></span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex shrink-0 items-center gap-1.5" aria-hidden>
                     {Object.entries(
                       liveParsedTheme.colors,
                     )
@@ -810,9 +817,9 @@ export function ThemeImportDialog({
               ) : null}
 
               {error ? (
-                <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                  <AlertCircle className="size-4 shrink-0" />
-                  <span>{error}</span>
+                <div role="alert" className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle aria-hidden className="size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">{error}</span>
                 </div>
               ) : null}
             </div>
@@ -820,7 +827,7 @@ export function ThemeImportDialog({
         </div>
 
         <DialogFooter className="shrink-0 p-4 border-t border-border/40 bg-muted/20 flex items-center justify-between sm:justify-between">
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-xs text-muted-foreground">
             Supports Atlas, T3 Code, and VS Code themes
           </div>
           <div className="flex items-center gap-2">

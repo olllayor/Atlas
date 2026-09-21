@@ -10,8 +10,9 @@ export function PanelAnimationsPreview({ durationMs }: { durationMs: number }) {
     <button
       type="button"
       aria-label="Replay panel animation preview"
+      aria-pressed={panelsOpen}
       title="Click to replay panel animation"
-      className="flex h-10 w-full cursor-pointer overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 sm:w-28 shrink-0"
+      className="flex h-10 w-full cursor-pointer overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--bg-base)] sm:w-28 shrink-0"
       onClick={() => setPanelsOpen((open) => !open)}
       style={{ "--preview-duration": `${durationMs}ms` } as CSSProperties}
     >

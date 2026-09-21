@@ -1,4 +1,5 @@
-import { Check, Copy, Pencil, Upload, Trash2 } from 'lucide-react';
+import { Check, Copy, Pencil, Download, Trash2 } from 'lucide-react';
+import { useState } from 'react';
 import type { ThemeAppearance, ThemeCardDefinition, ThemeDefinition } from '../../../shared/themePalettes';
 import { ThemePreviewCircles } from './ThemePreviewCircles';
 import {
@@ -39,32 +40,33 @@ export function ThemeLibraryCard({
   const currentVariant = variants?.find((v) => v.id === activeVariantId) ?? variants?.[0];
   const shortLabel = currentVariant ? getVariantShortLabel(currentVariant.label, theme.label) : '';
   const otherCount = variants ? variants.length - 1 : 0;
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelectTheme()}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelectTheme();
-        }
-      }}
       style={isPartiallyActive ? { boxShadow: 'inset 0 0 0 1px var(--ring)' } : undefined}
-      className={`group relative flex flex-col justify-between overflow-hidden rounded-xl border p-2 transition-all cursor-pointer select-none ${
+      className={`group relative flex flex-col justify-between overflow-hidden rounded-xl border p-2 transition-colors cursor-default select-none ${
         isPartiallyActive
           ? 'border-transparent bg-[var(--accent-surface)]/20 shadow-sm'
-          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-default)]'
-      } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]`}
+          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-default)]'
+      } focus-within:ring-2 focus-within:ring-[var(--ring)]`}
     >
       <div className="flex flex-col items-center">
-        <ThemePreviewCircles
-          label={theme.label}
-          activeModes={activeModes}
-          onSelectMode={(mode) => onSelectMode(mode)}
-          previews={theme.previews}
-        />
+        <button
+          type="button"
+          onClick={() => onSelectTheme()}
+          aria-label={`Apply ${theme.label} theme`}
+          aria-pressed={isPartiallyActive}
+          title={`Apply ${theme.label}`}
+          className="flex w-full cursor-pointer flex-col items-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          <ThemePreviewCircles
+            label={theme.label}
+            activeModes={activeModes}
+            onSelectMode={(mode) => onSelectMode(mode)}
+            previews={theme.previews}
+          />
+        </button>
 
         {hasMultipleVariants && currentVariant && (
           <div className="mt-1 mb-0.5">
@@ -73,9 +75,12 @@ export function ThemeLibraryCard({
                 <button
                   type="button"
                   onClick={(e) => e.stopPropagation()}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)] shadow-2xs transition-colors hover:border-[var(--border-medium)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] cursor-pointer"
+                  aria-label={`${theme.label} variant: ${currentVariant.label}. Change variant`}
+                  aria-haspopup="menu"
+                  title={currentVariant.label}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)] shadow-2xs transition-colors hover:border-[var(--border-medium)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 >
-                  <span className="truncate max-w-28">{shortLabel}</span>
+                  <span className="truncate max-w-28" title={currentVariant.label}>{shortLabel}</span>
                   <span className="rounded-full bg-[var(--bg-elevated)] px-1 py-0.2 text-[9px] font-semibold text-[var(--text-muted)] border border-[var(--border-subtle)]">
                     +{otherCount}
                   </span>
@@ -94,7 +99,7 @@ export function ThemeLibraryCard({
                       className="flex items-center justify-between text-xs cursor-pointer"
                     >
                       <span className="truncate">{v.label}</span>
-                      {isSelected ? <Check className="size-3 text-[var(--accent)] ml-2 shrink-0" /> : null}
+                      {isSelected ? <Check aria-hidden className="size-3 text-[var(--accent)] ml-2 shrink-0" /> : null}
                     </DropdownMenuItem>
                   );
                 })}
@@ -107,7 +112,7 @@ export function ThemeLibraryCard({
       <div className="mt-2 flex items-center justify-between px-2 pb-1">
         <span
           className={`text-xs font-medium truncate ${
-            isPartiallyActive ? 'text-[var(--text-primary)] font-semibold' : 'text-[var(--text-secondary)]'
+            isPartiallyActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'
           }`}
           title={theme.label}
         >
@@ -126,7 +131,7 @@ export function ThemeLibraryCard({
                 onDuplicate();
               }}
             >
-              <Copy className="size-3.5" />
+              <Copy aria-hidden className="size-3.5" />
             </button>
           )}
 
@@ -141,7 +146,7 @@ export function ThemeLibraryCard({
                 onEdit();
               }}
             >
-              <Pencil className="size-3.5" />
+              <Pencil aria-hidden className="size-3.5" />
             </button>
           )}
 
@@ -156,23 +161,53 @@ export function ThemeLibraryCard({
                 onDownload();
               }}
             >
-              <Upload className="size-3.5" />
+              <Download aria-hidden className="size-3.5" />
             </button>
           )}
 
           {onRemove && (
-            <button
-              type="button"
-              aria-label={`Delete ${theme.label} theme`}
-              title="Delete theme"
-              className="flex size-6 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--error-surface)] hover:text-[var(--error)] cursor-pointer"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove();
-              }}
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+            confirmDelete ? (
+              <span className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label={`Confirm delete ${theme.label}`}
+                  title="Confirm delete"
+                  className="flex h-6 items-center rounded-md bg-[var(--error-surface)] px-2 text-[11px] font-medium text-[var(--error)] transition-colors hover:brightness-110 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDelete(false);
+                    onRemove();
+                  }}
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  aria-label="Cancel delete"
+                  title="Cancel"
+                  className="flex size-6 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDelete(false);
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                aria-label={`Delete ${theme.label} theme`}
+                title="Delete theme"
+                className="flex size-6 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--error-surface)] hover:text-[var(--error)] cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDelete(true);
+                }}
+              >
+                <Trash2 aria-hidden className="size-3.5" />
+              </button>
+            )
           )}
         </div>
       </div>

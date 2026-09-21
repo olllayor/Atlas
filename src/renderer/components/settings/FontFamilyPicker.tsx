@@ -78,21 +78,27 @@ export function FontFamilyPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={value.trim() ? `Font: ${value}` : placeholder}
           className="flex h-8 w-44 items-center justify-between gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs text-[var(--text-primary)] shadow-xs transition-colors hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
         >
-          <span className="truncate font-normal" style={value.trim() ? { fontFamily: value } : undefined}>
+          <span className="truncate font-normal" title={displayLabel} style={value.trim() ? { fontFamily: value } : undefined}>
             {displayLabel}
           </span>
-          <ChevronDown className="size-3.5 shrink-0 opacity-50" />
+          <ChevronDown aria-hidden className="size-3.5 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56 p-1">
         {/* Search header */}
         <div className="relative mb-1 flex items-center border-b border-[var(--border-subtle)] pb-1 px-1">
-          <Search className="size-3.5 text-[var(--text-muted)] shrink-0 mr-1.5" />
+          <Search aria-hidden className="size-3.5 text-[var(--text-muted)] shrink-0 mr-1.5" />
+          <label className="sr-only" htmlFor="font-family-search">Search fonts</label>
           <input
+            id="font-family-search"
             type="text"
             placeholder="Search fonts…"
+            autoComplete="off"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="w-full bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
@@ -100,10 +106,12 @@ export function FontFamilyPicker({
         </div>
 
         {/* Font List */}
-        <div className="max-h-60 overflow-y-auto space-y-0.5">
+        <div role="listbox" aria-label="Font families" className="max-h-60 overflow-y-auto overscroll-contain space-y-0.5">
           {/* Default Option */}
           <button
             type="button"
+            role="option"
+            aria-selected={!value.trim()}
             onClick={() => {
               onSelect("");
               setOpen(false);
@@ -116,7 +124,7 @@ export function FontFamilyPicker({
             )}
           >
             <span>{placeholder}</span>
-            {!value.trim() && <Check className="size-3.5 text-[var(--accent)]" />}
+            {!value.trim() && <Check aria-hidden className="size-3.5 text-[var(--accent)]" />}
           </button>
 
           {/* Filtered items */}
@@ -126,6 +134,9 @@ export function FontFamilyPicker({
               <button
                 key={family}
                 type="button"
+                role="option"
+                aria-selected={isSelected}
+                title={family}
                 onClick={() => {
                   onSelect(family);
                   setOpen(false);
@@ -140,7 +151,7 @@ export function FontFamilyPicker({
                 <span className="truncate" style={{ fontFamily: family }}>
                   {family}
                 </span>
-                {isSelected && <Check className="size-3.5 text-[var(--accent)]" />}
+                {isSelected && <Check aria-hidden className="size-3.5 text-[var(--accent)]" />}
               </button>
             );
           })}
@@ -154,7 +165,7 @@ export function FontFamilyPicker({
               }}
               className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs text-[var(--accent)] hover:bg-[var(--bg-hover)]"
             >
-              <span>Use &ldquo;{query.trim()}&rdquo;</span>
+              <span className="truncate">Use &ldquo;{query.trim()}&rdquo;</span>
             </button>
           )}
         </div>

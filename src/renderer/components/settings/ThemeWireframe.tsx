@@ -9,7 +9,7 @@ function isLightBg(color: string): boolean {
   if (trimmed === '#000' || trimmed === '#000000' || trimmed === 'black') return false;
   if (trimmed.startsWith('#')) {
     const hex = trimmed.slice(1);
-    const num = parseInt(hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex, 16);
+    const num = parseInt(hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex.slice(0, 6), 16);
     if (!Number.isNaN(num)) {
       const r = (num >> 16) & 255;
       const g = (num >> 8) & 255;
@@ -23,6 +23,21 @@ function isLightBg(color: string): boolean {
       return parseFloat(match[1]) > 0.6;
     }
   }
+  // rgb()/rgba()/hsl()/hsla(): parse first three channels / lightness.
+  const rgbMatch = trimmed.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+  if (rgbMatch) {
+    const r = Number(rgbMatch[1]);
+    const g = Number(rgbMatch[2]);
+    const b = Number(rgbMatch[3]);
+    const scale = trimmed.includes('%') ? 100 : 255;
+    return (0.299 * r + 0.587 * g + 0.114 * b) / scale > 0.55;
+  }
+  const hslMatch = trimmed.match(/hsla?\(\s*[\d.]+\s*[,\s]\s*[\d.]+%?\s*[,\s]\s*([\d.]+)%/);
+  if (hslMatch && hslMatch[1]) {
+    return parseFloat(hslMatch[1]) > 55;
+  }
+  // CSS vars / color-mix() can't be resolved statically: fall back to canvas
+  // luminance-agnostic mid value by treating unknown as dark (previous behavior).
   return false;
 }
 
@@ -34,7 +49,7 @@ export function ThemeWireframePane({
   clip?: 'left' | 'right' | undefined;
 }) {
   const isLight = isLightBg(colors.canvas);
-  const line = isLight ? 'rgba(0, 0, 0, 0.07)' : 'rgba(255, 255, 255, 0.08)';
+  const line = isLight ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.14)';
   const pillBg = isLight ? '#f4f4f5' : 'rgba(255, 255, 255, 0.08)';
   const textLine = isLight ? '#e4e4e7' : 'rgba(255, 255, 255, 0.14)';
   const cardBg = isLight ? '#ffffff' : (colors.surface || '#18181b');

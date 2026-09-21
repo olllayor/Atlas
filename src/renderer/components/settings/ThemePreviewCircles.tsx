@@ -43,7 +43,7 @@ export function ThemePreviewCircle({
   return (
     <span
       aria-hidden
-      className="relative block size-14 shrink-0 overflow-hidden rounded-full border-2 border-[var(--bg-base)]"
+      className="relative block size-14 shrink-0 overflow-hidden rounded-full border-2 border-[var(--border-subtle)]"
       style={{ boxShadow: themePreviewEdgeShadow(mode) }}
     >
       <span
@@ -79,14 +79,22 @@ export function ThemePreviewCircles({
           <button
             key={mode}
             aria-label={`Use ${label} for ${mode} mode`}
+            aria-pressed={isPicked}
             title={mode === 'light' ? 'Use for light mode only' : 'Use for dark mode only'}
             type="button"
-            className={`relative flex size-[68px] shrink-0 cursor-pointer items-center justify-center rounded-full p-1 outline-none transition-transform ${
-              isPicked ? 'scale-100' : 'hover:scale-105'
+            className={`relative flex size-[68px] shrink-0 cursor-pointer items-center justify-center rounded-full p-1 outline-none transition-transform motion-reduce:transition-none ${
+              isPicked ? 'scale-100' : 'hover:scale-105 motion-reduce:hover:scale-100'
             } focus-visible:ring-2 focus-visible:ring-[var(--ring)]`}
             onClick={(event) => {
               event.stopPropagation();
               onSelectMode(mode);
+            }}
+            onKeyDown={(event) => {
+              // Card wraps circles in its own button: stop Enter/Space here so
+              // one keypress doesn't fire both select-mode and select-theme.
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.stopPropagation();
+              }
             }}
           >
             <ThemePreviewCircle colors={preview.colors} mode={mode} />
@@ -94,17 +102,16 @@ export function ThemePreviewCircles({
               <>
                 <span
                   aria-hidden
-                  className="pointer-events-none absolute inset-0 rounded-full"
-                  style={{ boxShadow: 'inset 0 0 0 2px var(--ring)' }}
+                  className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-inset ring-[var(--ring)]"
                 />
                 <span
                   aria-hidden
                   className="pointer-events-none absolute bottom-0.5 right-0.5 flex size-5 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-sm"
                 >
                   {mode === 'light' ? (
-                    <SunIcon className="size-3 text-warning" />
+                    <SunIcon aria-hidden className="size-3 text-warning" />
                   ) : (
-                    <MoonIcon className="size-3 text-accent" />
+                    <MoonIcon aria-hidden className="size-3 text-accent" />
                   )}
                 </span>
               </>

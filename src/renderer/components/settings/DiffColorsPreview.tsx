@@ -34,11 +34,11 @@ export function DiffColorsPreview() {
   return (
     <div
       role="img"
-      aria-label="Diff color preview"
+      aria-label="Diff color preview: one removed line in deletion color and one added line in addition color"
       inert
       className="pointer-events-none max-h-28 overflow-hidden rounded-md border border-[var(--border-subtle)]"
     >
-      {file ? <DiffBlock file={file} /> : null}
+      {file ? <DiffBlock file={file} /> : <p className="p-3 text-xs text-[var(--text-muted)]">Diff preview unavailable.</p>}
     </div>
   );
 }

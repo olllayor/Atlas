@@ -10,13 +10,14 @@ export function PromptFontPreview({ family, size }: { family?: string; size?: nu
 
   return (
     <div
+      aria-hidden
       className="mt-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-3 text-[var(--text-primary)] shadow-xs transition-colors"
       style={style}
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <span>Use</span>
         <span className="inline-flex items-center gap-1 rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-xs font-normal text-[var(--text-primary)]">
-          <Hexagon className="size-3 text-[var(--accent)]" />
+          <Hexagon aria-hidden className="size-3 text-[var(--accent)]" />
           <span>Frontend Design</span>
         </span>
         <span>to fix the flaky test in</span>
@@ -26,7 +27,7 @@ export function PromptFontPreview({ family, size }: { family?: string; size?: nu
         </span>
         <span>and align the header with</span>
         <span className="inline-flex items-center gap-1 rounded-md border border-[var(--border-medium)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-xs font-mono font-medium text-[var(--text-primary)]">
-          <Atom className="size-3 text-[var(--accent)]" />
+          <Atom aria-hidden className="size-3 text-[var(--accent)]" />
           <span>SettingsPanels.tsx</span>
         </span>
         <span>before shipping.</span>
@@ -43,11 +44,11 @@ export function CodeFontPreview({ family, size }: { family?: string; size?: numb
   };
 
   return (
-    <div className="mt-2.5 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--code-background,var(--bg-base))] shadow-xs">
+    <div aria-hidden className="mt-2.5 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--code-background,var(--bg-base))] shadow-xs">
       {/* File Header */}
       <div className="flex items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs">
         <div className="flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-          <FileCode className="size-3.5 text-[var(--accent)]" />
+          <FileCode aria-hidden className="size-3.5 text-[var(--accent)]" />
           <span className="font-medium text-[var(--text-primary)]">src/formatUser.ts</span>
         </div>
         <div className="flex items-center gap-1.5 font-mono text-xs">
@@ -104,7 +105,8 @@ export function TerminalFontPreview({ family, size }: { family?: string; size?: 
 
   return (
     <div
-      className="mt-2.5 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--terminal-background,var(--bg-base))] p-3.5 shadow-xs font-mono select-text"
+      aria-hidden
+      className="mt-2.5 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--terminal-background,var(--bg-base))] p-3.5 shadow-xs font-mono select-none"
       style={style}
     >
       <div className="space-y-1">
@@ -135,15 +137,15 @@ export function TerminalFontPreview({ family, size }: { family?: string; size?: 
         {/* Test status line */}
         <div className="flex items-center gap-4 text-xs">
           <span className="flex items-center gap-1 text-success">
-            <Check className="size-3.5 stroke-[3]" />
+            <Check aria-hidden className="size-3.5 stroke-[3]" />
             <span>85 passed</span>
           </span>
           <span className="flex items-center gap-1 text-warning">
-            <AlertTriangle className="size-3.5" />
+            <AlertTriangle aria-hidden className="size-3.5" />
             <span>2 warnings</span>
           </span>
           <span className="flex items-center gap-1 text-error">
-            <X className="size-3.5 stroke-[3]" />
+            <X aria-hidden className="size-3.5 stroke-[3]" />
             <span>0 failed</span>
           </span>
         </div>
@@ -156,7 +158,7 @@ export function TerminalFontPreview({ family, size }: { family?: string; size?: 
             READY
           </span>
           <span className="text-[var(--text-muted)]">
-            watching for changes — press <span className="font-semibold text-[var(--text-primary)]">q</span> to quit
+            watching for changes — press <kbd className="font-semibold text-[var(--text-primary)]">q</kbd> to quit
           </span>
         </div>
 
@@ -170,7 +172,7 @@ export function TerminalFontPreview({ family, size }: { family?: string; size?: 
             git:(<span className="text-error font-medium">main</span>)
           </span>
           <span className="text-warning">✗</span>
-          <span className="inline-block w-2 h-4 bg-[var(--text-primary)] animate-pulse" />
+          <span className="inline-block w-2 h-4 bg-[var(--text-primary)] animate-pulse motion-reduce:animate-none" />
         </div>
       </div>
     </div>

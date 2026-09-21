@@ -325,8 +325,8 @@ function PullRequestRow({
               <span
                 className={cn(
                   entry.reviewDecision === 'approved'
-                    ? 'text-emerald-600 dark:text-emerald-400/80'
-                    : 'text-amber-600 dark:text-amber-400/80'
+                    ? 'text-success'
+                    : 'text-warning'
                 )}
               >
                 {entry.reviewDecision === 'approved' ? 'Approved' : 'Changes requested'}
@@ -525,7 +525,7 @@ function CreatePullRequestForm({
             type="checkbox"
             checked={draft}
             onChange={(event) => setDraft(event.target.checked)}
-            className="size-3.5 accent-emerald-600"
+            className="size-3.5 accent-brand"
           />
           Draft
         </label>

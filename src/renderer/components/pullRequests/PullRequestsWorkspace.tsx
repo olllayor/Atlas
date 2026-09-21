@@ -463,8 +463,8 @@ function WorkspaceRow({
                 className={cn(
                   'truncate',
                   entry.reviewDecision === 'approved'
-                    ? 'text-emerald-600/90 dark:text-emerald-400/80'
-                    : 'text-amber-600/90 dark:text-amber-400/80'
+                    ? 'text-success'
+                    : 'text-warning'
                 )}
               >
                 {entry.reviewDecision === 'approved' ? 'Approved' : 'Changes requested'}

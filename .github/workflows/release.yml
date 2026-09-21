@@ -25,6 +25,14 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # node-gyp 9 (via electron-builder install-app-deps) needs distutils,
+      # gone from Python 3.12+. macos-latest ships 3.12+, so pin 3.11 for
+      # the node-pty source rebuild.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

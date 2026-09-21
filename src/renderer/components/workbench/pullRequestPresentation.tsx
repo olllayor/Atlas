@@ -49,12 +49,12 @@ export function resolvePullRequestState(input: {
   baseBranch?: string;
 }): StatePresentation {
   if (input.state === 'merged') {
-    return { label: 'Merged', toneClassName: 'text-violet-600 dark:text-violet-300/90', Icon: GitMerge };
+    return { label: 'Merged', toneClassName: 'text-brand-strong', Icon: GitMerge };
   }
   if (input.state === 'closed') {
     return {
       label: 'Closed',
-      toneClassName: 'text-red-600 dark:text-red-300/90',
+      toneClassName: 'text-error',
       Icon: GitPullRequestClosed,
     };
   }
@@ -71,13 +71,13 @@ export function resolvePullRequestState(input: {
       // triangle catches their eye, so name the branch wherever the caller
       // knows it.
       label: input.baseBranch ? `Conflicts with ${input.baseBranch}` : 'Has conflicts',
-      toneClassName: 'text-red-600 dark:text-red-400/90',
+      toneClassName: 'text-error',
       Icon: TriangleAlert,
     };
   }
   return {
     label: 'Open',
-    toneClassName: 'text-emerald-600 dark:text-emerald-300/90',
+    toneClassName: 'text-success',
     Icon: GitPullRequest,
   };
 }
@@ -120,13 +120,13 @@ const CHECK_STATUS_PRESENTATION: Record<
   PullRequestCheckStatus,
   { label: string; Icon: LucideIcon; toneClassName: string }
 > = {
-  pending: { label: 'Running', Icon: CircleDot, toneClassName: 'text-amber-600 dark:text-amber-400/90' },
+  pending: { label: 'Running', Icon: CircleDot, toneClassName: 'text-warning' },
   success: {
     label: 'Passed',
     Icon: CircleCheck,
-    toneClassName: 'text-emerald-600 dark:text-emerald-300/90',
+    toneClassName: 'text-success',
   },
-  failure: { label: 'Failed', Icon: CircleX, toneClassName: 'text-red-600 dark:text-red-400/90' },
+  failure: { label: 'Failed', Icon: CircleX, toneClassName: 'text-error' },
   skipped: { label: 'Skipped', Icon: CircleDashed, toneClassName: 'text-text-faint' },
   cancelled: { label: 'Cancelled', Icon: CircleDashed, toneClassName: 'text-text-faint' },
 };
@@ -142,13 +142,13 @@ const CHECKS_STATE_PRESENTATION: Record<
   passing: {
     label: 'All checks passing',
     Icon: CircleCheck,
-    toneClassName: 'text-emerald-600 dark:text-emerald-300/90',
+    toneClassName: 'text-success',
   },
-  failing: { label: 'Some checks failing', Icon: CircleX, toneClassName: 'text-red-600 dark:text-red-400/90' },
+  failing: { label: 'Some checks failing', Icon: CircleX, toneClassName: 'text-error' },
   pending: {
     label: 'Checks running',
     Icon: CircleDot,
-    toneClassName: 'text-amber-600 dark:text-amber-400/90',
+    toneClassName: 'text-warning',
   },
 };
 
@@ -190,8 +190,8 @@ export function PullRequestDiffStat({
 
   return (
     <span className={cn('flex shrink-0 items-center gap-1.5 tabular-nums', className)}>
-      {additions > 0 ? <span className="text-emerald-600 dark:text-emerald-400/80">+{additions}</span> : null}
-      {deletions > 0 ? <span className="text-red-600 dark:text-red-400/80">−{deletions}</span> : null}
+      {additions > 0 ? <span className="text-diff-add-fg">+{additions}</span> : null}
+      {deletions > 0 ? <span className="text-diff-del-fg">−{deletions}</span> : null}
     </span>
   );
 }

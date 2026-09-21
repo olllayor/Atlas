@@ -683,6 +683,7 @@ test('ChatSessionRuntime retries once with aggressive compaction when prompt is 
 test('ChatSessionRuntime does not retry prompt-too-long compaction after partial streamed output', async () => {
   const history = createHistory(12);
   let attempts = 0;
+  const events: StreamEvent[] = [];
 
   const provider: ProviderAdapter = {
     providerId: 'openrouter',
@@ -699,17 +700,27 @@ test('ChatSessionRuntime does not retry prompt-too-long compaction after partial
 
   const { runtime } = createRuntime({ provider, history });
 
-  await assert.rejects(
-    runtime.executeTurn({
-      requestId: 'request-no-retry-after-stream',
-      request: createRequest(),
-      signal: new AbortController().signal,
-      emitEvent: () => undefined,
-    }),
-    Error,
-  );
+  const result = await runtime.executeTurn({
+    requestId: 'request-no-retry-after-stream',
+    request: createRequest(),
+    signal: new AbortController().signal,
+    emitEvent: (event) => {
+      events.push(event as StreamEvent);
+    },
+  });
 
   assert.equal(attempts, 1);
+  // Overflow after tokens reached the user persists a structured stop instead
+  // of throwing the raw provider error mid-transcript.
+  assert.equal(result.status, 'completed');
+  assert.ok(
+    events.some((event) => event.type === 'notice' && event.code === 'context-overflow'),
+    'expected a context-overflow notice',
+  );
+  assert.ok(
+    result.parts.some((part) => part.type === 'text' && part.text.includes('too long for this model')),
+    'expected the stop notice persisted as a trailing text part',
+  );
 });
 
 test('ChatSessionRuntime escalates to maximal compaction when aggressive still overflows', async () => {

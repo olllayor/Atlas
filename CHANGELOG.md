@@ -5,22 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> Releases v0.1.15 through v0.1.18 were cut on `main` and have not been merged
-> back into `dev`, so `dev` still reports version 0.1.14. The entries below
-> describe what shipped; the branch divergence is a separate problem.
-
 ## [Unreleased]
 
+### Added
+- GitHub pull requests in the workbench: list with sort and filters,
+  detail with diffs, checks, comments, review threads, labels, and
+  reviewer requests.
+- Dev-server auto-open hook with browser surface improvements and
+  surface picker groups.
+- Tool-step budget wrap-up: the model is told its remaining step budget
+  so turns finish cleanly instead of dying mid-chain, and the
+  step-limit stop is persisted in the transcript.
+
+### Changed
+- macOS packaging hardened for unsigned distribution with signed and
+  notarized paths when certificates exist, plus post-package verification.
+- Telemetry is opt-in, production sourcemaps are dropped, and native
+  modules unpack from asar.
+- CI runs tests and packages macOS arm64; release builds pin Python 3.11
+  for native rebuilds.
+
 ### Fixed
-- Light mode is no longer offered for design themes that have no light palette.
-  Picking it under `default` or `xai` set `color-scheme: light` — whitening
-  native inputs, scrollbars and autofill — while every app surface stayed dark.
-  The mode is now disabled for those themes and clamped to dark if already
-  stored.
-- The onboarding "You're all set" screen is reachable again. Opening Settings
-  from "Add a provider" unmounted the flow and nothing restored it, so a user
-  who configured a provider was dropped into an empty chat with no confirmation
-  and the `onboarding completed` event never fired.
+- OpenCode missing-binary crash restored: the serve spawn fails its own
+  call with a clear ENOENT message while keeping Finder PATH resolution,
+  with regression coverage.
+- Context overflow after partial streaming now persists a structured stop
+  notice instead of throwing the raw provider error mid-transcript.
+- Pull request surfaces use theme contract tokens instead of raw Tailwind
+  palette colors, so status colors follow all five design themes.
+- Fresh dev-server icon fallback reused when the root source is absent.
+- Main crash handlers, SQLite corrupt-file quarantine, Finder PATH for
+  OpenCode and MCP, Cloud Sandbox deploy gate when packaged, and
+  openExternal http allowlist with visual window nav lock.
+
+## [0.2.1] - 2026-09-08
+
+### Fixed
+- Fresh installs no longer crash on launch when the OpenCode CLI is absent.
+  The missing binary surfaced as an uncaught `spawn opencode ENOENT` in the
+  main process; the serve spawn now fails its own call instead, and the
+  integration reports itself as not installed.
+
+## [0.2.0] - 2026-09-08
+
+### Added
+- OpenCode integration with SDK server default and ACP beta behind
+  integration modes, including model inventory, streaming session adapter,
+  approvals bridge, Settings card, and keychain account support.
+- Antigravity provider over ACP transport with auth recovery and
+  provider banners, plus local agent detection and Claude adapter.
+- Plugin system: install from folders and marketplaces, settings page,
+  MCP servers served from bundles, per-chat tool gating.
+- Subagents: catalog, continuable runtime with FIFO follow-ups, durable
+  conversations, permission presets, composer takeover, and a live
+  agent count badge.
+- Terminal tab with panes, right panel surfaces, conversation fork and
+  side conversations, raw transcript mode.
+- Per-conversation model persistence and tool permission mode, context
+  window framed as remaining, composer prompt history recall.
+- Attachment staging with background compression, HEIC photo conversion,
+  inline sandboxed visuals, markdown favicons and brand marks,
+  session search, checkpoints with compaction prompts.
+- Durable follow-up queue with restart resume, sticky compaction boundary.
+
+### Changed
+- New interface pass across the app shell, slim sidebar rows, compact
+  composer, centered empty state.
+
+### Fixed
+- Settled turns no longer shimmer: reasoning rows require a live turn,
+  and missed terminal events reconcile locally instead of sticking the
+  draft at streaming.
+- Custom Electron schemes register in one call so privileges no longer
+  overwrite each other.
+- Light mode clamped to themes that have a light palette; onboarding
+  completion screen reachable again.
+- Sidebar hover card flow debounced, model labels resolved from catalog,
+  tool output streaming optimized, orphaned serve processes reaped.
 
 ## [0.1.18] - 2026-04-06
 
@@ -95,7 +156,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security-oriented Electron architecture with a typed preload bridge.
 - macOS app icon generation and release packaging.
 
-[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/olllayor/Atlas/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/olllayor/Atlas/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/olllayor/Atlas/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/olllayor/Atlas/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/olllayor/Atlas/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/olllayor/Atlas/compare/v0.1.15...v0.1.16

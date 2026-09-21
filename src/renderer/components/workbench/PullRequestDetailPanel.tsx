@@ -513,8 +513,8 @@ function ActivityTab({ scope, number }: { scope: PrScope; number: number }) {
                       <span
                         className={
                           comment.verdict === 'approved'
-                            ? 'text-emerald-600 dark:text-emerald-400/80'
-                            : 'text-amber-600 dark:text-amber-400/80'
+                            ? 'text-success'
+                            : 'text-warning'
                         }
                       >
                         {comment.verdict === 'approved' ? 'approved' : 'requested changes'}
@@ -583,7 +583,7 @@ function ActivityTab({ scope, number }: { scope: PrScope; number: number }) {
             type="button"
             disabled={posting}
             onClick={() => void post('approve')}
-            className={cn(ACTION_CLASS, 'text-emerald-700 dark:text-emerald-300/90')}
+            className={cn(ACTION_CLASS, 'text-success')}
           >
             Approve
           </button>
@@ -592,7 +592,7 @@ function ActivityTab({ scope, number }: { scope: PrScope; number: number }) {
             disabled={posting || draft.trim().length === 0}
             title="Requesting changes needs a body explaining what to change"
             onClick={() => void post('request-changes')}
-            className={cn(ACTION_CLASS, 'text-amber-700 dark:text-amber-300/90')}
+            className={cn(ACTION_CLASS, 'text-warning')}
           >
             Request changes
           </button>
@@ -748,7 +748,7 @@ function DiffTab({
   return (
     <div className="flex flex-col gap-3 pb-16">
       {result.truncated ? (
-        <p className="text-sm text-amber-600 dark:text-amber-400/90">
+        <p className="text-sm text-warning">
           This patch is too large to show in full. What follows ends part-way through.
         </p>
       ) : null}
@@ -926,7 +926,7 @@ function ReviewBar({
             type="button"
             disabled={submitting}
             onClick={() => onSubmit('approve')}
-            className={cn(ACTION_CLASS, 'text-emerald-700 dark:text-emerald-300/90')}
+            className={cn(ACTION_CLASS, 'text-success')}
           >
             Approve
           </button>
@@ -935,7 +935,7 @@ function ReviewBar({
             disabled={submitting || !summary.trim()}
             title="Requesting changes needs a review summary"
             onClick={() => onSubmit('request-changes')}
-            className={cn(ACTION_CLASS, 'text-amber-700 dark:text-amber-300/90')}
+            className={cn(ACTION_CLASS, 'text-warning')}
           >
             Request changes
           </button>
@@ -1137,7 +1137,7 @@ function LabelsEditor({
                 className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm transition-colors hover:bg-bg-hover"
               >
                 <span className="min-w-0 flex-1 truncate text-text-secondary">{label.name}</span>
-                {label.isApplied ? <span className="text-xs text-emerald-600">on</span> : null}
+                {label.isApplied ? <span className="text-xs text-success">on</span> : null}
               </button>
             </li>
           ))}
@@ -1233,7 +1233,7 @@ function ReviewersEditor({
                   {candidate.login}
                   {candidate.name ? ` · ${candidate.name}` : ''}
                 </span>
-                {candidate.isRequested ? <span className="text-xs text-emerald-600">requested</span> : null}
+                {candidate.isRequested ? <span className="text-xs text-success">requested</span> : null}
               </button>
             </li>
           ))}

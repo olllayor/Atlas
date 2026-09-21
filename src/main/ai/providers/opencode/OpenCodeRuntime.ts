@@ -339,7 +339,7 @@ export class OpenCodeRuntime {
 
     let baseUrl: string;
     try {
-      baseUrl = await this.waitForReady(child);
+      baseUrl = await this.waitForReady(child, command);
     } catch (error) {
       // A shutdown kills the child, which trips the early-exit watcher first.
       // Report why it really died rather than blaming startup.
@@ -427,8 +427,12 @@ export class OpenCodeRuntime {
   /**
    * Accumulate stdout until the ready line appears. Rejects — and tears the
    * half-started child down — on early exit or timeout, so nothing leaks.
+   *
+   * A spawn that never happens (binary missing, bad path) emits `error` and
+   * no `exit`. Unhandled, that is an uncaught exception in the main process —
+   * a missing binary must fail this call, not the app.
    */
-  private waitForReady(child: ChildProcess): Promise<string> {
+  private waitForReady(child: ChildProcess, command: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       let stdout = '';
       let stderr = '';
@@ -441,6 +445,7 @@ export class OpenCodeRuntime {
         child.stdout?.off('data', onStdout);
         child.stderr?.off('data', onStderr);
         child.off('exit', onEarlyExit);
+        child.off('error', onSpawnError);
         settle();
       };
 
@@ -469,6 +474,20 @@ export class OpenCodeRuntime {
           )
         );
       };
+      const onSpawnError = (error: unknown) => {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        finish(() =>
+          reject(
+            new OpenCodeRuntimeError(
+              'startOpenCodeServerProcess',
+              code === 'ENOENT'
+                ? `Failed to start OpenCode server: spawn ${command} ENOENT. The OpenCode CLI is not installed or not on PATH.`
+                : `Failed to start OpenCode server: ${error instanceof Error ? error.message : String(error)}.`,
+              error
+            )
+          )
+        );
+      };
 
       const timer = setTimeout(
         () =>
@@ -487,6 +506,7 @@ export class OpenCodeRuntime {
       child.stdout?.on('data', onStdout);
       child.stderr?.on('data', onStderr);
       child.once('exit', onEarlyExit);
+      child.once('error', onSpawnError);
     });
   }
 

@@ -180,7 +180,10 @@ export function buildModelSelectorViewModel({
 
   const visibleRows = query
     ? baseRows.filter(
-        (row) => row.name.toLowerCase().includes(query) || row.model.id.toLowerCase().includes(query)
+        (row) =>
+          row.name.toLowerCase().includes(query) ||
+          row.model.id.toLowerCase().includes(query) ||
+          row.providerLabel.toLowerCase().includes(query)
       )
     : baseRows;
 

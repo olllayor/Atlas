@@ -181,6 +181,38 @@ test('providerFilter narrows rows to one provider but strip stays full', () => {
   assert.deepEqual(view.rows.map((row) => row.model.id), ['a-one', 'a-two']);
 });
 
+test('searchQuery matches provider display name, not only model name and id', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      // Ids and labels never mention the vendor; only the provider name does.
+      model('nv-llama-3-70b', { providerId: 'custom:nv', label: 'Llama 3 70B' }),
+      model('gpt-5', { providerId: 'custom:oa', label: 'GPT-5' })
+    ],
+    customProviders: [
+      { id: 'custom:nv', name: 'NVIDIA' },
+      { id: 'custom:oa', name: 'OpenAI' }
+    ],
+    showFreeOnly: false,
+    searchQuery: 'nvidia'
+  });
+
+  assert.deepEqual(view.rows.map((row) => row.model.id), ['nv-llama-3-70b']);
+
+  const byVendor = buildModelSelectorViewModel({
+    models: [
+      model('nv-llama-3-70b', { providerId: 'custom:nv', label: 'Llama 3 70B' }),
+      model('gpt-5', { providerId: 'custom:oa', label: 'GPT-5' })
+    ],
+    customProviders: [
+      { id: 'custom:nv', name: 'NVIDIA' },
+      { id: 'custom:oa', name: 'OpenAI' }
+    ],
+    showFreeOnly: false,
+    searchQuery: 'openai'
+  });
+  assert.deepEqual(byVendor.rows.map((row) => row.model.id), ['gpt-5']);
+});
+
 test('searchQuery filters by name and id, case-insensitively', () => {
   const models = [
     model('openai/gpt-5', { providerId: 'custom:a', label: 'GPT-5' }),

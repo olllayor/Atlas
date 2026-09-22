@@ -1,6 +1,6 @@
 // Aliased: bare `Image` would shadow the DOM constructor in this module.
 import { Check, Image as ImageIcon, Layers } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   DropdownMenu,
@@ -60,6 +60,33 @@ function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSu
   return a.id === b.id && a.providerId === b.providerId;
 }
 
+const MENU_NAV_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End']);
+
+/**
+ * Radix roving focus only moves when the keydown target is the menu item
+ * itself, so a child field has to hand navigation keys back to its item.
+ */
+function focusSiblingMenuItem(fromItem: HTMLElement, key: string) {
+  const content = fromItem.closest('[data-radix-menu-content]');
+  if (!content) return;
+  const items = Array.from(
+    content.querySelectorAll<HTMLElement>(
+      '[role="menuitem"]:not([data-disabled]), [role="menuitemcheckbox"]:not([data-disabled]), [role="menuitemradio"]:not([data-disabled])'
+    )
+  );
+  const index = items.indexOf(fromItem);
+  if (index < 0) return;
+
+  let nextIndex: number | null = null;
+  if (key === 'ArrowDown') nextIndex = index + 1 < items.length ? index + 1 : null;
+  else if (key === 'ArrowUp') nextIndex = index - 1 >= 0 ? index - 1 : null;
+  else if (key === 'Home') nextIndex = items.length > 0 ? 0 : null;
+  else if (key === 'End') nextIndex = items.length > 0 ? items.length - 1 : null;
+
+  if (nextIndex == null) return;
+  items[nextIndex]?.focus();
+}
+
 export function ModelSelector({
   models,
   selectedModelId,
@@ -78,6 +105,8 @@ export function ModelSelector({
   onReasoningEffortChange,
 }: ModelSelectorProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchItemRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -111,6 +140,15 @@ export function ModelSelector({
   );
 
   // Filters are ephemeral chrome for the open menu, not a remembered mode.
+  // A parent can flip `open` to false without going through handleOpenChange
+  // (Composer / App call setModelPickerOpen directly), so the controlled prop
+  // is the reliable reset signal.
+  useEffect(() => {
+    if (open) return;
+    setProviderFilter(null);
+    setSearchQuery('');
+  }, [open]);
+
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (!nextOpen) {
@@ -251,41 +289,46 @@ export function ModelSelector({
         ) : (
           <>
             {/*
-              Provider filter and search are menu chrome, not items. Keeping
-              them out of the item list preserves arrow-key navigation across
-              the model rows.
+              Provider filter and search are still menu items so arrow-key
+              roving can reach them. Each filter keeps the menu open on select.
             */}
             <div
               className="flex items-center gap-1 overflow-x-auto px-0.5 pb-1.5"
               onMouseDown={(event) => event.preventDefault()}
             >
-              <button
-                type="button"
+              <DropdownMenuItem
                 title="All providers"
+                textValue="All providers"
                 aria-label="All providers"
                 aria-pressed={providerFilter == null}
-                onClick={() => setProviderFilter(null)}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  setProviderFilter(null);
+                }}
                 className={cn(
-                  'flex size-7 shrink-0 items-center justify-center rounded-md transition',
+                  'flex size-7 shrink-0 items-center justify-center rounded-md px-0 py-0 transition',
                   providerFilter == null
                     ? 'bg-bg-subtle text-text-primary ring-1 ring-border-default'
                     : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
                 )}
               >
                 <Layers className="size-3.5" strokeWidth={1.75} />
-              </button>
+              </DropdownMenuItem>
               {strip.map((item) => {
                 const isSelected = providerFilter === item.providerId;
                 return (
-                  <button
+                  <DropdownMenuItem
                     key={item.providerId}
-                    type="button"
                     title={item.label}
+                    textValue={item.label}
                     aria-label={item.label}
                     aria-pressed={isSelected}
-                    onClick={() => setProviderFilter(item.providerId)}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      setProviderFilter(item.providerId);
+                    }}
                     className={cn(
-                      'flex size-7 shrink-0 items-center justify-center rounded-md transition',
+                      'flex size-7 shrink-0 items-center justify-center rounded-md px-0 py-0 transition',
                       isSelected
                         ? 'bg-bg-subtle ring-1 ring-border-default'
                         : 'opacity-55 hover:bg-bg-hover hover:opacity-100'
@@ -296,26 +339,52 @@ export function ModelSelector({
                       label={item.label}
                       className="h-3.5 w-3.5"
                     />
-                  </button>
+                  </DropdownMenuItem>
                 );
               })}
             </div>
 
             <div className="px-0.5 pb-1.5" onMouseDown={(event) => event.preventDefault()}>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  event.currentTarget.focus();
+              <DropdownMenuItem
+                ref={searchItemRef}
+                textValue="Search models"
+                onSelect={(event) => event.preventDefault()}
+                className="p-1 focus:bg-transparent"
+                // Roving focus lands on the item; typing needs the field.
+                onFocus={(event) => {
+                  if (event.target === event.currentTarget) {
+                    searchInputRef.current?.focus();
+                  }
                 }}
-                // Radix menu key handling must not swallow typed characters.
-                onKeyDown={(event) => event.stopPropagation()}
-                placeholder="Search models"
-                aria-label="Search models"
-                className="h-7 w-full rounded-md border border-border-subtle bg-bg-subtle px-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-default"
-              />
+              >
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.currentTarget.focus();
+                  }}
+                  onKeyDown={(event) => {
+                    // Radix typeahead is exactly character keys. Stop those so
+                    // letters and Space stay in the field. Escape is left alone
+                    // (Radix closes on a document capture listener).
+                    if (event.key.length === 1) {
+                      event.stopPropagation();
+                      return;
+                    }
+                    if (MENU_NAV_KEYS.has(event.key) && searchItemRef.current) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      focusSiblingMenuItem(searchItemRef.current, event.key);
+                    }
+                  }}
+                  placeholder="Search models"
+                  aria-label="Search models"
+                  className="h-7 w-full rounded-md border border-border-subtle bg-bg-subtle px-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-default"
+                />
+              </DropdownMenuItem>
             </div>
 
             <div className="max-h-[320px] overflow-y-auto">

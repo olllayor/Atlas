@@ -58,10 +58,14 @@ export function startBackgroundBashJob(
     conversationId: spec.conversationId,
     outputLimitBytes: BACKGROUND_JOB_OUTPUT_LIMIT_BYTES,
     run: (): JobHooks => {
+      // detached: the child is its own process-group leader, so cancel can
+      // signal the whole tree. A shell that forks leaves grandchildren holding
+      // the stdio pipes after it dies.
       const child = spawn(spec.launch.command, spec.launch.args, {
         cwd: spec.cwd,
         env: spec.env,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true
       });
 
       const stdoutDecoder = new StringDecoder('utf8');
@@ -97,32 +101,81 @@ export function startBackgroundBashJob(
       let killRequested = false;
       let killReason: string | undefined;
       let spawnError: string | undefined;
+      let escalateTimer: ReturnType<typeof setTimeout> | undefined;
 
       child.on('error', (error) => {
         spawnError = error.message;
       });
 
       const done = new Promise<JobOutcome>((resolve) => {
-        child.on('close', (code) => {
+        let settled = false;
+        const finish = (outcome: JobOutcome) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (escalateTimer !== undefined) {
+            clearTimeout(escalateTimer);
+            escalateTimer = undefined;
+          }
+          resolve(outcome);
+        };
+
+        const settleFromProcessEnd = (code: number | null) => {
+          if (settled) {
+            return;
+          }
           append(stdoutDecoder.end());
           append(stderrDecoder.end());
           spec.onCommandRun?.({ command: spec.command, exitCode: code, venue: 'local' });
 
           if (spawnError) {
-            resolve({ status: 'failed', detail: spawnError });
+            finish({ status: 'failed', detail: spawnError });
             return;
           }
           if (killRequested) {
-            resolve({ status: 'killed', detail: killReason || 'cancelled' });
+            finish({ status: 'killed', detail: killReason || 'cancelled' });
             return;
           }
           if (code === 0) {
-            resolve({ status: 'completed', detail: 'exit code: 0' });
+            finish({ status: 'completed', detail: 'exit code: 0' });
             return;
           }
-          resolve({ status: 'failed', detail: `exit code: ${code ?? 'unknown'}` });
+          finish({ status: 'failed', detail: `exit code: ${code ?? 'unknown'}` });
+        };
+
+        child.on('close', (code) => {
+          settleFromProcessEnd(code);
+        });
+
+        // `close` waits for stdio, which an orphaned grandchild can hold open
+        // after our process is already gone. Once the process exits, settle;
+        // destroy the pipes so `close` cannot pin the job either.
+        child.on('exit', (code) => {
+          if (!killRequested) {
+            return;
+          }
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          settleFromProcessEnd(code);
         });
       });
+
+      const signalGroup = (signal: NodeJS.Signals) => {
+        if (child.pid === undefined) {
+          return;
+        }
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          try {
+            child.kill(signal);
+          } catch {
+            // An already-exited child races the kill: `exit`/`close` settle
+            // the outcome either way.
+          }
+        }
+      };
 
       return {
         cancel: (reason?: string) => {
@@ -131,12 +184,10 @@ export function startBackgroundBashJob(
           }
           killRequested = true;
           killReason = reason;
-          try {
-            child.kill('SIGTERM');
-          } catch {
-            // An already-exited child races the kill: `close` settles the
-            // outcome either way.
-          }
+          signalGroup('SIGTERM');
+          escalateTimer = setTimeout(() => {
+            signalGroup('SIGKILL');
+          }, 2_000);
         },
         done,
         readOutput: () => {

@@ -504,6 +504,23 @@ test('producer: kill terminates a long-running command', async () => {
   assert.equal(snapshot.detail, 'test teardown');
 });
 
+test('producer: kill settles even when a grandchild holds stdio open', async () => {
+  const registry = new BackgroundJobRegistry();
+  const { jobId } = startBackgroundBashJob(registry, {
+    // The shell dies on SIGTERM while the background sleep keeps the pipes.
+    command: 'sleep 30 & wait',
+    launch: { command: '/bin/sh', args: ['-c', 'sleep 30 & wait'] },
+    cwd: tmpdir(),
+    env: {},
+    conversationId: 'c'
+  });
+
+  registry.kill(jobId, 'c', 'test teardown');
+  const snapshot = await registry.wait(jobId, 2_000, 'c');
+  assert.equal(snapshot.status, 'killed');
+  assert.equal(snapshot.detail, 'test teardown');
+});
+
 test('producer: a rejected start (full bucket) spawns nothing', async () => {
   const registry = new BackgroundJobRegistry(1);
   startBackgroundBashJob(registry, {

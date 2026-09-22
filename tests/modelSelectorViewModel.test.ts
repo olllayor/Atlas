@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import {
   buildModelSelectorViewModel,
-  modelNeedsApiKey
+  modelNeedsApiKey,
+  modelShortName
 } from '../src/renderer/components/modelSelectorViewModel.js';
 import type { ModelSummary, ProviderId } from '../src/shared/contracts.js';
 
@@ -40,7 +41,7 @@ test('the free filter keeps only models the provider does not charge for', () =>
   });
 
   assert.deepEqual(
-    view.groups.flatMap((group) => group.models.map((entry) => entry.id)).sort(),
+    view.rows.map((row) => row.model.id).sort(),
     ['free-one', 'gateway-free']
   );
 });
@@ -64,7 +65,31 @@ test('the free filter is ignored when nothing in the catalog is free', () => {
   assert.equal(view.totalCount, 2);
 });
 
-test('models group under their configured provider name', () => {
+test('strip has one entry per provider with correct counts and order', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      model('a', { providerId: 'custom:zeta' }),
+      model('b', { providerId: 'custom:zeta' }),
+      model('c', { providerId: 'custom:alpha' })
+    ],
+    customProviders: [
+      { id: 'custom:zeta', name: 'Zeta' },
+      { id: 'custom:alpha', name: 'Alpha' }
+    ],
+    credentials: [credential('custom:zeta', true), credential('custom:alpha', false)],
+    showFreeOnly: false
+  });
+
+  assert.deepEqual(
+    view.strip.map((item) => [item.label, item.modelCount, item.configured]),
+    [
+      ['Zeta', 2, true],
+      ['Alpha', 1, false]
+    ]
+  );
+});
+
+test('models strip under their configured provider name', () => {
   const view = buildModelSelectorViewModel({
     models: [model('a', { providerId: 'custom:one' }), model('b', { providerId: 'custom:two' })],
     customProviders: [
@@ -74,7 +99,7 @@ test('models group under their configured provider name', () => {
     showFreeOnly: false
   });
 
-  assert.deepEqual(view.groups.map((group) => group.label).sort(), ['NVIDIA', 'Together']);
+  assert.deepEqual(view.strip.map((item) => item.label).sort(), ['NVIDIA', 'Together']);
 });
 
 test('a model whose provider was deleted still groups under a readable label', () => {
@@ -84,7 +109,7 @@ test('a model whose provider was deleted still groups under a readable label', (
     showFreeOnly: false
   });
 
-  assert.equal(view.groups[0]?.label, 'Removed provider');
+  assert.equal(view.strip[0]?.label, 'Removed provider');
 });
 
 test('providers with a saved key sort ahead of ones without', () => {
@@ -100,7 +125,7 @@ test('providers with a saved key sort ahead of ones without', () => {
 
   // Alphabetically Alpha would come first; readiness wins.
   assert.deepEqual(
-    view.groups.map((group) => [group.label, group.configured]),
+    view.strip.map((item) => [item.label, item.configured]),
     [
       ['Zeta', true],
       ['Alpha', false]
@@ -114,7 +139,7 @@ test('with no credential data every provider is treated as usable', () => {
     showFreeOnly: false
   });
 
-  assert.equal(view.groups[0]?.configured, true);
+  assert.equal(view.strip[0]?.configured, true);
   assert.equal(modelNeedsApiKey(model('a')), false);
 });
 
@@ -127,12 +152,88 @@ test('modelNeedsApiKey flags only providers that are known to lack a key', () =>
   assert.equal(modelNeedsApiKey(model('c', { providerId: 'custom:abc' }), credentials), true);
 });
 
-test('an empty catalog yields no groups', () => {
+test('an empty catalog yields no strip entries and no rows', () => {
   const view = buildModelSelectorViewModel({ models: [], showFreeOnly: true });
 
-  assert.deepEqual(view.groups, []);
+  assert.deepEqual(view.strip, []);
+  assert.deepEqual(view.rows, []);
   assert.equal(view.totalCount, 0);
   assert.equal(view.hasFreeModels, false);
+});
+
+test('providerFilter narrows rows to one provider but strip stays full', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      model('z-one', { providerId: 'custom:zeta', label: 'Z One' }),
+      model('a-one', { providerId: 'custom:alpha', label: 'A One' }),
+      model('a-two', { providerId: 'custom:alpha', label: 'A Two' })
+    ],
+    customProviders: [
+      { id: 'custom:zeta', name: 'Zeta' },
+      { id: 'custom:alpha', name: 'Alpha' }
+    ],
+    credentials: [credential('custom:zeta', true), credential('custom:alpha', true)],
+    showFreeOnly: false,
+    providerFilter: 'custom:alpha'
+  });
+
+  assert.equal(view.strip.length, 2, 'strip keeps every provider');
+  assert.deepEqual(view.rows.map((row) => row.model.id), ['a-one', 'a-two']);
+});
+
+test('searchQuery filters by name and id, case-insensitively', () => {
+  const models = [
+    model('openai/gpt-5', { providerId: 'custom:a', label: 'GPT-5' }),
+    model('anthropic/claude-sonnet-4-5', { providerId: 'custom:b', label: 'Claude Sonnet 4.5' }),
+    model('google/gemini-3-pro', { providerId: 'custom:c', label: 'Gemini 3 Pro' })
+  ];
+  const customProviders = [
+    { id: 'custom:a', name: 'A' },
+    { id: 'custom:b', name: 'B' },
+    { id: 'custom:c', name: 'C' }
+  ];
+
+  const byName = buildModelSelectorViewModel({
+    models,
+    customProviders,
+    showFreeOnly: false,
+    searchQuery: 'sonn'
+  });
+  assert.deepEqual(byName.rows.map((row) => row.model.id), ['anthropic/claude-sonnet-4-5']);
+
+  const byId = buildModelSelectorViewModel({
+    models,
+    customProviders,
+    showFreeOnly: false,
+    searchQuery: 'GEMINI'
+  });
+  assert.deepEqual(byId.rows.map((row) => row.model.id), ['google/gemini-3-pro']);
+});
+
+test('ambiguous is true only when two visible rows share a short name', () => {
+  const view = buildModelSelectorViewModel({
+    models: [
+      model('openai/gpt-4o', { providerId: 'custom:a', label: 'GPT-4o' }),
+      model('azure/gpt-4o', { providerId: 'custom:b', label: 'GPT-4o' }),
+      model('openai/o3', { providerId: 'custom:a', label: 'o3' })
+    ],
+    customProviders: [
+      { id: 'custom:a', name: 'A' },
+      { id: 'custom:b', name: 'B' }
+    ],
+    showFreeOnly: false
+  });
+
+  const gptRows = view.rows.filter((row) => row.name === 'GPT-4o');
+  assert.equal(gptRows.length, 2);
+  assert.ok(gptRows.every((row) => row.ambiguous));
+  assert.equal(view.rows.find((row) => row.name === 'o3')?.ambiguous, false);
+});
+
+test('short name prefers the catalog label and strips gateway pricing suffixes', () => {
+  assert.equal(modelShortName({ id: 'vendor/DeepSeek-V4-Flash-01:free', label: 'DeepSeek V4 Flash' }), 'DeepSeek V4 Flash');
+  assert.equal(modelShortName({ id: 'vendor/DeepSeek-V4-Flash-01:free', label: 'vendor/DeepSeek-V4-Flash-01:free' }), 'DeepSeek-V4-Flash-01');
+  assert.equal(modelShortName({ id: 'gpt-5@latest', label: 'gpt-5@latest' }), 'gpt-5');
 });
 
 test('a new chat opens on the model the user last picked', async () => {
@@ -161,7 +262,7 @@ test('a new chat opens on the model the user last picked', async () => {
   assert.equal(chooseDefaultModel(archived, null, 'gateway/stale'), 'gateway/cheap-free');
 });
 
-test('OpenCode models group under their own name and never ask for an API key', () => {
+test('OpenCode models strip under their own name and never ask for an API key', () => {
   const viewModel = buildModelSelectorViewModel({
     models: [
       model('opencode/claude-opus-4-7', { providerId: 'opencode', label: 'Claude Opus 4.7' }),
@@ -172,11 +273,13 @@ test('OpenCode models group under their own name and never ask for an API key', 
     showFreeOnly: false
   });
 
-  const opencode = viewModel.groups.find((group) => group.label === 'OpenCode');
-  assert.ok(opencode, 'OpenCode group is present');
+  const opencode = viewModel.strip.find((item) => item.label === 'OpenCode');
+  assert.ok(opencode, 'OpenCode strip entry is present');
   // opencode signs itself in, so it counts as configured without a stored key.
   assert.equal(opencode.configured, true);
-  assert.equal(modelNeedsApiKey(opencode.models[0]!, [credential('custom:openai', true)]), false);
+  const opencodeRow = viewModel.rows.find((row) => row.providerId === 'opencode');
+  assert.ok(opencodeRow);
+  assert.equal(modelNeedsApiKey(opencodeRow.model, [credential('custom:openai', true)]), false);
 });
 
 test('the integration and a same-named endpoint stay separate, and the agent one says so', () => {
@@ -192,9 +295,9 @@ test('the integration and a same-named endpoint stay separate, and the agent one
     showFreeOnly: false
   });
 
-  assert.equal(view.groups.length, 2, 'grouped by provider, not by display name');
-  const agent = view.groups.find((group) => group.providerId === 'opencode');
-  const endpoint = view.groups.find((group) => group.providerId === 'custom:oc');
+  assert.equal(view.strip.length, 2, 'grouped by provider, not by display name');
+  const agent = view.strip.find((item) => item.providerId === 'opencode');
+  const endpoint = view.strip.find((item) => item.providerId === 'custom:oc');
   assert.ok(agent && endpoint);
   assert.equal(agent.label, 'OpenCode');
   assert.equal(endpoint.label, 'OpenCode');
@@ -215,7 +318,7 @@ test('the send gate exempts a provider that signs itself in', () => {
   assert.equal(modelNeedsApiKey(model('m', { providerId: 'custom:two' }), credentials), true);
 });
 
-test('Antigravity models group under their own name, count as self-managed, and never ask for an API key', () => {
+test('Antigravity models strip under their own name, count as self-managed, and never ask for an API key', () => {
   const viewModel = buildModelSelectorViewModel({
     models: [
       model('gemini-3.8-flash-high', { providerId: 'antigravity', label: 'Gemini 3.8 Flash (High)' }),
@@ -226,9 +329,11 @@ test('Antigravity models group under their own name, count as self-managed, and 
     showFreeOnly: false
   });
 
-  const antigravity = viewModel.groups.find((group) => group.providerId === 'antigravity');
-  assert.ok(antigravity, 'Antigravity group is present');
+  const antigravity = viewModel.strip.find((item) => item.providerId === 'antigravity');
+  assert.ok(antigravity, 'Antigravity strip entry is present');
   assert.equal(antigravity.configured, true);
   assert.equal(antigravity.selfManaged, true);
-  assert.equal(modelNeedsApiKey(antigravity.models[0]!, [credential('custom:openai', true)]), false);
+  const antigravityRow = viewModel.rows.find((row) => row.providerId === 'antigravity');
+  assert.ok(antigravityRow);
+  assert.equal(modelNeedsApiKey(antigravityRow.model, [credential('custom:openai', true)]), false);
 });

@@ -35,29 +35,72 @@ export type ModelGroup = {
   /**
    * The provider is an integration that runs the turn itself, not an endpoint
    * Atlas calls. Worth marking: the same OpenCode can also be reached as an
-   * ordinary base-URL provider, and the two behave nothing alike — this one
+   * ordinary base-URL provider, and the two behave nothing alike. This one
    * brings its own tools, approvals and sampling.
    */
   selfManaged: boolean;
 };
 
+export type ProviderStripItem = {
+  providerId: string;
+  label: string;
+  modelCount: number;
+  configured: boolean;
+  selfManaged: boolean;
+};
+
+export type ModelRow = {
+  model: ModelSummary;
+  providerId: string;
+  providerLabel: string;
+  name: string;
+  configured: boolean;
+  selfManaged: boolean;
+  /** True when another visible row shares this short name. */
+  ambiguous: boolean;
+};
+
 export type ModelSelectorViewModel = {
-  groups: ModelGroup[];
+  /** Unfiltered providers, configured first then by label. Stays full when a providerFilter narrows rows. */
+  strip: ProviderStripItem[];
+  /** Models after providerFilter and searchQuery. */
+  rows: ModelRow[];
   totalCount: number;
-  /** Drives whether the free/all toggle is worth showing at all. */
   hasFreeModels: boolean;
 };
+
+const extractModelName = (modelId: string): string => {
+  const parts = modelId.split('/');
+  return parts.length > 1 ? parts.slice(1).join('/') : modelId;
+};
+
+/**
+ * The chip and the dense row name the model the way a person would, not the
+ * way the gateway does. The catalog's `label` is the human name; a raw id
+ * segment is what filled the chip before. The gateway suffix only ever marked
+ * pricing, which the menu's Free badge already says.
+ */
+export function modelShortName(model: Pick<ModelSummary, 'id' | 'label'>): string {
+  if (model.label && model.label !== model.id) {
+    return model.label;
+  }
+  return extractModelName(model.id).replace(/[:@](free|beta|preview|latest)$/i, '');
+}
 
 export function buildModelSelectorViewModel({
   models,
   customProviders = [],
   credentials,
-  showFreeOnly
+  showFreeOnly,
+  providerFilter,
+  searchQuery
 }: {
   models: ModelSummary[];
   customProviders?: ProviderRef[];
   credentials?: ProviderCredentialSummary[];
   showFreeOnly: boolean;
+  providerFilter?: string | null;
+  searchQuery?: string;
 }): ModelSelectorViewModel {
   const hasFreeModels = models.some((model) => model.isFree);
 
@@ -108,8 +151,53 @@ export function buildModelSelectorViewModel({
       return a.label.localeCompare(b.label);
     });
 
+  // The strip always shows the full free-filtered catalog so the user can hop
+  // providers even while a filter is active on the list below.
+  const strip = groups.map<ProviderStripItem>((group) => ({
+    providerId: group.providerId,
+    label: group.label,
+    modelCount: group.models.length,
+    configured: group.configured,
+    selfManaged: group.selfManaged
+  }));
+
+  const scopedGroups = providerFilter
+    ? groups.filter((group) => group.providerId === providerFilter)
+    : groups;
+
+  const query = (searchQuery ?? '').trim().toLowerCase();
+  const baseRows = scopedGroups.flatMap<ModelRow>((group) =>
+    group.models.map((model) => ({
+      model,
+      providerId: group.providerId,
+      providerLabel: group.label,
+      name: modelShortName(model),
+      configured: group.configured,
+      selfManaged: group.selfManaged,
+      ambiguous: false
+    }))
+  );
+
+  const visibleRows = query
+    ? baseRows.filter(
+        (row) =>
+          row.name.toLowerCase().includes(query) ||
+          row.model.id.toLowerCase().includes(query) ||
+          row.providerLabel.toLowerCase().includes(query)
+      )
+    : baseRows;
+
+  const nameCounts = new Map<string, number>();
+  for (const row of visibleRows) {
+    nameCounts.set(row.name, (nameCounts.get(row.name) ?? 0) + 1);
+  }
+
   return {
-    groups,
+    strip,
+    rows: visibleRows.map((row) => ({
+      ...row,
+      ambiguous: (nameCounts.get(row.name) ?? 0) > 1
+    })),
     totalCount: groups.reduce((sum, group) => sum + group.models.length, 0),
     hasFreeModels
   };

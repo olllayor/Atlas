@@ -76,6 +76,16 @@
       "version": "1.0.0"
     },
     {
+      "name": "openheard",
+      "source": {
+        "source": "local",
+        "path": "./plugins/openheard"
+      },
+      "description": "Triage Atlas feature feedback on the OpenHeard board.",
+      "category": "Productivity",
+      "version": "1.0.0"
+    },
+    {
       "name": "figma",
       "source": {
         "source": "local",

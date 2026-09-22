@@ -1,6 +1,6 @@
 // Aliased: bare `Image` would shadow the DOM constructor in this module.
-import { Check, Image as ImageIcon } from 'lucide-react';
-import { useCallback, useMemo, useRef } from 'react';
+import { Check, Image as ImageIcon, Layers } from 'lucide-react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import {
   DropdownMenu,
@@ -21,8 +21,13 @@ import type { ReasoningEffort } from '../../shared/chatParameters';
 import { REASONING_EFFORTS, clampReasoningEffort, resolveReasoningEffortMenu } from '../../shared/chatParameters';
 import type { ModelSummary, ProviderCredentialSummary } from '../../shared/contracts';
 import { resolveProviderLabel } from '../../shared/providerMetadata';
+import { ProviderLogo } from '../lib/providerLogos';
 import type { ProviderRef } from './modelSelectorViewModel';
-import { buildModelSelectorViewModel, isSelfManagedProvider } from './modelSelectorViewModel';
+import {
+  buildModelSelectorViewModel,
+  isSelfManagedProvider,
+  modelShortName,
+} from './modelSelectorViewModel';
 
 type ModelSelectorProps = {
   models: ModelSummary[];
@@ -51,25 +56,6 @@ type ModelSelectorProps = {
   onReasoningEffortChange?: (value: ReasoningEffort) => void;
 };
 
-const extractModelName = (modelId: string): string => {
-  const parts = modelId.split('/');
-  return parts.length > 1 ? parts.slice(1).join('/') : modelId;
-};
-
-/**
- * The chip names the model the way a person would, not the way the gateway
- * does. The catalog's `label` is the human name ("DeepSeek V4 Flash"); a raw
- * id segment ("DeepSeek-V4-Flash-01:free") is what filled the chip before,
- * and its length is why the name truncated mid-word. The gateway suffix only
- * ever marked pricing, which the menu's Free badge already says.
- */
-const compactChipLabel = (model: ModelSummary): string => {
-  if (model.label && model.label !== model.id) {
-    return model.label;
-  }
-  return extractModelName(model.id).replace(/[:@](free|beta|preview|latest)$/i, '');
-};
-
 function isSameModel(a: Pick<ModelSummary, 'id' | 'providerId'>, b: Pick<ModelSummary, 'id' | 'providerId'>) {
   return a.id === b.id && a.providerId === b.providerId;
 }
@@ -92,6 +78,8 @@ export function ModelSelector({
   onReasoningEffortChange,
 }: ModelSelectorProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const providerRefs = customProviders ?? [];
   const selectedModel = useMemo(() => {
@@ -109,17 +97,37 @@ export function ModelSelector({
     return best;
   }, [models, selectedModelId, selectedProviderId]);
 
-  const { groups } = useMemo(
-    () => buildModelSelectorViewModel({ models, customProviders: providerRefs, credentials, showFreeOnly: false }),
-    [credentials, models, providerRefs]
+  const { strip, rows } = useMemo(
+    () =>
+      buildModelSelectorViewModel({
+        models,
+        customProviders: providerRefs,
+        credentials,
+        showFreeOnly: false,
+        providerFilter,
+        searchQuery
+      }),
+    [credentials, models, providerRefs, providerFilter, searchQuery]
+  );
+
+  // Filters are ephemeral chrome for the open menu, not a remembered mode.
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setProviderFilter(null);
+        setSearchQuery('');
+      }
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange]
   );
 
   const handleSelect = useCallback(
     (modelId: string, providerId: string) => {
       onSelect(modelId, providerId);
-      onOpenChange(false);
+      handleOpenChange(false);
     },
-    [onSelect, onOpenChange]
+    [onSelect, handleOpenChange]
   );
 
   // The menu offers only what the selected model accepts: its catalog levels,
@@ -140,10 +148,9 @@ export function ModelSelector({
   const selectedIsAgent = selectedModel ? isSelfManagedProvider(selectedModel.providerId) : false;
   // Model name only. The provider used to be prefixed here, which spent most of
   // a 240px chip on a word that is the same for every model in the list you
-  // just picked from — and truncated the name that actually identifies it. It
-  // still names the endpoint in the tooltip, in the menu's group headings, and
-  // in the accessible name.
-  const chipLabel = selectedModel ? compactChipLabel(selectedModel) : 'Choose model';
+  // just picked from, and truncated the name that actually identifies it. It
+  // still names the endpoint in the tooltip and in the accessible name.
+  const chipLabel = selectedModel ? modelShortName(selectedModel) : 'Choose model';
   const effortLabel = effectiveEffort
     ? REASONING_EFFORTS.find((entry) => entry.value === effectiveEffort)?.label
     : null;
@@ -157,7 +164,7 @@ export function ModelSelector({
   const chipDisplayLabel = showProviderInChip && selectedModel ? `${chipLabel} · ${selectedProviderLabel}` : chipLabel;
 
   return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+    <DropdownMenu open={open} onOpenChange={handleOpenChange}>
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
@@ -166,9 +173,8 @@ export function ModelSelector({
               type="button"
               disabled={disabled}
               // Bare label, not a filled pill: in the reference the model is
-              // the quietest thing in the control row — a tinted chip plus a
-              // chevron made the least-changed setting the loudest. Hover and
-              // the open state still light the hit area.
+              // the quietest thing in the control row. Hover and the open state
+              // still light the hit area.
               className="group flex h-8 min-w-0 max-w-[240px] items-center gap-2 rounded-full px-2.5 text-sm font-normal transition hover:bg-bg-hover data-[state=open]:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={
                 selectedModel
@@ -178,6 +184,13 @@ export function ModelSelector({
                   : 'Choose a model'
               }
             >
+              {selectedModel ? (
+                <ProviderLogo
+                  providerId={selectedModel.providerId}
+                  label={selectedProviderLabel ?? selectedModel.providerId}
+                  className="h-3.5 w-3.5"
+                />
+              ) : null}
               <span
                 className={`min-w-0 truncate transition-colors ${
                   selectedModel
@@ -212,8 +225,12 @@ export function ModelSelector({
         ) : null}
       </Tooltip>
 
-      <DropdownMenuContent align="start" side="top" className="min-w-[220px] border-border-default bg-bg-overlay p-1.5">
-        {groups.length === 0 ? (
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        className="min-w-[320px] max-w-[380px] border-border-default bg-bg-overlay p-1.5"
+      >
+        {strip.length === 0 ? (
           <>
             <DropdownMenuItem disabled className="px-3 py-2 text-sm text-text-muted">
               No models available
@@ -232,83 +249,128 @@ export function ModelSelector({
             ) : null}
           </>
         ) : (
-          groups.map((group) => {
-            const isActiveProvider = selectedModel != null && group.models.some((m) => isSameModel(m, selectedModel));
+          <>
+            {/*
+              Provider filter and search are menu chrome, not items. Keeping
+              them out of the item list preserves arrow-key navigation across
+              the model rows.
+            */}
+            <div
+              className="flex items-center gap-1 overflow-x-auto px-0.5 pb-1.5"
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <button
+                type="button"
+                title="All providers"
+                aria-label="All providers"
+                aria-pressed={providerFilter == null}
+                onClick={() => setProviderFilter(null)}
+                className={cn(
+                  'flex size-7 shrink-0 items-center justify-center rounded-md transition',
+                  providerFilter == null
+                    ? 'bg-bg-subtle text-text-primary ring-1 ring-border-default'
+                    : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+                )}
+              >
+                <Layers className="size-3.5" strokeWidth={1.75} />
+              </button>
+              {strip.map((item) => {
+                const isSelected = providerFilter === item.providerId;
+                return (
+                  <button
+                    key={item.providerId}
+                    type="button"
+                    title={item.label}
+                    aria-label={item.label}
+                    aria-pressed={isSelected}
+                    onClick={() => setProviderFilter(item.providerId)}
+                    className={cn(
+                      'flex size-7 shrink-0 items-center justify-center rounded-md transition',
+                      isSelected
+                        ? 'bg-bg-subtle ring-1 ring-border-default'
+                        : 'opacity-55 hover:bg-bg-hover hover:opacity-100'
+                    )}
+                  >
+                    <ProviderLogo
+                      providerId={item.providerId}
+                      label={item.label}
+                      className="h-3.5 w-3.5"
+                    />
+                  </button>
+                );
+              })}
+            </div>
 
-            return (
-              <DropdownMenuSub key={group.providerId}>
-                <DropdownMenuSubTrigger
-                  className={cn(
-                    'gap-2 rounded-md px-3 py-2 text-sm text-text-primary',
-                    isActiveProvider && 'bg-bg-subtle font-medium text-text-primary'
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate">{group.label}</span>
-                  {/*
-                    The same OpenCode can be reached two ways: as this
-                    integration, or as a base-URL provider someone added by
-                    hand. They can even carry the same name, so the one that
-                    runs the turn itself says so.
-                  */}
-                  {(group.selfManaged || !group.configured) && (
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      {group.selfManaged ? (
-                        <span className="rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
+            <div className="px-0.5 pb-1.5" onMouseDown={(event) => event.preventDefault()}>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.currentTarget.focus();
+                }}
+                // Radix menu key handling must not swallow typed characters.
+                onKeyDown={(event) => event.stopPropagation()}
+                placeholder="Search models"
+                aria-label="Search models"
+                className="h-7 w-full rounded-md border border-border-subtle bg-bg-subtle px-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-default"
+              />
+            </div>
+
+            <div className="max-h-[320px] overflow-y-auto">
+              {rows.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-text-muted">No matching models</div>
+              ) : (
+                rows.map((row) => {
+                  const isSelected = selectedModel != null && isSameModel(row.model, selectedModel);
+
+                  return (
+                    <DropdownMenuItem
+                      key={`${row.providerId}:${row.model.id}`}
+                      onSelect={() => handleSelect(row.model.id, row.providerId)}
+                      className="gap-2 rounded-md px-3 py-1.5 text-sm text-text-primary"
+                    >
+                      <span className="min-w-0 flex-1 truncate" title={row.model.id}>
+                        {row.name}
+                      </span>
+                      {row.ambiguous ? (
+                        <span className="shrink-0 text-3xs text-text-tertiary">{row.providerLabel}</span>
+                      ) : null}
+                      {row.selfManaged ? (
+                        <span className="shrink-0 rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
                           Agent
                         </span>
                       ) : null}
-                      {group.configured ? null : (
-                        <span className="rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
+                      {row.configured ? null : (
+                        <span className="shrink-0 rounded-sm bg-warning-bg px-1 py-px text-3xs font-normal leading-4 text-warning-text">
                           No key
                         </span>
                       )}
-                    </span>
-                  )}
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent
-                  className="max-h-[min(420px,60vh)] min-w-[220px] max-w-[300px] overflow-y-auto border-border-default bg-bg-overlay p-1.5"
-                  sideOffset={6}
-                >
-                  {group.models.map((model) => {
-                    const isSelected = selectedModel != null && isSameModel(model, selectedModel);
-                    const shortName = extractModelName(model.id);
-
-                    return (
-                      <DropdownMenuItem
-                        key={`${model.providerId}:${model.id}`}
-                        onSelect={() => handleSelect(model.id, model.providerId)}
-                        className="gap-2 rounded-md px-3 py-2 text-sm text-text-primary"
-                      >
-                        <span className="min-w-0 flex-1 truncate" title={model.id}>
-                          {shortName}
+                      {/*
+                        Only a confirmed yes earns the mark. Unknown stays
+                        blank rather than showing a third glyph nobody can
+                        read at a glance.
+                      */}
+                      {row.model.supportsVision === true ? (
+                        <ImageIcon
+                          aria-label="Reads images"
+                          className="size-3.5 shrink-0 text-text-tertiary"
+                          strokeWidth={1.75}
+                        />
+                      ) : null}
+                      {row.model.isFree ? (
+                        <span className="shrink-0 rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
+                          Free
                         </span>
-                        {/*
-                          Only a confirmed yes earns the mark. Unknown stays
-                          blank rather than showing a third glyph nobody can
-                          read at a glance — an image sent to it is allowed to
-                          be attempted, and the answer arrives from the
-                          provider, not from this list.
-                        */}
-                        {model.supportsVision === true ? (
-                          <ImageIcon
-                            aria-label="Reads images"
-                            className="size-3.5 shrink-0 text-text-tertiary"
-                            strokeWidth={1.75}
-                          />
-                        ) : null}
-                        {model.isFree ? (
-                          <span className="shrink-0 rounded-sm bg-bg-subtle px-1.5 py-0.5 text-3xs font-normal text-text-tertiary">
-                            Free
-                          </span>
-                        ) : null}
-                        {isSelected ? <Check className="size-4 shrink-0 text-text-secondary" /> : null}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            );
-          })
+                      ) : null}
+                      {isSelected ? <Check className="size-4 shrink-0 text-text-secondary" /> : null}
+                    </DropdownMenuItem>
+                  );
+                })
+              )}
+            </div>
+          </>
         )}
 
         {effortMenu.length > 0 && effectiveEffort && onReasoningEffortChange ? (

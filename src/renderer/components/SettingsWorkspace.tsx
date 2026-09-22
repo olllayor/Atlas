@@ -52,7 +52,7 @@ import { isMacPlatform } from '../lib/platform';
 import { cn } from '../lib/utils';
 import { useIsFullScreen } from '../hooks/useIsFullScreen';
 import { RailBackButton } from './railPrimitives';
-import { getDefaultKeybindingRules } from '../../shared/keybindings';
+import { getDefaultKeybindingRules, upsertKeybindingRule } from '../../shared/keybindings';
 import type { KeybindingShortcut } from '../../shared/keybindings';
 import { resolveProviderMetadata } from '../../shared/providerMetadata';
 import { APP_COMMAND_DEFINITIONS, APP_COMMANDS_BY_ID } from '../lib/keybindingCommands';
@@ -1069,9 +1069,7 @@ function KeyboardPage({
   }, []);
 
   const updateCommandShortcut = (command: KeybindingCommand, shortcut: KeybindingShortcut) => {
-    onUpdateKeybindings(
-      keybindings.map((rule) => (rule.command === command ? { ...rule, shortcut } : rule)),
-    );
+    onUpdateKeybindings(upsertKeybindingRule(keybindings, command, shortcut));
   };
 
   const resetCommandShortcut = (command: KeybindingCommand) => {

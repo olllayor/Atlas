@@ -1,6 +1,7 @@
 ---
 name: openheard-triage
-description: Triage Atlas feature feedback on the OpenHeard board with workspace MCP tools.
+description: Use when a user reports feature feedback or a bug on the Atlas board, or asks to move a post or draft release notes.
+disable-model-invocation: true
 ---
 
 # OpenHeard triage

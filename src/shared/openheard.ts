@@ -44,7 +44,7 @@ export const OPENHEARD_CHROME_COMMANDS: readonly OpenHeardChromeCommand[] = [
     id: 'openheard.board.open',
     title: 'Feature board',
     description: 'Open the public Atlas feature board in your browser.',
-    keywords: ['feedback', 'openheard', 'feature requests', 'board', 'vote', 'suggest'],
+    keywords: ['openheard', 'feature requests', 'board', 'vote'],
     destination: { kind: 'board' },
   },
   {

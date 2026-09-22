@@ -297,7 +297,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
-              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'board' }));
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'board' })).catch(() => {});
             }}
             className="px-3 text-sm"
           >
@@ -306,7 +306,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
-              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'roadmap' }));
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'roadmap' })).catch(() => {});
             }}
             className="px-3 text-sm"
           >
@@ -315,7 +315,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
-              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'changelog' }));
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'changelog' })).catch(() => {});
             }}
             className="px-3 text-sm"
           >
@@ -324,7 +324,7 @@ export function SidebarSettingsMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
-              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'newPost' }));
+              void window.atlasChat.browser.openExternal(openHeardPublicUrl({ kind: 'newPost' })).catch(() => {});
             }}
             className="px-3 text-sm"
           >

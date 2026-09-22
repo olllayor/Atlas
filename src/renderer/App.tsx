@@ -1529,7 +1529,7 @@ export default function App() {
     const openHeardCommand = OPENHEARD_CHROME_COMMANDS.find((entry) => entry.id === command);
     if (openHeardCommand) {
       live.setCommandPaletteOpen(false);
-      void window.atlasChat.browser.openExternal(openHeardPublicUrl(openHeardCommand.destination));
+      void window.atlasChat.browser.openExternal(openHeardPublicUrl(openHeardCommand.destination)).catch(() => {});
       return;
     }
 

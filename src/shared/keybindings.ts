@@ -448,6 +448,31 @@ export function cloneKeybindingRules(rules: KeybindingRule[]) {
   }));
 }
 
+/**
+ * Replace the rule for `command`, or append one when the command has no rule.
+ * Capture has to mint a first rule for commands that ship unbound.
+ */
+export function upsertKeybindingRule(
+  rules: KeybindingRule[],
+  command: KeybindingCommand,
+  shortcut: KeybindingShortcut,
+): KeybindingRule[] {
+  let found = false;
+  const next = rules.map((rule) => {
+    if (rule.command !== command) {
+      return rule;
+    }
+    found = true;
+    return { ...rule, shortcut: { ...shortcut } };
+  });
+
+  if (found) {
+    return next;
+  }
+
+  return [...next, { command, shortcut: { ...shortcut } }];
+}
+
 export function getDefaultKeybindingRules() {
   return cloneKeybindingRules(DEFAULT_KEYBINDING_RULES);
 }

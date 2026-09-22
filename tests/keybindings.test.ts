@@ -5,6 +5,7 @@ import {
   getDefaultKeybindingRules,
   parseKeybindingWhenExpression,
   resolveKeybindingRules,
+  upsertKeybindingRule,
 } from '../src/shared/keybindings.js';
 import { parseKeybindingRules } from '../src/shared/keybindingSchemas.js';
 import { getAdjacentConversationId, getConversationJumpId } from '../src/renderer/lib/keybindingCommands.js';
@@ -258,6 +259,33 @@ test('conversation navigation helpers resolve adjacent and jump targets', () => 
   assert.equal(getAdjacentConversationId(conversations, 'two', 'previous'), 'one');
   assert.equal(getAdjacentConversationId(conversations, 'two', 'next'), 'three');
   assert.equal(getConversationJumpId(conversations, 1), 'two');
+});
+
+test('upsertKeybindingRule appends a first rule for unbound commands', () => {
+  const shortcut = {
+    key: 'o',
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: true,
+    modKey: true,
+  };
+
+  const seeded = getDefaultKeybindingRules();
+  assert.equal(
+    seeded.some((rule) => rule.command === 'openheard.board.open'),
+    false,
+    'openheard.board.open is intentionally unbound by default',
+  );
+
+  const withRule = upsertKeybindingRule(seeded, 'openheard.board.open', shortcut);
+  const appended = withRule.find((rule) => rule.command === 'openheard.board.open');
+  assert.ok(appended, 'capture should mint a missing rule');
+  assert.deepEqual(appended.shortcut, shortcut);
+
+  const updated = upsertKeybindingRule(withRule, 'openheard.board.open', { ...shortcut, key: 'p' });
+  assert.equal(updated.filter((rule) => rule.command === 'openheard.board.open').length, 1);
+  assert.equal(updated.find((rule) => rule.command === 'openheard.board.open')?.shortcut.key, 'p');
 });
 
 test('the terminal dock has a default shortcut, scoped to the chat view', () => {

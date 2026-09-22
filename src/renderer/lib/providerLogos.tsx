@@ -73,10 +73,9 @@ function resolveLogoKey(providerId: string): string | null {
 
 function resolveLogo(providerId: string): string | null {
   const key = resolveLogoKey(providerId);
-  return key ? LOGOS[key]! : null;
+  return (key && LOGOS[key]) || null;
 }
 
-/** Brand color for a provider id, or null when the mark stays monochrome. */
 export function resolveProviderBrandColor(providerId: string): string | null {
   const key = resolveLogoKey(providerId);
   return key ? (BRAND_COLORS[key] ?? null) : null;

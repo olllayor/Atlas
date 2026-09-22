@@ -53,7 +53,6 @@ export type ModelRow = {
   model: ModelSummary;
   providerId: string;
   providerLabel: string;
-  /** Short display name for the one-line row. */
   name: string;
   configured: boolean;
   selfManaged: boolean;
@@ -62,9 +61,9 @@ export type ModelRow = {
 };
 
 export type ModelSelectorViewModel = {
-  /** Full provider list for the strip. Same order as today (configured first, then label). */
+  /** Unfiltered providers, configured first then by label. Stays full when a providerFilter narrows rows. */
   strip: ProviderStripItem[];
-  /** Models after providerFilter and searchQuery, one line each. */
+  /** Models after providerFilter and searchQuery. */
   rows: ModelRow[];
   totalCount: number;
   hasFreeModels: boolean;

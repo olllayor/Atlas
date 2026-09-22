@@ -25,6 +25,14 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Cache Electron and electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
       # node-gyp 9 (via electron-builder install-app-deps) needs distutils,
       # gone from Python 3.12+. macos-latest ships 3.12+, so pin 3.11 for
       # the node-pty source rebuild.

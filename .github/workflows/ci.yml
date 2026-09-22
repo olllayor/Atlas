@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [dev, main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-base:
     name: PR base branch
@@ -48,13 +52,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: pnpm exec tsc --noEmit
 
       - name: Test
         run: pnpm test
 
       - name: Build
-        run: pnpm build
+        run: pnpm exec electron-vite build
 
   package-macos:
     name: Package (macOS arm64)
@@ -72,6 +76,14 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Cache Electron and electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -87,7 +99,7 @@ jobs:
       - name: Package arm64 (unsigned)
         run: |
           pnpm run icons:mac
-          CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac --arm64 --publish never
+          CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac --arm64 --dir --publish never
 
       - name: List release artifacts
         run: ls -la release/

@@ -77,6 +77,7 @@ import { RAW_BLOCK, useRawTranscript } from '../lib/rawTranscript';
 import { useClipboard } from '../hooks/useClipboard';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { decideAutoLoad } from '../lib/chatAutoLoad';
+import { computePrependRestore } from '../lib/prependRestore';
 import { deriveJumpState } from './jumpToLatest';
 import { filterHistoryMessages } from './chatHistoryFilter';
 import { AtlasMark } from './ui/atlas-mark';
@@ -1558,7 +1559,13 @@ export function ChatWindow({
   );
 
   const listRef = useRef<HTMLDivElement | null>(null);
-  const pendingPrependRef = useRef<{ conversationId: string; previousMessageCount: number } | null>(null);
+  const pendingPrependRef = useRef<{
+    conversationId: string;
+    previousMessageCount: number;
+    anchorIndex: number;
+    pixelDelta: number;
+    scrollTopAtStart: number;
+  } | null>(null);
   const lastAutoLoadCursorRef = useRef<string | null>(null);
   /** See `decideAutoLoad`: paging re-arms only once the reader leaves the top. */
   const autoLoadArmedRef = useRef(false);
@@ -1686,18 +1693,70 @@ export function ChatWindow({
   const showSetupPrompt = Boolean(detail && !hasCredential && messages.length === 0);
   const showSuggestions = Boolean(detail && hasCredential && messages.length === 0 && !draft);
 
-  const { userHasScrolledRef, isScrolledUp } = useTranscriptScroll({
+  const lastUserGestureAtRef = useRef(0);
+  /** Reader left the live edge on purpose. Cleared when stick re-locks via a real gesture. */
+  const stickUserEscapedRef = useRef(false);
+
+  const { userHasScrolledRef, isScrolledUp, distanceFromBottomRef } = useTranscriptScroll({
     element: scrollNode,
-    onUserScrollUp: stopScroll,
+    onUserScrollUp: () => {
+      stickUserEscapedRef.current = true;
+      stopScroll();
+    },
     onUserScroll: () => {
       // A real gesture is the only thing that may re-arm paging after a
       // programmatic restore. Virtualizer corrections never reach here.
       autoLoadNeedsGestureRef.current = false;
       estimateScaleFrozenRef.current = false;
+      lastUserGestureAtRef.current = performance.now();
+    },
+    onUserScrollDown: () => {
+      lastUserGestureAtRef.current = performance.now();
+      stickUserEscapedRef.current = false;
     },
     showAt: JUMP_SHOW_PX,
     hideAt: JUMP_HIDE_PX,
   });
+
+  /*
+    `use-stick-to-bottom` clears `escapedFromLock` on any downward `scrollTop`
+    change (`handleScroll` sees `scrollTop > lastScrollTop` and re-engages).
+    Virtualizer size corrections and prepend restore are downward writes too.
+    During a long stream that re-locks the view and the next content growth
+    yanks the reader to the live edge. A deliberate gesture is the only thing
+    allowed to re-engage; everything else keeps the escape.
+  */
+  useEffect(() => {
+    if (!scrollNode) {
+      return;
+    }
+    let timer: number | null = null;
+    const reassertEscape = () => {
+      if (performance.now() - lastUserGestureAtRef.current < 50) {
+        return;
+      }
+      if (stickUserEscapedRef.current) {
+        // `escapedFromLock` alone is not enough: stick's near-bottom
+        // hysteresis (70px) re-sets `isAtBottom` on any downward scroll,
+        // and the next growth pins from there.
+        stopScroll();
+      }
+    };
+    const onScroll = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      // Stick's own handler settles in a 1ms timeout; run after it.
+      timer = window.setTimeout(reassertEscape, 2);
+    };
+    scrollNode.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+      scrollNode.removeEventListener('scroll', onScroll);
+    };
+  }, [scrollNode, stickState, stopScroll]);
 
   // ---------------------------------------------------------------------
   // Virtualizer
@@ -1739,7 +1798,11 @@ export function ChatWindow({
       const index = Number(element.getAttribute('data-index'));
       const message = Number.isFinite(index) ? visibleMessages[index] : undefined;
 
-      if (message && size > 0 && !estimateScaleFrozenRef.current) {
+      // Far-outside rows pin `height: virtualItem.size`, so measuring them
+      // just reads the pin back. Feeding that into the scale is tautological
+      // and drags calibration toward whatever the estimate already claimed.
+      const isPinnedHeight = element.style.height !== '';
+      if (message && size > 0 && !estimateScaleFrozenRef.current && !isPinnedHeight) {
         const stats = estimateScaleRef.current;
         stats.measured += size;
         stats.estimated += estimateHistoryRowHeight(message, rawTranscript);
@@ -2047,6 +2110,7 @@ export function ChatWindow({
     const anchor = getConversationScrollAnchor(conversationId);
     if (!anchor) {
       userHasScrolledRef.current = false;
+      stickUserEscapedRef.current = false;
       stickState.escapedFromLock = false;
       element.scrollTop = element.scrollHeight;
       void scrollToBottom({ animation: 'instant', wait: false });
@@ -2068,6 +2132,7 @@ export function ChatWindow({
     ) {
       clearConversationScrollAnchor(conversationId);
       userHasScrolledRef.current = false;
+      stickUserEscapedRef.current = false;
       stickState.escapedFromLock = false;
       element.scrollTop = element.scrollHeight;
       void scrollToBottom({ animation: 'instant', wait: false });
@@ -2075,6 +2140,7 @@ export function ChatWindow({
     }
 
     userHasScrolledRef.current = true;
+    stickUserEscapedRef.current = true;
     stickState.escapedFromLock = true;
 
     const targetIndex = visibleMessages.findIndex((m) => m.id === anchor.messageId);
@@ -2104,13 +2170,12 @@ export function ChatWindow({
   /**
    * Restore the reading position after older messages are prepended.
    *
-   * The old implementation diffed `scrollHeight` before and after, which is
-   * measured against *estimated* heights for the newly inserted rows and
-   * therefore drifted. Re-anchoring on the message that used to be first is
-   * exact: it was already measured, and any correction as the prepended rows
-   * measure is absorbed by the virtualizer's own size-change adjustment,
-   * which shifts `scrollTop` by the delta of any row that resizes above the
-   * current offset.
+   * Anchors on the row that was at the top of the viewport when the load
+   * started, plus whatever the reader scrolled while the page was in flight.
+   * The old `scrollToIndex(prependedCount)` pinned the previously-first row to
+   * y=0, which yanks anyone who was not already at the head — the common case
+   * during a long scroll or a long stream. Estimate error in the prepended
+   * block is then absorbed by virtual-core's size-change adjustment.
    */
   useLayoutEffect(() => {
     const pending = pendingPrependRef.current;
@@ -2128,17 +2193,46 @@ export function ChatWindow({
     }
 
     pendingPrependRef.current = null;
-    rowVirtualizer.scrollToIndex(prependedCount, { align: 'start' });
-  }, [conversationId, historyMessages.length, rowVirtualizer]);
+    const element = scrollRef.current;
+    const scrollTopNow = element?.scrollTop ?? 0;
+    // Reader hit the absolute head and stayed there. The prepend is the
+    // answer to that request: show the newly loaded head instead of yanking
+    // them to the old first row (which is what `scrollToIndex(prependedCount)`
+    // does, and reads as a 20k-px drift).
+    if (scrollTopNow <= 1) {
+      if (element) {
+        element.scrollTop = 0;
+      }
+      return;
+    }
+    const target = computePrependRestore({
+      anchorIndex: pending.anchorIndex,
+      pixelDelta: pending.pixelDelta,
+      scrollTopAtStart: pending.scrollTopAtStart,
+      scrollTopNow,
+      prependedCount,
+    });
+    rowVirtualizer.scrollToIndex(target.index, { align: 'start' });
+    if (element && target.pixelDelta !== 0) {
+      element.scrollTop += target.pixelDelta;
+    }
+  }, [conversationId, historyMessages.length, rowVirtualizer, scrollRef]);
 
   const loadOlderMessages = useCallback(async () => {
     if (!detail?.conversation || !hasOlder || isLoadingOlder) {
       return;
     }
 
+    const element = scrollRef.current;
+    const scrollTopAtStart = element?.scrollTop ?? 0;
+    const items = rowVirtualizer.getVirtualItems();
+    const anchorItem = items.find((item) => item.end > scrollTopAtStart) ?? items[0];
     pendingPrependRef.current = {
       conversationId: detail.conversation.id,
       previousMessageCount: historyMessages.length,
+      anchorIndex: anchorItem?.index ?? 0,
+      pixelDelta: anchorItem ? Math.max(0, scrollTopAtStart - anchorItem.start) : 0,
+      scrollTopAtStart,
     };
     // Prepended rows must not rewrite the live-edge scale; unfreeze on the
     // next deliberate user scroll (see `useTranscriptScroll`).
@@ -2146,7 +2240,7 @@ export function ChatWindow({
     autoLoadNeedsGestureRef.current = true;
 
     await onLoadOlderMessages(detail.conversation.id);
-  }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages]);
+  }, [detail, hasOlder, isLoadingOlder, historyMessages.length, onLoadOlderMessages, rowVirtualizer]);
 
   /*
     Everything the scroll listener below needs, refreshed every render. The
@@ -2800,6 +2894,7 @@ export function ChatWindow({
       <button
         type="button"
         onClick={() => {
+          stickUserEscapedRef.current = false;
           const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
           void scrollToBottom({ animation: reduce ? 'instant' : 'smooth' });
         }}

@@ -823,6 +823,9 @@ function CellDetail({
           head={detail.head}
           tail={detail.tail}
           omitted={detail.omitted}
+          source={detail.source}
+          peek={detail.peek}
+          running={detail.running}
         />
       </div>
     );

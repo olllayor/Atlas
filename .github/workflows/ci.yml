@@ -7,6 +7,22 @@ on:
     branches: [dev, main]
 
 jobs:
+  pr-base:
+    name: PR base branch
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Allow only release PRs into main
+        run: |
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
+          if [ "$base" = "main" ] && [ "$head" != "dev" ]; then
+            echo "Feature and fix PRs target dev. Only the release PR (dev → main) may target main."
+            exit 1
+          fi
+          echo "base=$base head=$head ok"
+
   verify:
     name: Build & Typecheck
     runs-on: ubuntu-latest

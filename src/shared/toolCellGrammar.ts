@@ -26,6 +26,12 @@ export { summarizeToolGroup } from './toolPresentation';
 import { commandProgram } from './toolGroups';
 import { describeMcpToolName } from './mcp';
 import { isPlanToolPart } from './planTool';
+import {
+  createLineStore,
+  finishToolOutputLineStore,
+  syncToolOutputLineStore,
+  type LineStore,
+} from './toolOutputStream';
 
 /** Head/tail line budget for an agent tool call's output block. */
 export const TOOL_OUTPUT_MAX_LINES = 5;
@@ -93,6 +99,15 @@ export type ToolDetail =
       tail: number;
       omitted: number;
       empty: boolean;
+      /**
+       * Line store behind the cap and the expanded window. Head identity
+       * freezes once truncation engages so a memoized head block stays dead
+       * while output streams.
+       */
+      source: LineStore;
+      /** Bounded live peek while the call is still running. */
+      peek: string | null;
+      running: boolean;
     }
   | { type: 'diff'; files: DiffFile[]; added: number; removed: number }
   | { type: 'explore'; entries: ExploreEntry[] }
@@ -551,81 +566,55 @@ function outputText(part: ChatToolPart): string {
   return toolText(part.output);
 }
 
+function emptyTextDetail(): ToolDetail {
+  // Codex renders a literal, dim `(no output)` rather than nothing —
+  // "the command produced nothing" and "we lost the output" must not
+  // look the same.
+  return {
+    type: 'text',
+    lines: [],
+    allLines: [],
+    head: 0,
+    tail: 0,
+    omitted: 0,
+    empty: true,
+    source: createLineStore(),
+    peek: null,
+    running: false,
+  };
+}
+
 function buildTextDetail(part: ChatToolPart): ToolDetail {
   const text = outputText(part).trim();
+  const status = toolCellStatus(part.state);
+  const running = !isFinished(status);
+  const jobId = part.toolCallId || part.id;
+
   if (!text) {
     // `(no output)` is a *result*, so it may only be claimed once the call
     // has finished. While a call is still in flight, having produced
     // nothing yet is not the same as having produced nothing.
-    if (!isFinished(toolCellStatus(part.state))) {
+    if (running) {
       return { type: 'none' };
     }
-    // Codex renders a literal, dim `(no output)` rather than nothing —
-    // "the command produced nothing" and "we lost the output" must not
-    // look the same.
-    return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
+    finishToolOutputLineStore(jobId, status === 'success' ? 'done' : 'error');
+    return emptyTextDetail();
   }
 
-  // Fast count of lines without splitting the entire string into an array.
-  let end = text.length;
-  while (end > 0 && (text.charCodeAt(end - 1) === 10 || text.charCodeAt(end - 1) === 13)) {
-    end--;
-  }
-  if (end === 0) {
-    return { type: 'text', lines: [], allLines: [], head: 0, tail: 0, omitted: 0, empty: true };
+  // One store per tool call. Stream flushes append only the prefix delta;
+  // cap derivation is O(H+T) and freezes head identity after truncation.
+  const source = syncToolOutputLineStore(jobId, text);
+  if (!running) {
+    finishToolOutputLineStore(jobId, status === 'success' ? 'done' : 'error');
   }
 
-  let lineCount = 1;
-  for (let i = 0; i < end; i++) {
-    if (text.charCodeAt(i) === 10) {
-      lineCount++;
-    }
+  const total = source.getLineCount();
+  if (total === 0) {
+    return emptyTextDetail();
   }
 
-  // Small outputs: split eagerly, no head/tail omission.
-  if (lineCount <= TOOL_OUTPUT_MAX_LINES * 2) {
-    const allLines = splitLines(text);
-    return {
-      type: 'text',
-      lines: allLines,
-      allLines,
-      head: allLines.length,
-      tail: 0,
-      omitted: 0,
-      empty: false,
-    };
-  }
-
-  // Large outputs: extract only the first and last `TOOL_OUTPUT_MAX_LINES` lines.
-  // This avoids allocating thousands of short-lived string slices on every stream flush.
-  let headEnd = 0;
-  let headSeen = 0;
-  for (let i = 0; i < end; i++) {
-    if (text.charCodeAt(i) === 10) {
-      headSeen++;
-      if (headSeen === TOOL_OUTPUT_MAX_LINES) {
-        headEnd = i;
-        break;
-      }
-    }
-  }
-  const headSlice = text.slice(0, headEnd - (headEnd > 0 && text.charCodeAt(headEnd - 1) === 13 ? 1 : 0));
-  const head = splitLines(headSlice);
-
-  let tailStart = 0;
-  let tailSeen = 0;
-  for (let i = end - 1; i >= 0; i--) {
-    if (text.charCodeAt(i) === 10) {
-      tailSeen++;
-      if (tailSeen === TOOL_OUTPUT_MAX_LINES) {
-        tailStart = i + 1;
-        break;
-      }
-    }
-  }
-  const tail = splitLines(text.slice(tailStart, end));
-  const lines = [...head, ...tail];
-  const omitted = lineCount - TOOL_OUTPUT_MAX_LINES * 2;
+  const { view } = source.getCapView(TOOL_OUTPUT_MAX_LINES, TOOL_OUTPUT_MAX_LINES);
+  const lines = view.truncated ? [...view.head, ...view.tail] : [...view.head];
 
   let cachedAllLines: string[] | null = null;
   return {
@@ -633,14 +622,17 @@ function buildTextDetail(part: ChatToolPart): ToolDetail {
     lines,
     get allLines(): string[] {
       if (!cachedAllLines) {
-        cachedAllLines = splitLines(text);
+        cachedAllLines = [...source.getLines(0, source.getLineCount())];
       }
       return cachedAllLines;
     },
-    head: TOOL_OUTPUT_MAX_LINES,
-    tail: TOOL_OUTPUT_MAX_LINES,
-    omitted,
+    head: view.truncated ? TOOL_OUTPUT_MAX_LINES : view.head.length,
+    tail: view.truncated ? TOOL_OUTPUT_MAX_LINES : 0,
+    omitted: view.omitted,
     empty: false,
+    source,
+    peek: view.peek,
+    running,
   };
 }
 

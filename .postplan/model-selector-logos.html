@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model selector logos: design variants</title>
+<style>
+  * { box-sizing: border-box; }
+  body { background:#000; color:#fafafa; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,"PingFang SC",system-ui,sans-serif; margin:0; padding:28px 16px 72px; font-size:14px; line-height:1.5; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:650; margin:0 0 6px; letter-spacing:-0.01em; }
+  .sub { color:#a3a3a3; margin:0 0 18px; max-width:72ch; font-size:13.5px; }
+  h2 { font-size:15px; font-weight:650; margin:28px 0 8px; }
+  h3 { font-size:13px; font-weight:650; margin:0 0 8px; color:#e5e5e5; }
+  p, li { color:#d4d4d4; font-size:13.5px; }
+  .switch { display:flex; gap:6px; margin:0 0 18px; flex-wrap:wrap; }
+  .switch button {
+    appearance:none; border:1px solid #2a2a2a; background:#0a0a0a; color:#a3a3a3;
+    font:inherit; font-size:13px; font-weight:600; padding:7px 12px; border-radius:8px; cursor:pointer;
+  }
+  .switch button[aria-pressed="true"] { background:#1a1a1a; color:#fafafa; border-color:#404040; }
+  .stage { display:none; }
+  .stage.on { display:block; }
+  .meta { color:#737373; font-size:12.5px; margin:10px 0 0; max-width:72ch; }
+  .meta b { color:#d4d4d4; font-weight:600; }
+  .rowline { display:grid; grid-template-columns:minmax(280px,420px) 1fr; gap:20px; align-items:start; }
+  @media (max-width:860px) { .rowline { grid-template-columns:1fr; } }
+  .frame {
+    background:#0a0a0a; border:1px solid #262626; border-radius:12px; padding:14px;
+  }
+  .chip {
+    display:inline-flex; align-items:center; gap:8px; height:34px; max-width:100%;
+    padding:0 10px; border-radius:999px; border:1px solid #2a2a2a; background:#111;
+    color:#a3a3a3; font-size:13.5px; margin-bottom:10px;
+  }
+  .chip .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip .eff {
+    flex:none; font-size:11px; font-weight:600; color:#d4d4d4;
+    background:#1c1c1c; border:1px solid #2e2e2e; border-radius:999px; padding:1px 7px;
+  }
+  .logo { width:16px; height:16px; flex:none; display:inline-flex; color:currentColor; }
+  .logo svg, .logo use { width:100%; height:100%; display:block; }
+  .logo.mono {
+    display:inline-flex; align-items:center; justify-content:center; border-radius:4px;
+    background:#1a1a1a; color:#a3a3a3; font-size:9px; font-weight:700;
+  }
+  /* shared picker chrome */
+  .picker {
+    width:100%; max-width:420px; background:#0c0c0c; border:1px solid #2a2a2a; border-radius:12px;
+    overflow:hidden; box-shadow:0 18px 40px rgba(0,0,0,.55);
+  }
+  .search {
+    width:100%; border:0; border-bottom:1px solid #222; background:#0c0c0c; color:#fafafa;
+    font:inherit; font-size:13.5px; padding:12px 14px; outline:none;
+  }
+  .search::placeholder { color:#737373; }
+  .list { max-height:320px; overflow:auto; padding:6px; }
+  .item {
+    display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px;
+    color:#fafafa; font-size:13.5px; cursor:default;
+  }
+  .item:hover, .item.hot { background:#161616; }
+  .item.sel { background:#1a1a1a; }
+  .item .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .item .prov {
+    display:flex; align-items:center; gap:6px; color:#737373; font-size:11.5px; margin-top:2px;
+  }
+  .item .stack { flex:1; min-width:0; }
+  .item .stack .name { display:block; }
+  .badge {
+    flex:none; font-size:10.5px; font-weight:600; color:#a3a3a3; background:#1a1a1a;
+    border:1px solid #2a2a2a; border-radius:4px; padding:1px 6px; line-height:16px;
+  }
+  .badge.warn { color:#fbbf24; background:#2a1d0a; border-color:#3a2a12; }
+  .badge.agent { color:#d4d4d4; }
+  .kbd {
+    flex:none; font-size:10.5px; color:#737373; background:#151515; border:1px solid #2a2a2a;
+    border-radius:4px; padding:1px 5px; line-height:16px; font-variant-numeric:tabular-nums;
+  }
+  .check { flex:none; color:#d4d4d4; width:14px; text-align:center; }
+  .foot { border-top:1px solid #222; padding:6px; }
+  .foot .item { color:#a3a3a3; }
+  /* A: icon rail */
+  .railbox { display:grid; grid-template-columns:52px 1fr; min-height:340px; }
+  .rail {
+    border-right:1px solid #222; background:#0a0a0a; padding:8px 6px;
+    display:flex; flex-direction:column; gap:6px; align-items:center;
+  }
+  .rail button {
+    width:36px; height:36px; border:0; border-radius:8px; background:transparent; color:#737373;
+    display:grid; place-items:center; cursor:pointer; position:relative; padding:0;
+  }
+  .rail button:hover { background:#161616; color:#d4d4d4; }
+  .rail button[aria-pressed="true"] { background:#1a1a1a; color:#fafafa; }
+  .rail button[aria-pressed="true"]::before {
+    content:""; position:absolute; left:-6px; top:8px; bottom:8px; width:2px; background:#60a5fa; border-radius:2px;
+  }
+  .rail button .logo { width:18px; height:18px; }
+  .star { width:18px; height:18px; }
+  /* B: logo strip */
+  .strip {
+    display:flex; gap:4px; padding:8px; border-bottom:1px solid #222; overflow-x:auto; background:#0a0a0a;
+  }
+  .strip button {
+    width:34px; height:34px; border:0; border-radius:8px; background:transparent; color:#737373;
+    display:grid; place-items:center; cursor:pointer; flex:none; padding:0;
+  }
+  .strip button:hover { background:#161616; color:#d4d4d4; }
+  .strip button[aria-pressed="true"] {
+    background:#1c1c1c; color:#fafafa; box-shadow:0 0 0 1px #333;
+  }
+  .strip button .logo { width:17px; height:17px; }
+  .switchrow {
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 12px; color:#d4d4d4; font-size:13.5px; border-top:1px solid #222;
+  }
+  .toggle {
+    width:32px; height:18px; border-radius:999px; background:#2a2a2a; border:0; position:relative; cursor:pointer;
+  }
+  .toggle::after {
+    content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:999px; background:#a3a3a3;
+  }
+  .toggle[aria-pressed="true"] { background:#3b82f6; }
+  .toggle[aria-pressed="true"]::after { left:16px; background:#fff; }
+  ul.tight { margin:8px 0 0; padding-left:18px; }
+  ul.tight li { margin:4px 0; }
+  .rec { color:#93c5fd; font-weight:650; }
+  .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<svg class="sr" aria-hidden="true" focusable="false"><symbol id="lg-anthropic" viewBox="0 0 40 40" fill="currentColor"><path d="M26.9568 9.88184H22.1265L30.7753 31.7848H35.4917L26.9568 9.88184ZM13.028 9.88184L4.4917 31.7848H9.32203L11.2305 27.1793H20.2166L22.0126 31.6724H26.8444L18.0832 9.88184H13.028ZM12.5783 23.1361L15.4987 15.3853L18.5315 23.1361H12.5783Z" fill="currentColor"/></symbol>
+<symbol id="lg-openai" viewBox="0 0 40 40" fill="currentColor"><path d="M32.8377 17.282C33.2127 16.25 33.3072 15.218 33.2127 14.1875C33.1197 13.1571 32.7447 12.1251 32.2752 11.1876C31.4322 9.78209 30.2127 8.6571 28.8072 8.0001C27.3072 7.34461 25.7127 7.15711 24.1197 7.53211C23.3698 6.78212 22.5253 6.12512 21.5878 5.65713C20.6503 5.18913 19.5253 5.00013 18.4948 5.00013C16.8851 4.99074 15.3125 5.48246 13.9948 6.40712C12.6824 7.34311 11.7449 8.6571 11.2754 10.1571C10.1504 10.4376 9.21289 10.9071 8.27539 11.4696C7.4324 12.1251 6.77541 12.9696 6.21291 13.8126C5.36992 15.2195 5.08792 16.8125 5.27542 18.407C5.46399 19.9968 6.11605 21.496 7.1504 22.718C6.79608 23.7086 6.66795 24.7659 6.77541 25.8124C6.86991 26.8444 7.2449 27.8749 7.7129 28.8124C8.55739 30.2194 9.77538 31.3444 11.1824 31.9999C12.6824 32.6569 14.2753 32.8444 15.8698 32.4694C16.6198 33.2194 17.4628 33.8749 18.4003 34.3444C19.3378 34.8139 20.4628 34.9999 21.4948 34.9999C23.1043 35.0097 24.6769 34.5185 25.9947 33.5944C27.3072 32.6569 28.2447 31.3444 28.7127 29.8444C29.7719 29.6432 30.7682 29.1934 31.6197 28.5319C32.4627 27.8749 33.2127 27.1249 33.6822 26.1874C34.5251 24.7819 34.8071 23.1875 34.6196 21.5945C34.4322 20 33.8697 18.5015 32.8377 17.282ZM21.5878 33.0304C20.0878 33.0304 18.9628 32.5609 17.9323 31.7179C17.9323 31.7179 18.0253 31.6234 18.1198 31.6234L24.1197 28.1554C24.2862 28.0803 24.4196 27.9469 24.4947 27.7804C24.5698 27.636 24.6021 27.4731 24.5877 27.3109V18.875L27.1197 20.375V27.3124C27.1455 28.0547 27.0215 28.7945 26.755 29.4878C26.4885 30.181 26.085 30.8134 25.5687 31.3473C25.0523 31.8811 24.4337 32.3054 23.7497 32.5949C23.0658 32.8843 22.3305 33.0314 21.5878 33.0304ZM9.49488 27.8749C8.83789 26.7499 8.55739 25.4374 8.83789 24.125C8.83789 24.125 8.93239 24.2195 9.02539 24.2195L15.0253 27.6874C15.1693 27.7638 15.3325 27.7966 15.4948 27.7819C15.6823 27.7819 15.8698 27.7819 15.9628 27.6874L23.2753 23.4695V26.3749L17.1823 29.9374C16.5506 30.3042 15.8527 30.5427 15.1287 30.6393C14.4046 30.7358 13.6686 30.6884 12.9629 30.4999C11.4629 30.1249 10.2449 29.1874 9.49488 27.8749ZM7.9004 14.8445C8.56239 13.7234 9.58826 12.8627 10.8074 12.4056V19.532C10.8074 19.718 10.8074 19.907 10.9004 20C10.9755 20.1665 11.1089 20.2998 11.2754 20.375L18.5878 24.5944L16.0573 26.0944L10.0574 22.625C9.41842 22.2639 8.85742 21.7797 8.40684 21.2004C7.95627 20.6211 7.62506 19.9582 7.4324 19.25C7.05741 17.8445 7.1504 16.157 7.9004 14.8445ZM28.6197 19.625L21.3073 15.407L23.8377 13.9071L29.8377 17.375C30.7752 17.9375 31.5252 18.6875 31.9947 19.625C32.4642 20.5625 32.7447 21.5945 32.6502 22.7195C32.5603 23.7755 32.1699 24.7837 31.5252 25.6249C30.8697 26.4694 30.0252 27.1249 28.9947 27.4999V20.375C28.9947 20.1875 28.9947 20 28.9002 19.907C28.9002 19.907 28.8072 19.718 28.6197 19.625ZM31.1502 15.875C31.1502 15.875 31.0572 15.782 30.9627 15.782L24.9627 12.3126C24.7752 12.2196 24.6822 12.2196 24.4947 12.2196C24.3072 12.2196 24.1197 12.2196 24.0252 12.3126L16.7128 16.532V13.6251L22.8073 10.0626C23.7448 9.50009 24.7752 9.31259 25.9002 9.31259C26.9322 9.31259 27.9627 9.68759 28.9002 10.3446C29.7447 11.0001 30.4947 11.8446 30.8697 12.7821C31.2447 13.7196 31.3377 14.8445 31.1502 15.875ZM15.4003 21.125L12.8699 19.625V12.5946C12.8699 11.5626 13.1503 10.4376 13.7128 9.59459C14.2753 8.6571 15.1198 8.0001 16.0573 7.53211C17.0127 7.05249 18.0956 6.88812 19.1503 7.06261C20.1823 7.15711 21.2128 7.62511 22.0573 8.2821C22.0573 8.2821 21.9628 8.3751 21.8698 8.3751L15.8698 11.8446C15.7033 11.9197 15.57 12.0531 15.4948 12.2196C15.4003 12.4071 15.4003 12.5001 15.4003 12.6876V21.125ZM16.7128 18.125L19.9948 16.25L23.2753 18.125V21.875L19.9948 23.75L16.7128 21.875V18.125Z" fill="currentColor"/></symbol>
+<symbol id="lg-google" viewBox="0 0 40 40" fill="currentColor"><path d="M37 20.034C27.8809 20.5837 20.5808 27.8809 20.0326 37H19.966C19.4163 27.8809 12.1177 20.5837 3 20.034V19.9674C12.1191 19.4163 19.4163 12.1191 19.966 3H20.0326C20.5822 12.1191 27.8809 19.4163 37 19.9674V20.034Z" fill="currentColor"/></symbol>
+<symbol id="lg-opencode" viewBox="0 0 24 24" fill="currentColor"><path d="M8.40005 17.4H19.2001V21H4.80005V13.8H8.40005V17.4ZM15.6001 10.2V13.8H8.40005V10.2H15.6001ZM19.2001 10.2H15.6001V6.6H4.80005V3H19.2001V10.2Z" fill="currentColor"/></symbol>
+<symbol id="lg-xai" viewBox="0 0 40 40" fill="currentColor"><path d="M12.4579 15.6036L26.1529 35H20.0656L6.37059 15.6036H12.4579ZM12.4524 26.3764L15.4974 30.6909L12.4551 35H6.36377L12.4524 26.3764ZM33.6365 7.15727V35H28.647V14.2236L33.6365 7.15727ZM33.6365 5L20.0656 24.2205L17.0206 19.9073L27.5451 5H33.6365Z" fill="currentColor"/></symbol>
+<symbol id="lg-mistral" viewBox="0 0 40 40" fill="currentColor"><path d="M8.92783 8.88101H13.357V13.3088H17.7861V17.738H17.7835H22.2152V13.3088H26.6418V8.88101H31.0722V26.5949H35.5V31.0241H22.2139V26.5962H17.7861V22.1671H13.3557V26.5949L17.7861 26.5962V31.0241H4.5V26.5949H8.92783V8.88101ZM22.2139 26.5962H26.6418V22.1671H22.2152V26.5962H22.2139Z" fill="currentColor"/></symbol>
+<symbol id="lg-deepseek" viewBox="0 0 40 40" fill="currentColor"><path d="M35.6638 9.91965C35.3251 9.75432 35.1785 10.0703 34.9811 10.2316C34.9131 10.2836 34.8558 10.3516 34.7985 10.413C34.3025 10.9423 33.7238 11.289 32.9678 11.2476C31.8625 11.1863 30.9186 11.533 30.0839 12.3783C29.9066 11.3356 29.3173 10.7143 28.4213 10.3143C27.9519 10.1063 27.4773 9.89965 27.148 9.44766C26.9186 9.12633 26.856 8.76767 26.7413 8.41568C26.668 8.20235 26.5946 7.98502 26.3506 7.94902C26.084 7.90769 25.98 8.13035 25.876 8.31702C25.4587 9.07967 25.2973 9.91965 25.3133 10.7703C25.3493 12.6849 26.1573 14.2102 27.764 15.2942C27.9466 15.4182 27.9933 15.5435 27.9359 15.7249C27.8266 16.0982 27.696 16.4609 27.5813 16.8355C27.508 17.0742 27.3986 17.1248 27.1426 17.0222C26.2777 16.6504 25.4919 16.1164 24.828 15.4489C23.6854 14.3449 22.6534 13.1263 21.3654 12.1716C21.067 11.9511 20.7606 11.7416 20.4468 11.5436C19.1335 10.2676 20.6201 9.21967 20.9641 9.09567C21.3241 8.965 21.0881 8.51968 19.9254 8.52501C18.7628 8.53035 17.6988 8.91834 16.3428 9.43699C16.1413 9.51421 15.934 9.57529 15.7229 9.61966C14.4557 9.38091 13.1598 9.33506 11.8789 9.48366C9.36565 9.76365 7.35902 10.953 5.88305 12.9809C4.10975 15.4182 3.69243 18.1888 4.20308 21.0768C4.74041 24.122 6.29504 26.6433 8.683 28.6139C11.1603 30.6579 14.0122 31.6592 17.2668 31.4672C19.2428 31.3539 21.4441 31.0886 23.9254 28.9873C24.552 29.2993 25.208 29.4233 26.2986 29.5166C27.1386 29.5953 27.9466 29.4766 28.5719 29.3459C29.5519 29.1379 29.4839 28.23 29.1306 28.0646C26.2573 26.726 26.888 27.2713 26.3133 26.83C27.7746 25.102 29.9746 23.3074 30.8359 17.4928C30.9026 17.0302 30.8452 16.7395 30.8359 16.3662C30.8306 16.1395 30.8826 16.0502 31.1426 16.0249C31.8639 15.95 32.5637 15.7349 33.2025 15.3915C35.0638 14.3742 35.8158 12.7049 35.9931 10.7023C36.0198 10.3956 35.9878 10.081 35.6638 9.91965ZM19.4414 27.9433C16.6562 25.754 15.3055 25.0327 14.7482 25.0634C14.2256 25.0954 14.3202 25.6913 14.4349 26.0807C14.5549 26.4647 14.7109 26.7286 14.9295 27.066C15.0815 27.2886 15.1855 27.6206 14.7789 27.87C13.8816 28.4246 12.3229 27.6833 12.2496 27.6473C10.435 26.578 8.91632 25.1673 7.84834 23.2381C6.81637 21.3808 6.21638 19.3888 6.11771 17.2622C6.09105 16.7475 6.24171 16.5662 6.7537 16.4729C7.42583 16.3442 8.11451 16.3267 8.79233 16.4209C11.6349 16.8368 14.0536 18.1075 16.0828 20.1194C17.2402 21.2661 18.1161 22.6354 19.0188 23.974C19.9788 25.3953 21.0108 26.75 22.3254 27.8593C22.7894 28.2486 23.1587 28.5446 23.5134 28.7619C22.4441 28.8819 20.6601 28.9086 19.4414 27.9433ZM20.7748 19.3568C20.7745 19.2906 20.7904 19.2253 20.8211 19.1666C20.8517 19.1078 20.8962 19.0575 20.9507 19.0198C21.0052 18.9821 21.068 18.9583 21.1337 18.9503C21.1995 18.9424 21.2662 18.9505 21.3281 18.9741C21.407 19.0024 21.475 19.0546 21.5228 19.1235C21.5706 19.1923 21.5958 19.2743 21.5947 19.3581C21.5949 19.4123 21.5843 19.4659 21.5636 19.5159C21.5428 19.5659 21.5123 19.6113 21.4738 19.6494C21.4354 19.6875 21.3897 19.7176 21.3395 19.7378C21.2893 19.7581 21.2356 19.7682 21.1814 19.7675C21.1277 19.7676 21.0745 19.7571 21.0248 19.7365C20.9752 19.7158 20.9302 19.6855 20.8925 19.6473C20.8548 19.609 20.825 19.5636 20.805 19.5138C20.785 19.4639 20.7739 19.4105 20.7748 19.3568ZM24.9213 21.4848C24.6547 21.5928 24.3893 21.6861 24.1347 21.6981C23.7516 21.7114 23.3756 21.5918 23.0707 21.3594C22.7054 21.0528 22.4441 20.8821 22.3347 20.3488C22.297 20.0881 22.3042 19.823 22.3561 19.5648C22.4494 19.1288 22.3454 18.8488 22.0374 18.5955C21.7881 18.3875 21.4694 18.3302 21.1201 18.3302C21.0005 18.3232 20.8843 18.2875 20.7814 18.2262C20.6348 18.1542 20.5148 17.9728 20.6294 17.7488C20.6668 17.6768 20.8428 17.5008 20.8854 17.4688C21.3601 17.1995 21.9081 17.2875 22.4134 17.4902C22.8827 17.6822 23.2374 18.0342 23.748 18.5328C24.2694 19.1341 24.364 19.3008 24.6613 19.7515C24.896 20.1048 25.1093 20.4674 25.2547 20.8821C25.344 21.1421 25.2293 21.3541 24.9213 21.4848Z" fill="currentColor"/></symbol>
+<symbol id="lg-openrouter" viewBox="0 0 24 24" fill="currentColor"><g transform="translate(-220,-220) scale(0.028)"><path d="M728.039 234C819.325 234 893.323 308.62 893.323 400.668C893.323 492.716 819.325 567.336 728.039 567.336L891.984 732.656C912.81 753.655 898.061 789.56 868.613 789.56H397.472C245.333 789.56 122 665.193 122 511.78C122 358.367 245.333 234 397.472 234H728.039ZM397.472 345.112C306.189 345.112 232.189 419.732 232.189 511.78C232.189 603.828 306.189 678.448 397.472 678.448C488.756 678.448 562.756 603.828 562.756 511.78C562.756 419.732 488.756 345.112 397.472 345.112Z" fill="currentColor" transform="scale(0.0234375)"/></g></symbol>
+<symbol id="lg-groq" viewBox="0 0 40 40" fill="currentColor"><path d="M20.056 4.50022C14.0839 4.44597 9.20616 9.15015 9.15036 15.0106C9.09611 20.8726 13.8855 25.6621 19.8576 25.7163H23.6085V21.7391H20.056C16.3252 21.7825 13.2671 18.8468 13.2237 15.1827C13.1787 11.5216 16.1702 8.52086 19.901 8.47746H20.056C23.7868 8.47746 26.8108 11.4457 26.8216 15.1083V24.8809C26.8216 28.5109 23.8085 31.4683 20.1211 31.5132C18.3617 31.5007 16.6759 30.8049 15.42 29.5726L12.551 32.3905C14.5529 34.3571 17.239 35.4715 20.0451 35.4998H20.1877C26.0823 35.413 30.8175 30.7212 30.85 24.9351V14.8603C30.7059 9.0928 25.9165 4.50022 20.056 4.50022Z" fill="currentColor"/></symbol>
+<symbol id="lg-perplexity" viewBox="0 0 24 24" fill="currentColor"><path d="M17.2642 2.8689L12.042 8.0961M17.2642 2.8689V8.0961H12.042M17.2642 2.8689V4.30027M12.042 8.0961L6.81809 2.8689V8.0961H12.042ZM12.042 8.0961L17.2642 13.3225V20.8159L12.042 15.5887M12.042 8.0961V15.5887M12.042 8.0961L6.81892 13.3225M12.0296 2.1V21.9M12.042 15.5887L6.81892 20.8159V13.3225M6.81892 13.3225L6.81809 15.559H4.57739V8.09527H12.0412L6.81892 13.3225ZM11.9859 8.09527L17.2081 13.3225V15.559H19.4497V8.09527H11.9859Z" stroke="currentColor" stroke-width="0.825" stroke-miterlimit="10"/></symbol>
+<symbol id="lg-togetherai" viewBox="0 0 40 40" fill="currentColor"><path opacity="0.25" d="M27.539 18.922C29.2526 18.922 30.8959 18.2413 32.1076 17.0296C33.3193 15.8179 34 14.1746 34 12.461C34 10.7474 33.3193 9.10406 32.1076 7.89238C30.8959 6.68071 29.2526 6 27.539 6C25.8254 6 24.1821 6.68071 22.9704 7.89238C21.7587 9.10406 21.078 10.7474 21.078 12.461C21.078 14.1746 21.7587 15.8179 22.9704 17.0296C24.1821 18.2413 25.8254 18.922 27.539 18.922ZM27.539 34C29.2526 34 30.8959 33.3193 32.1076 32.1076C33.3193 30.8959 34 29.2526 34 27.539C34 25.8254 33.3193 24.1821 32.1076 22.9704C30.8959 21.7587 29.2526 21.078 27.539 21.078C25.8254 21.078 24.1821 21.7587 22.9704 22.9704C21.7587 24.1821 21.078 25.8254 21.078 27.539C21.078 29.2526 21.7587 30.8959 22.9704 32.1076C24.1821 33.3193 25.8254 34 27.539 34ZM12.461 34C14.1746 34 15.8179 33.3193 17.0296 32.1076C18.2413 30.8959 18.922 29.2526 18.922 27.539C18.922 25.8254 18.2413 24.1821 17.0296 22.9704C15.8179 21.7587 14.1746 21.078 12.461 21.078C10.7474 21.078 9.10406 21.7587 7.89238 22.9704C6.68071 24.1821 6 25.8254 6 27.539C6 29.2526 6.68071 30.8959 7.89238 32.1076C9.10406 33.3193 10.7474 34 12.461 34Z" fill="currentColor"/>
+<path d="M12.461 18.922C16.0293 18.922 18.922 16.0293 18.922 12.461C18.922 8.89269 16.0293 6 12.461 6C8.89269 6 6 8.89269 6 12.461C6 16.0293 8.89269 18.922 12.461 18.922Z" fill="currentColor"/></symbol>
+<symbol id="lg-cohere" viewBox="0 0 24 24" fill="currentColor"><path d="M9.14882 13.5552C9.58082 13.5552 10.4448 13.5336 11.6544 13.0368C13.0584 12.4536 15.8232 11.4168 17.832 10.3368C19.236 9.5808 19.8408 8.5872 19.8408 7.248C19.8408 5.412 18.3504 3.9 16.4928 3.9H8.71682C6.06002 3.9 3.90002 6.06 3.90002 8.7168C3.90002 11.3736 5.93042 13.5552 9.14882 13.5552Z" fill="currentColor"/>
+<path d="M10.4664 16.86C10.4664 15.564 11.244 14.376 12.4536 13.8792L14.8944 12.864C17.3784 11.8488 20.1 13.6632 20.1 16.3416C20.1 18.4152 18.4152 20.1 16.3416 20.1H13.6848C11.9136 20.1 10.4664 18.6528 10.4664 16.86Z" fill="currentColor"/>
+<path d="M6.68642 14.1816C5.15282 14.1816 3.90002 15.4344 3.90002 16.968V17.3352C3.90002 18.8472 5.15282 20.1 6.68642 20.1C8.22003 20.1 9.47283 18.8472 9.47283 17.3136V16.9464C9.45123 15.4344 8.22003 14.1816 6.68642 14.1816Z" fill="currentColor"/></symbol></svg>
+<div class="wrap">
+  <h1>Model selector with provider logos</h1>
+  <p class="sub">Decision is how logos structure the composer picker, not whether to use them. Atlas already ships monochrome brand marks in <code>providerLogos.tsx</code>. Three shapes below use those marks as navigation. Not a clone of the screenshots.</p>
+
+  <div class="switch" role="tablist" aria-label="Variants">
+    <button type="button" data-v="a" aria-pressed="true">A Icon rail</button>
+    <button type="button" data-v="b" aria-pressed="false">B Logo strip</button>
+    <button type="button" data-v="c" aria-pressed="false">C Logo list</button>
+    <button type="button" data-v="all" aria-pressed="false">All</button>
+  </div>
+
+  <!-- A -->
+  <section class="stage on" id="v-a" aria-label="Variant A">
+    <h2>A. Icon rail filters providers</h2>
+    <p class="sub">Left rail is the provider index. Right pane is one flat model list for the active rail slot. Search narrows models. Closest to the dark screenshots.</p>
+    <div class="rowline">
+      <div class="frame">
+        <div class="chip"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><span class="nm">Opus 5</span><span class="eff">High</span></div>
+        <div class="picker railbox" data-picker="a">
+          <div class="rail" data-role="rail" aria-label="Providers">
+            <button type="button" data-p="*" aria-pressed="true" title="All models"><svg class="star" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3.5l2.4 4.86 5.36.78-3.88 3.78.92 5.34L12 15.7l-4.8 2.56.92-5.34-3.88-3.78 5.36-.78L12 3.5z"/></svg></button>
+            <button type="button" data-p="anthropic" aria-pressed="false" title="Anthropic"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span></button>
+            <button type="button" data-p="opencode" aria-pressed="false" title="OpenCode"><span class="logo"><svg><use href="#lg-opencode"/></svg></span></button>
+            <button type="button" data-p="google" aria-pressed="false" title="Antigravity"><span class="logo"><svg><use href="#lg-google"/></svg></span></button>
+            <button type="button" data-p="xai" aria-pressed="false" title="xAI"><span class="logo"><svg><use href="#lg-xai"/></svg></span></button>
+            <button type="button" data-p="deepseek" aria-pressed="false" title="DeepSeek"><span class="logo"><svg><use href="#lg-deepseek"/></svg></span></button>
+            <button type="button" data-p="openrouter" aria-pressed="false" title="OpenRouter"><span class="logo"><svg><use href="#lg-openrouter"/></svg></span></button>
+            <button type="button" data-p="harbor" aria-pressed="false" title="TokenHarbor"><span class="logo mono">T</span></button>
+          </div>
+          <div>
+            <input class="search" data-role="q" type="search" placeholder="Search models..." aria-label="Search models">
+            <div class="list" data-role="list">
+              <div class="item sel" data-p="anthropic" data-t="opus 5 claude anthropic"><div class="stack"><span class="name">Opus 5</span><div class="prov"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span>Anthropic</div></div><span class="badge">High</span><span class="kbd">⌘1</span><span class="check">✓</span></div>
+              <div class="item" data-p="anthropic" data-t="fable 4.1 claude anthropic"><div class="stack"><span class="name">Fable 4.1</span><div class="prov"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span>Anthropic</div></div><span class="kbd">⌘2</span></div>
+              <div class="item" data-p="anthropic" data-t="sonnet 4.5 claude anthropic"><div class="stack"><span class="name">Sonnet 4.5</span><div class="prov"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span>Anthropic</div></div></div>
+              <div class="item" data-p="opencode" data-t="mimo-v2.6-flash free opencode"><div class="stack"><span class="name">MiMo-V2.6-Flash Free</span><div class="prov"><span class="logo"><svg><use href="#lg-opencode"/></svg></span>OpenCode <span class="badge agent">Agent</span></div></div><span class="badge">Free</span></div>
+              <div class="item" data-p="opencode" data-t="muse spark 1.3 free opencode"><div class="stack"><span class="name">Muse Spark 1.3 Free</span><div class="prov"><span class="logo"><svg><use href="#lg-opencode"/></svg></span>OpenCode <span class="badge agent">Agent</span></div></div><span class="badge">Free</span></div>
+              <div class="item" data-p="google" data-t="gemini 3.8 flash high antigravity"><div class="stack"><span class="name">Gemini 3.8 Flash (High)</span><div class="prov"><span class="logo"><svg><use href="#lg-google"/></svg></span>Antigravity <span class="badge agent">Agent</span></div></div><span class="badge">High</span></div>
+              <div class="item" data-p="google" data-t="gemini 3.8 flash medium antigravity"><div class="stack"><span class="name">Gemini 3.8 Flash (Medium)</span><div class="prov"><span class="logo"><svg><use href="#lg-google"/></svg></span>Antigravity <span class="badge agent">Agent</span></div></div><span class="badge">Med</span></div>
+              <div class="item" data-p="xai" data-t="grok-4.6 xai"><div class="stack"><span class="name">grok-4.6</span><div class="prov"><span class="logo"><svg><use href="#lg-xai"/></svg></span>xAI <span class="badge agent">Agent</span></div></div><span class="badge">High</span></div>
+              <div class="item" data-p="deepseek" data-t="deepseek v4 flash"><div class="stack"><span class="name">DeepSeek V4 Flash</span><div class="prov"><span class="logo"><svg><use href="#lg-deepseek"/></svg></span>DeepSeek</div></div></div>
+              <div class="item" data-p="openrouter" data-t="claude sonnet openrouter"><div class="stack"><span class="name">claude-sonnet-4.5</span><div class="prov"><span class="logo"><svg><use href="#lg-openrouter"/></svg></span>OpenRouter</div></div><span class="badge">Vision</span></div>
+              <div class="item" data-p="harbor" data-t="harbor mini tokenharbor"><div class="stack"><span class="name">Harbor Mini</span><div class="prov"><span class="logo mono">T</span>TokenHarbor <span class="badge warn">No key</span></div></div></div>
+            </div>
+            <div class="foot">
+              <div class="item">Reasoning effort<span style="margin-left:auto" class="badge">High</span></div>
+              <div class="item">Manage models...</div>
+            </div>
+          </div>
+        </div>
+        <p class="meta"><b>Tradeoff.</b> Scales past a dozen providers and keeps the list single-purpose. Costs a permanent 52px column and makes provider switching a lateral move.</p>
+      </div>
+      <div>
+        <h3>Why this shape</h3>
+        <ul class="tight">
+          <li>Logos are the provider index. Names stay out of the rail.</li>
+          <li>Model rows carry a quiet provider line so mixed lists stay readable.</li>
+          <li>Selected model keeps check and shortcut on the right edge.</li>
+          <li>Agent and No key stay as tiny text badges, not colored pills.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- B -->
+  <section class="stage" id="v-b" aria-label="Variant B">
+    <h2>B. Horizontal logo strip</h2>
+    <p class="sub">One row of provider logos filters the list below. Selected logo lifts. Compact height for the floating composer chip. Matches the light screenshots in structure only.</p>
+    <div class="rowline">
+      <div class="frame">
+        <div class="chip"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><span class="nm">Opus 5</span><span class="eff">High</span></div>
+        <div class="picker" data-picker="b">
+          <div class="strip" data-role="rail" aria-label="Providers">
+            <button type="button" data-p="*" aria-pressed="true" title="All models"><svg class="star" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3.5l2.4 4.86 5.36.78-3.88 3.78.92 5.34L12 15.7l-4.8 2.56.92-5.34-3.88-3.78 5.36-.78L12 3.5z"/></svg></button>
+            <button type="button" data-p="anthropic" aria-pressed="false" title="Anthropic"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span></button>
+            <button type="button" data-p="opencode" aria-pressed="false" title="OpenCode"><span class="logo"><svg><use href="#lg-opencode"/></svg></span></button>
+            <button type="button" data-p="google" aria-pressed="false" title="Antigravity"><span class="logo"><svg><use href="#lg-google"/></svg></span></button>
+            <button type="button" data-p="xai" aria-pressed="false" title="xAI"><span class="logo"><svg><use href="#lg-xai"/></svg></span></button>
+            <button type="button" data-p="deepseek" aria-pressed="false" title="DeepSeek"><span class="logo"><svg><use href="#lg-deepseek"/></svg></span></button>
+            <button type="button" data-p="openrouter" aria-pressed="false" title="OpenRouter"><span class="logo"><svg><use href="#lg-openrouter"/></svg></span></button>
+            <button type="button" data-p="harbor" aria-pressed="false" title="TokenHarbor"><span class="logo mono">T</span></button>
+          </div>
+          <input class="search" data-role="q" type="search" placeholder="Search models..." aria-label="Search models">
+          <div class="list" data-role="list">
+            <div class="item sel" data-p="anthropic" data-t="opus 5"><div class="name">Opus 5 <span style="color:#737373">High</span></div><span class="check">✓</span></div>
+            <div class="item" data-p="anthropic" data-t="fable 4.1"><div class="name">Fable 4.1</div></div>
+            <div class="item" data-p="anthropic" data-t="sonnet 4.5"><div class="name">Sonnet 4.5</div></div>
+            <div class="item" data-p="opencode" data-t="mimo-v2.6-flash free"><div class="name">MiMo-V2.6-Flash Free</div><span class="badge">Free</span></div>
+            <div class="item" data-p="opencode" data-t="muse spark 1.3 free"><div class="name">Muse Spark 1.3 Free</div><span class="badge">Free</span></div>
+            <div class="item" data-p="google" data-t="gemini 3.8 flash high"><div class="name">Gemini 3.8 Flash (High)</div></div>
+            <div class="item" data-p="google" data-t="gemini 3.8 flash medium"><div class="name">Gemini 3.8 Flash (Medium)</div></div>
+            <div class="item" data-p="xai" data-t="grok-4.6"><div class="name">grok-4.6 <span style="color:#737373">High</span></div></div>
+            <div class="item" data-p="deepseek" data-t="deepseek v4 flash"><div class="name">DeepSeek V4 Flash</div></div>
+            <div class="item" data-p="openrouter" data-t="claude sonnet"><div class="name">claude-sonnet-4.5</div></div>
+            <div class="item" data-p="harbor" data-t="harbor mini"><div class="name">Harbor Mini</div><span class="badge warn">No key</span></div>
+          </div>
+          <div class="switchrow"><span>Fast mode</span><button class="toggle" type="button" aria-pressed="false" aria-label="Fast mode"></button></div>
+          <div class="foot"><div class="item">Manage models...</div></div>
+        </div>
+        <p class="meta"><b>Tradeoff.</b> Shortest popover and fastest provider hop. Strip scrolls once you pass roughly eight providers, and each logo needs a tooltip to stay honest.</p>
+      </div>
+      <div>
+        <h3>Why this shape</h3>
+        <ul class="tight">
+          <li>Logos filter. The list stays name-first and dense.</li>
+          <li>Selected provider is a raised tile, not a text tab.</li>
+          <li>Provider identity is carried by the strip, so rows stay one line.</li>
+          <li>Fits the composer chip without a side column.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- C -->
+  <section class="stage" id="v-c" aria-label="Variant C">
+    <h2>C. Logo list, no rail</h2>
+    <p class="sub">Every row leads with its provider logo. Search is the only filter. Simplest mental model when most sessions already know the model name.</p>
+    <div class="rowline">
+      <div class="frame">
+        <div class="chip"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><span class="nm">Opus 5</span><span class="eff">High</span></div>
+        <div class="picker" data-picker="c">
+          <input class="search" data-role="q" type="search" placeholder="Search models..." aria-label="Search models">
+          <div class="list" data-role="list">
+            <div class="item sel" data-p="anthropic" data-t="opus 5"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><div class="stack"><span class="name">Opus 5</span><div class="prov">Anthropic</div></div><span class="badge">High</span><span class="kbd">⌘1</span><span class="check">✓</span></div>
+            <div class="item" data-p="anthropic" data-t="fable"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><div class="stack"><span class="name">Fable 4.1</span><div class="prov">Anthropic</div></div><span class="kbd">⌘2</span></div>
+            <div class="item" data-p="anthropic" data-t="sonnet"><span class="logo"><svg><use href="#lg-anthropic"/></svg></span><div class="stack"><span class="name">Sonnet 4.5</span><div class="prov">Anthropic</div></div></div>
+            <div class="item" data-p="opencode" data-t="mimo free"><span class="logo"><svg><use href="#lg-opencode"/></svg></span><div class="stack"><span class="name">MiMo-V2.6-Flash Free</span><div class="prov">OpenCode · Agent</div></div><span class="badge">Free</span></div>
+            <div class="item" data-p="opencode" data-t="muse spark"><span class="logo"><svg><use href="#lg-opencode"/></svg></span><div class="stack"><span class="name">Muse Spark 1.3 Free</span><div class="prov">OpenCode · Agent</div></div><span class="badge">Free</span></div>
+            <div class="item" data-p="google" data-t="gemini high"><span class="logo"><svg><use href="#lg-google"/></svg></span><div class="stack"><span class="name">Gemini 3.8 Flash (High)</span><div class="prov">Antigravity · Agent</div></div></div>
+            <div class="item" data-p="google" data-t="gemini medium"><span class="logo"><svg><use href="#lg-google"/></svg></span><div class="stack"><span class="name">Gemini 3.8 Flash (Medium)</span><div class="prov">Antigravity · Agent</div></div></div>
+            <div class="item" data-p="xai" data-t="grok"><span class="logo"><svg><use href="#lg-xai"/></svg></span><div class="stack"><span class="name">grok-4.6</span><div class="prov">xAI · Agent</div></div><span class="badge">High</span></div>
+            <div class="item" data-p="deepseek" data-t="deepseek v4"><span class="logo"><svg><use href="#lg-deepseek"/></svg></span><div class="stack"><span class="name">DeepSeek V4 Flash</span><div class="prov">DeepSeek</div></div></div>
+            <div class="item" data-p="openrouter" data-t="claude sonnet openrouter"><span class="logo"><svg><use href="#lg-openrouter"/></svg></span><div class="stack"><span class="name">claude-sonnet-4.5</span><div class="prov">OpenRouter</div></div><span class="badge">Vision</span></div>
+            <div class="item" data-p="harbor" data-t="harbor mini"><span class="logo mono">T</span><div class="stack"><span class="name">Harbor Mini</span><div class="prov">TokenHarbor · No key</div></div></div>
+          </div>
+          <div class="foot">
+            <div class="item">Reasoning effort<span style="margin-left:auto" class="badge">High</span></div>
+            <div class="item">Manage models...</div>
+          </div>
+        </div>
+        <p class="meta"><b>Tradeoff.</b> Zero navigation chrome and the fastest scan when names are known. Provider logos become decoration once the list grows past one viewport, and duplicates across providers still need the subline.</p>
+      </div>
+      <div>
+        <h3>Why this shape</h3>
+        <ul class="tight">
+          <li>Logo is recognition, not a second navigation system.</li>
+          <li>Subline disambiguates the same model on two providers.</li>
+          <li>Closest to the existing cascade content model, so the view model change is small.</li>
+          <li>Weakest when the catalog is large and users browse by vendor.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <h2>Data shape behind any variant</h2>
+  <p class="sub">Same domain for all three. The layout only changes how <code>Provider</code> is reached.</p>
+  <div class="frame" style="max-width:520px">
+    <pre style="margin:0;color:#d4d4d4;font-size:12px;overflow:auto">Provider {
+  id, label, logoId,
+  selfManaged, configured,
+  models: Model[]
+}
+Model {
+  id, label, providerId,
+  isFree, supportsVision,
+  supportsReasoning, reasoningEfforts
+}</pre>
+  </div>
+  <p class="meta"><b>Shared rules.</b> Chip shows logo + short name + effort pill. Menu keeps Reasoning effort and Manage models. Agent and No key stay text badges. No colored logo tiles.</p>
+
+  <h2>Recommendation</h2>
+  <p class="sub"><span class="rec">B first.</span> It is the smallest break from the current chip + menu, uses logos as real filters, and stays compact above the composer. A if the provider list regularly exceeds eight. C if you want the least new chrome and mostly search by name.</p>
+  <p class="meta">Throwaway mock. Not production code. Pick a variant and the real build goes through Feature.</p>
+</div>
+<script>
+(function () {
+  var buttons = document.querySelectorAll('.switch [data-v]');
+  var stages = { a: document.getElementById('v-a'), b: document.getElementById('v-b'), c: document.getElementById('v-c') };
+  function show(v) {
+    buttons.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-v') === v ? 'true' : 'false'); });
+    ['a','b','c'].forEach(function (k) {
+      stages[k].classList.toggle('on', v === 'all' || v === k);
+    });
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.getAttribute('data-v')); });
+  });
+
+  document.querySelectorAll('[data-picker]').forEach(function (picker) {
+    var rail = picker.querySelector('[data-role="rail"]');
+    var q = picker.querySelector('[data-role="q"]');
+    var list = picker.querySelector('[data-role="list"]');
+    if (!list) return;
+    var provider = '*';
+    function apply() {
+      var query = (q && q.value || '').trim().toLowerCase();
+      list.querySelectorAll('.item').forEach(function (row) {
+        var okP = provider === '*' || row.getAttribute('data-p') === provider;
+        var t = row.getAttribute('data-t') || '';
+        var okQ = !query || t.indexOf(query) !== -1;
+        row.style.display = okP && okQ ? '' : 'none';
+      });
+    }
+    if (rail) {
+      rail.querySelectorAll('[data-p]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          provider = btn.getAttribute('data-p');
+          rail.querySelectorAll('[data-p]').forEach(function (b) {
+            b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+          });
+          apply();
+        });
+      });
+    }
+    if (q) q.addEventListener('input', apply);
+    var toggle = picker.querySelector('.toggle');
+    if (toggle) {
+      toggle.addEventListener('click', function () {
+        var on = toggle.getAttribute('aria-pressed') === 'true';
+        toggle.setAttribute('aria-pressed', on ? 'false' : 'true');
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -24,9 +24,11 @@
  */
 
 import { Check, Copy } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { UIEvent } from 'react';
 
-import { stripAnsi } from '../../../shared/toolCellGrammar';
+import { TOOL_OUTPUT_MAX_LINES, stripAnsi } from '../../../shared/toolCellGrammar';
+import type { LineStore, WindowSpec } from '../../../shared/toolOutputStream';
 import { useClipboard } from '../../hooks/useClipboard';
 import { cn } from '../../lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -131,7 +133,10 @@ export function parseAnsiLine(line: string): Segment[] {
   return segments.filter((segment) => segment.text.length > 0);
 }
 
-function AnsiLines({ lines }: { lines: string[] }) {
+/** Fallback row height until the first line measures (term font + leading). */
+const ESTIMATED_ROW_HEIGHT_PX = 18;
+
+function AnsiLines({ lines }: { lines: readonly string[] }) {
   return (
     <>
       {lines.map((line, index) => {
@@ -158,12 +163,51 @@ function AnsiLines({ lines }: { lines: string[] }) {
   );
 }
 
+/** Memo-dead during stream once head freezes (same array identity). */
+const HeadLines = memo(function HeadLines({ lines }: { lines: readonly string[] }) {
+  return <AnsiLines lines={lines} />;
+});
+
+/**
+ * Windowed full log. Only the visible rows mount; pad spacers hold scroll
+ * height. One calculator (`LineStore.getWindow`) — no second path.
+ */
+function VirtualLog({
+  source,
+  rowHeight,
+  viewportHeight,
+  scrollTop,
+  generation,
+}: {
+  source: LineStore;
+  rowHeight: number;
+  viewportHeight: number;
+  scrollTop: number;
+  generation: number;
+}) {
+  const win: WindowSpec = useMemo(
+    () => source.getWindow(rowHeight, viewportHeight, scrollTop),
+    [source, rowHeight, viewportHeight, scrollTop, generation]
+  );
+  const rows = source.getLines(win.start, win.end);
+  return (
+    <>
+      <div style={{ height: win.padTop }} aria-hidden="true" />
+      <AnsiLines lines={rows} />
+      <div style={{ height: win.padBottom }} aria-hidden="true" />
+    </>
+  );
+}
+
 export function TerminalBlock({
   lines,
   omitted,
   head,
   tail,
   allLines,
+  source,
+  peek,
+  running = false,
   className,
 }: {
   /** Head + tail slice as produced by the grammar. */
@@ -178,31 +222,59 @@ export function TerminalBlock({
   tail?: number;
   /** Untruncated output — what the `… +N lines` button reveals. */
   allLines?: string[];
+  /**
+   * Line store behind the cap. When present, expand is a virtual window over
+   * the full log instead of a second head/tail slice of `allLines`.
+   */
+  source?: LineStore;
+  /** Bounded live peek while the call is still running. */
+  peek?: string | null;
+  running?: boolean;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useClipboard();
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const probeRef = useRef<HTMLSpanElement | null>(null);
+  const [rowHeight, setRowHeight] = useState(ESTIMATED_ROW_HEIGHT_PX);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(320);
 
-  const full = allLines && allLines.length > 0 ? allLines : lines;
+  const generation = useSyncExternalStore(
+    useCallback((onChange: () => void) => source?.subscribe(onChange) ?? (() => undefined), [source]),
+    useCallback(() => source?.getGeneration() ?? 0, [source]),
+    useCallback(() => source?.getGeneration() ?? 0, [source])
+  );
 
+  const full = useMemo(() => {
+    if (source) return [...source.getLines(0, source.getLineCount())];
+    return allLines && allLines.length > 0 ? allLines : lines;
+  }, [source, allLines, lines, generation]);
+
+  // Prefer the store's frozen head so HeadLines stays memo-dead while the
+  // tail slides. Fall back to slicing `lines` when no store is attached.
   const { headLines, tailLines } = useMemo(() => {
-    if (omitted <= 0) return { headLines: lines, tailLines: [] as string[] };
+    if (omitted <= 0) return { headLines: lines as readonly string[], tailLines: [] as readonly string[] };
+    if (source) {
+      const view = source.getCapView(head ?? TOOL_OUTPUT_MAX_LINES, tail ?? TOOL_OUTPUT_MAX_LINES).view;
+      return { headLines: view.head, tailLines: view.tail };
+    }
     const headCount = head ?? Math.ceil(lines.length / 2);
     return {
       headLines: lines.slice(0, headCount),
       tailLines: lines.slice(tail != null ? lines.length - tail : headCount),
     };
-  }, [lines, omitted, head, tail]);
+  }, [source, lines, omitted, head, tail, generation]);
 
-  if (!lines.length && !expanded) return null;
-
-  const canExpand = omitted > 0 && full.length > lines.length;
+  const canExpand =
+    omitted > 0 && (source ? source.getLineCount() > lines.length : full.length > lines.length);
   const showingAll = expanded && canExpand;
 
-  const MAX_EXPANDED_RENDER_LINES = 200;
+  // Legacy fallback when no store is attached: keep the old 200-line window.
   const renderedExpanded = useMemo(() => {
-    if (!showingAll || full.length <= MAX_EXPANDED_RENDER_LINES) {
-      return { isCapped: false, head: full, tail: [] as string[], cappedCount: 0 };
+    const MAX_EXPANDED_RENDER_LINES = 200;
+    if (source || !showingAll || full.length <= MAX_EXPANDED_RENDER_LINES) {
+      return { isCapped: false, head: full, tail: [] as readonly string[], cappedCount: 0 };
     }
     const half = Math.floor(MAX_EXPANDED_RENDER_LINES / 2);
     return {
@@ -211,12 +283,46 @@ export function TerminalBlock({
       tail: full.slice(full.length - half),
       cappedCount: full.length - MAX_EXPANDED_RENDER_LINES,
     };
-  }, [showingAll, full]);
+  }, [source, showingAll, full]);
+
+  useEffect(() => {
+    const probe = probeRef.current;
+    if (!probe) return;
+    const height = probe.getBoundingClientRect().height;
+    if (height > 0) setRowHeight(height);
+  }, [expanded]);
+
+  useEffect(() => {
+    if (!showingAll || !source) return;
+    const pre = preRef.current;
+    if (!pre) return;
+    const update = () => setViewportHeight(pre.clientHeight || 320);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [showingAll, source]);
+
+  const onScroll = useCallback((event: UIEvent<HTMLPreElement>) => {
+    setScrollTop(event.currentTarget.scrollTop);
+  }, []);
+
+  if (!lines.length && !showingAll) return null;
 
   // Plain dim mono, no gutter glyph, no border — the app's expanded
   // command output is borderless (reference-visual-spec.md §5).
   return (
     <div className="group/term relative min-w-0">
+      {running && peek ? (
+        <div
+          data-testid="tool-output-peek"
+          className="app-code-compact mb-0.5 truncate text-text-faint"
+          title="streaming peek"
+        >
+          {peek}
+        </div>
+      ) : null}
+
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -232,14 +338,28 @@ export function TerminalBlock({
       </Tooltip>
 
       <pre
+        ref={preRef}
+        onScroll={showingAll && source ? onScroll : undefined}
         className={cn(
           'app-terminal-text scrollbar-auto-hide m-0 min-w-0 overflow-x-auto whitespace-pre text-text-tertiary',
           showingAll && 'max-h-[60vh] overflow-y-auto',
           className
         )}
       >
+        {/* Measures one output line for the virtual window. */}
+        <span ref={probeRef} className="pointer-events-none block select-none" aria-hidden="true">
+          &nbsp;
+        </span>
         {showingAll ? (
-          renderedExpanded.isCapped ? (
+          source ? (
+            <VirtualLog
+              source={source}
+              rowHeight={rowHeight}
+              viewportHeight={viewportHeight}
+              scrollTop={scrollTop}
+              generation={generation}
+            />
+          ) : renderedExpanded.isCapped ? (
             <>
               <AnsiLines lines={renderedExpanded.head} />
               <div className="my-1.5 rounded bg-bg-hover px-2 py-0.5 text-2xs text-text-faint select-none">
@@ -252,7 +372,7 @@ export function TerminalBlock({
           )
         ) : (
           <>
-            <AnsiLines lines={headLines} />
+            <HeadLines lines={headLines} />
             {omitted > 0 && (
               <>
                 <button

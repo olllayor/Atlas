@@ -63,6 +63,7 @@ export function useTranscriptScroll({
   element,
   onUserScrollUp,
   onUserScroll,
+  onUserScrollDown,
   showAt = 120,
   hideAt = 40,
 }: {
@@ -75,6 +76,8 @@ export function useTranscriptScroll({
    * programmatic restore; virtualizer corrections never reach it.
    */
   onUserScroll?: () => void;
+  /** Called on a deliberate downward gesture. Lets stick re-lock. */
+  onUserScrollDown?: () => void;
   /** Distance from bottom at which "scrolled up" turns on. */
   showAt?: number;
   /** Distance from bottom at which it turns back off. */
@@ -87,6 +90,8 @@ export function useTranscriptScroll({
   onUserScrollUpRef.current = onUserScrollUp;
   const onUserScrollRef = useRef(onUserScroll);
   onUserScrollRef.current = onUserScroll;
+  const onUserScrollDownRef = useRef(onUserScrollDown);
+  onUserScrollDownRef.current = onUserScrollDown;
 
   useEffect(() => {
     if (!element) {
@@ -119,6 +124,7 @@ export function useTranscriptScroll({
         }
       } else if (event.deltaY > 1) {
         noteUserScroll();
+        onUserScrollDownRef.current?.();
       }
     };
 
@@ -133,6 +139,8 @@ export function useTranscriptScroll({
       // scrolls the transcript up.
       if (y - touchStartY > 2) {
         onUserScrollUpRef.current();
+      } else if (touchStartY - y > 2) {
+        onUserScrollDownRef.current?.();
       }
       touchStartY = y;
     };
@@ -150,6 +158,7 @@ export function useTranscriptScroll({
         return;
       }
       noteUserScroll();
+      onUserScrollDownRef.current?.();
     };
 
     const measure = () => {

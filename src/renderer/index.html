@@ -32,9 +32,146 @@
       fonts.googleapis.com / fonts.gstatic.com CSP allowances went with it,
       since no remaining stylesheet or font request targets either host.
     -->
+    <!--
+      Theme stamp and static shell paint before any module script. The stamp
+      mirrors `earlyThemeStamp.ts` for the attributes the CSS needs; palette
+      variables still come from `stampCachedTheme()` once the bundle loads.
+    -->
+    <script>
+      (function () {
+        try {
+          var root = document.documentElement;
+          var mode = localStorage.getItem('atlas.theme-mode') || 'system';
+          var design = localStorage.getItem('atlas.design-theme') || 'atlas';
+          var themeId = localStorage.getItem('atlas.theme-id');
+          var prefersDark = window.matchMedia
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+            : true;
+          var resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+          root.classList.toggle('dark', resolved === 'dark');
+          root.setAttribute('data-theme', resolved);
+          root.setAttribute('data-design-theme', design);
+          root.style.colorScheme = resolved;
+          if (themeId) root.setAttribute('data-theme-id', themeId);
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      /* Critical shell only: full viewport, titlebar, sidebar, empty transcript,
+         composer frame. Atlas tokens inlined so the first paint is themed
+         before styles.css lands. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #060709;
+        color: #fafafa;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      html[data-theme='light'],
+      html[data-theme='light'] body {
+        background: #fcfcfc;
+        color: #09090b;
+      }
+      #boot-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+        background: #09090b;
+      }
+      html[data-theme='light'] #boot-shell {
+        background: #fcfcfc;
+      }
+      .boot-titlebar {
+        height: 52px;
+        flex: 0 0 52px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        background: #101013;
+      }
+      html[data-theme='light'] .boot-titlebar {
+        border-bottom-color: rgba(9, 9, 11, 0.06);
+        background: #f4f4f5;
+      }
+      .boot-body {
+        display: flex;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .boot-sidebar {
+        width: 284px;
+        flex: 0 0 284px;
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
+        background: #101013;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+      html[data-theme='light'] .boot-sidebar {
+        border-right-color: rgba(9, 9, 11, 0.06);
+        background: #f4f4f5;
+      }
+      .boot-block {
+        height: 12px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.06);
+        margin-bottom: 10px;
+      }
+      html[data-theme='light'] .boot-block {
+        background: rgba(9, 9, 11, 0.06);
+      }
+      .boot-main {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+      }
+      .boot-transcript {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .boot-composer {
+        flex: 0 0 auto;
+        margin: 0 auto 20px;
+        width: min(100% - 48px, 55rem);
+        height: 88px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 28px;
+        background: #141417;
+        box-sizing: border-box;
+      }
+      html[data-theme='light'] .boot-composer {
+        border-color: rgba(9, 9, 11, 0.09);
+        background: #ffffff;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Replaced wholesale when React mounts. Skeleton blocks only: no fake
+         conversation rows that would lie about local data. -->
+    <div id="root">
+      <div id="boot-shell" aria-hidden="true">
+        <div class="boot-titlebar"></div>
+        <div class="boot-body">
+          <div class="boot-sidebar">
+            <div class="boot-block" style="width: 60%"></div>
+            <div class="boot-block" style="width: 82%"></div>
+            <div class="boot-block" style="width: 70%"></div>
+            <div class="boot-block" style="width: 76%"></div>
+            <div class="boot-block" style="width: 54%"></div>
+          </div>
+          <div class="boot-main">
+            <div class="boot-transcript"></div>
+            <div class="boot-composer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

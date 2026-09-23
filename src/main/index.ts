@@ -994,7 +994,7 @@ app.whenReady().then(async () => {
   // atlas chrome so it could paint immediately; sync the native frame to the
   // real theme before unblocking the renderer.
   syncNativeTheme(database.settings.getThemeMode());
-  perfMark('boot:pre-window-complete');
+  perfMark('boot:chrome-synced');
   const windowChromeState = () => ({
     themeMode: database.settings.getThemeMode(),
     designTheme: database.settings.getDesignTheme(),

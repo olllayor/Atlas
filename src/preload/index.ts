@@ -17,6 +17,10 @@ import type {
 import { IPC_CHANNELS } from '../shared/ipc';
 
 const api: RendererApi = {
+  // The invoke is issued at preload time and the handle (registered before
+  // createWindow) simply returns main's gate. That covers both races: preload
+  // before ready holds the promise, ready before preload resolves it at once.
+  bootReady: ipcRenderer.invoke(IPC_CHANNELS.bootStatus),
   settings: {
     getSummary: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGetSummary),
     saveProviderKey: (providerId, secret) =>

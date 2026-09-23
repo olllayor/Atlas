@@ -1,4 +1,5 @@
 export const IPC_CHANNELS = {
+  bootStatus: 'boot:status',
   settingsGetSummary: 'settings:getSummary',
   settingsSaveProviderKey: 'settings:saveProviderKey',
   settingsValidateProviderKey: 'settings:validateProviderKey',

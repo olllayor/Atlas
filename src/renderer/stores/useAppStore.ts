@@ -756,6 +756,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ bootstrapping: true, bootstrapError: null });
 
     try {
+      // Window and preload load before the main service graph exists. Hold
+      // every IPC call until those handlers are registered.
+      await window.atlasChat.bootReady;
       const settings = await window.atlasChat.settings.getSummary();
       let conversations = await window.atlasChat.conversations.list();
 

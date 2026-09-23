@@ -23,6 +23,7 @@ import { registerAttachmentProtocolHandler } from './attachments/attachmentProto
 import { NativeAppIconResolver } from './assets/NativeAppIconResolver';
 import { registerNativeAppIconProtocolHandler } from './assets/nativeAppIconProtocol';
 import { createWindow, syncNativeTheme, syncWindowChrome } from './bootstrap/createWindow';
+import { createBootReadyGate } from './bootstrap/bootReady';
 import { installCrashHandlers } from './bootstrap/crashHandlers';
 import { registerPrivilegedSchemes } from './bootstrap/privilegedSchemes';
 import { getDockIcon } from './bootstrap/iconPath';
@@ -252,6 +253,31 @@ app.whenReady().then(async () => {
   if (icon && process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(icon);
   }
+
+  // Window first, shell later: the static HTML shell paints while the service
+  // graph below is still building. This gate is the only thing the renderer
+  // waits on, and it is registered before createWindow so preload can invoke it.
+  const bootReady = createBootReadyGate();
+  ipcMain.handle(IPC_CHANNELS.bootStatus, (event) => {
+    assertTrustedSender(event);
+    return bootReady.ready;
+  });
+
+  const window = createWindow({ themeMode: 'dark', designTheme: 'atlas' });
+  perfMark('window:created');
+  window.webContents.once('did-finish-load', () => {
+    perfMark('boot:total (module eval → renderer loaded)');
+    if (process.env.ATLAS_PERF_TRACE === '1') {
+      console.info(`[perf] bootStart→whenReady measured from module eval; whenReady delta: ${Math.round(performance.now() - bootStart)}ms`);
+    }
+  });
+  // Show can land while this function is still building services (the static
+  // shell paints early). The work below needs that graph, so it waits on the
+  // gate and reads the assignment made after registration completes.
+  let runPostShowWork: () => void = () => {};
+  window.once('show', () => {
+    void bootReady.ready.then(() => runPostShowWork());
+  });
 
   const attachmentsDir = await resolveAttachmentDirectory();
   const attachmentStore = new AttachmentStore(attachmentsDir);
@@ -964,10 +990,11 @@ app.whenReady().then(async () => {
     ),
   );
 
-  // Before the first window: the vibrancy material is created with the native
-  // appearance, so setting it afterwards leaves the first paint mismatched.
+  // Settings-backed appearance now exists. The window was created with dark
+  // atlas chrome so it could paint immediately; sync the native frame to the
+  // real theme before unblocking the renderer.
   syncNativeTheme(database.settings.getThemeMode());
-  perfMark('boot:pre-window-complete');
+  perfMark('boot:chrome-synced');
   const windowChromeState = () => ({
     themeMode: database.settings.getThemeMode(),
     designTheme: database.settings.getDesignTheme(),
@@ -975,22 +1002,15 @@ app.whenReady().then(async () => {
     foregroundColor: database.settings.getThemeColor('foregroundColor'),
     translucentSidebar: database.settings.getTranslucentSidebar(),
   });
-  const window = createWindow({ ...windowChromeState() });
+  syncWindowChrome(window, windowChromeState());
   // System mode tracks the OS live; re-resolve the frame when it flips.
   nativeTheme.on('updated', () => {
     for (const win of BrowserWindow.getAllWindows()) {
       syncWindowChrome(win, windowChromeState());
     }
   });
-  perfMark('window:created');
-  window.webContents.once('did-finish-load', () => {
-    perfMark('boot:total (module eval → renderer loaded)');
-    if (process.env.ATLAS_PERF_TRACE === '1') {
-      console.info(`[perf] bootStart→whenReady measured from module eval; whenReady delta: ${Math.round(performance.now() - bootStart)}ms`);
-    }
-  });
   captureFirstLaunchIfNeeded();
-  window.once('show', () => {
+  runPostShowWork = () => {
     // Auto-update checks only make sense for a packaged build; dev runs
     // against the working tree and has nothing to update to.
     if (app.isPackaged) {
@@ -1025,7 +1045,9 @@ app.whenReady().then(async () => {
         reportBackgroundFailure('projects.auto_pull_failed')(err);
       }
     })();
-  });
+  };
+  bootReady.resolve();
+  perfMark('boot:ready');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

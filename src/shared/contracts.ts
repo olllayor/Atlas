@@ -2969,6 +2969,11 @@ export type SaveImageResult = {
 };
 
 export type RendererApi = {
+  /**
+   * Resolves once main has registered the real IPC handlers. Anything that
+   * starts before the service graph is built must await this first.
+   */
+  bootReady: Promise<void>;
   settings: {
     getSummary: () => Promise<SettingsSummary>;
     saveProviderKey: (providerId: ProviderId, secret: string) => Promise<SettingsSummary>;

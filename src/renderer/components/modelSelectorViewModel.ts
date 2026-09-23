@@ -45,7 +45,9 @@ export type ProviderStripItem = {
   providerId: string;
   label: string;
   modelCount: number;
+  /** True when the provider has an API key saved, or does not need one. */
   configured: boolean;
+  /** True when the provider signs itself in (local agents like OpenCode). */
   selfManaged: boolean;
 };
 
@@ -60,11 +62,21 @@ export type ModelRow = {
   ambiguous: boolean;
 };
 
+export type ModelGroupViewModel = {
+  providerId: string;
+  providerLabel: string;
+  configured: boolean;
+  selfManaged: boolean;
+  rows: ModelRow[];
+};
+
 export type ModelSelectorViewModel = {
   /** Unfiltered providers, configured first then by label. Stays full when a providerFilter narrows rows. */
   strip: ProviderStripItem[];
   /** Models after providerFilter and searchQuery. */
   rows: ModelRow[];
+  /** Grouped view of models by provider. Useful for structured sectioned lists. */
+  groups: ModelGroupViewModel[];
   totalCount: number;
   hasFreeModels: boolean;
 };
@@ -192,12 +204,35 @@ export function buildModelSelectorViewModel({
     nameCounts.set(row.name, (nameCounts.get(row.name) ?? 0) + 1);
   }
 
+  const finalRows = visibleRows.map((row) => ({
+    ...row,
+    ambiguous: (nameCounts.get(row.name) ?? 0) > 1
+  }));
+
+  const rowsByProvider = new Map<string, ModelRow[]>();
+  for (const row of finalRows) {
+    const list = rowsByProvider.get(row.providerId);
+    if (list) {
+      list.push(row);
+    } else {
+      rowsByProvider.set(row.providerId, [row]);
+    }
+  }
+
+  const resultGroups: ModelGroupViewModel[] = scopedGroups
+    .filter((g) => rowsByProvider.has(g.providerId))
+    .map((g) => ({
+      providerId: g.providerId,
+      providerLabel: g.label,
+      configured: g.configured,
+      selfManaged: g.selfManaged,
+      rows: rowsByProvider.get(g.providerId) ?? []
+    }));
+
   return {
     strip,
-    rows: visibleRows.map((row) => ({
-      ...row,
-      ambiguous: (nameCounts.get(row.name) ?? 0) > 1
-    })),
+    rows: finalRows,
+    groups: resultGroups,
     totalCount: groups.reduce((sum, group) => sum + group.models.length, 0),
     hasFreeModels
   };
